@@ -6,7 +6,7 @@ Edgeweir 边缘节点：Go agent（`edgeweir-node`）+ OpenResty/Lua 数据面�
 
 - Go 1.27.1（`go.mod` 固定补丁版本，ADR-0017），模块 `github.com/edgeweir/edgeweir-node`，静态编译（`CGO_ENABLED=0`）
 - 依赖只有 `connectrpc.com/connect` 和 `google.golang.org/protobuf`，其余用标准库（`log/slog`、`crypto/x509`、`flag`）
-- 契约：`edgeweir/proto` 的 git tag（`PROTO_TAG`，当前 `proto/v0.2.1`），buf 生成到 `internal/gen/`（已提交，不要手改）
+- 契约：`edgeweir/proto` 的 git tag（`PROTO_TAG`，当前 `proto/v0.2.2`），buf 生成到 `internal/gen/`（已提交，不要手改）
 - 数据面：`openresty/openresty:1.31.1.1-bookworm`，Lua 模块在 `lua/edgeweir/`
 - 发布：goreleaser v2（deb/rpm/tar.gz，linux amd64/arm64）、syft SBOM、cosign keyless、SLSA provenance
 

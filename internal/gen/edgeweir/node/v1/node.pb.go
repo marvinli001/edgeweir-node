@@ -970,10 +970,11 @@ type OriginHealth struct {
 	DownUntil *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=down_until,json=downUntil,proto3" json:"down_until,omitempty"`
 	// Short description of the last failure, e.g. "connect timeout".
 	LastError string `protobuf:"bytes,7,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
-	// Stable code of the last failure, e.g. "connect_timeout", with its
-	// parameters (e.g. "status" for "upstream_status"); the console localizes
-	// the code and falls back to last_error for codes it does not know.
-	// Added in v0.2.1.
+	// Stable code of the last failure with its parameters: connect_failed,
+	// timeout, upstream_status {status}, dns_failed {host},
+	// address_forbidden {address}, tls_failed; empty for anything else. The
+	// console localizes the code and falls back to last_error for codes it
+	// does not know. Added in v0.2.1.
 	LastErrorCode   string            `protobuf:"bytes,8,opt,name=last_error_code,json=lastErrorCode,proto3" json:"last_error_code,omitempty"`
 	LastErrorParams map[string]string `protobuf:"bytes,9,rep,name=last_error_params,json=lastErrorParams,proto3" json:"last_error_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields   protoimpl.UnknownFields
@@ -1931,10 +1932,13 @@ type ReportTaskResultRequest struct {
 	Succeeded  uint32                 `protobuf:"varint,4,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
 	Failed     uint32                 `protobuf:"varint,5,opt,name=failed,proto3" json:"failed,omitempty"`
 	FinishedAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
-	// Stable code of the outcome when something failed, e.g.
-	// "prefetch_failed", with its parameters (e.g. "failed", "total",
-	// "first_url", "first_error"); the console localizes the code and falls
-	// back to message for codes it does not know. Added in v0.2.1.
+	// Stable code of the outcome when something failed, with its parameters:
+	// prefetch_failed {failed, total, url, reason, status} (url is the first
+	// failed URL; reason is status, connect_failed, timeout, https_unsupported
+	// or other; status only with reason=status), prefetch_timeout {done,
+	// total}, task_unsupported {type}, purge_failed. The console localizes the
+	// code and falls back to message for codes it does not know. Added in
+	// v0.2.1.
 	ErrorCode     string            `protobuf:"bytes,7,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	ErrorParams   map[string]string `protobuf:"bytes,8,rep,name=error_params,json=errorParams,proto3" json:"error_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields

@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点当前（MVP M2 与 2026-09-25 收尾之后）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.2.1`）里的 `edgeweir.node.v1`。
+本文描述节点当前（MVP M2 与 2026-09-25 收尾之后）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.2.2`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
