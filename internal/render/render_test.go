@@ -58,6 +58,7 @@ func TestRenderFullGolden(t *testing.T) {
 	p.ListenIPv6 = true
 	p.WorkerConnections = 8192
 	p.WorkerRlimitNofile = 65536
+	p.TrustedCA = "/etc/ssl/certs/ca-certificates.crt"
 	plan := &configir.Plan{
 		Listeners: []configir.Listener{
 			{Port: 80, HTTP2: true},
@@ -106,6 +107,8 @@ func TestRenderRejectsUnsafeInput(t *testing.T) {
 		func(p *Params) { p.Resolvers = []string{"dns.example"} },
 		func(p *Params) { p.WorkerProcesses = "auto;" },
 		func(p *Params) { p.User = "root; daemon on" },
+		func(p *Params) { p.TrustedCA = "/etc/ssl/ca.pem; include /etc/passwd" },
+		func(p *Params) { p.OriginSocketNoVerify = p.OriginSocket },
 	}
 	for i, mutate := range bad {
 		p := params()
@@ -154,5 +157,42 @@ func TestResolversFallback(t *testing.T) {
 	}
 	if got := Resolvers(empty); !reflect.DeepEqual(got, []string{"127.0.0.1"}) {
 		t.Fatalf("no nameservers: %v", got)
+	}
+}
+
+func TestRenderOriginLayersAndTrustStore(t *testing.T) {
+	p := params()
+	got, err := Render(p, configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	for _, want := range []string{
+		"listen unix:/run/edgeweir-node/origin.sock;",
+		"listen unix:/run/edgeweir-node/origin-noverify.sock;",
+		"proxy_ssl_verify off;",
+		`set $edgeweir_trust_store "missing";`,
+		"balancer_by_lua_block",
+		"lua_shared_dict edgeweir_purge 32m;",
+		`resolvers = {"127.0.0.11"},`,
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("nginx.conf lacks %q", want)
+		}
+	}
+	// Without a CA bundle the verifying layer must not claim to verify.
+	if strings.Contains(conf, "proxy_ssl_verify on;") {
+		t.Error("proxy_ssl_verify on without a trusted certificate")
+	}
+	p.TrustedCA = "/etc/ssl/certs/ca-certificates.crt"
+	got, err = Render(p, configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf = string(got)
+	if strings.Count(conf, "proxy_ssl_verify on;") != 1 || strings.Count(conf, "proxy_ssl_verify off;") != 1 ||
+		!strings.Contains(conf, "proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") ||
+		!strings.Contains(conf, `set $edgeweir_trust_store "ok";`) {
+		t.Errorf("verifying origin layer not rendered as expected:\n%s", conf)
 	}
 }

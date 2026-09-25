@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"text/template"
@@ -44,6 +45,13 @@ type Params struct {
 	ControlSocket string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
+	// OriginSocketNoVerify is the unix socket of the origin layer for sites
+	// that skip TLS verification (default: origin-noverify.sock next to
+	// OriginSocket).
+	OriginSocketNoVerify string
+	// TrustedCA is the CA bundle used to verify HTTPS origins. Empty means
+	// none was found: origins that must be verified then fail closed.
+	TrustedCA string
 	// ResolvConf is the file the resolvers were read from (comment only).
 	ResolvConf string
 	// Resolvers are nginx resolver addresses (IPv6 bracketed).
@@ -62,6 +70,7 @@ type Params struct {
 	ErrorLogLevel      string
 	SitesDictMB        int
 	StatsDictMB        int
+	PurgeDictMB        int
 }
 
 // WithDefaults fills zero values with production defaults.
@@ -81,6 +90,12 @@ func (p Params) WithDefaults() Params {
 	if p.StatsDictMB == 0 {
 		p.StatsDictMB = 16
 	}
+	if p.PurgeDictMB == 0 {
+		p.PurgeDictMB = 32
+	}
+	if p.OriginSocketNoVerify == "" && p.OriginSocket != "" {
+		p.OriginSocketNoVerify = filepath.Join(filepath.Dir(p.OriginSocket), "origin-noverify.sock")
+	}
 	if len(p.Resolvers) == 0 {
 		p.Resolvers = []string{"127.0.0.1"}
 	}
@@ -94,10 +109,17 @@ func (p Params) validate() error {
 	for name, v := range map[string]string{
 		"nginx prefix": p.Prefix, "lua dir": p.LuaDir, "cache dir": p.CacheDir,
 		"control socket": p.ControlSocket, "origin socket": p.OriginSocket, "resolv.conf": p.ResolvConf,
+		"origin socket without verification": p.OriginSocketNoVerify,
 	} {
 		if !safePath.MatchString(v) {
 			return fmt.Errorf("%s %q must be an absolute path without spaces or special characters", name, v)
 		}
+	}
+	if p.TrustedCA != "" && !safePath.MatchString(p.TrustedCA) {
+		return fmt.Errorf("trusted CA bundle %q must be an absolute path without spaces or special characters", p.TrustedCA)
+	}
+	if p.OriginSocket == p.OriginSocketNoVerify {
+		return errors.New("the origin sockets with and without TLS verification must differ")
 	}
 	for name, v := range map[string]string{"worker_processes": p.WorkerProcesses, "error log level": p.ErrorLogLevel} {
 		if !safeWord.MatchString(v) {
@@ -117,9 +139,15 @@ func (p Params) validate() error {
 
 type data struct {
 	Params
-	Listeners   []configir.Listener
-	CacheZones  []configir.CacheZone
-	DefaultZone string
+	Listeners    []configir.Listener
+	CacheZones   []configir.CacheZone
+	DefaultZone  string
+	OriginLayers []originLayer
+}
+
+type originLayer struct {
+	Socket string
+	Verify bool
 }
 
 // Render returns nginx.conf for plan.
@@ -147,6 +175,10 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		Listeners:   plan.Listeners,
 		CacheZones:  plan.CacheZones,
 		DefaultZone: plan.CacheZones[0].Name,
+		OriginLayers: []originLayer{
+			{Socket: p.OriginSocket, Verify: true},
+			{Socket: p.OriginSocketNoVerify, Verify: false},
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("render nginx.conf: %w", err)
