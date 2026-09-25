@@ -17,7 +17,10 @@
 --
 -- Matching uses the site's current cache key policy: the host is ignored
 -- when the key excludes it, and query strings are compared after the same
--- normalization as the key (edgeweir.cachekey.normalize_query).
+-- normalization as the key (edgeweir.cachekey.normalize_query). Marker
+-- paths arrive percent-encoded as requested and are normalized like
+-- nginx's $uri (edgeweir.cachekey.normalize_path), which is what requests
+-- are matched with: a prefix purge of "/static/" covers "/%73tatic/x".
 --
 -- The agent persists the markers, drops them once no object keyed without
 -- them can remain (cache inactive time), and replays them after an nginx
@@ -94,9 +97,9 @@ local function build(markers)
     elseif m.type == "prefix" then
       local k = "p|" .. m.site_id
       entries[k] = entries[k] or {}
-      merge(entries[k], m.host or "", m.path or "/", epoch)
+      merge(entries[k], m.host or "", cachekey.normalize_path(m.path or "/"), epoch)
     else
-      local k = "u|" .. m.site_id .. "|" .. (m.path or "/")
+      local k = "u|" .. m.site_id .. "|" .. cachekey.normalize_path(m.path or "/")
       entries[k] = entries[k] or {}
       merge(entries[k], m.host or "", m.query or "", epoch)
     end
@@ -198,7 +201,8 @@ function _M.status()
 end
 
 -- epoch returns the highest epoch of the markers matching a request, or 0.
--- key is the site's prepared cache key policy; path and args are raw.
+-- key is the site's prepared cache key policy; path is the normalized
+-- $uri, args the raw query string.
 function _M.epoch(site_id, key, host, path, args)
   local ver = dict:get("#ver")
   if not ver then

@@ -123,7 +123,7 @@ func TestBuildDropsInvalidM2Parts(t *testing.T) {
 	site.CacheKey = &nodev1.CacheKeyPolicy{
 		Query:       nodev1.CacheKeyQuery_CACHE_KEY_QUERY_INCLUDE,
 		QueryParams: []string{"ok", "a&b"},
-		Headers:     []string{"X-Ok", "cookie", "bad header"},
+		Headers:     []string{"X-Ok", "cookie", "bad header", "X-Edgeweir-Site"},
 		Cookies:     []string{"sid", "bad;cookie"},
 	}
 	site.OriginPool.Origins = append(site.OriginPool.Origins,
@@ -147,7 +147,7 @@ func TestBuildDropsInvalidM2Parts(t *testing.T) {
 		t.Fatalf("origins = %+v rules = %+v", s.Origins, s.CacheRules)
 	}
 	joined := strings.Join(p.Warnings, "\n")
-	for _, want := range []string{`"a&b"`, `"cookie"`, `"bad header"`, `"bad;cookie"`, "invalid S3 region", "S3 origin without credential", "no valid status code", "maximum size below minimum size", "no valid path"} {
+	for _, want := range []string{`"a&b"`, `"cookie"`, `"bad header"`, `"x-edgeweir-site"`, `"bad;cookie"`, "invalid S3 region", "S3 origin without credential", "no valid status code", "maximum size below minimum size", "no valid path"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("warnings do not mention %s:\n%s", want, joined)
 		}

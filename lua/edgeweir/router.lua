@@ -20,7 +20,7 @@ local purge = require("edgeweir.purge")
 local _M = {}
 
 local concat = table.concat
-local find, lower, sub = string.find, string.lower, string.sub
+local lower, sub = string.lower, string.sub
 
 local function deny(status, code, message)
   ngx.status = status
@@ -32,14 +32,19 @@ local function deny(status, code, message)
 end
 
 -- strip_internal_headers removes client-supplied X-Edgeweir-* headers so
--- that clients can never inject internal routing or caching hints.
+-- that clients can never inject internal routing or caching hints. It
+-- reads every request header (no limit) and returns them: the cache key
+-- is built from the same table, so a header can never be invisible to
+-- one and visible to the other.
 local function strip_internal_headers()
   local headers = ngx.req.get_headers(0)
   for name in pairs(headers) do
     if sub(name, 1, 11) == "x-edgeweir-" then
       ngx.req.clear_header(name)
+      headers[name] = nil
     end
   end
+  return headers
 end
 
 -- cdn_loop_contains reports whether a CDN-Loop header value (RFC 8586:
@@ -76,8 +81,9 @@ local function rule_ids(chain)
   return concat(ids, ",")
 end
 
--- key_request collects what the cache key policy of site needs.
-local function key_request(site, var, path)
+-- key_request collects what the cache key policy of site needs. path is
+-- the normalized $uri, headers every request header.
+local function key_request(site, var, path, headers)
   local key = site.cache_key
   local req = {
     scheme = var.scheme,
@@ -89,7 +95,7 @@ local function key_request(site, var, path)
     req.user_agent = var.http_user_agent
   end
   if #key.headers > 0 then
-    req.headers = ngx.req.get_headers(100)
+    req.headers = headers
   end
   if #key.cookies > 0 then
     req.cookie = function(name)
@@ -100,7 +106,7 @@ local function key_request(site, var, path)
 end
 
 function _M.access()
-  strip_internal_headers()
+  local headers = strip_internal_headers()
 
   local var = ngx.var
   -- Loop detection (RFC 8586) comes before any origin or cache work: an
@@ -157,11 +163,11 @@ function _M.access()
     var.edgeweir_range_mode = "slice"
   end
 
-  local request_uri = var.request_uri
-  local q = find(request_uri, "?", 1, true)
-  local path = q and sub(request_uri, 1, q - 1) or request_uri
+  -- Cache rules, purge markers and the key all use nginx's normalized
+  -- path, so an encoded variant of a URL can never escape a purge.
+  local path = var.uri
   local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
-  var.edgeweir_cache_key = cachekey.build(site, key_request(site, var, path), epoch)
+  var.edgeweir_cache_key = cachekey.build(site, key_request(site, var, path, headers), epoch)
 end
 
 function _M.header_filter()

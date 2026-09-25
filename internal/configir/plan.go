@@ -519,7 +519,8 @@ func buildCacheKey(k *nodev1.CacheKeyPolicy) (CacheKey, []string) {
 	}
 	for _, h := range k.GetHeaders() {
 		h = strings.ToLower(h)
-		if !tokenRE.MatchString(h) || h == "cookie" || h == "host" {
+		// Internal headers are stripped before the key is built.
+		if !tokenRE.MatchString(h) || h == "cookie" || h == "host" || strings.HasPrefix(h, "x-edgeweir-") {
 			warnings = append(warnings, fmt.Sprintf("cache key header %q ignored", h))
 			continue
 		}

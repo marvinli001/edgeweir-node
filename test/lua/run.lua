@@ -433,6 +433,71 @@ test("cachekey query modes, sorting, device, headers, cookies and host", functio
   eq(cachekey.build(s, req, 0), "v:1:http:///p|d=m|h:accept-language=de,en|c:ab=b")
 end)
 
+test("cachekey parts are escaped so no value can imitate another part", function()
+  local s = store.prepare(site("x", { { name = "x.test" } }, {
+    cache_key = { query = "all", headers = { "h1", "h2" }, cookies = { "c1", "c2" } },
+  }))
+  local function key(path, args, h, c)
+    return cachekey.build(s, {
+      scheme = "http", host = "x.test", path = path, args = args, headers = h,
+      cookie = function(name)
+        return c and c[name]
+      end,
+    }, 0)
+  end
+  -- A header value cannot inject a later header part.
+  local a = key("/p", "", { h1 = "x|h:h2=y", h2 = "" })
+  local b = key("/p", "", { h1 = "x", h2 = "y|h:h2=" })
+  assert(a ~= b, "header values collide: " .. a)
+  -- Nor ":" / "=" games between name and value, or cookies.
+  assert(key("/p", "", {}, { c1 = "a|c:c2=b" }) ~= key("/p", "", {}, { c1 = "a", c2 = "b|c:c2=" }), "cookie values collide")
+  assert(key("/p", "", { h1 = "a=b" }) ~= key("/p", "", { h1 = "a", h2 = "b" }))
+  -- A path (decoded $uri) cannot imitate the query or a header part, and a
+  -- query cannot imitate a header part or the purge epoch.
+  assert(key("/p?a=1", "") ~= key("/p", "a=1"), "path vs query")
+  assert(key("/p|h:h1=v", "", {}) ~= key("/p", "", { h1 = "v" }), "path vs header")
+  assert(key("/p", "a=1|h:h1=v", {}) ~= key("/p", "a=1", { h1 = "v" }), "query vs header")
+  assert(key("/p#1", "") ~= cachekey.build(s, { scheme = "http", host = "x.test", path = "/p", args = "" }, 1), "path vs epoch")
+  -- "%" itself is escaped: an escaped-looking value is not an escape.
+  assert(key("/a%7Cb", "") ~= key("/a|b", ""), "percent escapes are not ambiguous")
+  eq(key("/a|b", "q=%41", { h1 = "v:1" }), "x:1:http://x.test/a%7Cb?q=%2541|h:h1=v%3A1|h:h2=|c:c1=|c:c2=")
+  -- Repeated header fields join with "," (equivalent in HTTP), escaped each.
+  eq(key("/p", "", { h1 = { "a|b", "c" } }), "x:1:http://x.test/p|h:h1=a%7Cb,c|h:h2=|c:c1=|c:c2=")
+  -- Control characters never reach the key.
+  assert(not key("/a\nb", ""):find("\n", 1, true))
+end)
+
+test("cachekey.normalize_path matches nginx's $uri", function()
+  -- Expected values recorded from OpenResty 1.31.1.1 ($uri of the raw path).
+  local cases = {
+    ["/%73tatic/x"] = "/static/x", ["/a/../b"] = "/b", ["//a///b"] = "/a/b", ["/a/./b"] = "/a/b",
+    ["/a/b/.."] = "/a/", ["/a/b/."] = "/a/b/", ["/a/%2e%2e/c"] = "/c", ["/a%2Fb"] = "/a/b",
+    ["/a%2F..%2Fc"] = "/c", ["/a+b%20c"] = "/a+b c", ["/%7C%23%3F"] = "/|#?", ["/a/b/"] = "/a/b/",
+    ["/a/.%2e/b"] = "/b", ["/x/.."] = "/", ["/./a"] = "/a", ["/"] = "/", ["/static/"] = "/static/",
+  }
+  for raw, want in pairs(cases) do
+    eq(cachekey.normalize_path(raw), want, raw)
+  end
+  eq(cachekey.normalize_path("/../../x"), "/x", "never above the root")
+  eq(cachekey.normalize_path(""), "/")
+end)
+
+test("purge markers match encoded variants of their paths", function()
+  local key = cachekey.prepare({ query = "all" })
+  assert(purge.replace({ id = "enc", markers = {
+    { site_id = "e1", type = "prefix", host = "e.test", path = "/static/", epoch = 500 },
+    { site_id = "e1", type = "url", host = "e.test", path = "/img/a%20b.png", query = "", epoch = 600 },
+    { site_id = "e1", type = "prefix", host = "e.test", path = "/%64ocs/", epoch = 700 },
+  } }))
+  -- Requests are matched with nginx's normalized $uri.
+  eq(purge.epoch("e1", key, "e.test", cachekey.normalize_path("/%73tatic/x.js"), ""), 500, "/%73tatic/ escapes no prefix purge")
+  eq(purge.epoch("e1", key, "e.test", "/static/x.js", ""), 500)
+  eq(purge.epoch("e1", key, "e.test", "/img/a b.png", ""), 600, "URL marker path is normalized too")
+  eq(purge.epoch("e1", key, "e.test", "/docs/index.html", ""), 700, "encoded prefix marker")
+  eq(purge.epoch("e1", key, "e.test", "/staticx", ""), 0)
+  assert(purge.replace({ id = "empty-enc", markers = {} }))
+end)
+
 test("purge markers change the epoch of matching requests only", function()
   local key = cachekey.prepare({ query = "all", sort_query = true })
   eq(purge.epoch("p1", key, "a.test", "/x", ""), 0, "no markers")

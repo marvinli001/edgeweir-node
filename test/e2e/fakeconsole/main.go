@@ -25,6 +25,8 @@
 //	GET /applied  "<applied_revision> <state>" from the last ReportStatus
 //	GET /stats    number of uploaded MinuteStats buckets
 //	GET /node-id  node id the console assigned
+//	POST /purge-prefix?site=&host=&path=  queue a prefix purge task
+//	GET /task-results  "<task id> <state> <error code>" per result
 //	GET /origin-health  one line per origin with failures from the last
 //	              ReportStatus: "<site> <origin> <code> <error>"
 //	POST /publish publish a new revision adding site demo2.test
@@ -42,6 +44,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/edgeweir/edgeweir-node/internal/configir"
 	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
@@ -144,7 +148,15 @@ func baseSites(origin string) []*nodev1.Site {
 		site("site-hidden", "hidden.test", "hidden", 80),
 		tlsSite("site-tls-ok", "tls-ok.test", "origin.test"),
 		tlsSite("site-tls-bad", "tls-bad.test", "wrong.test"),
+		keyedSite(origin),
 	}
+}
+
+// keyedSite varies its cache key on Accept-Language.
+func keyedSite(origin string) *nodev1.Site {
+	s := site("site-keyed", "keyed.test", origin, 80)
+	s.CacheKey = &nodev1.CacheKeyPolicy{Headers: []string{"accept-language"}}
+	return s
 }
 
 func main() {
@@ -188,6 +200,23 @@ func main() {
 				code = "-"
 			}
 			fmt.Fprintf(w, "%s %s %s %s\n", h.GetSiteId(), h.GetOriginId(), code, h.GetLastError())
+		}
+	})
+	mux.HandleFunc("POST /purge-prefix", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		id := fmt.Sprintf("purge-%d", time.Now().UnixNano())
+		c.AddTask(&nodev1.NodeTask{Id: id, CreatedAt: timestamppb.Now(), Kind: &nodev1.NodeTask_Purge{Purge: &nodev1.PurgeTask{
+			Targets: []*nodev1.PurgeTarget{{SiteId: q.Get("site"), Type: nodev1.PurgeType_PURGE_TYPE_PREFIX, Host: q.Get("host"), Path: q.Get("path")}},
+		}}}, false)
+		fmt.Fprint(w, id)
+	})
+	mux.HandleFunc("GET /task-results", func(w http.ResponseWriter, _ *http.Request) {
+		for _, res := range c.TaskResults() {
+			code := res.GetErrorCode()
+			if code == "" {
+				code = "-"
+			}
+			fmt.Fprintf(w, "%s %s %s\n", res.GetTaskId(), res.GetState(), code)
 		}
 	})
 	mux.HandleFunc("GET /node-id", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.Options().NodeID) })

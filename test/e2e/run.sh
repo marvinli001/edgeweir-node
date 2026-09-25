@@ -51,6 +51,9 @@ x_cache() { # host -> value of X-Cache
   curl -s -o /dev/null -D - -H "Host: $1" "$NODE/" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-cache"{print $2}'
 }
 status_code() { curl -s -o /dev/null -w '%{http_code}' -H "Host: $1" "$NODE/"; }
+x_cache_path() { # host path -> value of X-Cache
+  curl -s -o /dev/null -D - -H "Host: $1" "$NODE$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-cache"{print $2}'
+}
 applied_is() { [ "$(curl -fsS "$HELPER/applied")" = "$1" ]; }
 
 compose up -d --build --quiet-pull
@@ -126,6 +129,27 @@ echo "$body" | grep -q "tls origin ok sni=origin.test" || fail "matching name af
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: tls-bad.test' "$NODE/tls-4")
 [ "$code" = 502 ] || fail "wrong name after a verified connection returned $code, want 502 (connection reused?)"
 pass "origin HTTPS: trusted CA + matching name 200, wrong name 502"
+
+# The cache key sees every header (not only the first 100): a key header
+# behind 150 others still splits the variants.
+x_cache_keyed() { # accept-language
+  curl -s -o /dev/null -D - -H 'Host: keyed.test' "${pad[@]}" -H "Accept-Language: $1" "$NODE/keyed" |
+    tr -d '\r' | awk -F': ' 'tolower($1)=="x-cache"{print $2}'
+}
+[ "$(x_cache_keyed de)" = MISS ] || fail "keyed.test first request is not a MISS"
+[ "$(x_cache_keyed de)" = HIT ] || fail "keyed.test second request is not a HIT"
+[ "$(x_cache_keyed en)" = MISS ] || fail "another Accept-Language behind 150 headers shares the cached variant"
+curl -fsS -H 'Host: keyed.test' "${pad[@]}" -H 'Accept-Language: en' "$NODE/keyed" | grep -q "Accept-Language: en" ||
+  fail "keyed.test served the wrong variant"
+pass "cache key reads every request header"
+
+# Purges match nginx's normalized path: /%73tatic/ is /static/.
+[ "$(x_cache_path demo.test /%73tatic/e2e.js)" = MISS ] || fail "/%73tatic/e2e.js first request is not a MISS"
+[ "$(x_cache_path demo.test /static/e2e.js)" = HIT ] || fail "/static/e2e.js does not share the key of /%73tatic/e2e.js"
+task=$(curl -fsS -X POST "$HELPER/purge-prefix?site=site-demo&host=demo.test&path=/static/")
+wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
+[ "$(x_cache_path demo.test /%73tatic/e2e.js)" = MISS ] || fail "prefix purge of /static/ did not cover /%73tatic/e2e.js"
+pass "prefix purge covers percent-encoded variants"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
