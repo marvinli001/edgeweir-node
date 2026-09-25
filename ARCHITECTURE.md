@@ -257,3 +257,5 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 - `CacheRuleMatch.expression` 非空的配置会被拒绝。
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
+- 暂不支持 WebSocket / `Upgrade` 透传（两层代理都重置了 `Connection` 头）。
+- 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。

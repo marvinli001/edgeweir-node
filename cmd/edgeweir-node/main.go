@@ -86,6 +86,13 @@ also be set through an environment variable EDGEWEIR_<NAME> (for example
 `)
 }
 
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 // envName maps a flag name to its environment variable.
 func envName(flagName string) string {
 	return "EDGEWEIR_" + strings.ToUpper(strings.ReplaceAll(flagName, "-", "_"))
@@ -202,7 +209,15 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Best effort: report the OpenResty version with the enrollment.
+	engineVersion := ""
+	vctx, vcancel := context.WithTimeout(ctx, 3*time.Second)
+	if v, err := engine.New(engine.Config{Bin: envOr("EDGEWEIR_NGINX_BIN", "openresty")}).Version(vctx); err == nil {
+		engineVersion = v
+	}
+	vcancel()
 	if _, err := enroll.Run(ctx, enroll.Options{
+		Info:       hostinfo.Collect(engineVersion),
 		ServerURL:  *server,
 		Token:      *token,
 		CASHA256:   *caSHA256,
