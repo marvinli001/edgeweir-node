@@ -140,7 +140,10 @@ sboms:
 # GoReleaser OSS has no `if:` on signs (it is a GoReleaser Pro feature) and
 # `cmd` is not templated, but `args` are: the command is wrapped in `sh -c`
 # so snapshot builds skip signing instead of starting an interactive OIDC
-# login. Release builds always sign (and fail if signing fails).
+# login (GoReleaser then warns that no signature file was written). Release
+# builds always sign and fail if signing fails. Note that GoReleaser expands
+# $name / ${name} in args itself, so the script must not use shell
+# positional parameters; the paths come from ${signature} and ${artifact}.
 signs:
   - id: cosign
     artifacts: checksum
@@ -149,9 +152,7 @@ signs:
     args:
       - -c
       - >-
-        {{ if .IsSnapshot }}echo "snapshot build: skipping cosign keyless signature of $1"{{ else }}exec cosign sign-blob --yes --bundle="$0" "$1"{{ end }}
-      - "${signature}"
-      - "${artifact}"
+        {{ if .IsSnapshot }}echo "snapshot build: not signing ${artifact}"{{ else }}exec cosign sign-blob --yes --bundle='${signature}' '${artifact}'{{ end }}
     output: true
 
 snapshot:
