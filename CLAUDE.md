@@ -1,0 +1,37 @@
+# CLAUDE.md
+
+Edgeweir 边缘节点：Go agent（`edgeweir-node`）+ OpenResty/Lua 数据面。控制面在同级仓库 `../edgeweir`（只读，不要修改）。架构见 ARCHITECTURE.md。
+
+## 技术栈
+
+- Go 1.27，模块 `github.com/edgeweir/edgeweir-node`，静态编译（`CGO_ENABLED=0`）
+- 依赖只有 `connectrpc.com/connect` 和 `google.golang.org/protobuf`，其余用标准库（`log/slog`、`crypto/x509`、`flag`）
+- 契约：`edgeweir/proto` 的 git tag（`PROTO_TAG`，当前 `proto/v0.1.0`），buf 生成到 `internal/gen/`（已提交，不要手改）
+- 数据面：`openresty/openresty:1.31.1.1-bookworm`，Lua 模块在 `lua/edgeweir/`
+- 发布：goreleaser v2（deb/rpm/tar.gz，linux amd64/arm64）、syft SBOM、cosign keyless、SLSA provenance
+
+## 常用命令
+
+```sh
+go vet ./... && go test ./...        # 必须通过
+make test-race lua-test e2e           # race、Lua（resty）、容器冒烟测试
+make proto / make proto-check         # 从 tag 重新生成 / 检查漂移
+go test ./internal/render -update     # 更新 nginx.conf golden 文件（review diff）
+make docker && make snapshot          # 镜像、goreleaser 本地快照
+```
+
+## 约定
+
+- Conventional Commits，小步提交；提交信息末尾带 `Co-Authored-By` 行（如适用）。
+- 文档以中文为主，README 中英双语。
+- 所有持久化写入用 `fsutil.WriteFileAtomic`。
+- 写进 `nginx.conf` 的值必须先校验；站点等可变数据只走控制 socket，不进 `nginx.conf`。
+- 改 content_hash 相关逻辑必须同步控制面，测试向量 `internal/configir/testdata/content_hash_vector.json` 不能随意改。
+
+## 不可违反的原则
+
+- 没有 phone-home、授权校验或默认开启的遥测。
+- 节点私钥只在本机生成和保存（0600），从不传输；注册前必须按 `--ca-sha256` 固定 CA。
+- 注册后所有 RPC 走 mTLS；控制 API 只监听 unix socket。
+- 控制面不可达或新配置被拒绝时，继续按 last-known-good 配置服务。
+- 不为让测试通过而跳过或削弱测试。
