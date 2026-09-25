@@ -76,13 +76,44 @@ edgeweir-node version
 
 每个参数都可以用环境变量 `EDGEWEIR_<参数名>` 设置（例如 `--state-dir` 对应 `EDGEWEIR_STATE_DIR`，`--token` 对应 `EDGEWEIR_TOKEN`，`--token-file` 对应 `EDGEWEIR_TOKEN_FILE`），命令行参数优先。`run` 在节点注册之前每 2 秒检查一次状态目录，所以可以在 `run` 已经运行时再执行 `enroll`。
 
+| `enroll` 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--server` | 必填 | 控制台节点通道地址，例如 `https://console.example.com:8443` |
+| `--ca-sha256` | 必填 | 安装命令里的控制台内部 CA 证书（DER）SHA-256，十六进制 |
+| `--token-file` | 无 | 从这个文件读取一次性 token（去掉首尾空白） |
+| `--token` | 无 | 直接给出一次性 token；会出现在进程列表里，优先用 `EDGEWEIR_TOKEN` 或 `--token-file` |
+| `--server-name` | `--server` 的主机名 | 校验的 TLS 服务器名 |
+| `--state-dir` | `/var/lib/edgeweir-node` | 保存节点身份的状态目录 |
+| `--force` | 关 | 替换已有身份（重新注册） |
+| `--timeout` | `30s` | 注册 RPC 的超时 |
+| `--log-level` | `info` | 日志级别：`debug`、`info`、`warn` 或 `error` |
+| `--log-format` | `text` | 日志格式：`text` 或 `json` |
+
 | `run` 参数 | 默认值 | 作用 |
 | --- | --- | --- |
+| `--manage-nginx` | 关 | 把 OpenResty 作为受监管的子进程运行（容器和 systemd 单元都开启） |
+| `--state-dir` | `/var/lib/edgeweir-node` | 状态目录（身份、last-known-good 配置） |
+| `--nginx-bin` | `openresty` | OpenResty 可执行文件 |
+| `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix 目录 |
+| `--nginx-user` | 无 | agent 以 root 运行时 nginx worker 使用的用户（更好的做法是用非特权用户运行 agent） |
+| `--lua-dir` | `/usr/share/edgeweir-node/lua` | 存放 `edgeweir/*.lua` 的目录 |
+| `--cache-dir` | `/var/cache/edgeweir-node` | 缓存 zone 的上级目录 |
+| `--control-socket` | `/run/edgeweir-node/control.sock` | 数据面控制 API 的 unix socket |
+| `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层的 unix socket |
+| `--origin-socket-noverify` | 回源 socket 旁的 `origin-noverify.sock` | 不校验 TLS 的回源层 unix socket |
+| `--edge-socket` | 控制 socket 旁的 `edge.sock` | 所有监听都要求 PROXY protocol 时，预热使用的本地边缘监听 |
 | `--trusted-ca` | 系统 CA bundle | 校验 HTTPS 源站证书用的 CA |
-| `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`）的大小 |
+| `--resolv-conf` | `/etc/resolv.conf` | 从中读取 nginx resolver 的 resolv.conf |
+| `--resolver` | 无 | 逗号分隔的 resolver 地址（优先于 `--resolv-conf`） |
+| `--resolver-ipv6` | `auto` | 为源站解析 AAAA 记录：`auto`（本机有全局 IPv6 地址时）、`on` 或 `off` |
+| `--listen-ipv6` | `auto` | 同时监听 IPv6：`auto`（本机能绑定 IPv6 时）、`on` 或 `off` |
+| `--default-port` | `80` | 收到配置之前提供服务的 HTTP 端口 |
+| `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`）的大小，单位 MiB |
 | `--purge-markers-per-site` | `1000` | 每个站点的 URL 与前缀标记上限，超过后合并为一个全站标记 |
 | `--prefetch-budget` | `4m` | 一次拉取的预热任务可用的时间 |
-| `--edge-socket` | 控制 socket 旁的 `edge.sock` | 所有监听都要求 PROXY protocol 时，预热使用的本地边缘监听 |
+| `--log-level` | `info` | 日志级别：`debug`、`info`、`warn` 或 `error` |
+| `--log-format` | `text` | 日志格式：`text` 或 `json` |
 
 | 路径 / 端口 | 用途 |
 | --- | --- |

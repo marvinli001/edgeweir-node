@@ -76,13 +76,44 @@ edgeweir-node version
 
 Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for example `--state-dir` → `EDGEWEIR_STATE_DIR`, `--token` → `EDGEWEIR_TOKEN`, `--token-file` → `EDGEWEIR_TOKEN_FILE`); command-line flags win. `run` waits (polling every 2 s) until the node is enrolled, so `enroll` can be run while `run` is already running.
 
+| `enroll` flag | Default | Purpose |
+| --- | --- | --- |
+| `--server` | required | console node-channel URL, e.g. `https://console.example.com:8443` |
+| `--ca-sha256` | required | SHA-256 of the console's internal CA certificate (DER, hex) from the install command |
+| `--token-file` | none | read the one-time token from this file (surrounding whitespace is ignored) |
+| `--token` | none | the one-time token itself; visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
+| `--server-name` | host of `--server` | TLS server name to verify |
+| `--state-dir` | `/var/lib/edgeweir-node` | state directory for the node identity |
+| `--force` | off | replace an existing identity (re-enroll) |
+| `--timeout` | `30s` | enrollment RPC timeout |
+| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
+| `--log-format` | `text` | `text` or `json` |
+
 | `run` flag | Default | Purpose |
 | --- | --- | --- |
+| `--manage-nginx` | off | run OpenResty as a supervised child process (the container and the systemd unit set it) |
+| `--state-dir` | `/var/lib/edgeweir-node` | state directory (identity, last-known-good configuration) |
+| `--nginx-bin` | `openresty` | OpenResty binary |
+| `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix directory |
+| `--nginx-user` | none | user for the nginx workers when the agent runs as root (better: run the agent as an unprivileged user) |
+| `--lua-dir` | `/usr/share/edgeweir-node/lua` | directory containing `edgeweir/*.lua` |
+| `--cache-dir` | `/var/cache/edgeweir-node` | parent directory of the proxy cache zones |
+| `--control-socket` | `/run/edgeweir-node/control.sock` | unix socket of the data plane control API |
+| `--origin-socket` | `/run/edgeweir-node/origin.sock` | unix socket of the internal origin layer |
+| `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | unix socket of the origin layer without TLS verification |
+| `--edge-socket` | `edge.sock` next to the control socket | local edge listener for prefetches when every listener uses the PROXY protocol |
 | `--trusted-ca` | system bundle | CA bundle for verifying HTTPS origins |
-| `--purge-dict-mb` | `32` | size of the purge marker store (`lua_shared_dict edgeweir_purge`) |
+| `--resolv-conf` | `/etc/resolv.conf` | resolv.conf to take the nginx resolvers from |
+| `--resolver` | none | comma-separated resolver addresses (overrides `--resolv-conf`) |
+| `--resolver-ipv6` | `auto` | resolve AAAA records for origins: `auto` (when the host has a global IPv6 address), `on` or `off` |
+| `--listen-ipv6` | `auto` | also listen on IPv6: `auto` (when the host can bind IPv6), `on` or `off` |
+| `--default-port` | `80` | HTTP port served before any configuration exists |
+| `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--purge-dict-mb` | `32` | size of the purge marker store (`lua_shared_dict edgeweir_purge`) in MiB |
 | `--purge-markers-per-site` | `1000` | URL and prefix purge markers per site before they collapse into one site-level marker |
 | `--prefetch-budget` | `4m` | time the prefetches of one pulled batch may take |
-| `--edge-socket` | `edge.sock` next to the control socket | local edge listener for prefetches when every listener uses the PROXY protocol |
+| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
+| `--log-format` | `text` | `text` or `json` |
 
 | Path / port | Purpose |
 | --- | --- |
