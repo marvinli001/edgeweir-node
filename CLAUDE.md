@@ -26,6 +26,7 @@ make docker && make snapshot          # 镜像、goreleaser 本地快照
 
 - Conventional Commits，小步提交；提交信息末尾带 `Co-Authored-By` 行（如适用）。
 - 文档以中文为主，README 中英双语。
+- `docs/adr/` 是控制台仓库 `docs/adr` 的镜像，由 `scripts/sync-adr.sh` 生成（只把指向控制台独有文件的相对链接换成 GitHub URL）。不要在这里编辑：ADR 先在控制台仓库修改，再运行 `scripts/sync-adr.sh` 同步；`scripts/sync-adr.sh --check` 检查镜像是否一致。
 - 所有持久化写入用 `fsutil.WriteFileAtomic`。
 - 写进 `nginx.conf` 的值必须先校验；站点等可变数据只走控制 socket，不进 `nginx.conf`。
 - 改 content_hash 相关逻辑必须同步控制面，测试向量 `internal/configir/testdata/content_hash_vector*.json`（Phase 0、M2、v0.2.1）不能随意改。
