@@ -39,7 +39,11 @@
 | `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id），解析 `/etc/resolv.conf` |
 | `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督 |
 | `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态的 JSON 结构 |
-| `internal/agent` | 运行时主循环、源站凭据、清缓存标记集合、类型化任务 |
+| `internal/agent` | 运行时主循环、源站凭据、清缓存标记集合、类型化任务；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
+| `internal/hostinfo` | 上报给控制台的 `NodeInfo`（主机名、非回环非链路本地地址、版本），以及渲染用的本机探测：是否有全局 IPv6（resolver 是否查 AAAA）、能否监听 IPv6、打开文件数硬上限（`worker_rlimit_nofile`） |
+| `internal/fsutil` | 崩溃安全的文件操作：`WriteFileAtomic`（临时文件 → fsync → rename → fsync 目录）、`Rename`、`SyncDir`；所有持久化写入都用它 |
+| `internal/version` | 构建信息（版本、commit、提交时间），由 `-ldflags -X` 注入，`edgeweir-node version` 和 `NodeInfo.agent_version` 使用 |
+| `internal/testutil`、`internal/pki/pkitest` | 只用于测试：假控制台（内存中的 NodeService，也用于容器冒烟测试）、假数据面（控制 API）、临时内部 CA |
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
@@ -125,12 +129,13 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`、reload 未生效）的同一 revision 在 5 分钟内不重复尝试。
 
-**应用**（`agent.applyPlan`）：
+**应用**（`agent.apply` → `agent.applyPlan`），在哈希校验和 `configir.Build` 通过之后按以下顺序执行：
 
-1. 渲染 `nginx.conf`。与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload。
-2. **确认 reload 生效**：每个渲染出的 `nginx.conf` 带一个配置 id（不含 id 时渲染结果的 SHA-256 前 16 位），`init_by_lua` 记下它，`GET /v1/status` 返回 `conf_id`。SIGHUP 只是请求 reload：新文件无法应用（例如端口被占用）时 nginx 记录错误并保留旧 worker。agent 在 reload 后最多等 15 秒，直到 worker 报告新的 id；否则该 revision 记为失败，把旧的 `nginx.conf` 写回（之后重启 nginx 时用的仍是正在运行的配置），LKG 继续服务。
-3. 按需补齐 S3 凭据（`GetOriginCredentials`），装入清缓存标记（§3.4），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
-4. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
+1. **S3 凭据**：Plan 引用了本地没有（或版本过旧）的凭据时，先经 mTLS 调用 `GetOriginCredentials` 补齐，写入 `credentials.json`，不再引用的凭据从文件中删除；再把密钥填进 Plan 的 S3 源站。这一步在渲染和 `nginx -t` 之前：RPC 失败算暂时性错误，本次应用失败，下一次同步重试（不计入 5 分钟的拒绝窗口），仍在服务的配置不受影响。
+2. **渲染** `nginx.conf`，并为每个 cache zone 创建缓存目录。与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload。
+3. **确认 reload 生效**：每个渲染出的 `nginx.conf` 带一个配置 id（不含 id 时渲染结果的 SHA-256 前 16 位），`init_by_lua` 记下它，`GET /v1/status` 返回 `conf_id`。SIGHUP 只是请求 reload：新文件无法应用（例如端口被占用）时 nginx 记录错误并保留旧 worker。agent 在 reload 后最多等 15 秒，直到 worker 报告新的 id；否则该 revision 记为失败，把旧的 `nginx.conf` 写回（之后重启 nginx 时用的仍是正在运行的配置），LKG 继续服务。
+4. **清缓存标记与站点表**：装入清缓存标记（§3.4；`purge.json` 无法读取时先给每个站点加全站标记），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
+5. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
 
 `nginx.conf` 只包含结构性设置，站点数据从不写进去，所以"渲染结果是否变化"就是"是否需要 reload"的判定：站点、源站、缓存规则、缓存代际号、允许清单的变化只走热更新。
 
