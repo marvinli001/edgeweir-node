@@ -2,11 +2,12 @@
 --
 -- order() returns the origins to try for a request, best first, at most
 -- MAX_TRIES of them:
---   1. healthy primaries, ordered by the pool policy;
---   2. then healthy backups (backups only take traffic when no primary is
---      available, or as the retry after the primaries failed);
---   3. when every origin is down, all of them anyway (fail open: an attempt
---      may still succeed and ends the down period early).
+--   1. the healthy primaries, ordered by the pool policy; retries stay
+--      among them, backups never take traffic while a primary is up;
+--   2. only when every primary is down: the healthy backups;
+--   3. when every origin is down, all of them anyway, primaries first
+--      (fail open: an attempt may still succeed and ends the down period
+--      early).
 --
 -- Policies:
 --   weighted_random  weighted random choice (then weighted order for retries)
@@ -175,14 +176,11 @@ end
 -- consistent-hash key (the request URI).
 function _M.order(site, key, now)
   local prim, back = site._primaries or {}, site._backups or {}
-  local hp, hb = healthy(site, prim, now), healthy(site, back, now)
+  local hp = healthy(site, prim, now)
+  local hb = #hp == 0 and healthy(site, back, now) or nil
   local out
   if #hp > 0 then
     out = policy_order(site, prim, hp, "p", key)
-    local rest = policy_order(site, back, hb, "b", key)
-    for i = 1, #rest do
-      out[#out + 1] = rest[i]
-    end
   elseif #hb > 0 then
     out = policy_order(site, back, hb, "b", key)
   else

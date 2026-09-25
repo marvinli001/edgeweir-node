@@ -152,8 +152,10 @@ test("lb.order weights and backups", function()
   for _ = 1, 10000 do
     local order = lb.order(s, "/x", 1000)
     counts[order[1].id] = counts[order[1].id] + 1
-    eq(#order, 3, "primaries then backups as retries")
-    eq(order[3].id, "spare", "backup only after every primary")
+    eq(#order, 2, "retries only among the primaries")
+    for _, o in ipairs(order) do
+      assert(o.id ~= "spare", "backup offered while the primaries are up")
+    end
   end
   eq(counts.spare, 0, "backup used while primaries exist")
   assert(counts.heavy > 8500 and counts.heavy < 9500, "heavy share " .. counts.heavy)
@@ -162,6 +164,42 @@ test("lb.order weights and backups", function()
   }))
   eq(lb.order(b, "/", 1000)[1].id, "spare-only", "backup used without primaries")
   eq(#lb.order({ _primaries = {}, _backups = {} }, "/", 1000), 0)
+end)
+
+test("lb.order uses backups only when every primary is down", function()
+  local s = store.prepare(site("bk", { { name = "bk.test" } }, {
+    load_balance = "round_robin",
+    origins = {
+      { id = "p1", scheme = "http", address = "a", port = 80, weight = 1 },
+      { id = "p2", scheme = "http", address = "b", port = 80, weight = 1 },
+      { id = "b1", scheme = "http", address = "c", port = 80, weight = 1, backup = true },
+      { id = "b2", scheme = "http", address = "d", port = 80, weight = 1, backup = true },
+    },
+  }))
+  local function ids(order)
+    local out = {}
+    for i, o in ipairs(order) do
+      out[i] = o.id
+    end
+    table.sort(out)
+    return table.concat(out, ",")
+  end
+  eq(ids(lb.order(s, "/", 1000)), "p1,p2", "both primaries up: no backup, not even as a retry")
+  health.failure("bk", "p1", "timeout", 1, 30, 1000)
+  eq(ids(lb.order(s, "/", 1001)), "p2", "one primary left: retries stay on it")
+  health.failure("bk", "p2", "timeout", 1, 30, 1000)
+  eq(ids(lb.order(s, "/", 1001)), "b1,b2", "every primary down: backups")
+  health.failure("bk", "b1", "timeout", 1, 30, 1000)
+  eq(ids(lb.order(s, "/", 1001)), "b2")
+  health.failure("bk", "b2", "timeout", 1, 30, 1000)
+  local all = lb.order(s, "/", 1001)
+  eq(#all, 3, "everything down: fail open, at most MAX_TRIES")
+  assert(not all[1].backup and not all[2].backup, "primaries first when failing open")
+  health.success("bk", "p2")
+  eq(ids(lb.order(s, "/", 1001)), "p2", "a recovered primary takes over again")
+  for _, id in ipairs({ "p1", "b1", "b2" }) do
+    health.success("bk", id)
+  end
 end)
 
 test("lb.order skips origins marked down and fails open", function()
