@@ -50,6 +50,14 @@ proto-check: proto ## Regenerate and fail if the committed code differs
 	@git diff --exit-code -- internal/gen || { echo "generated code is stale: run 'make proto' and commit"; exit 1; }
 	@test -z "$$(git status --porcelain -- internal/gen)" || { git status --porcelain -- internal/gen; echo "untracked generated files: run 'make proto' and commit"; exit 1; }
 
+# --- ADR mirror --------------------------------------------------------------
+# docs/adr is generated from the console's docs/adr by scripts/sync-adr.sh.
+# The check needs the console checkout next to this one (../edgeweir). CI
+# checks out only this repository, so this target is not part of CI.
+.PHONY: adr-check
+adr-check: ## Fail if docs/adr differs from the console's ADRs (needs ../edgeweir)
+	scripts/sync-adr.sh --check
+
 .PHONY: lua-test
 lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) sh -c '\

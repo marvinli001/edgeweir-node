@@ -37,6 +37,7 @@
 | `make e2e` | 容器冒烟测试（假控制面 + 节点 + 源站） |
 | `make proto` | 从 proto git tag 重新生成 Go 代码 |
 | `make proto-check` | 重新生成，若与已提交的代码不一致则失败 |
+| `make adr-check` | `docs/adr` 与同级目录 `../edgeweir` 的 ADR 不一致时失败（`scripts/sync-adr.sh --check`；CI 没有同级检出，不运行它） |
 | `make release-check` | 校验 goreleaser 配置 |
 | `make snapshot` | 本地构建发布物，不发布，不签名 |
 
@@ -45,6 +46,7 @@
 - 改了 Lua：跑 `make lua-test`
 - 改了渲染、数据面或镜像：跑 `make e2e`
 - 改了 goreleaser 配置：跑 `make release-check`
+- 同步了 ADR（`docs/adr` 是控制面仓库 ADR 的镜像，先在那里修改，再运行 `scripts/sync-adr.sh`）：跑 `make adr-check`
 
 ## 提交规范
 
