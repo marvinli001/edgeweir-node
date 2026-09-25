@@ -124,10 +124,16 @@ function _M.access()
 
   local now = ngx.now()
   local method = ngx.req.get_method()
+  local allowed = store.config().allowed
   local cands, scheme, s3_refused = {}, nil, false
   for _, o in ipairs(lb.order(site, var.request_uri, now)) do
     local usable = true
-    if o.s3 and method ~= "GET" and method ~= "HEAD" then
+    if o.forbidden then
+      -- Refused by the agent already (special-purpose IP literal).
+      usable = false
+      health.failure(site.id, o.id, "address " .. o.address .. " is a special-purpose address outside the origin allow list",
+        site.health.max_fails, site.health.recovery_seconds, now)
+    elseif o.s3 and method ~= "GET" and method ~= "HEAD" then
       usable, s3_refused = false, true
     elseif o.s3 and not o.s3.secret_key then
       usable = false
@@ -143,7 +149,7 @@ function _M.access()
       usable = false
     end
     if usable then
-      local ip, err = dns.resolve(o.address)
+      local ip, err = dns.resolve(o.address, allowed)
       if ip then
         scheme = scheme or o.scheme
         cands[#cands + 1] = { origin = o, ip = ip }
@@ -356,7 +362,7 @@ function _M.log()
       health.failure(site.id, o.id, reason, site.health.max_fails, site.health.recovery_seconds, now)
       dns.invalidate(o.address)
     elseif st ~= "-" then
-      health.success(o.id)
+      health.success(site.id, o.id)
     end
   end
 end

@@ -11,46 +11,50 @@
 -- traffic may try it again).
 --
 -- State lives in lua_shared_dict "edgeweir_health" (shared by all workers,
--- entries expire after a day without failures):
+-- entries expire after a day without failures), keyed by site and origin
+-- (<key> = "<site id>|<origin id>"; ids never contain "|"):
 --
---   f|<origin>  consecutive failures     d|<origin>  down until (epoch s)
---   t|<origin>  last failure (epoch s)   e|<origin>  last error
---   s|<origin>  site id                  m|<origin>  max_fails of its site
+--   f|<key>  consecutive failures     d|<key>  down until (epoch s)
+--   t|<key>  last failure (epoch s)   e|<key>  last error
+--   m|<key>  max_fails of its site
 local _M = {}
 
-local sub = string.sub
+local find, sub = string.find, string.sub
 local dict = ngx.shared.edgeweir_health
 local TTL = 86400
+local FIELDS = { "f|", "d|", "t|", "e|", "m|" }
 
-function _M.is_down(origin_id, now)
-  local until_ = dict:get("d|" .. origin_id)
+local function key(site_id, origin_id)
+  return site_id .. "|" .. origin_id
+end
+
+function _M.is_down(site_id, origin_id, now)
+  local until_ = dict:get("d|" .. key(site_id, origin_id))
   return until_ ~= nil and until_ > (now or ngx.now())
 end
 
 -- failure records a failed attempt; returns true when the origin is down.
 function _M.failure(site_id, origin_id, err, max_fails, recovery, now)
   now = now or ngx.now()
-  local n = dict:incr("f|" .. origin_id, 1, 0, TTL) or 1
-  dict:set("t|" .. origin_id, now, TTL)
-  dict:set("e|" .. origin_id, sub(err or "", 1, 200), TTL)
-  dict:set("s|" .. origin_id, site_id, TTL)
-  dict:set("m|" .. origin_id, max_fails or 3, TTL)
+  local k = key(site_id, origin_id)
+  local n = dict:incr("f|" .. k, 1, 0, TTL) or 1
+  dict:set("t|" .. k, now, TTL)
+  dict:set("e|" .. k, sub(err or "", 1, 200), TTL)
+  dict:set("m|" .. k, max_fails or 3, TTL)
   if n >= (max_fails or 3) then
-    dict:set("d|" .. origin_id, now + (recovery or 30), TTL)
+    dict:set("d|" .. k, now + (recovery or 30), TTL)
     return true
   end
   return false
 end
 
 -- success resets the failure counter of an origin.
-function _M.success(origin_id)
-  if dict:get("f|" .. origin_id) then
-    dict:delete("f|" .. origin_id)
-    dict:delete("d|" .. origin_id)
-    dict:delete("t|" .. origin_id)
-    dict:delete("e|" .. origin_id)
-    dict:delete("s|" .. origin_id)
-    dict:delete("m|" .. origin_id)
+function _M.success(site_id, origin_id)
+  local k = key(site_id, origin_id)
+  if dict:get("f|" .. k) then
+    for i = 1, #FIELDS do
+      dict:delete(FIELDS[i] .. k)
+    end
   end
 end
 
@@ -61,13 +65,14 @@ function _M.report(now)
   local keys = dict:get_keys(0)
   for i = 1, #keys do
     local k = keys[i]
-    if sub(k, 1, 2) == "f|" then
+    local bar = sub(k, 1, 2) == "f|" and find(k, "|", 3, true)
+    if bar then
       local id = sub(k, 3)
       local until_ = dict:get("d|" .. id)
       local failures = dict:get(k) or 0
       out[#out + 1] = {
-        site_id = dict:get("s|" .. id) or "",
-        origin_id = id,
+        site_id = sub(k, 3, bar - 1),
+        origin_id = sub(k, bar + 1),
         healthy = failures < (dict:get("m|" .. id) or 3),
         failures = failures,
         last_failure_at = dict:get("t|" .. id) or 0,

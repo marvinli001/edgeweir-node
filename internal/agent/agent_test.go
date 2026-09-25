@@ -239,6 +239,10 @@ func TestAgentEndToEnd(t *testing.T) {
 	if tb.Revision != rev1 || len(tb.Sites) != 1 || tb.Sites[0].Domains[0].Name != "a.test" {
 		t.Fatalf("data plane table = %+v", tb)
 	}
+	// The table carries this node's CDN-Loop id (RFC 8586).
+	if tb.CDNID != dataplane.CDNID("node-7") || tb.CDNID == "" {
+		t.Fatalf("site table cdn_id = %q, want %q", tb.CDNID, dataplane.CDNID("node-7"))
+	}
 	calls := console.GetConfigCalls()
 	if len(calls) == 0 || !calls[0].Snapshot || calls[0].Request.GetBaseRevision() != 0 {
 		t.Fatalf("first GetConfig = %+v, want snapshot with base 0", calls)
@@ -369,6 +373,10 @@ func TestAgentEndToEnd(t *testing.T) {
 		tb := dp2.Table()
 		return tb != nil && tb.Revision == rev3 && len(tb.Sites) == 2
 	})
+	// Before the mTLS channel is up the cdn-id comes from identity.json.
+	if got := dp2.Table().CDNID; got != dataplane.CDNID("node-7") {
+		t.Fatalf("cdn_id of the last-known-good table = %q", got)
+	}
 }
 
 func hasCall(calls []fakeconsole.GetConfigCall, pred func(fakeconsole.GetConfigCall) bool) bool {

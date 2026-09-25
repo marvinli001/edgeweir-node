@@ -125,6 +125,7 @@ type Agent struct {
 
 	engineVersion string
 	channel       *controlplane.Channel
+	nodeID        string // guarded by mu; empty until the identity is known
 	connectedOnce sync.Once
 
 	mu          sync.Mutex
@@ -212,6 +213,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.channel = ch
 	defer ch.Close()
 	id := ch.Identity()
+	a.mu.Lock()
+	a.nodeID = id.NodeID
+	a.mu.Unlock()
 	a.log.Info("node identity loaded", "node_id", id.NodeID, "cluster_id", id.ClusterID,
 		"node_name", id.NodeName, "server", id.ServerURL,
 		"certificate_not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339))
@@ -316,6 +320,20 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 		a.message = truncate("bootstrap configuration failed: " + err.Error())
 		a.mu.Unlock()
 	}
+}
+
+// cdnID returns this node's CDN-Loop identifier, reading identity.json
+// while the mTLS channel is not open yet (last-known-good at startup).
+func (a *Agent) cdnID() string {
+	a.mu.Lock()
+	id := a.nodeID
+	a.mu.Unlock()
+	if id == "" {
+		if ident, err := a.ids.ReadIdentity(); err == nil {
+			id = ident.NodeID
+		}
+	}
+	return dataplane.CDNID(id)
 }
 
 func (a *Agent) appliedConfig() *nodev1.NodeConfig {

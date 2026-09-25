@@ -63,6 +63,9 @@ type Plan struct {
 	Listeners   []Listener
 	CacheZones  []CacheZone
 	Sites       []Site
+	// OriginAllowedCIDRs are the normalized entries of the platform's
+	// origin allow list (special-purpose ranges origins may use anyway).
+	OriginAllowedCIDRs []string
 	// Warnings lists parts of the configuration that were skipped or
 	// adjusted; they are reported to the console with the apply result.
 	Warnings []string
@@ -161,6 +164,10 @@ type Origin struct {
 	// S3 signs requests with AWS Signature V4; the keys are filled in by
 	// the agent from GetOriginCredentials, never from the configuration.
 	S3 *S3Auth `json:"s3,omitempty"`
+	// Forbidden marks an origin whose IP literal is a special-purpose
+	// address outside the origin allow list: the data plane never connects
+	// to it (requests that only have such origins fail with 502).
+	Forbidden bool `json:"forbidden,omitempty"`
 }
 
 // S3Auth is the signing configuration of an S3-compatible origin.
@@ -262,6 +269,10 @@ func defaultZone() CacheZone {
 //   - invalid domains are dropped, domains claimed by an earlier site (by
 //     id order) are dropped, sites left without domains are skipped;
 //   - invalid origins are dropped, sites left without origins are skipped;
+//   - origins whose IP literal is a special-purpose address (see
+//     address.go) outside origin_allowed_cidrs stay in the site but are
+//     marked forbidden, so the data plane answers 502 instead of
+//     connecting;
 //   - cache rules with an unknown action or with a condition list that
 //     becomes empty after dropping invalid entries are skipped (never
 //     widened to "match everything");
@@ -289,6 +300,10 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 
 	p := &Plan{Revision: c.GetRevision(), ContentHash: c.GetContentHash(), ClusterID: c.GetClusterId()}
 	warn := func(format string, args ...any) { p.Warnings = append(p.Warnings, fmt.Sprintf(format, args...)) }
+
+	policy, allowed, policyWarnings := NewAddressPolicy(c.GetOriginAllowedCidrs())
+	p.OriginAllowedCIDRs = allowed
+	p.Warnings = append(p.Warnings, policyWarnings...)
 
 	// Listeners.
 	seenPorts := map[uint32]bool{}
@@ -392,6 +407,10 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			if err != nil {
 				warn("site %s: origin %q skipped: %v", id, o.GetId(), err)
 				continue
+			}
+			if ip, err := netip.ParseAddr(origin.Address); err == nil && policy.Forbidden(ip) {
+				origin.Forbidden = true
+				warn("site %s: origin %q refused: %s is a special-purpose address outside the origin allow list", id, o.GetId(), origin.Address)
 			}
 			site.Origins = append(site.Origins, origin)
 		}

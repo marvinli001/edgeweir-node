@@ -1,6 +1,7 @@
 -- edgeweir.router: edge layer (public listeners).
 --
--- access(): resolves the site by Host (404 for unknown hosts), handles
+-- access(): rejects requests that already passed this node (CDN-Loop,
+-- 508), resolves the site by Host (404 for unknown hosts), handles
 -- WebSocket upgrades, evaluates the request conditions of the cache rules
 -- and prepares the variables used by proxy_cache in nginx.conf: the cache
 -- key (edgeweir.cachekey, including the purge epoch from edgeweir.purge),
@@ -41,6 +42,32 @@ local function strip_internal_headers()
   end
 end
 
+-- cdn_loop_contains reports whether a CDN-Loop header value (RFC 8586:
+-- comma-separated cdn-info, each a cdn-id with optional ";" parameters)
+-- names cdn_id (compared case-insensitively).
+function _M.cdn_loop_contains(value, cdn_id)
+  if not value or value == "" then
+    return false
+  end
+  local want = lower(cdn_id)
+  for info in string.gmatch(value, "[^,]+") do
+    local id = info:match("^%s*([^;%s]+)")
+    if id and lower(id) == want then
+      return true
+    end
+  end
+  return false
+end
+
+-- cdn_loop_value is the CDN-Loop header sent upstream: the incoming value
+-- with this node's cdn-id appended.
+function _M.cdn_loop_value(incoming, cdn_id)
+  if incoming and incoming ~= "" then
+    return incoming .. ", " .. cdn_id
+  end
+  return cdn_id
+end
+
 local function rule_ids(chain)
   local ids = {}
   for i = 1, #chain do
@@ -76,6 +103,19 @@ function _M.access()
   strip_internal_headers()
 
   local var = ngx.var
+  -- Loop detection (RFC 8586) comes before any origin or cache work: an
+  -- origin that points back at this node (directly or through other CDNs
+  -- that keep the header) would otherwise recurse until connections run
+  -- out.
+  local cdn_id = store.config().cdn_id
+  if cdn_id ~= "" then
+    local loop = var.http_cdn_loop
+    if _M.cdn_loop_contains(loop, cdn_id) then
+      return deny(508, "loop-detected", "loop detected")
+    end
+    var.edgeweir_cdn_loop = _M.cdn_loop_value(loop, cdn_id)
+  end
+
   local host = var.host
   local site = store.lookup_host(host)
   if not site then

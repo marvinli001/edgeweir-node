@@ -27,10 +27,10 @@ local remove, sort = table.remove, table.sort
 local POINTS_PER_WEIGHT = 40
 local MAX_WEIGHT_POINTS = 100
 
-local function healthy(list, now)
+local function healthy(site, list, now)
   local out = {}
   for i = 1, #list do
-    if not health.is_down(list[i].id, now) then
+    if not health.is_down(site.id, list[i].id, now) then
       out[#out + 1] = list[i]
     end
   end
@@ -175,7 +175,7 @@ end
 -- consistent-hash key (the request URI).
 function _M.order(site, key, now)
   local prim, back = site._primaries or {}, site._backups or {}
-  local hp, hb = healthy(prim, now), healthy(back, now)
+  local hp, hb = healthy(site, prim, now), healthy(site, back, now)
   local out
   if #hp > 0 then
     out = policy_order(site, prim, hp, "p", key)

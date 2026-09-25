@@ -4,14 +4,18 @@
 #   2. `docker compose exec node edgeweir-node enroll ...` while `run` is
 #      running switches the node to mTLS and applies revision 1;
 #   3. demo.test is proxied to the whoami origin: first MISS, then HIT;
-#   4. a site-only revision is hot-updated (no reload) and reported;
-#   5. restarting the container serves the last-known-good config.
+#   4. origin address policy: special-purpose literals and DNS answers
+#      outside the allow list get 502, CDN-Loop is appended and loops get
+#      508;
+#   5. a site-only revision is hot-updated (no reload) and reported;
+#   6. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NODE="http://127.0.0.1:${E2E_NODE_PORT:-28080}"
 HELPER="http://127.0.0.1:${E2E_HELPER_PORT:-28090}"
+# COMPOSE_PROJECT_NAME (if set) takes precedence over the file's name.
 compose() { docker compose -f compose.yml "$@"; }
 
 cleanup() {
@@ -84,6 +88,29 @@ echoed=$(curl -fsS -H 'Host: demo.test' "${pad[@]}" -H 'X-Edgeweir-Site: site-ot
 echo "$echoed" | grep "X-Pad-150" >/dev/null || fail "origin did not receive the request"
 if echo "$echoed" | grep -i "x-edgeweir" >/dev/null; then fail "internal headers reached the origin"; fi
 pass "client-supplied X-Edgeweir-* headers never reach the origin"
+
+# Origin address policy (special-purpose addresses) and CDN-Loop.
+NODE_ID=$(curl -fsS "$HELPER/node-id")
+sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
+CDN_ID="edgeweir-$(printf '%s' "$NODE_ID" | sha256 | cut -c1-16)"
+echoed=$(curl -fsS -H 'Host: demo.test' -H 'CDN-Loop: other-cdn.example; v=1' "$NODE/cdn-loop")
+echo "$echoed" | tr -d '\r' | grep -qi "^Cdn-Loop: other-cdn.example; v=1, $CDN_ID\$" ||
+  fail "origin did not receive CDN-Loop with this node's cdn-id appended: $(echo "$echoed" | grep -i cdn-loop)"
+pass "CDN-Loop forwarded with this node's cdn-id ($CDN_ID)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.test' -H "CDN-Loop: x, $CDN_ID" "$NODE/looped")
+[ "$code" = 508 ] || fail "request carrying this node's cdn-id returned $code, want 508"
+code=$(status_code loop.test)
+[ "$code" = 508 ] || fail "origin pointing back at the node returned $code, want 508 (loop detected)"
+pass "loops are rejected with 508"
+code=$(status_code forbidden.test)
+[ "$code" = 502 ] || fail "origin 127.0.0.1 returned $code, want 502"
+code=$(status_code hidden.test)
+[ "$code" = 502 ] || fail "origin resolving outside the allow list returned $code, want 502"
+compose logs node | grep "special-purpose address" >/dev/null || fail "refused origin not reported as a warning"
+origin_health_has() { curl -fsS "$HELPER/origin-health" | grep -q -- "$1"; }
+WAIT_SECS=30 wait_for "DNS answer refusal in origin health" origin_health_has "^site-hidden o1 .*dns hidden: every address"
+WAIT_SECS=30 wait_for "literal refusal in origin health" origin_health_has "^site-forbidden o1 .*address 127.0.0.1 is a special-purpose address"
+pass "special-purpose origins refused (literal and DNS answer), allow-listed Docker network served"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

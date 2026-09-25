@@ -1,6 +1,11 @@
-# Container smoke test: fake console + edgeweir-node + whoami origin.
+# Container smoke test: fake console + edgeweir-node + whoami origins.
 # Run with `make e2e` (test/e2e/run.sh). The real end-to-end test with the
 # console lives in the edgeweir repository (compose.e2e.yml).
+#
+# The fake console allows origins on its own network (default), which the
+# node and whoami share. "hidden" sits only on the isolated network that
+# the node also joins: its DNS answer is a private address outside the
+# allow list, so the node must refuse it.
 name: edgeweir-node-e2e
 
 services:
@@ -10,9 +15,15 @@ services:
       dockerfile: test/e2e/fakeconsole/Dockerfile
     ports:
       - "127.0.0.1:${E2E_HELPER_PORT:-28090}:8081"
+    networks: [default]
 
   whoami:
     image: traefik/whoami:v1.11.0
+    networks: [default]
+
+  hidden:
+    image: traefik/whoami:v1.11.0
+    networks: [isolated]
 
   node:
     build:
@@ -21,10 +32,16 @@ services:
     depends_on:
       - console
       - whoami
+      - hidden
     ports:
       - "127.0.0.1:${E2E_NODE_PORT:-28080}:80"
     volumes:
       - node-state:/var/lib/edgeweir-node
+    networks: [default, isolated]
+
+networks:
+  default:
+  isolated:
 
 volumes:
   node-state:

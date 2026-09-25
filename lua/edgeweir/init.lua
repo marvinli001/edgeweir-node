@@ -10,6 +10,7 @@ local _M = {}
 function _M.init(opts)
   opts = opts or {}
   -- Load every module eagerly: workers inherit them after fork.
+  require("edgeweir.ipaddr")
   require("edgeweir.store")
   require("edgeweir.rules")
   require("edgeweir.cachekey")

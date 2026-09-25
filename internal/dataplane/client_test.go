@@ -83,15 +83,22 @@ func TestSiteTableJSONShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Revision is a string (Lua numbers are doubles) and an empty site list
-	// is an array, never null.
-	if want := `{"revision":"12","content_hash":"h","sites":[]}`; string(b) != want {
+	// Revision is a string (Lua numbers are doubles) and empty lists are
+	// arrays, never null.
+	if want := `{"revision":"12","content_hash":"h","sites":[],"origin_allowed_cidrs":[]}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
+	}
+	table = dataplane.FromPlan(&configir.Plan{Revision: 1, OriginAllowedCIDRs: []string{"10.0.0.0/8"}})
+	table.CDNID = dataplane.CDNID("node-1")
+	b, _ = json.Marshal(table)
+	if !strings.Contains(string(b), `"origin_allowed_cidrs":["10.0.0.0/8"]`) || !strings.Contains(string(b), `"cdn_id":"edgeweir-`) {
+		t.Fatalf("JSON = %s", b)
 	}
 	site := configir.Site{ID: "s", Domains: []configir.Domain{{Name: "a.test", Wildcard: true}}, CacheGeneration: 3,
 		Origins: []configir.Origin{{ID: "o", Scheme: "https", Address: "o.test", Port: 443, Weight: 2, Backup: true, HostHeader: "h.test", SNI: "s.test"}}}
+	site.Origins = append(site.Origins, configir.Origin{ID: "f", Scheme: "http", Address: "127.0.0.1", Port: 80, Forbidden: true})
 	b, _ = json.Marshal(site)
-	for _, want := range []string{`"cache_generation":"3"`, `"wildcard":true`, `"host_header":"h.test"`, `"sni":"s.test"`, `"backup":true`} {
+	for _, want := range []string{`"cache_generation":"3"`, `"wildcard":true`, `"host_header":"h.test"`, `"sni":"s.test"`, `"backup":true`, `"forbidden":true`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("site JSON %s missing %s", b, want)
 		}
@@ -102,5 +109,24 @@ func TestClientSocketMissing(t *testing.T) {
 	c := dataplane.NewClient("/nonexistent/edgeweir/control.sock")
 	if _, err := c.Status(context.Background()); err == nil {
 		t.Fatal("status against a missing socket succeeded")
+	}
+}
+
+// TestCDNID pins the CDN-Loop identifier: "edgeweir-" + the first 16 hex
+// characters of sha256(node id).
+func TestCDNID(t *testing.T) {
+	// sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad.
+	if got := dataplane.CDNID("node-1"); len(got) != len("edgeweir-")+16 || !strings.HasPrefix(got, "edgeweir-") {
+		t.Fatalf("CDNID = %q", got)
+	}
+	if got, want := dataplane.CDNID("abc"), "edgeweir-ba7816bf8f01cfea"; got != want {
+		t.Fatalf("CDNID(abc) = %q, want %q", got, want)
+	}
+	if dataplane.CDNID("") != "" {
+		t.Fatal("CDNID of an unknown node must be empty")
+	}
+	st := dataplane.Status{Version: 1, Revision: 2, ContentHash: "h", CDNID: "x"}
+	if st.InSync(&dataplane.SiteTable{Revision: 2, ContentHash: "h", CDNID: "y"}) {
+		t.Fatal("a table with another cdn_id counts as in sync")
 	}
 }

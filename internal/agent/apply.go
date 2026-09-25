@@ -79,6 +79,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 		a.log.Warn("cannot install purge markers before the site table; retrying in the background", "err", err)
 	}
 	table := dataplane.FromPlan(plan)
+	table.CDNID = a.cdnID()
 	a.mu.Lock()
 	a.desired = table
 	a.plan = plan

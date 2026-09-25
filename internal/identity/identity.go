@@ -124,9 +124,8 @@ func (s Store) Remove() error {
 	return fsutil.SyncDir(s.Dir)
 }
 
-// Load reads and validates the identity. A certificate swap interrupted by
-// a crash (see SwapCertificate) is completed transparently.
-func (s Store) Load() (*Loaded, error) {
+// ReadIdentity reads only identity.json (no keys or certificates).
+func (s Store) ReadIdentity() (*Identity, error) {
 	raw, err := os.ReadFile(s.Path(IdentityFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotEnrolled
@@ -141,6 +140,17 @@ func (s Store) Load() (*Loaded, error) {
 	if id.NodeID == "" || id.ServerURL == "" {
 		return nil, fmt.Errorf("%s is incomplete (node_id/server_url missing)", IdentityFile)
 	}
+	return &id, nil
+}
+
+// Load reads and validates the identity. A certificate swap interrupted by
+// a crash (see SwapCertificate) is completed transparently.
+func (s Store) Load() (*Loaded, error) {
+	idp, err := s.ReadIdentity()
+	if err != nil {
+		return nil, err
+	}
+	id := *idp
 
 	caPEM, err := os.ReadFile(s.Path(CAFile))
 	if err != nil {

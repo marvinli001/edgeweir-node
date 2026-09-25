@@ -183,6 +183,7 @@ http {
             set $edgeweir_origin_layer "edgeweir_origin_verify";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
+            set $edgeweir_cdn_loop "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -194,6 +195,9 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
             proxy_set_header X-Edgeweir-Site $edgeweir_site;
             proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;

@@ -6,6 +6,7 @@
 --   v<N>:site:<id>    JSON of the site
 --   v<N>:host:<name>  site id for an exact host name
 --   v<N>:wild:<name>  site id for a wildcard suffix ("*.<name>")
+--   v<N>:cfg          JSON {origin_allowed_cidrs, cdn_id} of the table
 --
 -- A replacement writes table N+1 next to table N, then flips
 -- edgeweir_meta["version"]; requests never observe a half-written table.
@@ -17,6 +18,7 @@ local cjson = require("cjson.safe")
 local lrucache = require("resty.lrucache")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
+local ipaddr = require("edgeweir.ipaddr")
 
 local _M = {}
 
@@ -187,8 +189,17 @@ function _M.replace(doc)
     return true
   end
 
+  local allowed = doc.origin_allowed_cidrs
+  if type(allowed) ~= "table" then
+    allowed = {}
+  end
+  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "" }
+  if cjson.empty_array_mt and #allowed == 0 then
+    setmetatable(allowed, cjson.empty_array_mt)
+  end
   local count = 0
-  for i = 1, #list do
+  local n = put("cfg", cjson.encode(cfg)) and #list or 0
+  for i = 1, n do
     local site = list[i]
     local err = validate(site)
     if err then
@@ -225,6 +236,7 @@ function _M.replace(doc)
     content_hash = type(doc.content_hash) == "string" and doc.content_hash or "",
     site_count = count,
     pushed_at = ngx.now(),
+    cdn_id = cfg.cdn_id,
   }
   meta:set("status", cjson.encode(status))
   meta:set("prev_version", old)
@@ -253,6 +265,35 @@ function _M.status()
   end
   st.version = meta:get("version") or 0
   return st
+end
+
+-- config returns the table-wide settings of the current table:
+-- { allowed = parsed origin allow list (edgeweir.ipaddr.prefixes),
+--   cdn_id = CDN-Loop identifier or "" }.
+local EMPTY_CONFIG = { allowed = {}, cdn_id = "" }
+
+function _M.config()
+  local ver = meta:get("version")
+  if not ver then
+    return EMPTY_CONFIG
+  end
+  local c = lru()
+  local ck = "c:" .. ver
+  local hit = c:get(ck)
+  if hit then
+    return hit
+  end
+  local raw = sites:get("v" .. ver .. ":cfg")
+  local doc = raw and cjson.decode(raw)
+  local cfg = EMPTY_CONFIG
+  if type(doc) == "table" then
+    cfg = {
+      allowed = ipaddr.prefixes(doc.origin_allowed_cidrs),
+      cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "",
+    }
+  end
+  c:set(ck, cfg)
+  return cfg
 end
 
 -- site returns the decoded site with id from table version ver.

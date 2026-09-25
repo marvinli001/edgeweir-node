@@ -1,13 +1,26 @@
 // Command fakeconsole serves the fake NodeService used by the container
 // smoke test (test/e2e). It is not part of any release artifact.
 //
-// It publishes one site (demo.test -> whoami:80, cache everything for 60s)
-// and exposes a plain-HTTP helper API for the test script:
+// It publishes demo.test -> whoami:80 (cache everything for 60s) and sites
+// that exercise the origin address policy:
+//
+//	loop.test       -> node:80 (the node itself: CDN-Loop answers 508)
+//	forbidden.test  -> 127.0.0.1:80 (special-purpose literal: 502)
+//	hidden.test     -> hidden:80 (DNS answer on a network outside the
+//	                   allow list: 502)
+//
+// The origin allow list is the network(s) of this container, which the
+// node and whoami share, so the Docker-internal origins stay reachable
+// without widening the default policy. A plain-HTTP helper API serves the
+// test script:
 //
 //	GET /pin      internal CA pin (--ca-sha256)
 //	GET /token    single-use enrollment token
 //	GET /applied  "<applied_revision> <state>" from the last ReportStatus
 //	GET /stats    number of uploaded MinuteStats buckets
+//	GET /node-id  node id the console assigned
+//	GET /origin-health  one line per origin with failures from the last
+//	              ReportStatus: "<site> <origin> <code> <error>"
 //	POST /publish publish a new revision adding site demo2.test
 package main
 
@@ -18,6 +31,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -45,11 +59,44 @@ func site(id, domain, origin string, port uint32) *nodev1.Site {
 	}
 }
 
+// ownNetworks returns the IPv4 networks of this container's interfaces.
+func ownNetworks() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Fatal(err)
+	}
+	var out []string
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || ipn.IP.To4() == nil {
+			continue
+		}
+		pfx, err := netip.ParsePrefix(ipn.String())
+		if err == nil {
+			out = append(out, pfx.Masked().String())
+		}
+	}
+	return out
+}
+
+var allowList []string
+
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
-		Listeners:  []*nodev1.Listener{{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP}},
-		CacheZones: []*nodev1.CacheZone{{Name: "default", MaxSizeMb: 256, KeysZoneMb: 8, InactiveSeconds: 600}},
-		Sites:      sites,
+		Listeners:          []*nodev1.Listener{{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP}},
+		CacheZones:         []*nodev1.CacheZone{{Name: "default", MaxSizeMb: 256, KeysZoneMb: 8, InactiveSeconds: 600}},
+		Sites:              sites,
+		OriginAllowedCidrs: allowList,
+	}
+}
+
+// baseSites are published in every revision.
+func baseSites(origin string) []*nodev1.Site {
+	return []*nodev1.Site{
+		site("site-demo", "demo.test", origin, 80),
+		site("site-loop", "loop.test", "node", 80),
+		site("site-forbidden", "forbidden.test", "127.0.0.1", 80),
+		site("site-hidden", "hidden.test", "hidden", 80),
 	}
 }
 
@@ -59,14 +106,21 @@ func main() {
 	names := flag.String("dns-names", "console,localhost", "TLS certificate DNS names")
 	origin := flag.String("origin", "whoami", "origin address")
 	token := flag.String("token", "e2e-token", "enrollment token")
+	allowed := flag.String("origin-allowed-cidrs", "", "comma-separated origin allow list (default: this container's networks)")
 	flag.Parse()
+	if *allowed != "" {
+		allowList = strings.Split(*allowed, ",")
+	} else {
+		allowList = ownNetworks()
+	}
+	log.Printf("origin allow list: %v", allowList)
 
 	c, err := fakeconsole.New(fakeconsole.Options{NodeID: "node-e2e", ClusterID: "cluster-e2e", NodeName: "edge-e2e", ReportInterval: 2})
 	if err != nil {
 		log.Fatal(err)
 	}
 	c.AddToken(*token)
-	c.Publish(config(site("site-demo", "demo.test", *origin, 80)))
+	c.Publish(config(baseSites(*origin)...))
 
 	tlsCfg, err := c.TLSConfig(strings.Split(*names, ","), []net.IP{net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -77,6 +131,16 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.CA.Pin()) })
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
+	mux.HandleFunc("GET /origin-health", func(w http.ResponseWriter, _ *http.Request) {
+		for _, h := range c.LastStatus().GetOriginHealth() {
+			code := h.GetLastErrorCode()
+			if code == "" {
+				code = "-"
+			}
+			fmt.Fprintf(w, "%s %s %s %s\n", h.GetSiteId(), h.GetOriginId(), code, h.GetLastError())
+		}
+	})
+	mux.HandleFunc("GET /node-id", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.Options().NodeID) })
 	mux.HandleFunc("GET /applied", func(w http.ResponseWriter, _ *http.Request) {
 		s := c.LastStatus()
 		fmt.Fprintf(w, "%d %s", s.GetAppliedRevision(), s.GetState())
@@ -89,7 +153,7 @@ func main() {
 		fmt.Fprintf(w, "%d %d", len(c.Stats()), reqs)
 	})
 	mux.HandleFunc("POST /publish", func(w http.ResponseWriter, _ *http.Request) {
-		rev := c.Publish(config(site("site-demo", "demo.test", *origin, 80), site("site-demo2", "demo2.test", *origin, 80)))
+		rev := c.Publish(config(append(baseSites(*origin), site("site-demo2", "demo2.test", *origin, 80))...))
 		fmt.Fprint(w, rev)
 	})
 	go func() {

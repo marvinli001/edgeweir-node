@@ -91,6 +91,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Revision:    t.Revision,
 			ContentHash: t.ContentHash,
 			SiteCount:   len(t.Sites),
+			CDNID:       t.CDNID,
+			Purge:       s.status.Purge,
 		}
 		reply(w, 200, s.status)
 	case r.URL.Path == "/v1/purge" && (r.Method == http.MethodPut || r.Method == http.MethodPost):

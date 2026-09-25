@@ -14,6 +14,8 @@ local purge = require("edgeweir.purge")
 local health = require("edgeweir.health")
 local lb = require("edgeweir.lb")
 local dns = require("edgeweir.dns")
+local ipaddr = require("edgeweir.ipaddr")
+local router = require("edgeweir.router")
 
 local passed, failed = 0, 0
 
@@ -178,8 +180,8 @@ test("lb.order skips origins marked down and fails open", function()
   order = lb.order(s, "/", 1001)
   eq(order[1].id, "p1", "all down: fail open, primaries first")
   eq(order[2].id, "b1")
-  health.success("p1")
-  health.success("b1")
+  health.success("hs", "p1")
+  health.success("hs", "b1")
 end)
 
 test("lb round robin is smooth and weighted", function()
@@ -230,17 +232,17 @@ test("lb consistent hash is stable and moves only a down origin's keys", functio
     end
   end
   assert(moved > 0)
-  health.success("o2")
+  health.success("ch", "o2")
   eq(#lb.order(s, "/x", 1000), lb.MAX_TRIES, "at most MAX_TRIES candidates")
 end)
 
 test("health counts consecutive failures and reports them", function()
   eq(health.failure("hs2", "x", "connection failed", 3, 10, 2000), false)
   eq(health.failure("hs2", "x", "connection failed", 3, 10, 2001), false)
-  eq(health.is_down("x", 2002), false)
+  eq(health.is_down("hs2", "x", 2002), false)
   eq(health.failure("hs2", "x", "timeout", 3, 10, 2002), true)
-  eq(health.is_down("x", 2003), true)
-  eq(health.is_down("x", 2013), false, "recovered after the recovery time")
+  eq(health.is_down("hs2", "x", 2003), true)
+  eq(health.is_down("hs2", "x", 2013), false, "recovered after the recovery time")
   local report = health.report(2003)
   local entry
   for _, r in ipairs(report) do
@@ -267,14 +269,27 @@ test("health counts consecutive failures and reports them", function()
       eq(r.healthy, true, "below max_fails counts as healthy")
     end
   end
-  health.success("y")
+  health.success("hs2", "y")
   -- One more failure after the recovery time marks it down again at once.
   eq(health.failure("hs2", "x", "timeout", 3, 10, 2013), true)
-  health.success("x")
-  eq(health.is_down("x", 2014), false)
+  health.success("hs2", "x")
+  eq(health.is_down("hs2", "x", 2014), false)
   for _, r in ipairs(health.report(2014)) do
     assert(r.origin_id ~= "x", "success clears the entry")
   end
+  -- Origins are tracked per site: the same origin id in another site is
+  -- independent.
+  health.failure("site-1", "shared", "timeout", 1, 30, 3000)
+  eq(health.is_down("site-1", "shared", 3001), true)
+  eq(health.is_down("site-2", "shared", 3001), false)
+  local sites = {}
+  for _, r in ipairs(health.report(3001)) do
+    if r.origin_id == "shared" then
+      sites[#sites + 1] = r.site_id
+    end
+  end
+  eq(table.concat(sites, ","), "site-1")
+  health.success("site-1", "shared")
 end)
 
 test("rules chain and response conditions", function()
@@ -447,9 +462,120 @@ test("store.prepare applies M2 defaults", function()
   eq(t._primaries[2]._s3_host, "minio:9000")
 end)
 
-test("dns passes IP literals through", function()
-  eq(dns.resolve("10.0.0.7"), "10.0.0.7")
-  eq(dns.resolve("2001:db8::1"), "2001:db8::1")
+test("dns passes allowed IP literals through and refuses special-purpose ones", function()
+  eq(dns.resolve("93.184.216.34", {}), "93.184.216.34")
+  eq(dns.resolve("2606:4700:4700::1111", {}), "2606:4700:4700::1111")
+  for _, a in ipairs({ "10.0.0.7", "127.0.0.1", "169.254.169.254", "::1", "::ffff:127.0.0.1", "2001:db8::1" }) do
+    local ip, err, code, params = dns.resolve(a, {})
+    eq(ip, nil, a)
+    eq(code, "address_forbidden", a)
+    eq(params.address, a)
+    assert(err:find("special%-purpose"), err)
+  end
+  local allowed = ipaddr.prefixes({ "10.0.0.0/8", "::1/128" })
+  eq(dns.resolve("10.0.0.7", allowed), "10.0.0.7", "allow list")
+  eq(dns.resolve("::1", allowed), "::1")
+end)
+
+test("dns drops special-purpose answers", function()
+  local orig = dns.query
+  local calls = 0
+  dns.query = function(host)
+    calls = calls + 1
+    if host == "mixed.test" then
+      return { "10.0.0.5", "93.184.216.34", "127.0.0.1" }, nil, 30
+    elseif host == "private.test" then
+      return { "169.254.169.254", "fd00::1" }, nil, 30
+    elseif host == "mapped.test" then
+      return { "0:0:0:0:0:ffff:7f00:1" }, nil, 30 -- lua-resty-dns style, uncompressed
+    end
+    return nil, "name error"
+  end
+  for _ = 1, 50 do
+    eq(dns.resolve("mixed.test", {}), "93.184.216.34", "only the public answer is used")
+  end
+  local ip, err, code, params = dns.resolve("private.test", {})
+  eq(ip, nil)
+  eq(code, "address_forbidden")
+  eq(params.address, "169.254.169.254")
+  assert(err:find("private.test", 1, true), err)
+  eq(select(3, dns.resolve("mapped.test", {})), "address_forbidden", "IPv4-mapped loopback")
+  -- Cached answers are checked again against the current allow list.
+  local before = calls
+  eq(dns.resolve("private.test", ipaddr.prefixes({ "169.254.0.0/16" })), "169.254.169.254")
+  eq(calls, before, "answer came from the cache")
+  local _, _, dcode, dparams = dns.resolve("missing.test", {})
+  eq(dcode, "dns_failed")
+  eq(dparams.host, "missing.test")
+  dns.query = orig
+  for _, h in ipairs({ "mixed.test", "private.test", "mapped.test", "missing.test" }) do
+    dns.invalidate(h)
+  end
+end)
+
+test("ipaddr parses literals and applies the special-purpose list", function()
+  local p = ipaddr.parse
+  eq(#p("1.2.3.4"), 4)
+  eq(#p("::"), 16)
+  eq(#p("2001:db8::1"), 16)
+  eq(#p("::ffff:10.0.0.1"), 16)
+  eq(#p("1:2:3:4:5:6:7:8"), 16)
+  for _, bad in ipairs({ "", "1.2.3", "1.2.3.256", "01.2.3.4", "1::2::3", "1:2:3:4:5:6:7:8:9", "fe80::1%eth0", "g::1", "host.test", "::1.2.3" }) do
+    eq(p(bad), nil, bad)
+  end
+  local forbidden = {
+    "0.0.0.0", "10.1.2.3", "100.64.0.1", "127.0.0.1", "169.254.169.254", "172.16.0.1", "172.31.255.255",
+    "192.0.0.8", "192.0.2.1", "192.168.1.1", "198.18.0.1", "198.19.255.255", "198.51.100.7", "203.0.113.9",
+    "224.0.0.1", "240.0.0.1", "255.255.255.255", "::", "::1", "100::1", "2001:db8::1", "fc00::1", "fd12:3456::1",
+    "fe80::1", "febf::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "64:ff9b::7f00:1",
+    "64:ff9b::a9fe:a9fe", "not-an-ip",
+  }
+  local allowed = {
+    "1.1.1.1", "8.8.8.8", "100.63.255.255", "100.128.0.0", "172.15.255.255", "172.32.0.0", "192.0.1.1",
+    "192.169.0.1", "198.17.255.255", "198.20.0.0", "223.255.255.255", "2606:4700:4700::1111", "fec0::1",
+    "::2", "::ffff:8.8.8.8", "64:ff9b::808:808",
+  }
+  for _, a in ipairs(forbidden) do
+    eq(ipaddr.forbidden(a, {}), true, a)
+  end
+  for _, a in ipairs(allowed) do
+    eq(ipaddr.forbidden(a, {}), false, a)
+  end
+  eq(#ipaddr.FORBIDDEN, 21, "the list shared with configir/address.go")
+  local list = ipaddr.prefixes({ "10.1.0.0/16", "127.0.0.1/32", "fd00::/8", "bogus", "192.168.1.77/24" })
+  eq(#list, 4, "invalid entries skipped")
+  for _, a in ipairs({ "10.1.2.3", "127.0.0.1", "fd00::5", "::ffff:127.0.0.1", "64:ff9b::7f00:1", "192.168.1.200" }) do
+    eq(ipaddr.forbidden(a, list), false, a .. " allowed")
+  end
+  for _, a in ipairs({ "10.2.0.1", "127.0.0.2", "fc00::1", "::1", "192.168.2.1" }) do
+    eq(ipaddr.forbidden(a, list), true, a .. " outside the list")
+  end
+end)
+
+test("store keeps the allow list and cdn-id per table", function()
+  assert(store.replace({ revision = "30", content_hash = "cfg", cdn_id = "edgeweir-0123456789abcdef",
+    origin_allowed_cidrs = { "10.0.0.0/8" }, sites = { site("cfg", { { name = "cfg.test" } }) } }))
+  local cfg = store.config()
+  eq(cfg.cdn_id, "edgeweir-0123456789abcdef")
+  eq(#cfg.allowed, 1)
+  eq(ipaddr.forbidden("10.9.9.9", cfg.allowed), false)
+  eq(store.status().cdn_id, "edgeweir-0123456789abcdef")
+  assert(store.replace({ revision = "31", content_hash = "cfg2", sites = {} }))
+  eq(store.config().cdn_id, "", "older agents send no cdn-id")
+  eq(#store.config().allowed, 0)
+end)
+
+test("router CDN-Loop detection and header value", function()
+  local id = "edgeweir-0123456789abcdef"
+  eq(router.cdn_loop_contains(nil, id), false)
+  eq(router.cdn_loop_contains("", id), false)
+  eq(router.cdn_loop_contains("other.example", id), false)
+  eq(router.cdn_loop_contains("other.example, " .. id, id), true)
+  eq(router.cdn_loop_contains(" EDGEWEIR-0123456789ABCDEF ; hop=2", id), true, "case-insensitive, parameters")
+  eq(router.cdn_loop_contains(id .. "0, x" .. id, id), false, "no substring matches")
+  eq(router.cdn_loop_value(nil, id), id)
+  eq(router.cdn_loop_value("", id), id)
+  eq(router.cdn_loop_value("a.example; v=1", id), "a.example; v=1, " .. id)
 end)
 
 test("stats.drain aggregates completed minutes", function()

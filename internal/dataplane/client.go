@@ -8,6 +8,8 @@ package dataplane
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,15 +26,35 @@ type SiteTable struct {
 	Revision    uint64          `json:"revision,string"`
 	ContentHash string          `json:"content_hash"`
 	Sites       []configir.Site `json:"sites"`
+	// OriginAllowedCIDRs lets origins use these special-purpose addresses
+	// (literals and DNS answers are checked against them in Lua).
+	OriginAllowedCIDRs []string `json:"origin_allowed_cidrs"`
+	// CDNID is this node's CDN-Loop identifier (RFC 8586); empty before
+	// the node is enrolled.
+	CDNID string `json:"cdn_id,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
 func FromPlan(p *configir.Plan) *SiteTable {
-	t := &SiteTable{Revision: p.Revision, ContentHash: p.ContentHash, Sites: p.Sites}
+	t := &SiteTable{Revision: p.Revision, ContentHash: p.ContentHash, Sites: p.Sites, OriginAllowedCIDRs: p.OriginAllowedCIDRs}
 	if t.Sites == nil {
 		t.Sites = []configir.Site{}
 	}
+	if t.OriginAllowedCIDRs == nil {
+		t.OriginAllowedCIDRs = []string{}
+	}
 	return t
+}
+
+// CDNID returns the CDN-Loop identifier of a node (RFC 8586 pseudonym):
+// "edgeweir-" and the first 16 hex characters of sha256(node id). It does
+// not reveal the node id but is stable across restarts and renewals.
+func CDNID(nodeID string) string {
+	if nodeID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(nodeID))
+	return "edgeweir-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // Status is the response of GET /v1/status. Version is 0 until the first
@@ -43,6 +65,7 @@ type Status struct {
 	ContentHash   string      `json:"content_hash"`
 	SiteCount     int         `json:"site_count"`
 	PushedAt      float64     `json:"pushed_at"`
+	CDNID         string      `json:"cdn_id"`
 	Purge         PurgeStatus `json:"purge"`
 	NginxVersion  int64       `json:"nginx_version,omitempty"`
 	NgxLuaVersion int64       `json:"ngx_lua_version,omitempty"`
@@ -51,7 +74,7 @@ type Status struct {
 
 // InSync reports whether the data plane serves exactly table t.
 func (s *Status) InSync(t *SiteTable) bool {
-	return s.Version > 0 && s.Revision == t.Revision && s.ContentHash == t.ContentHash
+	return s.Version > 0 && s.Revision == t.Revision && s.ContentHash == t.ContentHash && s.CDNID == t.CDNID
 }
 
 // PurgeMarker invalidates cached objects of a site (see lua/edgeweir/purge.lua).
