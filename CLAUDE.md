@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Edgeweir 边缘节点：Go agent（`edgeweir-node`）+ OpenResty/Lua 数据面。控制面在同级仓库 `../edgeweir`（只读，不要修改）。架构见 ARCHITECTURE.md。
+Edgeweir 边缘节点：Go agent（`edgeweir-node`）+ OpenResty/Lua 数据面。控制面在同级仓库 `../edgeweir`；契约（proto）变更先在控制面仓库提交并打 `proto/vX.Y.Z` tag，再在这里重新生成。架构见 ARCHITECTURE.md。
 
 ## 技术栈
 
