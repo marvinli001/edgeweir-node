@@ -19,6 +19,13 @@ function _M.init(opts)
   require("edgeweir.lb")
   require("edgeweir.sigv4")
   require("edgeweir.dns").configure(opts.resolvers, opts.ipv6)
+  require("edgeweir.upstreamerr")
+  -- Capture only errors (lua_capture_error_log): enough to tell TLS
+  -- failures of origin attempts apart (edgeweir.upstreamerr).
+  local ok, errlog = pcall(require, "ngx.errlog")
+  if ok then
+    pcall(errlog.set_filter_level, ngx.ERR)
+  end
   require("edgeweir.router")
   require("edgeweir.origin")
   require("edgeweir.stats")

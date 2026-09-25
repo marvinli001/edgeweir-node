@@ -336,6 +336,8 @@ func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
 			Healthy:             h.Healthy,
 			ConsecutiveFailures: h.Failures,
 			LastError:           h.LastError,
+			LastErrorCode:       h.LastErrorCode,
+			LastErrorParams:     h.LastErrorParams,
 		}
 		if h.LastFailureAt > 0 {
 			e.LastFailureAt = timestamppb.New(unixFloat(h.LastFailureAt))

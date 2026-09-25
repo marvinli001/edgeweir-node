@@ -23,6 +23,7 @@ local lb = require("edgeweir.lb")
 local dns = require("edgeweir.dns")
 local health = require("edgeweir.health")
 local sigv4 = require("edgeweir.sigv4")
+local upstreamerr = require("edgeweir.upstreamerr")
 
 local _M = {}
 
@@ -134,7 +135,7 @@ function _M.access()
       -- Refused by the agent already (special-purpose IP literal).
       usable = false
       health.failure(site.id, o.id, "address " .. o.address .. " is a special-purpose address outside the origin allow list",
-        site.health.max_fails, site.health.recovery_seconds, now)
+        site.health.max_fails, site.health.recovery_seconds, now, "address_forbidden", { address = o.address })
     elseif o.s3 and method ~= "GET" and method ~= "HEAD" then
       usable, s3_refused = false, true
     elseif o.s3 and not o.s3.secret_key then
@@ -151,12 +152,12 @@ function _M.access()
       usable = false
     end
     if usable then
-      local ip, err = dns.resolve(o.address, allowed)
+      local ip, err, code, params = dns.resolve(o.address, allowed)
       if ip then
         scheme = scheme or o.scheme
         cands[#cands + 1] = { origin = o, ip = ip }
       else
-        health.failure(site.id, o.id, err, site.health.max_fails, site.health.recovery_seconds, now)
+        health.failure(site.id, o.id, err, site.health.max_fails, site.health.recovery_seconds, now, code, params)
       end
     end
   end
@@ -345,11 +346,36 @@ function _M.header_filter()
   end
 end
 
-local FAILURE = {
-  ["502"] = "connection failed or HTTP 502",
-  ["503"] = "HTTP 503",
-  ["504"] = "timeout or HTTP 504",
-}
+-- classify returns the error code, its parameters and a text for a failed
+-- attempt, or nil when the attempt counts as a success. status is the
+-- attempt's $upstream_status, answered whether the origin sent a response
+-- header, tls whether the TLS handshake (or certificate check) failed.
+function _M.classify(status, answered, tls)
+  if status ~= "502" and status ~= "503" and status ~= "504" then
+    return nil
+  end
+  if answered then
+    return "upstream_status", { status = status }, "HTTP " .. status
+  end
+  if status == "504" then
+    return "timeout", nil, "timeout"
+  end
+  if tls then
+    return "tls_failed", nil, "TLS handshake or certificate verification failed"
+  end
+  if status == "502" then
+    return "connect_failed", nil, "connection failed"
+  end
+  return "", nil, "HTTP " .. status
+end
+
+local function split(v)
+  local out = {}
+  for item in gmatch(v or "", "[^,:%s]+") do
+    out[#out + 1] = item
+  end
+  return out
+end
 
 function _M.log()
   local ctx = ngx.ctx
@@ -358,18 +384,24 @@ function _M.log()
     return
   end
   local site = ctx.site
-  local statuses = ngx.var.upstream_status or ""
-  local i, now = 0, ngx.now()
-  for st in gmatch(statuses, "[^,:%s]+") do
-    i = i + 1
+  local var = ngx.var
+  local statuses = split(var.upstream_status)
+  local header_times = split(var.upstream_header_time)
+  local now = ngx.now()
+  for i = 1, #statuses do
     local c = tried[i]
     if not c then
       break
     end
-    local o = c.origin
-    local reason = FAILURE[st]
-    if reason then
-      health.failure(site.id, o.id, reason, site.health.max_fails, site.health.recovery_seconds, now)
+    local o, st = c.origin, statuses[i]
+    local answered = header_times[i] ~= nil and header_times[i] ~= "-"
+    local tls = false
+    if st == "502" and not answered and o.scheme == "https" then
+      tls = upstreamerr.tls_failed(var.connection, upstreamerr.hostport(c.ip, o.port))
+    end
+    local code, params, text = _M.classify(st, answered, tls)
+    if code then
+      health.failure(site.id, o.id, text, site.health.max_fails, site.health.recovery_seconds, now, code, params)
       dns.invalidate(o.address)
     elseif st ~= "-" then
       health.success(site.id, o.id)

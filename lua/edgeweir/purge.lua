@@ -98,9 +98,28 @@ local function valid(m)
     and tonumber(m.epoch) and tonumber(m.epoch) > 0
 end
 
--- build groups markers into dict entries: key -> list | epoch.
+-- build groups markers into dict entries: key -> list | epoch. An index
+-- per entry keeps it linear in the number of markers.
 local function build(markers)
-  local entries = {}
+  local entries, index = {}, {}
+  local function add(k, host, value, epoch)
+    local list = entries[k]
+    if not list then
+      list = {}
+      entries[k], index[k] = list, {}
+    end
+    local id = host .. "\0" .. value
+    local m = index[k][id]
+    if m then
+      if epoch > m[3] then
+        m[3] = epoch
+      end
+    else
+      m = { host, value, epoch }
+      list[#list + 1] = m
+      index[k][id] = m
+    end
+  end
   for i = 1, #markers do
     local m = markers[i]
     local epoch = tonumber(m.epoch)
@@ -110,13 +129,9 @@ local function build(markers)
         entries[k] = epoch
       end
     elseif m.type == "prefix" then
-      local k = "p|" .. m.site_id
-      entries[k] = entries[k] or {}
-      merge(entries[k], m.host or "", cachekey.normalize_path(m.path or "/"), epoch)
+      add("p|" .. m.site_id, m.host or "", cachekey.normalize_path(m.path or "/"), epoch)
     else
-      local k = "u|" .. m.site_id .. "|" .. cachekey.normalize_path(m.path or "/")
-      entries[k] = entries[k] or {}
-      merge(entries[k], m.host or "", m.query or "", epoch)
+      add("u|" .. m.site_id .. "|" .. cachekey.normalize_path(m.path or "/"), m.host or "", m.query or "", epoch)
     end
   end
   return entries

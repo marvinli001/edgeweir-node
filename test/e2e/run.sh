@@ -113,8 +113,8 @@ code=$(status_code hidden.test)
 [ "$code" = 502 ] || fail "origin resolving outside the allow list returned $code, want 502"
 compose logs node | grep "special-purpose address" >/dev/null || fail "refused origin not reported as a warning"
 origin_health_has() { curl -fsS "$HELPER/origin-health" | grep -q -- "$1"; }
-WAIT_SECS=30 wait_for "DNS answer refusal in origin health" origin_health_has "^site-hidden o1 .*dns hidden: every address"
-WAIT_SECS=30 wait_for "literal refusal in origin health" origin_health_has "^site-forbidden o1 .*address 127.0.0.1 is a special-purpose address"
+WAIT_SECS=30 wait_for "DNS answer refusal in origin health" origin_health_has "^site-hidden o1 address_forbidden dns hidden: every address"
+WAIT_SECS=30 wait_for "literal refusal in origin health" origin_health_has "^site-forbidden o1 address_forbidden address 127.0.0.1 is a special-purpose address"
 pass "special-purpose origins refused (literal and DNS answer), allow-listed Docker network served"
 
 # Origin HTTPS verifies the origin's configured name (SNI) against the
@@ -128,7 +128,8 @@ body=$(curl -s -H 'Host: tls-ok.test' "$NODE/tls-3")
 echo "$body" | grep -q "tls origin ok sni=origin.test" || fail "matching name after a mismatch: got '$body'"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: tls-bad.test' "$NODE/tls-4")
 [ "$code" = 502 ] || fail "wrong name after a verified connection returned $code, want 502 (connection reused?)"
-pass "origin HTTPS: trusted CA + matching name 200, wrong name 502"
+WAIT_SECS=30 wait_for "tls_failed in origin health" origin_health_has "^site-tls-bad o1 tls_failed "
+pass "origin HTTPS: trusted CA + matching name 200, wrong name 502 (tls_failed)"
 
 # The cache key sees every header (not only the first 100): a key header
 # behind 150 others still splits the variants.

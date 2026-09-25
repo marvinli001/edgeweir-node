@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/edgeweir/edgeweir-node/internal/dataplane"
@@ -117,6 +118,42 @@ func (a *Agent) flushResults(ctx context.Context) {
 	}
 }
 
+// Task error codes (ReportTaskResultRequest.error_code, proto v0.2.1); the
+// console localizes them and falls back to the message.
+const (
+	codePrefetchFailed  = "prefetch_failed"  // failed, total, url, reason, status
+	codePrefetchTimeout = "prefetch_timeout" // done, total
+	codeTaskUnsupported = "task_unsupported" // type
+	codePurgeFailed     = "purge_failed"
+)
+
+// withCode sets the error code of a failed result.
+func withCode(r *nodev1.ReportTaskResultRequest, code string, params map[string]string) *nodev1.ReportTaskResultRequest {
+	r.ErrorCode, r.ErrorParams = code, params
+	return r
+}
+
+// unknownKind names the task kind an older node does not know: the field
+// number of the unknown oneof case ("field_<n>"), or "unknown".
+func unknownKind(task *nodev1.NodeTask) string {
+	b := task.ProtoReflect().GetUnknown()
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			break
+		}
+		if num > 2 { // 1 id, 2 created_at
+			return "field_" + strconv.Itoa(int(num))
+		}
+		m := protowire.ConsumeFieldValue(num, typ, b[n:])
+		if m < 0 {
+			break
+		}
+		b = b[n+m:]
+	}
+	return "unknown"
+}
+
 func result(task *nodev1.NodeTask, ok, failed uint32, state nodev1.TaskState, msg string) *nodev1.ReportTaskResultRequest {
 	if len(msg) > maxResultMessage {
 		msg = msg[:maxResultMessage] + "…"
@@ -151,7 +188,9 @@ func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask, deadline
 	case *nodev1.NodeTask_Prefetch:
 		return a.executePrefetch(ctx, task, kind.Prefetch, deadline)
 	default:
-		return result(task, 0, 0, nodev1.TaskState_TASK_STATE_FAILED, "unsupported task type; upgrade edgeweir-node")
+		name := unknownKind(task)
+		return withCode(result(task, 0, 0, nodev1.TaskState_TASK_STATE_FAILED, "unsupported task type ("+name+"); upgrade edgeweir-node"),
+			codeTaskUnsupported, map[string]string{"type": name})
 	}
 }
 
@@ -194,7 +233,7 @@ func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *node
 	markers, invalid := purgeMarkers(p, 0)
 	failed := uint32(len(invalid))
 	if len(markers) == 0 {
-		return result(task, 0, failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(invalid, "; "))
+		return withCode(result(task, 0, failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(invalid, "; ")), codePurgeFailed, nil)
 	}
 	epoch := a.taskEpoch(task.GetId())
 	for i := range markers {
@@ -215,14 +254,14 @@ func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *node
 		err = a.pushMarkers(ctx, &dataplane.PurgeTable{ID: id, Markers: delta})
 	}
 	if err != nil {
-		return result(task, 0, uint32(len(markers))+failed, nodev1.TaskState_TASK_STATE_FAILED,
-			"data plane unavailable, the purge applies when it recovers: "+err.Error())
+		return withCode(result(task, 0, uint32(len(markers))+failed, nodev1.TaskState_TASK_STATE_FAILED,
+			"data plane unavailable, the purge applies when it recovers: "+err.Error()), codePurgeFailed, nil)
 	}
-	state := nodev1.TaskState_TASK_STATE_SUCCEEDED
 	if failed > 0 {
-		state = nodev1.TaskState_TASK_STATE_FAILED
+		return withCode(result(task, uint32(len(markers)), failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(invalid, "; ")),
+			codePurgeFailed, nil)
 	}
-	return result(task, uint32(len(markers)), failed, state, strings.Join(invalid, "; "))
+	return result(task, uint32(len(markers)), 0, nodev1.TaskState_TASK_STATE_SUCCEEDED, "")
 }
 
 // httpPort returns the first plain-HTTP listener of the serving plan.
@@ -289,6 +328,7 @@ func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *n
 
 	var ok, failed, done uint32
 	var msgs []string
+	first := -1
 	for i, o := range outcomes {
 		switch {
 		case !o.done:
@@ -299,19 +339,29 @@ func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *n
 		default:
 			failed++
 			done++
+			if first < 0 {
+				first = i
+			}
 			if len(msgs) < 5 {
 				msgs = append(msgs, targets[i].GetUrl()+": "+o.err)
 			}
 		}
 	}
+	total := strconv.Itoa(len(targets))
 	if timedOut && done < uint32(len(targets)) {
 		msgs = append([]string{fmt.Sprintf("prefetch time budget exhausted: %d of %d URLs done", done, len(targets))}, msgs...)
+		return withCode(result(task, ok, failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(msgs, "; ")),
+			codePrefetchTimeout, map[string]string{"done": strconv.Itoa(int(done)), "total": total})
 	}
-	state := nodev1.TaskState_TASK_STATE_SUCCEEDED
-	if failed > 0 {
-		state = nodev1.TaskState_TASK_STATE_FAILED
+	if failed == 0 {
+		return result(task, ok, 0, nodev1.TaskState_TASK_STATE_SUCCEEDED, "")
 	}
-	return result(task, ok, failed, state, strings.Join(msgs, "; "))
+	o := outcomes[first]
+	params := map[string]string{"failed": strconv.Itoa(int(failed)), "total": total, "url": targets[first].GetUrl(), "reason": o.reason}
+	if o.reason == "status" {
+		params["status"] = strconv.Itoa(o.status)
+	}
+	return withCode(result(task, ok, failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(msgs, "; ")), codePrefetchFailed, params)
 }
 
 func prefetchOne(ctx context.Context, client *http.Client, raw string) prefetchOutcome {

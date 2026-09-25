@@ -117,6 +117,10 @@ type OriginHealth struct {
 	LastFailureAt float64 `json:"last_failure_at"`
 	DownUntil     float64 `json:"down_until"`
 	LastError     string  `json:"last_error"`
+	// LastErrorCode and LastErrorParams describe the last error for the
+	// console (see lua/edgeweir/health.lua); empty for unknown errors.
+	LastErrorCode   string            `json:"last_error_code"`
+	LastErrorParams map[string]string `json:"last_error_params,omitempty"`
 }
 
 // MinuteStats is one per-site, per-minute bucket from POST /v1/stats/drain.

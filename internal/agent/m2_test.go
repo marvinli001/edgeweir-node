@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -148,7 +149,8 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 	}, false)
 	eventually(t, "purge result", func() bool { return len(console.TaskResults()) == 1 })
 	res := console.TaskResults()[0]
-	if res.GetTaskId() != "task-purge" || res.GetSucceeded() != 3 || res.GetFailed() != 1 || res.GetState() != nodev1.TaskState_TASK_STATE_FAILED {
+	if res.GetTaskId() != "task-purge" || res.GetSucceeded() != 3 || res.GetFailed() != 1 || res.GetState() != nodev1.TaskState_TASK_STATE_FAILED ||
+		res.GetErrorCode() != "purge_failed" {
 		t.Fatalf("purge result = %v", res)
 	}
 	markers := dp.Markers()
@@ -185,6 +187,12 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 		!strings.Contains(res.GetMessage(), "https://a.test/secure: HTTPS prefetch needs an HTTPS listener") {
 		t.Fatalf("prefetch result = %v", res)
 	}
+	// The first failed URL (in task order) with its reason, for the console
+	// to localize; message stays for older consoles.
+	wantParams := map[string]string{"failed": "2", "total": "3", "url": "http://a.test/missing", "reason": "status", "status": "404"}
+	if res.GetErrorCode() != "prefetch_failed" || !maps.Equal(res.GetErrorParams(), wantParams) {
+		t.Fatalf("prefetch error = %q %v, want prefetch_failed %v", res.GetErrorCode(), res.GetErrorParams(), wantParams)
+	}
 	seen := edge.seen()
 	slices.Sort(seen)
 	if !slices.Equal(seen, []string{"a.test /missing", "a.test /ok.js?v=1"}) {
@@ -194,7 +202,8 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 	// Passive origin health rides on the heartbeat.
 	dp.SetOriginHealth(dataplane.OriginHealth{
 		SiteID: "site-a", OriginID: "o1", Healthy: false, Failures: 3,
-		LastFailureAt: 1790000000.5, DownUntil: 1790000030, LastError: "timeout or HTTP 504",
+		LastFailureAt: 1790000000.5, DownUntil: 1790000030, LastError: "HTTP 504",
+		LastErrorCode: "upstream_status", LastErrorParams: map[string]string{"status": "504"},
 	})
 	eventually(t, "origin health reported", func() bool {
 		s := console.LastStatus()
@@ -202,7 +211,8 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 	})
 	oh := console.LastStatus().GetOriginHealth()[0]
 	if oh.GetOriginId() != "o1" || oh.GetHealthy() || oh.GetConsecutiveFailures() != 3 ||
-		oh.GetLastError() != "timeout or HTTP 504" || oh.GetLastFailureAt().AsTime().UnixMilli() != 1790000000500 ||
+		oh.GetLastError() != "HTTP 504" || oh.GetLastErrorCode() != "upstream_status" || oh.GetLastErrorParams()["status"] != "504" ||
+		oh.GetLastFailureAt().AsTime().UnixMilli() != 1790000000500 ||
 		oh.GetDownUntil().AsTime().Unix() != 1790000030 {
 		t.Fatalf("origin health = %v", oh)
 	}

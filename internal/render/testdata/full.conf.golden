@@ -36,6 +36,9 @@ http {
     lua_shared_dict edgeweir_stats 16m;
     lua_shared_dict edgeweir_purge 32m;
     lua_shared_dict edgeweir_health 4m;
+    # Error-level log lines, per worker, to tell TLS failures of origin
+    # attempts apart from connection failures (edgeweir.upstreamerr).
+    lua_capture_error_log 64k;
     init_by_lua_block {
         require("edgeweir.init").init({
             resolvers = {"10.0.0.2", "[2001:db8::53]"},

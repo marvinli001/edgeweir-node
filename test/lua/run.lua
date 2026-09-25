@@ -16,6 +16,7 @@ local lb = require("edgeweir.lb")
 local dns = require("edgeweir.dns")
 local ipaddr = require("edgeweir.ipaddr")
 local router = require("edgeweir.router")
+local upstreamerr = require("edgeweir.upstreamerr")
 
 local passed, failed = 0, 0
 
@@ -358,6 +359,67 @@ test("health counts consecutive failures and reports them", function()
   health.success("site-1", "shared")
 end)
 
+test("origin.classify maps attempts to error codes", function()
+  local code, params, text = origin.classify("502", false, false)
+  eq(code, "connect_failed")
+  eq(params, nil)
+  eq(text, "connection failed")
+  eq(origin.classify("502", false, true), "tls_failed")
+  eq(origin.classify("504", false, false), "timeout")
+  eq(origin.classify("504", false, true), "timeout", "a handshake that times out is a timeout")
+  code, params = origin.classify("503", true, false)
+  eq(code, "upstream_status")
+  eq(params.status, "503")
+  eq(select(2, origin.classify("502", true, false)).status, "502", "the origin itself answered 502")
+  eq(origin.classify("200", true, false), nil)
+  eq(origin.classify("404", true, false), nil)
+end)
+
+test("upstreamerr tells TLS failures apart from connection failures", function()
+  -- Lines as captured from OpenResty 1.31.1.1 (lua_capture_error_log).
+  local tls = '2026/09/25 10:23:30 [error] 15#15: *4 upstream SSL certificate does not match "wrong.test" while SSL handshaking to upstream, client: 127.0.0.1, server: , request: "GET / HTTP/1.1", upstream: "https://127.0.0.1:9443/?sni=wrong.test", host: "x"'
+  local refused = '2026/09/25 10:23:30 [error] 15#15: *7 connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: , request: "GET / HTTP/1.1", upstream: "https://127.0.0.1:9999/", host: "x"'
+  local handshake = '2026/09/25 10:23:30 [error] 15#15: *9 SSL_do_handshake() failed (SSL: error:0A00010B:SSL routines::wrong version number) while SSL handshaking to upstream, client: 127.0.0.1, server: , request: "GET / HTTP/1.1", upstream: "https://[2001:db8::5]:9080/"'
+  local c, hp, phase = upstreamerr.parse(tls)
+  eq(c, "4")
+  eq(hp, "127.0.0.1:9443")
+  eq(phase, "tls")
+  eq(select(3, upstreamerr.parse(refused)), "connect")
+  c, hp, phase = upstreamerr.parse(handshake)
+  eq(hp, "[2001:db8::5]:9080")
+  eq(phase, "tls")
+  eq(upstreamerr.parse("2026/09/25 [error] something else"), nil)
+  eq(upstreamerr.hostport("2001:db8::5", 9080), "[2001:db8::5]:9080")
+  eq(upstreamerr.hostport("10.0.0.1", 443), "10.0.0.1:443")
+  upstreamerr.record("4", "127.0.0.1:9443", "tls")
+  upstreamerr.record("7", "127.0.0.1:9999", "connect")
+  eq(upstreamerr.tls_failed(4, "127.0.0.1:9443"), true)
+  eq(upstreamerr.tls_failed(4, "127.0.0.1:9443"), false, "consumed")
+  eq(upstreamerr.tls_failed(7, "127.0.0.1:9999"), false)
+  eq(upstreamerr.tls_failed(8, "127.0.0.1:9999"), false, "no capture: connection failure")
+end)
+
+test("health reports error codes and parameters", function()
+  health.failure("hc", "o", "dns x.test: name error", 3, 10, 5000, "dns_failed", { host = "x.test" })
+  local entry
+  for _, r in ipairs(health.report(5001)) do
+    if r.site_id == "hc" then
+      entry = r
+    end
+  end
+  eq(entry.last_error, "dns x.test: name error")
+  eq(entry.last_error_code, "dns_failed")
+  eq(entry.last_error_params.host, "x.test")
+  health.failure("hc", "o", "no credential for S3 signing", 3, 10, 5002)
+  for _, r in ipairs(health.report(5003)) do
+    if r.site_id == "hc" then
+      eq(r.last_error_code, "", "unknown errors have no code")
+      eq(r.last_error_params, nil)
+    end
+  end
+  health.success("hc", "o")
+end)
+
 test("rules chain and response conditions", function()
   local s = {
     cache_rules = {
@@ -595,8 +657,9 @@ test("purge replace collapses a site that does not fit into a site-level marker"
   -- single entry: that site falls back to a site-level marker at its
   -- highest epoch, other sites are installed as they are.
   local markers = {}
-  for i = 1, 150000 do
-    markers[#markers + 1] = { site_id = "big", type = "url", host = "big.test", path = "/same", query = "q=" .. i, epoch = 1000 + i }
+  local pad = string.rep("x", 2500)
+  for i = 1, 2000 do
+    markers[#markers + 1] = { site_id = "big", type = "url", host = "big.test", path = "/same", query = "q=" .. i .. pad, epoch = 1000 + i }
   end
   markers[#markers + 1] = { site_id = "small", type = "url", host = "small.test", path = "/x", query = "", epoch = 77 }
   local st = assert(purge.replace({ id = "big-1", markers = markers }))
@@ -604,7 +667,7 @@ test("purge replace collapses a site that does not fit into a site-level marker"
   eq(#st.collapsed, 1)
   eq(st.collapsed[1], "big")
   local key = cachekey.prepare({ query = "all" })
-  eq(purge.epoch("big", key, "big.test", "/anything", ""), 151000, "whole site purged at the highest epoch")
+  eq(purge.epoch("big", key, "big.test", "/anything", ""), 3000, "whole site purged at the highest epoch")
   eq(purge.epoch("small", key, "small.test", "/x", ""), 77, "other sites keep their markers")
   eq(purge.epoch("small", key, "small.test", "/y", ""), 0)
   eq(ngx.shared.edgeweir_purge:get("u|big|/same"), nil, "the oversized entry is gone")
