@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述 Phase 0 节点的实现。需求来源是控制面仓库的 BOOTSTRAP.md（§2 节点部分、§3.3），节点和控制面之间的契约是 `edgeweir/proto`（`proto/v0.1.0`）里的 `edgeweir.node.v1`。
+本文描述节点当前（MVP M2 与 2026-09-25 收尾之后）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.2.1`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -11,19 +11,19 @@
 ┌──────────────────────────────┴───────────────────────────────────────────┐
 │ edgeweir-node (Go, 静态二进制)                                             │
 │  enroll ─ pki ─ identity          controlplane (Connect 客户端, 证书热替换)   │
-│  agent: watch / poll / sync / report / renew / stats 循环                  │
+│  agent: watch / poll / sync / report / renew / stats / tasks / dataplane   │
 │  configir (规范排序, content_hash, diff, 校验 → Plan)   configstore (LKG)   │
 │  render (nginx.conf 模板)   engine (openresty -t / reload / 子进程托管)      │
 │  dataplane (unix socket JSON 客户端)                                        │
 └───────────────┬──────────────────────────────────┬───────────────────────┘
-      nginx.conf │ -t / HUP / 子进程                 │ PUT /v1/sites, GET /v1/status,
-                ▼                                  ▼ POST /v1/stats/drain
+      nginx.conf │ -t / HUP / 子进程                 │ /v1/status /v1/sites /v1/purge
+                ▼                                  ▼ /v1/stats/drain /v1/origins/health
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ OpenResty                                                                 │
-│  控制 server   unix:/run/edgeweir-node/control.sock  → lua/edgeweir/control │
-│  边缘层 server  :80 ... (每个 listener 一个)            → router + proxy_cache │
-│  回源层 server  unix:/run/edgeweir-node/origin.sock   → origin → 源站         │
-│  lua_shared_dict: edgeweir_sites / edgeweir_meta / edgeweir_stats          │
+│  控制 server   unix:/run/edgeweir-node/control.sock  → edgeweir.control    │
+│  边缘层 server  每个 listener 一个 + unix:edge.sock   → router + proxy_cache │
+│  回源层 server  unix:origin.sock / origin-noverify.sock → origin (balancer) │
+│  lua_shared_dict: edgeweir_sites / meta / stats / purge / health           │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -34,14 +34,16 @@
 | `internal/identity` | 状态目录里的身份文件，原子写入，续期时的密钥对原子替换与崩溃恢复 |
 | `internal/enroll` | 注册流程 |
 | `internal/controlplane` | Connect 客户端：pin 通道（注册）和 mTLS 通道（可热替换证书） |
-| `internal/configir` | 规范排序、content_hash、diff 应用、校验并生成与引擎无关的 `Plan` |
+| `internal/configir` | 规范排序、content_hash、diff 应用、校验并生成与引擎无关的 `Plan`；源站地址策略（`address.go`） |
 | `internal/configstore` | LKG 持久化（current + previous），加载时校验哈希 |
-| `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`，解析 `/etc/resolv.conf` |
+| `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id），解析 `/etc/resolv.conf` |
 | `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督 |
-| `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 JSON 结构 |
-| `internal/agent` | 运行时主循环 |
-| `lua/edgeweir/*.lua` | 数据面：`router`（边缘层）、`origin`（回源层）、`store`（站点表）、`rules`、`stats`、`control` |
+| `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态的 JSON 结构 |
+| `internal/agent` | 运行时主循环、源站凭据、清缓存标记集合、类型化任务 |
+| `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
+
+Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`sigv4`（S3 签名）、`store`（站点表）、`stats`（分钟统计）、`control`（控制 API）、`init`。
 
 第三方 Go 依赖只有 `connectrpc.com/connect` 和 `google.golang.org/protobuf`。
 
@@ -50,7 +52,8 @@
 ```text
 run 启动
   │
-  ├─ 准备目录；有 LKG 且仍合法 → 按 LKG 渲染并启动 OpenResty、推送站点表
+  ├─ 准备目录，读取 credentials.json、purge.json
+  ├─ 有 LKG 且仍合法 → 按 LKG 渲染并启动 OpenResty、推送标记和站点表
   │            否则 → bootstrap 配置（:80，所有 Host 返回 404 unknown-host）
   │
   ├─ 未注册：每 2s 检查 identity.json（此时数据面已经在服务）
@@ -60,25 +63,24 @@ run 启动
   │     "switched to mTLS channel node_id=<id>"
   │
   └─ 并行循环
-        watch  : WatchConfig 流；REVISION 且比已应用的新 → 触发 sync
-        poll   : 每 30s 触发一次 sync（不论流是否健康）
+        watch  : WatchConfig 流；REVISION 且比已应用的新 → sync；TASKS → tasks
+        poll   : 约每 30s（±20% 抖动）触发一次 sync（不论流是否健康）
         sync   : GetConfig → 校验 → 应用 → 持久化 LKG → 触发 report（串行执行）
         report : 立即、每次应用后、每 report_interval_seconds（默认 15s）
         renew  : 控制台要求或剩余有效期 < 1/3 时续期证书
         stats  : 每 60s 从 Lua 取出完整分钟的统计，ReportStats 上报
+        tasks  : 流通知、心跳 tasks_pending 或约每 30s（抖动）PullTasks
         dataplane: 每 5s 及 nginx (重)启动时检查 GET /v1/status，不一致则重推
 ```
 
 ### 2.1 注册（`enroll`）
 
-1. 校验参数：`--server` 必须是 https；`--ca-sha256` 为 64 位十六进制（也接受 `sha256:` 前缀和冒号分隔）；已有身份时除非 `--force` 否则拒绝。先确认状态目录可写，避免白白消耗一次性 token。
-2. 本地生成 ECDSA P-256 私钥，CSR 的 CN 为主机名（控制台会改成 node id）。
-3. 用 pin 通道调用 `Enroll`：`tls.Config` 设置 `InsecureSkipVerify`，由 `VerifyConnection` 做完整校验：
-   - 服务端证书链中必须有一张证书的 DER SHA-256 等于 pin（控制台发送 leaf + CA）；
-   - 以这张证书为唯一根，校验 leaf 的证书链、主机名（默认取 URL 的 host，`--server-name` 可覆盖）和 ServerAuth 用途。
-   校验通过后才发送 token。
-4. 校验响应：`ca_certificate_pem` 的哈希必须等于 pin；节点证书必须由该 CA 签发、用于 ClientAuth、公钥与本地私钥一致；CN 与 node_id 不一致时只告警。
-5. 原子写入 `node.key`（0600）、`node.crt`、`ca.crt`，最后写 `identity.json`（它是"已注册"的标记）。以 root 执行且状态目录属于服务用户时，文件会交给该用户。`--force` 会先删除旧身份和旧 LKG。
+1. token 来源：`EDGEWEIR_TOKEN` 环境变量（`install.sh` 用这种方式）、`--token-file PATH`（或 `EDGEWEIR_TOKEN_FILE`），或 `--token`（会出现在 `ps` 里，使用时打印警告）。命令行参数优先于环境变量；同一层同时给出 token 和 token 文件时报错；文件内容去掉首尾空白，为空则报错。读取后从环境中删除 `EDGEWEIR_TOKEN`，子进程（`openresty -v`）看不到它。
+2. 校验参数：`--server` 必须是 https；`--ca-sha256` 为 64 位十六进制（也接受 `sha256:` 前缀和冒号分隔）；已有身份时除非 `--force` 否则拒绝。先确认状态目录可写，避免白白消耗一次性 token。
+3. 本地生成 ECDSA P-256 私钥，CSR 的 CN 为主机名（控制台会改成 node id）。
+4. 用 pin 通道调用 `Enroll`：`tls.Config` 设置 `InsecureSkipVerify`，由 `VerifyConnection` 做完整校验：服务端证书链中必须有一张证书的 DER SHA-256 等于 pin；以这张证书为唯一根，校验 leaf 的证书链、主机名（默认取 URL 的 host，`--server-name` 可覆盖）和 ServerAuth 用途。校验通过后才发送 token。
+5. 校验响应：`ca_certificate_pem` 的哈希必须等于 pin；节点证书必须由该 CA 签发、用于 ClientAuth、公钥与本地私钥一致；CN 与 node_id 不一致时只告警。
+6. 原子写入 `node.key`（0600）、`node.crt`、`ca.crt`，最后写 `identity.json`（它是"已注册"的标记）。以 root 执行且状态目录属于服务用户时，文件会交给该用户。`--force` 会先删除旧身份和旧 LKG。
 
 token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenticated`）。
 
@@ -94,50 +96,72 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 `GetConfig(revision=0, base_revision=<已应用的 revision>)`：
 
 - **snapshot**：直接进入校验。
-- **diff**：以本地 LKG 为基础，listeners / cache_zones / certificates 整体替换，按 id upsert 站点，删除 `removed_site_ids`，重新规范排序后计算哈希，与 `diff.content_hash` 比较。基础 revision 不符、哈希不一致或任何错误 → 重新请求快照（`base_revision=0`）。
+- **diff**：以本地 LKG 为基础，listeners / cache_zones / certificates / origin_allowed_cidrs 整体替换，按 id upsert 站点，删除 `removed_site_ids`，重新规范排序后计算哈希，与 `diff.content_hash` 比较。基础 revision 不符、哈希不一致或任何错误 → 重新请求快照（`base_revision=0`）。
 - LKG 属于其他集群（重新注册到别的集群）时不作为 diff 基础。
+- 控制台返回比已应用更旧的 revision（例如从备份恢复）时忽略，继续服务 LKG（控制台备份恢复的处理见控制面延后项 D3）。
 
-**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量见 `internal/configir/testdata/content_hash_vector.json`（含 protojson 形式的配置、规范字节和期望哈希）。
+**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）。
 
 **校验策略**（`configir.Build`）：
 
 | 情况 | 处理 |
 | --- | --- |
 | 哈希不符（快照或 diff 回退后的快照） | 整个配置拒绝 |
-| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（Phase 0 节点不支持规则表达式，proto 约定） |
+| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（节点尚不支持规则表达式） |
 | `cluster_id` 与节点所属集群不同 | 整个配置拒绝 |
+| 站点、源站、缓存规则 id 含 `[A-Za-z0-9_-]` 以外的字符或超过 128 个字符 | 整个配置拒绝（id 在数据面里作为分隔符的一部分） |
 | listener 端口非法 / 重复 | 跳过该 listener 并告警 |
-| HTTPS listener | 跳过并告警：proto v0.1.0 没有下发证书材料的途径 |
+| HTTPS listener | 跳过并告警：证书下发属于 MVP M3 |
 | 没有可用 listener | 使用默认端口（80）并告警 |
 | cache zone 名非法或与内部 shared dict 重名 | 跳过并告警；没有 zone 时使用内置 `edgeweir_default` |
 | 站点引用不存在的 zone / 未指定 zone | 使用第一个 zone |
 | 非法域名、单级顶级泛域名（如 `*.com`）、已被前面站点（按 id 顺序）占用的域名 | 丢弃该域名并告警；站点没有域名则跳过 |
-| 非法源站（地址、端口、Host 头、SNI） | 丢弃该源站并告警；站点没有源站则跳过 |
-| 缓存规则 action 未指定，或条件列表过滤后变空 | 跳过该规则（绝不放宽成"匹配全部"） |
+| 非法源站（地址、端口、Host 头、SNI、S3 设置、缺 id） | 丢弃该源站并告警；站点没有源站则跳过 |
+| 源站 IP 字面量属于特殊地址段且不在允许清单内（§3.5） | 保留但标记 `forbidden` 并告警，请求得到 502 而不是 404 |
+| 允许清单里不是 CIDR 的条目 | 忽略并告警 |
+| 缓存键里非法的查询参数、请求头（含 `cookie`、`host`、`x-edgeweir-*`）、Cookie 名 | 忽略该项并告警 |
+| 缓存规则 action 未指定、缺 id，或条件列表过滤后变空 | 跳过该规则（绝不放宽成"匹配全部"） |
 | `enabled=false` 的站点 | 不对外服务（等同未知域名） |
 
-跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`）的同一 revision 在 5 分钟内不重复尝试。
+跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`、reload 未生效）的同一 revision 在 5 分钟内不重复尝试。
 
 **应用**（`agent.applyPlan`）：
 
 1. 渲染 `nginx.conf`。与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload。
-2. 把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。
-3. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
+2. **确认 reload 生效**：每个渲染出的 `nginx.conf` 带一个配置 id（不含 id 时渲染结果的 SHA-256 前 16 位），`init_by_lua` 记下它，`GET /v1/status` 返回 `conf_id`。SIGHUP 只是请求 reload：新文件无法应用（例如端口被占用）时 nginx 记录错误并保留旧 worker。agent 在 reload 后最多等 15 秒，直到 worker 报告新的 id；否则该 revision 记为失败，把旧的 `nginx.conf` 写回（之后重启 nginx 时用的仍是正在运行的配置），LKG 继续服务。
+3. 按需补齐 S3 凭据（`GetOriginCredentials`），装入清缓存标记（§3.4），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
+4. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
 
-`nginx.conf` 只包含结构性设置，站点数据从不写进去，所以"渲染结果是否变化"就是"是否需要 reload"的判定：站点、源站、缓存规则、缓存代际号的变化只走热更新。
+`nginx.conf` 只包含结构性设置，站点数据从不写进去，所以"渲染结果是否变化"就是"是否需要 reload"的判定：站点、源站、缓存规则、缓存代际号、允许清单的变化只走热更新。
 
 ### 2.4 状态回报、续期、统计
 
-- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`。响应中的 `latest_revision` 比已应用的新会触发 sync；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
-- 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（Phase 0 不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
-- 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats` 批量上报；上传失败的批次保留重试（有上限）。
+- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
+- 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats` 批量上报；上传失败的批次保留重试（最多 5 万条）。
 
 ### 2.5 WatchConfig
 
-- 请求带 `known_revision`；首条消息是 `WATCH_EVENT_REVISION`，之后约每 15s 一条 `KEEPALIVE`。
+- 请求带 `known_revision`；首条消息是 `WATCH_EVENT_REVISION`，之后约每 15s 一条 `KEEPALIVE`，有新任务时 `WATCH_EVENT_TASKS`。
 - 45s 内没有任何消息视为死流，主动断开重连。
 - 断线重连退避 1s → 30s，带随机抖动；收到过消息后退避复位。
-- 无论流是否健康，每 30s 都会 `GetConfig` 轮询一次；已是最新时控制台返回空 diff，开销很小。
+- 无论流是否健康，约每 30s（0.8–1.2 倍随机）都会 `GetConfig` 轮询一次；已是最新时控制台返回空 diff，开销很小。ADR-0014 #4 设想流恢复后停止轮询，节点保留轮询作为兜底。
+
+### 2.6 类型化任务（清缓存、预热）
+
+控制台只能下发两类任务（ADR-0014）：`PurgeTask` 与 `PrefetchTask`。任务幂等；结果没送到控制台时，控制台 5 分钟后再次交出，节点再执行一次。
+
+- **拉取与顺序**：每次 `PullTasks` 最多 10 个、最多 10 轮。一批里先执行所有清缓存（很快，且不能排在慢源站后面），再执行预热；这一批预热共享一个从拉取时刻算起的时间预算（`--prefetch-budget`，默认 4 分钟，小于控制台再次交出任务的 5 分钟）。
+- **清缓存**：目标转换成标记（URL、前缀、全站，§3.4）。标记时间由节点在第一次执行该任务时分配：`max(当前毫秒, 上一个+1)`，按任务 id 记在 `purge.json` 里，同一任务再次交出时沿用原时间；不采用控制台的 `created_at`（事务乱序提交或多实例时钟偏差会让清除静默无效）。
+- **预热**：经本机边缘监听请求 URL（响应像客户端请求一样落进缓存），并发 4，单个 URL 超时 60 秒，2xx/3xx 算成功，重定向不跟随。使用第一个不要求 PROXY protocol 的监听（`127.0.0.1:<端口>`）；所有监听都要求 PROXY protocol 时改用本地 unix socket 边缘监听（`--edge-socket`，默认 `edge.sock`）。只支持 http URL（HTTPS 监听属于 M3）。预算用完时，尚未开始或被中断的 URL 记为失败。
+- **结果与错误码**（v0.2.1，`message` 仍按旧格式填写，给旧控制台用）：
+
+| 错误码 | 参数 | 含义 |
+| --- | --- | --- |
+| `prefetch_failed` | `failed`、`total`、`url`、`reason`、`status` | 第一个失败的 URL；`reason` 为 `status`（带 `status`）、`connect_failed`、`timeout`、`https_unsupported`、`other` |
+| `prefetch_timeout` | `done`、`total` | 时间预算用完，剩余 URL 记为失败 |
+| `task_unsupported` | `type` | 更新的控制台下发了本版本不认识的任务类型：`field_<字段号>`，没有任何内容时为 `unknown` |
+| `purge_failed` | 无 | 目标非法或数据面不可用（标记已持久化，数据面恢复后生效） |
 
 ## 3. 数据面
 
@@ -146,86 +170,168 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 `proxy_cache_valid` 是静态指令，改 TTL 就要 reload。为了让缓存规则（含 TTL）可以热更新，同一个 nginx 里分两层：
 
 ```text
-客户端 ──► 边缘层 (listen :80, default_server)
+客户端 ──► 边缘层 (listen :80 ... default_server；PROXY protocol 监听取头部里的客户端地址)
             access_by_lua  edgeweir.router
-              · 删除客户端带来的 X-Edgeweir-* 请求头
-              · 按 Host 查站点：精确匹配 → 上一级域名的泛域名；查不到 → 404 + X-Edgeweir-Error: unknown-host
-              · 按顺序匹配缓存规则（路径前缀 / 扩展名，首个命中生效）
-              · 设置 $edgeweir_cache_zone / $edgeweir_cache_key / bypass / no_cache
-            proxy_cache $edgeweir_cache_zone; key = 站点id:缓存代际号:scheme://host+request_uri
-            proxy_cache_lock / use_stale (error timeout updating 5xx) / background_update / revalidate
+              · 删除客户端带来的 X-Edgeweir-* 请求头（读取全部请求头）
+              · CDN-Loop 已含本节点 cdn-id → 508 loop-detected；否则追加 cdn-id
+              · 按 Host 查站点：精确匹配 → 上一级域名的泛域名；查不到 → 404 unknown-host
+              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403
+              · 非 GET/HEAD：透传（Range 原样转发）
+              · 按规则链判断是否可能缓存（带 Authorization 的请求见 §3.3）
+              · 设置 $edgeweir_cache_zone / $edgeweir_cache_key / bypass / no_cache / Range 模式
+            proxy_cache $edgeweir_cache_zone; key = cachekey.build(...) [+ slice 范围]
+            proxy_cache_lock / background_update / revalidate；stale 由源站层设置的 Cache-Control 扩展决定
             add_header X-Cache $upstream_cache_status always
-            内部请求头 X-Edgeweir-Site / -TTL / -Cache-Mode（proxy_set_header 设置，覆盖客户端同名头）
-                │ keepalive, unix socket
+            内部请求头 X-Edgeweir-Site / -Rules / -Cache-Status（proxy_set_header 设置，覆盖客户端同名头）
+                │ keepalive, unix socket（关闭证书校验的站点走 origin-noverify.sock）
                 ▼
-          回源层 (listen unix:origin.sock)，外部不可达
+          回源层 (listen unix:origin.sock / origin-noverify.sock)，外部不可达
             access_by_lua  edgeweir.origin
-              · 按站点 id 取源站池：主源按权重随机；没有主源时才用备用源
-              · proxy_pass $scheme://address:port（变量 → 由 resolver 解析域名）
-              · Host = host_header 或客户端 Host；SNI = sni / host_header / address
+              · 按站点 id 取源站，lb.order 排序；DNS 解析并按地址策略过滤；S3 源站签名
+              · 候选中有 S3 源站时删除客户端的 x-amz-* 请求头
               · 发往源站前清除内部头；忽略源站的 X-Accel-*（防止源站操纵缓存或内部跳转）
+            balancer_by_lua（每次尝试一次）
+              · set_current_peer(ip, port, sni)，$edgeweir_ssl_name = sni（证书名校验，§3.6）
+              · 重试次数、超时、按地址+端口+SNI 的连接池；换到 Host/签名不同的源站时重建请求
             header_filter_by_lua
-              · OVERRIDE：200/203/206/300/301/308 响应加 X-Accel-Expires: <ttl>
-              · RESPECT：源站没有 Cache-Control/Expires 时才加
+              · 按规则链与响应状态/大小决定 X-Accel-Expires 和 stale-* 扩展
+                （原 Cache-Control 放进 X-Edgeweir-CC，边缘层还原）
+              · 源站 5xx 且边缘持有可 stale 的过期副本时断开连接，让边缘层返回 stale
+            log_by_lua · 被动健康检查与错误码（§3.7）
                 │
                 ▼
-              源站
+              源站（请求头带 CDN-Loop）
 ```
 
-边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；没有命中缓存规则的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
+边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-`proxy_cache` 指令使用变量，每个站点可以落到不同的 cache zone；刷新整个站点只需递增 `cache_generation`（在 cache key 里）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache` 和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`）。
 
-### 3.2 站点表与控制 API
+### 3.2 选源（`edgeweir.lb`）
+
+| 策略 | 做法 |
+| --- | --- |
+| `weighted_random` | 按权重随机，重试按权重顺序 |
+| `round_robin` | 平滑加权轮询（nginx 的算法），状态按 worker 和站点表版本保存在解码后的站点对象上 |
+| `consistent_hash` | ketama 式哈希环（每单位权重 40 个点），键为请求 URI；某源站下线只移动它自己的键 |
+
+一次请求最多尝试 3 个源站。重试只在健康的主源之间进行；**所有主源都被标记为下线时才用备用源**；全部下线时仍全部尝试（先主源，fail open），尝试成功即提前结束下线。一次请求内不能在 HTTP 和 HTTPS 之间切换（下一个请求可以）。
+
+### 3.3 缓存规则与缓存键
+
+规则按 (priority, id) 排序，首个匹配生效。请求条件（精确路径、路径前缀、扩展名）在边缘层按 nginx 规范化后的 `$uri` 判断，响应条件（状态码、大小）在回源层判断。规则链是请求条件匹配的规则，直到第一个"匹配任何响应"的规则为止；回源层取链中第一个响应条件也匹配的规则。
+
+- **遵循 / 覆盖源站缓存头**：覆盖模式用规则 TTL（没有状态码条件时只缓存 200/203/206/300/301/308）；遵循模式交给 proxy_cache 解析源站头，源站没有 Cache-Control/Expires 时才用规则 TTL。
+- **stale**：规则的 stale-while-revalidate / stale-if-error 秒数写成 Cache-Control 扩展交给边缘层的 proxy_cache，原头部经 `X-Edgeweir-CC` 还原给客户端。
+- **Range**：站点开启 slice 时按 1 MiB 分片获取并缓存，分片范围进入缓存键；不缓存的请求原样转发 Range；其余情况由缓存获取整个对象。
+- **Authorization**（RFC 9111 §3.5）：带 `Authorization` 的请求既不查缓存也不存储，除非生效的规则设置了 `cache_authorized`（v0.2.1）；对这类请求，没有该标记的缓存规则按 bypass 规则处理（即使源站返回 `public`）。
+- **缓存键**：
+
+  ```text
+  <站点id>:<代际号>:<scheme>://<host><path>[?<query>][|d=<m|d>][|h:<名>=<值>...][|c:<名>=<值>...][#<清缓存时间>]
+  ```
+
+  path 是 nginx 规范化后的 `$uri`（解码、去掉点段、合并斜杠），与规则匹配、清缓存匹配用的是同一个路径，`/%73tatic/x` 和 `/static/x` 共用一个键。每个可变部分都做百分号转义（`%`、`|`、`#`、控制字符，按位置还有 `?`、`/`、`:`、`=`），任何值都无法伪装成另一个部分。请求头取自全部请求头（与删除内部头用的是同一张表，没有 100 个的上限），重复字段按 HTTP 语义用 `,` 连接。查询参数可全部 / 忽略 / 白名单并可排序；可按设备类型（`Mobi`、`Android`、`iPhone` 等）、请求头、Cookie 区分，可不含 host。普通 URL 在默认策略下与 Phase 0 的键相同。
+
+### 3.4 清缓存标记
+
+清缓存从不访问磁盘：每个标记带一个时间（毫秒，§2.6），`cachekey` 把匹配请求的最大标记时间追加到缓存键，清除后的下一次请求在新键上 MISS，旧对象由缓存管理器按 inactive / max_size 淘汰。
+
+- **存储**：`lua_shared_dict edgeweir_purge`（`--purge-dict-mb`，默认 32 MiB）。`u|<站点>|<路径>` 为 URL 标记列表 `[[host, query, 时间], ...]`，`p|<站点>` 为前缀标记列表，`s|<站点>` 为全站标记；`#id` 标记集合 id，`#ver` 每次变化递增（让 worker 缓存失效），`#entries` / `#markers` 为计数器，`#lock` 串行化写入。`GET /v1/status` 读计数器，不遍历字典。
+- **匹配**：按站点当前的缓存键策略：不含 host 时忽略 host；查询串按与键相同的规范化比较；标记路径按请求时的写法（百分号编码）下发，装入时按 `$uri` 的规则规范化。
+- **上限**：每个站点的 URL + 前缀标记超过 `--purge-markers-per-site`（默认 1000）时，合并为一个时间取最大值的全站标记（宁可多刷）。全量替换时某个站点的条目装不下，Lua 把这个站点换成全站标记并在响应的 `collapsed` 里报告，agent 同步合并；整个集合都装不下（507）时 agent 只保留全站标记。
+- **集合 id**：`<随机代号>-<序号>`，每次变化序号加一，比较 id 是 O(1)。过期标记（最长 inactive + 1 小时）每分钟最多清理一次。
+- **重启**：`purge.json`（0600，格式版本 2，含任务时间）在 agent 和 nginx 重启后保留。nginx 重启后先装标记再推站点表；标记装不进去时退化为"每个有标记的站点一个全站标记"（一分钟后再试完整集合），仍失败也照样推送站点表：站点绝不会因此变成 404。`purge.json` 无法读取时，下一次应用配置给每个站点加一个全站标记。
+
+### 3.5 源站地址策略与 CDN-Loop
+
+源站不能指向节点自己、它所在的网络或云元数据服务。以下地址段禁止用作源站，除非平台管理员把它放进 `NodeConfig.origin_allowed_cidrs`（v0.2.1）：
+
+- IPv4：`0.0.0.0/8`、`10.0.0.0/8`、`100.64.0.0/10`、`127.0.0.0/8`、`169.254.0.0/16`、`172.16.0.0/12`、`192.0.0.0/24`、`192.0.2.0/24`、`192.168.0.0/16`、`198.18.0.0/15`、`198.51.100.0/24`、`203.0.113.0/24`、`224.0.0.0/4`、`240.0.0.0/4`
+- IPv6：`::/128`、`::1/128`、`100::/64`、`2001:db8::/32`、`fc00::/7`、`fe80::/10`、`ff00::/8`；IPv4 映射（`::ffff:0:0/96`）和 NAT64（`64:ff9b::/96`）地址按内嵌的 IPv4 地址判断
+
+`configir/address.go` 与 `lua/edgeweir/ipaddr.lua` 使用同一张表（控制台也按它校验）。配置里的 IP 字面量由 agent 拒绝（标记 `forbidden`），Lua 对字面量再查一次，并过滤每个 DNS 解析结果（缓存的解析结果也按当前允许清单重新过滤）；什么都不剩时这次尝试失败，错误码 `address_forbidden`。
+
+边缘层发往源站的每个请求都带 `CDN-Loop`（RFC 8586）：收到的值加上本节点的 cdn-id（`edgeweir-` + sha256(node id) 的前 16 个十六进制字符，站点表的 `cdn_id` 字段）。收到的请求里 `CDN-Loop` 已含本节点 cdn-id 时，在任何缓存或回源工作之前返回 `508 Loop Detected`。
+
+### 3.6 回源 HTTPS
+
+- 结论（nginx 与 lua-nginx-module 的文档和源码，并在 `openresty/openresty:1.31.1.1-bookworm-fat`（nginx 1.31.1）里实测）：`proxy_ssl_name` 默认是 `$proxy_host`，对本节点的 balancer upstream 就是 `edgeweir_balancer`。`balancer.set_current_peer(host, port, sni)` 在没有配置 `proxy_ssl_name` 时把 `u->ssl_name` 设为 sni，nginx 把它作为 SNI 发送并用它校验证书名；不传第三个参数时所有源站都按 `edgeweir_balancer` 校验而失败。另外，nginx 1.29.7 起 upstream keepalive 默认开启（`keepalive 32 local`），缓存的连接只按对端地址匹配：为 origin.test 校验过的 TLS 连接会被复用给必须校验 wrong.test 的请求，不握手也不校验（实测返回 200）。
+- 做法：`upstream edgeweir_balancer` 设置 `keepalive 0`（官方文档："The zero value disables keepalive connections to upstream servers"），连接池只由 `balancer.enable_keepalive` 提供，它按地址、端口和 SNI 区分连接；回源层设置 `proxy_ssl_name $edgeweir_ssl_name` 与 `proxy_ssl_server_name on`，balancer 每次尝试把 `$edgeweir_ssl_name` 设为传给 `set_current_peer` 的同一个 SNI。
+- SNI / 校验名取源站的 `sni`，其次 `host_header`（去掉端口），最后是地址本身。以 IP 配置的 HTTPS 源站需要设置证书覆盖的 SNI 或 Host（nginx 不对 IP 发送 SNI，也不按 IP 校验名称）。
+- 校验层（`origin.sock`）用 `--trusted-ca` 或系统 CA bundle 校验（`proxy_ssl_verify on`）；找不到 CA bundle 时需要校验的源站直接失败（fail closed）。站点关闭校验时走 `origin-noverify.sock`，这类连接不进入连接池。
+
+### 3.7 被动健康检查
+
+真实流量就是探测：连接失败、超时、502/503/504、DNS 失败、地址被禁止都计为失败，其他响应清零。连续失败达到 `max_fails`（默认 3）后在 `recovery_seconds`（默认 30）内不再选中；之后流量会再试，再失败一次立即再次下线；成功一次恢复健康。状态在 `lua_shared_dict edgeweir_health`，按"站点 + 源站"区分（同一源站 id 在不同站点互不影响），经 `GET /v1/origins/health` 随心跳上报。
+
+错误码（`last_error_code` / `last_error_params`，v0.2.1；`last_error` 仍为文本）：`connect_failed`、`timeout`、`upstream_status {status}`（源站自己返回 502/503/504）、`dns_failed {host}`、`address_forbidden {address}`、`tls_failed`；其他错误（如缺少 S3 凭据）码为空。TLS 握手或证书校验失败在 nginx 变量里与连接失败完全相同（502，没有响应头时间，字节数为 0）；回源层用 `lua_capture_error_log 64k`（只捕获 error 级别，每个 worker 独立）读取 "while SSL handshaking to upstream" 的日志行，按连接号和上游地址对应到尝试上（`edgeweir.upstreamerr`），对不上的按连接失败处理。
+
+### 3.8 站点表与控制 API
 
 控制 API 只监听 `unix:/run/edgeweir-node/control.sock`（目录权限 0750），由 `lua/edgeweir/control.lua` 处理：
 
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /v1/health` | 存活检查 |
-| `GET /v1/status` | `{version, revision, content_hash, site_count, pushed_at, nginx_version, ...}`，`version=0` 表示 nginx 启动后还没收到站点表 |
+| `GET /v1/status` | `{version, revision, content_hash, site_count, pushed_at, cdn_id, conf_id, purge: {id, entries, markers}, nginx_version, ngx_lua_version, worker_pid}`；`version=0` 表示 nginx 启动后还没收到站点表 |
 | `PUT /v1/sites` | 原子替换整张站点表 |
 | `POST /v1/stats/drain` | 返回并删除所有已结束分钟的统计 |
+| `PUT /v1/purge` | 替换整个清缓存标记集合 `{id, markers}`（装不下的站点合并为全站标记，见 `collapsed`） |
+| `POST /v1/purge` | 合并标记；装不下时 507（agent 随后全量替换） |
+| `GET /v1/purge` | 标记集合状态 |
+| `GET /v1/origins/health` | 有失败记录的源站 |
 
-站点表 JSON（Go 结构见 `configir.Site`，由 agent 从 IR 转换，Lua 不接触 protobuf）：
+站点表 JSON（Go 结构见 `dataplane.SiteTable` 和 `configir.Site`，由 agent 从 IR 转换，Lua 不接触 protobuf）：
 
 ```json
 {
   "revision": "12",
   "content_hash": "…",
+  "cdn_id": "edgeweir-0123456789abcdef",
+  "origin_allowed_cidrs": ["172.20.0.0/16"],
   "sites": [{
     "id": "site-a", "name": "demo", "cache_zone": "default", "cache_generation": "1",
-    "load_balance": "weighted_random",
+    "load_balance": "round_robin", "tls_verify": true, "websocket": true, "slice": false,
+    "health": {"max_fails": 3, "recovery_seconds": 30},
+    "conn": {"connect_timeout_ms": 10000, "send_timeout_ms": 60000, "read_timeout_ms": 60000,
+             "keepalive": true, "keepalive_idle": 60, "keepalive_requests": 1000},
+    "cache_key": {"query": "all", "headers": ["accept-language"]},
     "domains": [{"name": "demo.test"}, {"name": "example.com", "wildcard": true}],
-    "origins": [{"id": "o1", "scheme": "http", "address": "whoami", "port": 80, "weight": 1,
-                 "backup": false, "host_header": "", "sni": ""}],
+    "origins": [{"id": "o1", "scheme": "https", "address": "origin.example.com", "port": 443, "weight": 1,
+                 "host_header": "www.example.com", "sni": "origin.example.com"}],
     "cache_rules": [{"id": "r1", "action": "cache", "ttl": 60, "mode": "override",
-                     "path_prefixes": ["/"], "extensions": ["png"]}]
+                     "path_prefixes": ["/"], "swr": 30, "sie": 600, "cache_authorized": false}]
   }]
 }
 ```
 
-`revision` 和 `cache_generation` 用字符串传递，因为 Lua 的数字是 double。
+`revision` 和 `cache_generation` 用字符串传递，因为 Lua 的数字是 double。S3 源站带 `s3`（region、bucket、credential_id，以及 agent 从 `GetOriginCredentials` 取得后填入的密钥）；被地址策略拒绝的源站带 `"forbidden": true`。
 
-`PUT /v1/sites` 在 `edgeweir_sites` 里以版本前缀写入新表（`v<N>:site:<id>`、`v<N>:host:<name>`、`v<N>:wild:<name>`，使用 `safe_set`，内存不足时整体回滚并返回 507），写完后翻转 `edgeweir_meta` 中的 `version`，请求永远不会看到写了一半的表。上一版本保留到下一次替换，供翻转瞬间仍在处理的请求使用。每个 worker 用 lua-resty-lrucache 缓存解码后的站点和 Host 查询结果，键里带版本号，翻转即失效。
+`PUT /v1/sites` 在 `edgeweir_sites` 里以版本前缀写入新表（`v<N>:site:<id>`、`v<N>:host:<name>`、`v<N>:wild:<name>`、`v<N>:cfg`（允许清单与 cdn-id），使用 `safe_set`，内存不足时整体回滚并返回 507），写完后翻转 `edgeweir_meta` 中的 `version`，请求永远不会看到写了一半的表。上一版本保留到下一次替换，供翻转瞬间仍在处理的请求使用。每个 worker 有三个 lua-resty-lrucache：解码后的站点（含轮询和哈希环状态）与表设置、Host 命中（精确域名；泛域名按上一级域名只缓存一条，随机子域名不增加条目）、Host 未命中（独立的小缓存，1024 条），键里带版本号，翻转即失效；伪造 Host 的洪泛只会冲刷未命中缓存。
 
-shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s（以及收到 nginx 启动事件时）调用 `GET /v1/status`，发现 `version=0` 或 revision/哈希与期望不符就重新推送。
+shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s（以及收到 nginx 启动事件时）调用 `GET /v1/status`，发现 `version=0`、revision/哈希/cdn-id 与期望不符，或标记集合 id 不同就重新推送。
 
-### 3.3 reload 与热更新
+### 3.9 reload 与热更新
 
 | 变更 | 方式 |
 | --- | --- |
-| 监听端口、HTTP/2、PROXY protocol | 重新渲染 → `openresty -t` → reload（HUP） |
+| 监听端口、HTTP/2、PROXY protocol | 重新渲染 → `openresty -t` → reload（HUP）→ 确认新配置 id |
 | cache zone（增删、大小） | 同上 |
-| resolver（`/etc/resolv.conf`，agent 启动时读取） | 同上 |
-| 站点、域名、源站、缓存规则、TTL、缓存代际号 | 热更新：`PUT /v1/sites`，不 reload |
+| resolver（`/etc/resolv.conf`，agent 启动时读取）、trusted CA、shared dict 大小 | 同上（agent 启动参数） |
+| 站点、域名、源站、缓存规则、TTL、缓存代际号、允许清单 | 热更新：`PUT /v1/sites`，不 reload |
+| 清缓存 | 热更新：`POST` / `PUT /v1/purge` |
 
-`resolver` 取自 `/etc/resolv.conf` 的 nameserver（Docker 中为 `127.0.0.11`；IPv6 加方括号；带 zone 的链路本地地址跳过；没有时回退到 `127.0.0.1`），`valid=30s`；主机没有全局 IPv6 地址时加 `ipv6=off`。
+`resolver` 取自 `/etc/resolv.conf` 的 nameserver（Docker 中为 `127.0.0.11`；IPv6 加方括号；带 zone 的链路本地地址跳过；没有时回退到 `127.0.0.1`），Lua 按 min(TTL, 30s) 缓存结果（失败 5 秒）；主机没有全局 IPv6 地址时不查询 AAAA。
 
-### 3.4 进程管理
+### 3.10 PROXY protocol
 
-- **托管模式**（`--manage-nginx`，容器和 systemd 默认）：agent 以子进程运行 `openresty -p PREFIX -c nginx.conf -e stderr -g 'daemon off;'`。首次配置检查通过后才启动；reload 发送 SIGHUP；子进程意外退出时按 1s → 30s 退避重启，重启后自动重推站点表；agent 收到 SIGTERM/SIGINT 时向 OpenResty 发送 SIGQUIT 优雅退出，8s 后仍未退出则 SIGKILL。子进程在独立进程组中，Linux 上设置 `Pdeathsig`，agent 意外死亡时 OpenResty 也会退出。启动前清理残留的 unix socket。nginx 的 stderr 按行转进 agent 日志（`component=nginx`）。
-- **非托管模式**：OpenResty 由外部管理，agent 用 `-s reload` 通知。
+配置了 PROXY protocol 的监听，每个连接都以 PROXY 头开始，所以该 server 设置 `set_real_ip_from 0.0.0.0/0`、`set_real_ip_from ::/0`、`real_ip_header proxy_protocol`：`$remote_addr`、发往源站的 `X-Real-IP` 和 `X-Forwarded-For` 都是 PROXY 头里的客户端地址，而不是负载均衡器的地址（ngx_http_realip_module 文档："The proxy_protocol parameter changes the client address to the one from the PROXY protocol header"）。普通监听保持对端地址。agent 的预热请求从不走要求 PROXY protocol 的监听（§2.6）。
+
+### 3.11 进程管理
+
+- **托管模式**（`--manage-nginx`，容器和 systemd 默认）：agent 以子进程运行 `openresty -p PREFIX -c nginx.conf -e stderr -g 'daemon off;'`。首次配置检查通过后才启动；reload 发送 SIGHUP 并确认新配置 id；子进程意外退出时按 1s → 30s 退避重启，重启后自动重推标记和站点表；agent 收到 SIGTERM/SIGINT 时向 OpenResty 发送 SIGQUIT 优雅退出，8s 后仍未退出则 SIGKILL。子进程在独立进程组中，Linux 上设置 `Pdeathsig`，agent 意外死亡时 OpenResty 也会退出。启动前清理残留的 unix socket。nginx 的 stderr 按行转进 agent 日志（`component=nginx`）。
+- **非托管模式**：OpenResty 由外部管理，agent 用 `-s reload` 通知，同样确认新配置 id。
 - `worker_rlimit_nofile` 取进程的硬上限（os/exec 子进程只继承默认软上限），`worker_connections` 随之调整。
 
 ## 4. 文件布局
@@ -236,26 +342,27 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 | `/var/lib/edgeweir-node/node.crt`、`ca.crt` | 节点证书、内部 CA 证书 |
 | `/var/lib/edgeweir-node/identity.json` | node_id、cluster_id、node_name、server_url、server_name、ca_sha256、enrolled_at |
 | `/var/lib/edgeweir-node/config/current.binpb`、`previous.binpb` | LKG 配置及其备份（二进制 protobuf，0600） |
+| `/var/lib/edgeweir-node/credentials.json` | 当前配置引用的 S3 源站凭据（access key 与 secret key 明文，0600），控制台不可达时重启仍能服务 S3 源站 |
+| `/var/lib/edgeweir-node/purge.json` | 清缓存标记与任务时间（0600） |
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`、`logs/nginx.pid`、`tmp/` |
 | `/var/cache/edgeweir-node/<zone>/` | proxy_cache 数据 |
-| `/run/edgeweir-node/control.sock`、`origin.sock` | 控制 API、回源层 |
+| `/run/edgeweir-node/control.sock`、`edge.sock`、`origin.sock`、`origin-noverify.sock` | 控制 API、本地边缘监听、回源层（校验 / 不校验证书） |
 | `/usr/share/edgeweir-node/lua/edgeweir/` | Lua 模块 |
 
-所有持久化写入都是：写临时文件 → fsync → rename → fsync 目录。
+所有持久化写入都是：写临时文件 → fsync → rename → fsync 目录。状态目录为 0700。
 
 ## 5. 部署形态
 
 - **容器**：`openresty/openresty:1.31.1.1-bookworm` 为基础，agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node run --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。
-- **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty 作为 agent 的子进程运行，与发行版自带的 `openresty.service` 互斥。取舍说明见 unit 文件内的注释。
+- **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty 作为 agent 的子进程运行，与发行版自带的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
 
-## 6. 已知限制（Phase 0）
+## 6. 已知限制
 
-- HTTPS 监听被跳过：proto v0.1.0 只有 `CertificateRef`，没有下发证书/私钥材料的 RPC。
-- 回源 HTTPS 不校验源站证书（IR 暂无开关），SNI 已按配置发送。
-- `ROUND_ROBIN`、`CONSISTENT_HASH` 退化为加权随机；尚无被动健康检查。
-- 访问日志关闭，只有聚合统计。
-- `CacheRuleMatch.expression` 非空的配置会被拒绝。
+- HTTPS 监听被跳过：证书下发属于 MVP M3（proto 只有 `CertificateRef`）。预热也因此只支持 http URL。
+- `CacheRuleMatch.expression` 非空的配置会被拒绝（规则引擎属于后续里程碑）。
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
-- 暂不支持 WebSocket / `Upgrade` 透传（两层代理都重置了 `Connection` 头）。
+- 访问日志关闭，只有聚合统计；访问日志采样属于 MVP M6。
+- 预热只预热桌面变体；前缀与全站预热在 v1。
+- 没有最低 agent 版本门槛：旧节点遇到新的枚举值会退回默认值（控制面延后项 D1，M3）。
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。

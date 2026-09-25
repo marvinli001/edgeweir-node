@@ -20,8 +20,8 @@ The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir
 1. **Enroll**: `edgeweir-node enroll` generates an ECDSA P-256 key locally (it never leaves the node), pins the console's internal CA by the SHA-256 in the install command, and exchanges a single-use token and a CSR for a node certificate.
 2. **mTLS channel**: every later RPC uses the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is also polled every 30 s as a fallback.
 3. **Apply**: snapshots and diffs are verified against the `content_hash`, validated, and persisted as the last-known-good (LKG) configuration. Only structural changes (listeners, cache zones, resolver) re-render `nginx.conf` and reload OpenResty after `openresty -t`; sites, origins and cache rules are hot-updated through a local unix socket.
-4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (responses carry `X-Cache: MISS/HIT`), and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`.
-5. **Report**: status heartbeats with the applied revision, per-site per-minute traffic stats, and automatic certificate renewal.
+4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (responses carry `X-Cache: MISS/HIT/BYPASS`), balances over origin pools with passive health checks, and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`. Origins may not point at special-purpose addresses (loopback, link-local/cloud metadata, private networks, ...) unless the platform administrator allows them, and every upstream request carries `CDN-Loop`, so loops end with `508`.
+5. **Tasks and reports**: purge and prefetch tasks, status heartbeats with the applied revision and origin health, per-site per-minute traffic stats, and automatic certificate renewal.
 
 If the console is unreachable the node keeps serving its LKG configuration. See [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese) for the details.
 
@@ -29,13 +29,7 @@ If the console is unreachable the node keeps serving its LKG configuration. See 
 
 ### One-line install (recommended)
 
-The console shows an install command for each node:
-
-```sh
-curl -fsSL https://<console>/install.sh | sudo bash -s -- --token <one-time-token>
-```
-
-`install.sh` is served by your own console. Before executing anything it downloads the release artifacts (optionally mirrored by the console, useful where GitHub is slow) and verifies their SHA-256 **and** cosign signature; it then installs OpenResty and the `edgeweir-node` package, enrolls the node with the pinned CA fingerprint and starts the service. Installing over SSH from the console is an optional one-shot convenience: the credentials are used once and never stored.
+The console shows an install command for each node. `install.sh` is served by your own console. Before executing anything it downloads the release artifacts (optionally mirrored by the console, useful where GitHub is slow) and verifies their SHA-256 **and** cosign signature; it then installs OpenResty and the `edgeweir-node` package, enrolls the node with the pinned CA fingerprint (the one-time token is handed over in the `EDGEWEIR_TOKEN` environment variable, never on a command line) and starts the service. The console never stores SSH credentials.
 
 ### Manual install (deb / rpm)
 
@@ -45,11 +39,14 @@ curl -fsSL https://<console>/install.sh | sudo bash -s -- --token <one-time-toke
 
    ```sh
    sudo apt install ./edgeweir-node_<version>_linux_amd64.deb   # or: sudo dnf install ./edgeweir-node-<version>.x86_64.rpm
-   sudo edgeweir-node enroll --server https://console.example.com:8443 --token <token> --ca-sha256 <sha256>
+   # the token file keeps the one-time token out of the process list
+   sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
+   sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
+   sudo rm /root/edgeweir-token
    sudo systemctl enable --now edgeweir-node
    ```
 
-The package installs `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/edgeweir-node/lua`, the systemd unit and `/etc/default/edgeweir-node`, and creates the unprivileged `edgeweir` user.
+The package installs `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/edgeweir-node/lua`, the systemd unit and `/etc/default/edgeweir-node`, creates the unprivileged `edgeweir` user and the state and cache directories owned by it.
 
 ### Docker
 
@@ -57,8 +54,9 @@ The package installs `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/ed
 docker run -d --name edgeweir-node -p 80:80 \
   -v edgeweir-node:/var/lib/edgeweir-node \
   ghcr.io/edgeweir/edgeweir-node:<version>
-docker exec edgeweir-node edgeweir-node enroll \
-  --server https://console.example.com:8443 --token <token> --ca-sha256 <sha256>
+read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # paste the one-time token
+docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
+  --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
 The container starts OpenResty immediately (every host answers `404 unknown-host`), waits for the enrollment, and then follows the console. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume.
@@ -66,26 +64,38 @@ The container starts OpenResty immediately (every host answers `404 unknown-host
 ## Command line
 
 ```text
-edgeweir-node enroll --server URL --token TOKEN --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force]
+EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force]
+edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...   # --token TOKEN also works but shows in ps
 edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
-                  [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80] ...
+                  [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80]
+                  [--trusted-ca FILE] [--purge-dict-mb 32] [--purge-markers-per-site 1000]
+                  [--prefetch-budget 4m] [--edge-socket PATH] ...
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node version
 ```
 
-Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for example `--state-dir` → `EDGEWEIR_STATE_DIR`, `--token` → `EDGEWEIR_TOKEN`); command-line flags win. `run` waits (polling every 2 s) until the node is enrolled, so `enroll` can be run while `run` is already running.
+Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for example `--state-dir` → `EDGEWEIR_STATE_DIR`, `--token` → `EDGEWEIR_TOKEN`, `--token-file` → `EDGEWEIR_TOKEN_FILE`); command-line flags win. `run` waits (polling every 2 s) until the node is enrolled, so `enroll` can be run while `run` is already running.
+
+| `run` flag | Default | Purpose |
+| --- | --- | --- |
+| `--trusted-ca` | system bundle | CA bundle for verifying HTTPS origins |
+| `--purge-dict-mb` | `32` | size of the purge marker store (`lua_shared_dict edgeweir_purge`) |
+| `--purge-markers-per-site` | `1000` | URL and prefix purge markers per site before they collapse into one site-level marker |
+| `--prefetch-budget` | `4m` | time the prefetches of one pulled batch may take |
+| `--edge-socket` | `edge.sock` next to the control socket | local edge listener for prefetches when every listener uses the PROXY protocol |
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | state: `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG), `nginx/` (prefix, rendered `nginx.conf`) |
+| `/var/lib/edgeweir-node` | state (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
 | `/var/cache/edgeweir-node` | proxy cache zones |
 | `/run/edgeweir-node/control.sock` | local control API of the Lua data plane (unix socket only) |
+| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | local edge listener and the internal origin layers |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
 | `:80` | HTTP listener before any configuration; afterwards the listeners in the config |
 
 ## Build and test
 
-Requirements: Go 1.27, Docker, and for release work buf, goreleaser and syft.
+Requirements: Go 1.27.1, Docker, and for release work buf, goreleaser and syft.
 
 ```sh
 make build         # static binary in bin/
@@ -93,7 +103,8 @@ make vet test      # go vet ./... && go test ./...
 make test-race     # tests with the race detector
 make lua-test      # Lua unit tests with resty in the OpenResty image
 make docker        # docker build -t edgeweir-node:dev .
-make e2e           # container smoke test: fake console + node + whoami origin
+make e2e           # container smoke test: fake console + node + whoami origins
+                   # (COMPOSE_PROJECT_NAME=<name> keeps it apart from other stacks)
 make proto-check   # regenerate from the proto git tag and fail on drift
 make snapshot      # goreleaser release --snapshot --clean (unsigned)
 ```
