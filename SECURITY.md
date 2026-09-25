@@ -51,7 +51,7 @@ English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordin
 - token 通过 `EDGEWEIR_TOKEN` 环境变量（`install.sh` 的做法）或 `--token-file` 传给 `edgeweir-node enroll`，不出现在进程列表里；`--token` 仍可用，但同机其他用户能在 `ps` 里看到它，使用时会打印警告。读取后环境变量被删除，不传给子进程。
 - `Enroll` 返回的 CA 证书也必须与同一个 sha256 匹配，否则注册失败。
 - 注册之后每个 RPC 都走 mTLS，客户端证书 CN 为节点 ID。证书自动续期。
-- 控制面不保存 SSH 凭据。SSH 远程安装是可选的一次性操作，凭据用完即丢弃。
+- 控制面绝不保存 SSH 凭据（没有保存的选项），也没有 SSH 远程安装：节点只通过控制台生成的一次性安装命令（或手动安装）接入，由节点主动注册。
 
 **本机保存的敏感文件**
 
@@ -59,8 +59,8 @@ English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordin
 
 - `node.key`（0600）：节点私钥。
 - `credentials.json`（0600）：当前配置引用的 S3 源站凭据，access key 和 secret key 是**明文**。它让节点在控制面不可达时重启后仍能为 S3 源站签名；凭据只经 mTLS 的 `GetOriginCredentials` 获取，不进入配置和 LKG，不再被引用时从文件中删除。能读取该文件的人可以访问对应的存储桶，请只授予只读的最小权限。
-- `purge.json`（0600）：清缓存标记和任务时间，不含敏感数据，但丢失会让已清除的内容重新可见（节点此时会整站清除一次）。
-- `config/`（0600）：last-known-good 配置，不含凭据。
+- `purge.json`（0600）：清缓存标记和任务时间，不含敏感数据。文件存在但无法读取或解析时，节点在下一次应用配置时给每个站点加一个全站标记（宁可多刷）；文件缺失则视为没有标记，已清除的内容会重新可见，所以不要删除它。
+- `config/`（目录 0700，`current.binpb`、`previous.binpb` 为 0600）：last-known-good 配置及其备份，不含凭据。
 
 **源站与回源**
 
@@ -119,7 +119,7 @@ cosign verify ghcr.io/edgeweir/edgeweir-node:<tag> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-控制台提供的 `install.sh` 在执行任何内容之前，都会先完成 sha256 和 cosign 校验，注册 token 经 `EDGEWEIR_TOKEN` 环境变量交给 `edgeweir-node enroll`。控制台可以镜像转发二进制（国内访问 GitHub 较慢），但镜像的文件必须通过同样的校验。
+控制台提供的 `install.sh` 在执行任何内容之前，都会先完成 sha256 和 cosign 校验，注册 token 经 `EDGEWEIR_TOKEN` 环境变量交给 `edgeweir-node enroll`。控制台可以镜像转发二进制（国内访问 GitHub 较慢），但镜像的文件必须通过同样的校验。唯一的例外是 `--allow-unsigned`：它只供开发使用（例如安装本地快照构建），会跳过 cosign 签名校验，只剩 SHA-256 校验，而 `checksums.txt` 本身此时未经验证，所以它不能证明发布物来自官方 release；生产环境不要使用。
 
 ### 为什么这很重要
 
