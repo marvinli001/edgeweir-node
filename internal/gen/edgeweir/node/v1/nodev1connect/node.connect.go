@@ -47,6 +47,14 @@ const (
 	NodeServiceReportStatusProcedure = "/edgeweir.node.v1.NodeService/ReportStatus"
 	// NodeServiceReportStatsProcedure is the fully-qualified name of the NodeService's ReportStats RPC.
 	NodeServiceReportStatsProcedure = "/edgeweir.node.v1.NodeService/ReportStats"
+	// NodeServiceGetOriginCredentialsProcedure is the fully-qualified name of the NodeService's
+	// GetOriginCredentials RPC.
+	NodeServiceGetOriginCredentialsProcedure = "/edgeweir.node.v1.NodeService/GetOriginCredentials"
+	// NodeServicePullTasksProcedure is the fully-qualified name of the NodeService's PullTasks RPC.
+	NodeServicePullTasksProcedure = "/edgeweir.node.v1.NodeService/PullTasks"
+	// NodeServiceReportTaskResultProcedure is the fully-qualified name of the NodeService's
+	// ReportTaskResult RPC.
+	NodeServiceReportTaskResultProcedure = "/edgeweir.node.v1.NodeService/ReportTaskResult"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -65,6 +73,15 @@ type NodeServiceClient interface {
 	ReportStatus(context.Context, *connect.Request[v1.ReportStatusRequest]) (*connect.Response[v1.ReportStatusResponse], error)
 	// ReportStats uploads per-minute pre-aggregated traffic statistics.
 	ReportStats(context.Context, *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error)
+	// GetOriginCredentials returns origin credentials (e.g. S3 access keys)
+	// referenced by the node's cluster configuration. Secrets only travel over
+	// this mutually authenticated channel and never inside NodeConfig.
+	GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error)
+	// PullTasks hands out pending typed tasks (cache purge, prefetch). Tasks
+	// are idempotent: a task is handed out again when no result arrives.
+	PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error)
+	// ReportTaskResult records the outcome of a task on the calling node.
+	ReportTaskResult(context.Context, *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -114,17 +131,38 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportStats")),
 			connect.WithClientOptions(opts...),
 		),
+		getOriginCredentials: connect.NewClient[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse](
+			httpClient,
+			baseURL+NodeServiceGetOriginCredentialsProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("GetOriginCredentials")),
+			connect.WithClientOptions(opts...),
+		),
+		pullTasks: connect.NewClient[v1.PullTasksRequest, v1.PullTasksResponse](
+			httpClient,
+			baseURL+NodeServicePullTasksProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("PullTasks")),
+			connect.WithClientOptions(opts...),
+		),
+		reportTaskResult: connect.NewClient[v1.ReportTaskResultRequest, v1.ReportTaskResultResponse](
+			httpClient,
+			baseURL+NodeServiceReportTaskResultProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("ReportTaskResult")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // nodeServiceClient implements NodeServiceClient.
 type nodeServiceClient struct {
-	enroll           *connect.Client[v1.EnrollRequest, v1.EnrollResponse]
-	renewCertificate *connect.Client[v1.RenewCertificateRequest, v1.RenewCertificateResponse]
-	watchConfig      *connect.Client[v1.WatchConfigRequest, v1.WatchConfigResponse]
-	getConfig        *connect.Client[v1.GetConfigRequest, v1.GetConfigResponse]
-	reportStatus     *connect.Client[v1.ReportStatusRequest, v1.ReportStatusResponse]
-	reportStats      *connect.Client[v1.ReportStatsRequest, v1.ReportStatsResponse]
+	enroll               *connect.Client[v1.EnrollRequest, v1.EnrollResponse]
+	renewCertificate     *connect.Client[v1.RenewCertificateRequest, v1.RenewCertificateResponse]
+	watchConfig          *connect.Client[v1.WatchConfigRequest, v1.WatchConfigResponse]
+	getConfig            *connect.Client[v1.GetConfigRequest, v1.GetConfigResponse]
+	reportStatus         *connect.Client[v1.ReportStatusRequest, v1.ReportStatusResponse]
+	reportStats          *connect.Client[v1.ReportStatsRequest, v1.ReportStatsResponse]
+	getOriginCredentials *connect.Client[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse]
+	pullTasks            *connect.Client[v1.PullTasksRequest, v1.PullTasksResponse]
+	reportTaskResult     *connect.Client[v1.ReportTaskResultRequest, v1.ReportTaskResultResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -157,6 +195,21 @@ func (c *nodeServiceClient) ReportStats(ctx context.Context, req *connect.Reques
 	return c.reportStats.CallUnary(ctx, req)
 }
 
+// GetOriginCredentials calls edgeweir.node.v1.NodeService.GetOriginCredentials.
+func (c *nodeServiceClient) GetOriginCredentials(ctx context.Context, req *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error) {
+	return c.getOriginCredentials.CallUnary(ctx, req)
+}
+
+// PullTasks calls edgeweir.node.v1.NodeService.PullTasks.
+func (c *nodeServiceClient) PullTasks(ctx context.Context, req *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error) {
+	return c.pullTasks.CallUnary(ctx, req)
+}
+
+// ReportTaskResult calls edgeweir.node.v1.NodeService.ReportTaskResult.
+func (c *nodeServiceClient) ReportTaskResult(ctx context.Context, req *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error) {
+	return c.reportTaskResult.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -173,6 +226,15 @@ type NodeServiceHandler interface {
 	ReportStatus(context.Context, *connect.Request[v1.ReportStatusRequest]) (*connect.Response[v1.ReportStatusResponse], error)
 	// ReportStats uploads per-minute pre-aggregated traffic statistics.
 	ReportStats(context.Context, *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error)
+	// GetOriginCredentials returns origin credentials (e.g. S3 access keys)
+	// referenced by the node's cluster configuration. Secrets only travel over
+	// this mutually authenticated channel and never inside NodeConfig.
+	GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error)
+	// PullTasks hands out pending typed tasks (cache purge, prefetch). Tasks
+	// are idempotent: a task is handed out again when no result arrives.
+	PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error)
+	// ReportTaskResult records the outcome of a task on the calling node.
+	ReportTaskResult(context.Context, *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -218,6 +280,24 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportStats")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceGetOriginCredentialsHandler := connect.NewUnaryHandler(
+		NodeServiceGetOriginCredentialsProcedure,
+		svc.GetOriginCredentials,
+		connect.WithSchema(nodeServiceMethods.ByName("GetOriginCredentials")),
+		connect.WithHandlerOptions(opts...),
+	)
+	nodeServicePullTasksHandler := connect.NewUnaryHandler(
+		NodeServicePullTasksProcedure,
+		svc.PullTasks,
+		connect.WithSchema(nodeServiceMethods.ByName("PullTasks")),
+		connect.WithHandlerOptions(opts...),
+	)
+	nodeServiceReportTaskResultHandler := connect.NewUnaryHandler(
+		NodeServiceReportTaskResultProcedure,
+		svc.ReportTaskResult,
+		connect.WithSchema(nodeServiceMethods.ByName("ReportTaskResult")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -232,6 +312,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceReportStatusHandler.ServeHTTP(w, r)
 		case NodeServiceReportStatsProcedure:
 			nodeServiceReportStatsHandler.ServeHTTP(w, r)
+		case NodeServiceGetOriginCredentialsProcedure:
+			nodeServiceGetOriginCredentialsHandler.ServeHTTP(w, r)
+		case NodeServicePullTasksProcedure:
+			nodeServicePullTasksHandler.ServeHTTP(w, r)
+		case NodeServiceReportTaskResultProcedure:
+			nodeServiceReportTaskResultHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -263,4 +349,16 @@ func (UnimplementedNodeServiceHandler) ReportStatus(context.Context, *connect.Re
 
 func (UnimplementedNodeServiceHandler) ReportStats(context.Context, *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportStats is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetOriginCredentials is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.PullTasks is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) ReportTaskResult(context.Context, *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportTaskResult is not implemented"))
 }

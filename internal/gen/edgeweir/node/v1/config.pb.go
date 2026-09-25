@@ -72,6 +72,63 @@ func (ListenerProtocol) EnumDescriptor() ([]byte, []int) {
 	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{0}
 }
 
+// CacheKeyQuery selects which part of the query string enters the cache key.
+type CacheKeyQuery int32
+
+const (
+	// Same as CACHE_KEY_QUERY_ALL.
+	CacheKeyQuery_CACHE_KEY_QUERY_UNSPECIFIED CacheKeyQuery = 0
+	// The whole query string as sent by the client.
+	CacheKeyQuery_CACHE_KEY_QUERY_ALL CacheKeyQuery = 1
+	// No query string at all.
+	CacheKeyQuery_CACHE_KEY_QUERY_IGNORE CacheKeyQuery = 2
+	// Only the parameters listed in CacheKeyPolicy.query_params.
+	CacheKeyQuery_CACHE_KEY_QUERY_INCLUDE CacheKeyQuery = 3
+)
+
+// Enum value maps for CacheKeyQuery.
+var (
+	CacheKeyQuery_name = map[int32]string{
+		0: "CACHE_KEY_QUERY_UNSPECIFIED",
+		1: "CACHE_KEY_QUERY_ALL",
+		2: "CACHE_KEY_QUERY_IGNORE",
+		3: "CACHE_KEY_QUERY_INCLUDE",
+	}
+	CacheKeyQuery_value = map[string]int32{
+		"CACHE_KEY_QUERY_UNSPECIFIED": 0,
+		"CACHE_KEY_QUERY_ALL":         1,
+		"CACHE_KEY_QUERY_IGNORE":      2,
+		"CACHE_KEY_QUERY_INCLUDE":     3,
+	}
+)
+
+func (x CacheKeyQuery) Enum() *CacheKeyQuery {
+	p := new(CacheKeyQuery)
+	*p = x
+	return p
+}
+
+func (x CacheKeyQuery) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CacheKeyQuery) Descriptor() protoreflect.EnumDescriptor {
+	return file_edgeweir_node_v1_config_proto_enumTypes[1].Descriptor()
+}
+
+func (CacheKeyQuery) Type() protoreflect.EnumType {
+	return &file_edgeweir_node_v1_config_proto_enumTypes[1]
+}
+
+func (x CacheKeyQuery) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CacheKeyQuery.Descriptor instead.
+func (CacheKeyQuery) EnumDescriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{1}
+}
+
 // LoadBalancePolicy selects how an origin is picked from a pool.
 type LoadBalancePolicy int32
 
@@ -109,11 +166,11 @@ func (x LoadBalancePolicy) String() string {
 }
 
 func (LoadBalancePolicy) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[1].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[2].Descriptor()
 }
 
 func (LoadBalancePolicy) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[1]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[2]
 }
 
 func (x LoadBalancePolicy) Number() protoreflect.EnumNumber {
@@ -122,7 +179,7 @@ func (x LoadBalancePolicy) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use LoadBalancePolicy.Descriptor instead.
 func (LoadBalancePolicy) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{1}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{2}
 }
 
 // OriginScheme is the protocol used to talk to an origin.
@@ -159,11 +216,11 @@ func (x OriginScheme) String() string {
 }
 
 func (OriginScheme) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[2].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[3].Descriptor()
 }
 
 func (OriginScheme) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[2]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[3]
 }
 
 func (x OriginScheme) Number() protoreflect.EnumNumber {
@@ -172,7 +229,7 @@ func (x OriginScheme) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OriginScheme.Descriptor instead.
 func (OriginScheme) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{2}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{3}
 }
 
 // CacheAction is what a matching cache rule does.
@@ -209,11 +266,11 @@ func (x CacheAction) String() string {
 }
 
 func (CacheAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[3].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[4].Descriptor()
 }
 
 func (CacheAction) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[3]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[4]
 }
 
 func (x CacheAction) Number() protoreflect.EnumNumber {
@@ -222,7 +279,7 @@ func (x CacheAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CacheAction.Descriptor instead.
 func (CacheAction) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{3}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{4}
 }
 
 // OriginCacheControl decides whether origin caching headers win.
@@ -262,11 +319,11 @@ func (x OriginCacheControl) String() string {
 }
 
 func (OriginCacheControl) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[4].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[5].Descriptor()
 }
 
 func (OriginCacheControl) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[4]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[5]
 }
 
 func (x OriginCacheControl) Number() protoreflect.EnumNumber {
@@ -275,7 +332,7 @@ func (x OriginCacheControl) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OriginCacheControl.Descriptor instead.
 func (OriginCacheControl) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{4}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{5}
 }
 
 // NodeConfig is the engine-agnostic intermediate representation (IR) that the
@@ -670,8 +727,16 @@ type Site struct {
 	CacheGeneration uint64 `protobuf:"varint,8,opt,name=cache_generation,json=cacheGeneration,proto3" json:"cache_generation,omitempty"`
 	// Id of an entry in NodeConfig.certificates, empty for HTTP-only sites.
 	CertificateId string `protobuf:"bytes,9,opt,name=certificate_id,json=certificateId,proto3" json:"certificate_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// How cache keys are composed; unset means the default key (full query
+	// string, host included, no request headers, cookies or device type).
+	CacheKey *CacheKeyPolicy `protobuf:"bytes,10,opt,name=cache_key,json=cacheKey,proto3" json:"cache_key,omitempty"`
+	// Fetch and cache cacheable GET requests in fixed-size slices (1 MiB), so
+	// that Range requests on large files are served from cached slices.
+	RangeSlice bool `protobuf:"varint,11,opt,name=range_slice,json=rangeSlice,proto3" json:"range_slice,omitempty"`
+	// Reject WebSocket upgrades. WebSocket is proxied to the origin by default.
+	WebsocketDisabled bool `protobuf:"varint,12,opt,name=websocket_disabled,json=websocketDisabled,proto3" json:"websocket_disabled,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Site) Reset() {
@@ -767,6 +832,127 @@ func (x *Site) GetCertificateId() string {
 	return ""
 }
 
+func (x *Site) GetCacheKey() *CacheKeyPolicy {
+	if x != nil {
+		return x.CacheKey
+	}
+	return nil
+}
+
+func (x *Site) GetRangeSlice() bool {
+	if x != nil {
+		return x.RangeSlice
+	}
+	return false
+}
+
+func (x *Site) GetWebsocketDisabled() bool {
+	if x != nil {
+		return x.WebsocketDisabled
+	}
+	return false
+}
+
+// CacheKeyPolicy describes the cache key of a site. Every request of the
+// site uses the same policy, so that purging a URL covers all its variants.
+type CacheKeyPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Query CacheKeyQuery          `protobuf:"varint,1,opt,name=query,proto3,enum=edgeweir.node.v1.CacheKeyQuery" json:"query,omitempty"`
+	// Parameter names kept by CACHE_KEY_QUERY_INCLUDE, sorted.
+	QueryParams []string `protobuf:"bytes,2,rep,name=query_params,json=queryParams,proto3" json:"query_params,omitempty"`
+	// Sort the kept parameters so that "?a=1&b=2" and "?b=2&a=1" share a key.
+	SortQuery bool `protobuf:"varint,3,opt,name=sort_query,json=sortQuery,proto3" json:"sort_query,omitempty"`
+	// Lowercase request header names whose values enter the key, sorted.
+	Headers []string `protobuf:"bytes,4,rep,name=headers,proto3" json:"headers,omitempty"`
+	// Cookie names whose values enter the key, sorted.
+	Cookies []string `protobuf:"bytes,5,rep,name=cookies,proto3" json:"cookies,omitempty"`
+	// Separate mobile and desktop user agents.
+	DeviceType bool `protobuf:"varint,6,opt,name=device_type,json=deviceType,proto3" json:"device_type,omitempty"`
+	// Leave the Host out of the key: all domains of the site share objects.
+	ExcludeHost   bool `protobuf:"varint,7,opt,name=exclude_host,json=excludeHost,proto3" json:"exclude_host,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CacheKeyPolicy) Reset() {
+	*x = CacheKeyPolicy{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CacheKeyPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CacheKeyPolicy) ProtoMessage() {}
+
+func (x *CacheKeyPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CacheKeyPolicy.ProtoReflect.Descriptor instead.
+func (*CacheKeyPolicy) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CacheKeyPolicy) GetQuery() CacheKeyQuery {
+	if x != nil {
+		return x.Query
+	}
+	return CacheKeyQuery_CACHE_KEY_QUERY_UNSPECIFIED
+}
+
+func (x *CacheKeyPolicy) GetQueryParams() []string {
+	if x != nil {
+		return x.QueryParams
+	}
+	return nil
+}
+
+func (x *CacheKeyPolicy) GetSortQuery() bool {
+	if x != nil {
+		return x.SortQuery
+	}
+	return false
+}
+
+func (x *CacheKeyPolicy) GetHeaders() []string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *CacheKeyPolicy) GetCookies() []string {
+	if x != nil {
+		return x.Cookies
+	}
+	return nil
+}
+
+func (x *CacheKeyPolicy) GetDeviceType() bool {
+	if x != nil {
+		return x.DeviceType
+	}
+	return false
+}
+
+func (x *CacheKeyPolicy) GetExcludeHost() bool {
+	if x != nil {
+		return x.ExcludeHost
+	}
+	return false
+}
+
 // Domain is a host name routed to a site.
 type Domain struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -781,7 +967,7 @@ type Domain struct {
 
 func (x *Domain) Reset() {
 	*x = Domain{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[5]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -793,7 +979,7 @@ func (x *Domain) String() string {
 func (*Domain) ProtoMessage() {}
 
 func (x *Domain) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[5]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -806,7 +992,7 @@ func (x *Domain) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Domain.ProtoReflect.Descriptor instead.
 func (*Domain) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{5}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Domain) GetName() string {
@@ -825,17 +1011,24 @@ func (x *Domain) GetWildcard() bool {
 
 // OriginPool is the set of upstream servers of a site.
 type OriginPool struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Policy        LoadBalancePolicy      `protobuf:"varint,2,opt,name=policy,proto3,enum=edgeweir.node.v1.LoadBalancePolicy" json:"policy,omitempty"`
-	Origins       []*Origin              `protobuf:"bytes,3,rep,name=origins,proto3" json:"origins,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Id      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Policy  LoadBalancePolicy      `protobuf:"varint,2,opt,name=policy,proto3,enum=edgeweir.node.v1.LoadBalancePolicy" json:"policy,omitempty"`
+	Origins []*Origin              `protobuf:"bytes,3,rep,name=origins,proto3" json:"origins,omitempty"`
+	// Skip certificate verification for HTTPS origins. Certificates are
+	// verified against the system trust store by default.
+	SkipTlsVerify bool `protobuf:"varint,4,opt,name=skip_tls_verify,json=skipTlsVerify,proto3" json:"skip_tls_verify,omitempty"`
+	// Passive health checking of the origins.
+	HealthCheck *PassiveHealthCheck `protobuf:"bytes,5,opt,name=health_check,json=healthCheck,proto3" json:"health_check,omitempty"`
+	// Connection reuse and timeouts towards the origins.
+	Connection    *OriginConnection `protobuf:"bytes,6,opt,name=connection,proto3" json:"connection,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OriginPool) Reset() {
 	*x = OriginPool{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[6]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -847,7 +1040,7 @@ func (x *OriginPool) String() string {
 func (*OriginPool) ProtoMessage() {}
 
 func (x *OriginPool) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[6]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -860,7 +1053,7 @@ func (x *OriginPool) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginPool.ProtoReflect.Descriptor instead.
 func (*OriginPool) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{6}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *OriginPool) GetId() string {
@@ -884,6 +1077,174 @@ func (x *OriginPool) GetOrigins() []*Origin {
 	return nil
 }
 
+func (x *OriginPool) GetSkipTlsVerify() bool {
+	if x != nil {
+		return x.SkipTlsVerify
+	}
+	return false
+}
+
+func (x *OriginPool) GetHealthCheck() *PassiveHealthCheck {
+	if x != nil {
+		return x.HealthCheck
+	}
+	return nil
+}
+
+func (x *OriginPool) GetConnection() *OriginConnection {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+// PassiveHealthCheck marks an origin down after consecutive failures seen by
+// real traffic (connect errors, timeouts and 502/503/504 responses). Zero
+// values use the node defaults (3 failures, 30 seconds).
+type PassiveHealthCheck struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Consecutive failures that mark an origin down.
+	MaxFails uint32 `protobuf:"varint,1,opt,name=max_fails,json=maxFails,proto3" json:"max_fails,omitempty"`
+	// Seconds an origin stays down before traffic tries it again.
+	RecoverySeconds uint32 `protobuf:"varint,2,opt,name=recovery_seconds,json=recoverySeconds,proto3" json:"recovery_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *PassiveHealthCheck) Reset() {
+	*x = PassiveHealthCheck{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PassiveHealthCheck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PassiveHealthCheck) ProtoMessage() {}
+
+func (x *PassiveHealthCheck) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PassiveHealthCheck.ProtoReflect.Descriptor instead.
+func (*PassiveHealthCheck) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *PassiveHealthCheck) GetMaxFails() uint32 {
+	if x != nil {
+		return x.MaxFails
+	}
+	return 0
+}
+
+func (x *PassiveHealthCheck) GetRecoverySeconds() uint32 {
+	if x != nil {
+		return x.RecoverySeconds
+	}
+	return 0
+}
+
+// OriginConnection configures upstream connections. Zero values use the
+// node defaults (connect 10 s, send 60 s, read 60 s, keep-alive 60 s and
+// 1000 requests per connection).
+type OriginConnection struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ConnectTimeoutMs uint32                 `protobuf:"varint,1,opt,name=connect_timeout_ms,json=connectTimeoutMs,proto3" json:"connect_timeout_ms,omitempty"`
+	SendTimeoutMs    uint32                 `protobuf:"varint,2,opt,name=send_timeout_ms,json=sendTimeoutMs,proto3" json:"send_timeout_ms,omitempty"`
+	ReadTimeoutMs    uint32                 `protobuf:"varint,3,opt,name=read_timeout_ms,json=readTimeoutMs,proto3" json:"read_timeout_ms,omitempty"`
+	// Close upstream connections after every request.
+	KeepaliveDisabled bool `protobuf:"varint,4,opt,name=keepalive_disabled,json=keepaliveDisabled,proto3" json:"keepalive_disabled,omitempty"`
+	// Seconds an idle upstream connection stays in the pool.
+	KeepaliveIdleSeconds uint32 `protobuf:"varint,5,opt,name=keepalive_idle_seconds,json=keepaliveIdleSeconds,proto3" json:"keepalive_idle_seconds,omitempty"`
+	// Requests served over one upstream connection before it is closed.
+	KeepaliveMaxRequests uint32 `protobuf:"varint,6,opt,name=keepalive_max_requests,json=keepaliveMaxRequests,proto3" json:"keepalive_max_requests,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *OriginConnection) Reset() {
+	*x = OriginConnection{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OriginConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OriginConnection) ProtoMessage() {}
+
+func (x *OriginConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OriginConnection.ProtoReflect.Descriptor instead.
+func (*OriginConnection) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *OriginConnection) GetConnectTimeoutMs() uint32 {
+	if x != nil {
+		return x.ConnectTimeoutMs
+	}
+	return 0
+}
+
+func (x *OriginConnection) GetSendTimeoutMs() uint32 {
+	if x != nil {
+		return x.SendTimeoutMs
+	}
+	return 0
+}
+
+func (x *OriginConnection) GetReadTimeoutMs() uint32 {
+	if x != nil {
+		return x.ReadTimeoutMs
+	}
+	return 0
+}
+
+func (x *OriginConnection) GetKeepaliveDisabled() bool {
+	if x != nil {
+		return x.KeepaliveDisabled
+	}
+	return false
+}
+
+func (x *OriginConnection) GetKeepaliveIdleSeconds() uint32 {
+	if x != nil {
+		return x.KeepaliveIdleSeconds
+	}
+	return 0
+}
+
+func (x *OriginConnection) GetKeepaliveMaxRequests() uint32 {
+	if x != nil {
+		return x.KeepaliveMaxRequests
+	}
+	return 0
+}
+
 // Origin is one upstream server.
 type Origin struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -899,14 +1260,17 @@ type Origin struct {
 	// Host header sent upstream; empty means forward the client Host.
 	HostHeader string `protobuf:"bytes,7,opt,name=host_header,json=hostHeader,proto3" json:"host_header,omitempty"`
 	// TLS SNI for HTTPS origins; empty means derive from host_header/address.
-	Sni           string `protobuf:"bytes,8,opt,name=sni,proto3" json:"sni,omitempty"`
+	Sni string `protobuf:"bytes,8,opt,name=sni,proto3" json:"sni,omitempty"`
+	// Sign requests with AWS Signature Version 4 (S3-compatible object
+	// storage). Only GET and HEAD requests are forwarded to such origins.
+	S3            *S3Auth `protobuf:"bytes,9,opt,name=s3,proto3" json:"s3,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Origin) Reset() {
 	*x = Origin{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[7]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -918,7 +1282,7 @@ func (x *Origin) String() string {
 func (*Origin) ProtoMessage() {}
 
 func (x *Origin) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[7]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -931,7 +1295,7 @@ func (x *Origin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Origin.ProtoReflect.Descriptor instead.
 func (*Origin) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{7}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Origin) GetId() string {
@@ -990,6 +1354,89 @@ func (x *Origin) GetSni() string {
 	return ""
 }
 
+func (x *Origin) GetS3() *S3Auth {
+	if x != nil {
+		return x.S3
+	}
+	return nil
+}
+
+// S3Auth references the credential used to sign requests to an S3-compatible
+// origin. The secret itself is never part of the configuration; nodes fetch
+// it with NodeService.GetOriginCredentials over mutual TLS.
+type S3Auth struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Signing region, e.g. "us-east-1".
+	Region string `protobuf:"bytes,1,opt,name=region,proto3" json:"region,omitempty"`
+	// Bucket for path-style requests ("/<bucket>/<key>"); empty when the
+	// origin address already names the bucket (virtual-hosted style).
+	Bucket string `protobuf:"bytes,2,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	// Id of the credential to fetch.
+	CredentialId string `protobuf:"bytes,3,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
+	// Changes whenever the credential changes, so that nodes fetch it again.
+	CredentialVersion uint64 `protobuf:"varint,4,opt,name=credential_version,json=credentialVersion,proto3" json:"credential_version,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *S3Auth) Reset() {
+	*x = S3Auth{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3Auth) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3Auth) ProtoMessage() {}
+
+func (x *S3Auth) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3Auth.ProtoReflect.Descriptor instead.
+func (*S3Auth) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *S3Auth) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *S3Auth) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *S3Auth) GetCredentialId() string {
+	if x != nil {
+		return x.CredentialId
+	}
+	return ""
+}
+
+func (x *S3Auth) GetCredentialVersion() uint64 {
+	if x != nil {
+		return x.CredentialVersion
+	}
+	return 0
+}
+
 // CacheRule decides whether and for how long a response is cached.
 // Rules are evaluated in (priority, id) order and the first match wins.
 type CacheRule struct {
@@ -1000,13 +1447,19 @@ type CacheRule struct {
 	Action             CacheAction            `protobuf:"varint,4,opt,name=action,proto3,enum=edgeweir.node.v1.CacheAction" json:"action,omitempty"`
 	EdgeTtlSeconds     uint32                 `protobuf:"varint,5,opt,name=edge_ttl_seconds,json=edgeTtlSeconds,proto3" json:"edge_ttl_seconds,omitempty"`
 	OriginCacheControl OriginCacheControl     `protobuf:"varint,6,opt,name=origin_cache_control,json=originCacheControl,proto3,enum=edgeweir.node.v1.OriginCacheControl" json:"origin_cache_control,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Serve a stale object for this long after it expired while it is being
+	// refreshed in the background (RFC 5861); 0 disables it.
+	StaleWhileRevalidateSeconds uint32 `protobuf:"varint,7,opt,name=stale_while_revalidate_seconds,json=staleWhileRevalidateSeconds,proto3" json:"stale_while_revalidate_seconds,omitempty"`
+	// Serve a stale object for this long after it expired when the origin
+	// fails (RFC 5861); 0 disables it.
+	StaleIfErrorSeconds uint32 `protobuf:"varint,8,opt,name=stale_if_error_seconds,json=staleIfErrorSeconds,proto3" json:"stale_if_error_seconds,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CacheRule) Reset() {
 	*x = CacheRule{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[8]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1018,7 +1471,7 @@ func (x *CacheRule) String() string {
 func (*CacheRule) ProtoMessage() {}
 
 func (x *CacheRule) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[8]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1031,7 +1484,7 @@ func (x *CacheRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheRule.ProtoReflect.Descriptor instead.
 func (*CacheRule) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{8}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CacheRule) GetId() string {
@@ -1076,8 +1529,26 @@ func (x *CacheRule) GetOriginCacheControl() OriginCacheControl {
 	return OriginCacheControl_ORIGIN_CACHE_CONTROL_UNSPECIFIED
 }
 
+func (x *CacheRule) GetStaleWhileRevalidateSeconds() uint32 {
+	if x != nil {
+		return x.StaleWhileRevalidateSeconds
+	}
+	return 0
+}
+
+func (x *CacheRule) GetStaleIfErrorSeconds() uint32 {
+	if x != nil {
+		return x.StaleIfErrorSeconds
+	}
+	return 0
+}
+
 // CacheRuleMatch is the condition of a cache rule. Empty lists match all
-// requests. When several lists are set, all of them must match.
+// requests. When several conditions are set, all of them must match.
+// Request conditions (paths, prefixes, extensions) are checked when the
+// request arrives; response conditions (status codes, size) when the origin
+// answers. A rule whose response conditions fail passes the decision on to
+// the next rule whose request conditions matched.
 type CacheRuleMatch struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// URI path prefixes, e.g. "/static/".
@@ -1085,15 +1556,23 @@ type CacheRuleMatch struct {
 	// File extensions without the dot, lowercase, e.g. "png".
 	Extensions []string `protobuf:"bytes,2,rep,name=extensions,proto3" json:"extensions,omitempty"`
 	// Reserved for the rule-engine expression language (wirefilter style).
-	// Phase 0 nodes reject configs where this is non-empty.
-	Expression    string `protobuf:"bytes,3,opt,name=expression,proto3" json:"expression,omitempty"`
+	// Nodes reject configs where this is non-empty.
+	Expression string `protobuf:"bytes,3,opt,name=expression,proto3" json:"expression,omitempty"`
+	// Exact URI paths, e.g. "/index.html".
+	Paths []string `protobuf:"bytes,4,rep,name=paths,proto3" json:"paths,omitempty"`
+	// Response status codes, sorted; empty means any status the rule may cache.
+	StatusCodes []uint32 `protobuf:"varint,5,rep,packed,name=status_codes,json=statusCodes,proto3" json:"status_codes,omitempty"`
+	// Minimum response size in bytes (Content-Length); 0 means no minimum.
+	MinSizeBytes uint64 `protobuf:"varint,6,opt,name=min_size_bytes,json=minSizeBytes,proto3" json:"min_size_bytes,omitempty"`
+	// Maximum response size in bytes (Content-Length); 0 means no maximum.
+	MaxSizeBytes  uint64 `protobuf:"varint,7,opt,name=max_size_bytes,json=maxSizeBytes,proto3" json:"max_size_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CacheRuleMatch) Reset() {
 	*x = CacheRuleMatch{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[9]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1584,7 @@ func (x *CacheRuleMatch) String() string {
 func (*CacheRuleMatch) ProtoMessage() {}
 
 func (x *CacheRuleMatch) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[9]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,7 +1597,7 @@ func (x *CacheRuleMatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheRuleMatch.ProtoReflect.Descriptor instead.
 func (*CacheRuleMatch) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{9}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CacheRuleMatch) GetPathPrefixes() []string {
@@ -1142,6 +1621,34 @@ func (x *CacheRuleMatch) GetExpression() string {
 	return ""
 }
 
+func (x *CacheRuleMatch) GetPaths() []string {
+	if x != nil {
+		return x.Paths
+	}
+	return nil
+}
+
+func (x *CacheRuleMatch) GetStatusCodes() []uint32 {
+	if x != nil {
+		return x.StatusCodes
+	}
+	return nil
+}
+
+func (x *CacheRuleMatch) GetMinSizeBytes() uint64 {
+	if x != nil {
+		return x.MinSizeBytes
+	}
+	return 0
+}
+
+func (x *CacheRuleMatch) GetMaxSizeBytes() uint64 {
+	if x != nil {
+		return x.MaxSizeBytes
+	}
+	return 0
+}
+
 // CertificateRef points at a certificate stored in the console.
 type CertificateRef struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
@@ -1155,7 +1662,7 @@ type CertificateRef struct {
 
 func (x *CertificateRef) Reset() {
 	*x = CertificateRef{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[10]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1167,7 +1674,7 @@ func (x *CertificateRef) String() string {
 func (*CertificateRef) ProtoMessage() {}
 
 func (x *CertificateRef) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[10]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1180,7 +1687,7 @@ func (x *CertificateRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateRef.ProtoReflect.Descriptor instead.
 func (*CertificateRef) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{10}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CertificateRef) GetId() string {
@@ -1250,7 +1757,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\vmax_size_mb\x18\x02 \x01(\x04R\tmaxSizeMb\x12 \n" +
 	"\fkeys_zone_mb\x18\x03 \x01(\rR\n" +
 	"keysZoneMb\x12)\n" +
-	"\x10inactive_seconds\x18\x04 \x01(\rR\x0finactiveSeconds\"\xe6\x02\n" +
+	"\x10inactive_seconds\x18\x04 \x01(\rR\x0finactiveSeconds\"\xf5\x03\n" +
 	"\x04Site\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -1263,15 +1770,45 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\n" +
 	"cache_zone\x18\a \x01(\tR\tcacheZone\x12)\n" +
 	"\x10cache_generation\x18\b \x01(\x04R\x0fcacheGeneration\x12%\n" +
-	"\x0ecertificate_id\x18\t \x01(\tR\rcertificateId\"8\n" +
+	"\x0ecertificate_id\x18\t \x01(\tR\rcertificateId\x12=\n" +
+	"\tcache_key\x18\n" +
+	" \x01(\v2 .edgeweir.node.v1.CacheKeyPolicyR\bcacheKey\x12\x1f\n" +
+	"\vrange_slice\x18\v \x01(\bR\n" +
+	"rangeSlice\x12-\n" +
+	"\x12websocket_disabled\x18\f \x01(\bR\x11websocketDisabled\"\x81\x02\n" +
+	"\x0eCacheKeyPolicy\x125\n" +
+	"\x05query\x18\x01 \x01(\x0e2\x1f.edgeweir.node.v1.CacheKeyQueryR\x05query\x12!\n" +
+	"\fquery_params\x18\x02 \x03(\tR\vqueryParams\x12\x1d\n" +
+	"\n" +
+	"sort_query\x18\x03 \x01(\bR\tsortQuery\x12\x18\n" +
+	"\aheaders\x18\x04 \x03(\tR\aheaders\x12\x18\n" +
+	"\acookies\x18\x05 \x03(\tR\acookies\x12\x1f\n" +
+	"\vdevice_type\x18\x06 \x01(\bR\n" +
+	"deviceType\x12!\n" +
+	"\fexclude_host\x18\a \x01(\bR\vexcludeHost\"8\n" +
 	"\x06Domain\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
-	"\bwildcard\x18\x02 \x01(\bR\bwildcard\"\x8d\x01\n" +
+	"\bwildcard\x18\x02 \x01(\bR\bwildcard\"\xc2\x02\n" +
 	"\n" +
 	"OriginPool\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
 	"\x06policy\x18\x02 \x01(\x0e2#.edgeweir.node.v1.LoadBalancePolicyR\x06policy\x122\n" +
-	"\aorigins\x18\x03 \x03(\v2\x18.edgeweir.node.v1.OriginR\aorigins\"\xe1\x01\n" +
+	"\aorigins\x18\x03 \x03(\v2\x18.edgeweir.node.v1.OriginR\aorigins\x12&\n" +
+	"\x0fskip_tls_verify\x18\x04 \x01(\bR\rskipTlsVerify\x12G\n" +
+	"\fhealth_check\x18\x05 \x01(\v2$.edgeweir.node.v1.PassiveHealthCheckR\vhealthCheck\x12B\n" +
+	"\n" +
+	"connection\x18\x06 \x01(\v2\".edgeweir.node.v1.OriginConnectionR\n" +
+	"connection\"\\\n" +
+	"\x12PassiveHealthCheck\x12\x1b\n" +
+	"\tmax_fails\x18\x01 \x01(\rR\bmaxFails\x12)\n" +
+	"\x10recovery_seconds\x18\x02 \x01(\rR\x0frecoverySeconds\"\xab\x02\n" +
+	"\x10OriginConnection\x12,\n" +
+	"\x12connect_timeout_ms\x18\x01 \x01(\rR\x10connectTimeoutMs\x12&\n" +
+	"\x0fsend_timeout_ms\x18\x02 \x01(\rR\rsendTimeoutMs\x12&\n" +
+	"\x0fread_timeout_ms\x18\x03 \x01(\rR\rreadTimeoutMs\x12-\n" +
+	"\x12keepalive_disabled\x18\x04 \x01(\bR\x11keepaliveDisabled\x124\n" +
+	"\x16keepalive_idle_seconds\x18\x05 \x01(\rR\x14keepaliveIdleSeconds\x124\n" +
+	"\x16keepalive_max_requests\x18\x06 \x01(\rR\x14keepaliveMaxRequests\"\x8b\x02\n" +
 	"\x06Origin\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x12\n" +
@@ -1281,14 +1818,22 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x06backup\x18\x06 \x01(\bR\x06backup\x12\x1f\n" +
 	"\vhost_header\x18\a \x01(\tR\n" +
 	"hostHeader\x12\x10\n" +
-	"\x03sni\x18\b \x01(\tR\x03sni\"\xa8\x02\n" +
+	"\x03sni\x18\b \x01(\tR\x03sni\x12(\n" +
+	"\x02s3\x18\t \x01(\v2\x18.edgeweir.node.v1.S3AuthR\x02s3\"\x8c\x01\n" +
+	"\x06S3Auth\x12\x16\n" +
+	"\x06region\x18\x01 \x01(\tR\x06region\x12\x16\n" +
+	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12#\n" +
+	"\rcredential_id\x18\x03 \x01(\tR\fcredentialId\x12-\n" +
+	"\x12credential_version\x18\x04 \x01(\x04R\x11credentialVersion\"\xa2\x03\n" +
 	"\tCacheRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bpriority\x18\x02 \x01(\rR\bpriority\x126\n" +
 	"\x05match\x18\x03 \x01(\v2 .edgeweir.node.v1.CacheRuleMatchR\x05match\x125\n" +
 	"\x06action\x18\x04 \x01(\x0e2\x1d.edgeweir.node.v1.CacheActionR\x06action\x12(\n" +
 	"\x10edge_ttl_seconds\x18\x05 \x01(\rR\x0eedgeTtlSeconds\x12V\n" +
-	"\x14origin_cache_control\x18\x06 \x01(\x0e2$.edgeweir.node.v1.OriginCacheControlR\x12originCacheControl\"u\n" +
+	"\x14origin_cache_control\x18\x06 \x01(\x0e2$.edgeweir.node.v1.OriginCacheControlR\x12originCacheControl\x12C\n" +
+	"\x1estale_while_revalidate_seconds\x18\a \x01(\rR\x1bstaleWhileRevalidateSeconds\x123\n" +
+	"\x16stale_if_error_seconds\x18\b \x01(\rR\x13staleIfErrorSeconds\"\xfa\x01\n" +
 	"\x0eCacheRuleMatch\x12#\n" +
 	"\rpath_prefixes\x18\x01 \x03(\tR\fpathPrefixes\x12\x1e\n" +
 	"\n" +
@@ -1296,7 +1841,11 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"extensions\x12\x1e\n" +
 	"\n" +
 	"expression\x18\x03 \x01(\tR\n" +
-	"expression\"\x9e\x01\n" +
+	"expression\x12\x14\n" +
+	"\x05paths\x18\x04 \x03(\tR\x05paths\x12!\n" +
+	"\fstatus_codes\x18\x05 \x03(\rR\vstatusCodes\x12$\n" +
+	"\x0emin_size_bytes\x18\x06 \x01(\x04R\fminSizeBytes\x12$\n" +
+	"\x0emax_size_bytes\x18\a \x01(\x04R\fmaxSizeBytes\"\x9e\x01\n" +
 	"\x0eCertificateRef\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05names\x18\x02 \x03(\tR\x05names\x12-\n" +
@@ -1305,7 +1854,12 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x10ListenerProtocol\x12!\n" +
 	"\x1dLISTENER_PROTOCOL_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16LISTENER_PROTOCOL_HTTP\x10\x01\x12\x1b\n" +
-	"\x17LISTENER_PROTOCOL_HTTPS\x10\x02*\xaf\x01\n" +
+	"\x17LISTENER_PROTOCOL_HTTPS\x10\x02*\x82\x01\n" +
+	"\rCacheKeyQuery\x12\x1f\n" +
+	"\x1bCACHE_KEY_QUERY_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13CACHE_KEY_QUERY_ALL\x10\x01\x12\x1a\n" +
+	"\x16CACHE_KEY_QUERY_IGNORE\x10\x02\x12\x1b\n" +
+	"\x17CACHE_KEY_QUERY_INCLUDE\x10\x03*\xaf\x01\n" +
 	"\x11LoadBalancePolicy\x12#\n" +
 	"\x1fLOAD_BALANCE_POLICY_UNSPECIFIED\x10\x00\x12'\n" +
 	"#LOAD_BALANCE_POLICY_WEIGHTED_RANDOM\x10\x01\x12#\n" +
@@ -1337,52 +1891,62 @@ func file_edgeweir_node_v1_config_proto_rawDescGZIP() []byte {
 	return file_edgeweir_node_v1_config_proto_rawDescData
 }
 
-var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(ListenerProtocol)(0),         // 0: edgeweir.node.v1.ListenerProtocol
-	(LoadBalancePolicy)(0),        // 1: edgeweir.node.v1.LoadBalancePolicy
-	(OriginScheme)(0),             // 2: edgeweir.node.v1.OriginScheme
-	(CacheAction)(0),              // 3: edgeweir.node.v1.CacheAction
-	(OriginCacheControl)(0),       // 4: edgeweir.node.v1.OriginCacheControl
-	(*NodeConfig)(nil),            // 5: edgeweir.node.v1.NodeConfig
-	(*NodeConfigDiff)(nil),        // 6: edgeweir.node.v1.NodeConfigDiff
-	(*Listener)(nil),              // 7: edgeweir.node.v1.Listener
-	(*CacheZone)(nil),             // 8: edgeweir.node.v1.CacheZone
-	(*Site)(nil),                  // 9: edgeweir.node.v1.Site
-	(*Domain)(nil),                // 10: edgeweir.node.v1.Domain
-	(*OriginPool)(nil),            // 11: edgeweir.node.v1.OriginPool
-	(*Origin)(nil),                // 12: edgeweir.node.v1.Origin
-	(*CacheRule)(nil),             // 13: edgeweir.node.v1.CacheRule
-	(*CacheRuleMatch)(nil),        // 14: edgeweir.node.v1.CacheRuleMatch
-	(*CertificateRef)(nil),        // 15: edgeweir.node.v1.CertificateRef
-	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
+	(CacheKeyQuery)(0),            // 1: edgeweir.node.v1.CacheKeyQuery
+	(LoadBalancePolicy)(0),        // 2: edgeweir.node.v1.LoadBalancePolicy
+	(OriginScheme)(0),             // 3: edgeweir.node.v1.OriginScheme
+	(CacheAction)(0),              // 4: edgeweir.node.v1.CacheAction
+	(OriginCacheControl)(0),       // 5: edgeweir.node.v1.OriginCacheControl
+	(*NodeConfig)(nil),            // 6: edgeweir.node.v1.NodeConfig
+	(*NodeConfigDiff)(nil),        // 7: edgeweir.node.v1.NodeConfigDiff
+	(*Listener)(nil),              // 8: edgeweir.node.v1.Listener
+	(*CacheZone)(nil),             // 9: edgeweir.node.v1.CacheZone
+	(*Site)(nil),                  // 10: edgeweir.node.v1.Site
+	(*CacheKeyPolicy)(nil),        // 11: edgeweir.node.v1.CacheKeyPolicy
+	(*Domain)(nil),                // 12: edgeweir.node.v1.Domain
+	(*OriginPool)(nil),            // 13: edgeweir.node.v1.OriginPool
+	(*PassiveHealthCheck)(nil),    // 14: edgeweir.node.v1.PassiveHealthCheck
+	(*OriginConnection)(nil),      // 15: edgeweir.node.v1.OriginConnection
+	(*Origin)(nil),                // 16: edgeweir.node.v1.Origin
+	(*S3Auth)(nil),                // 17: edgeweir.node.v1.S3Auth
+	(*CacheRule)(nil),             // 18: edgeweir.node.v1.CacheRule
+	(*CacheRuleMatch)(nil),        // 19: edgeweir.node.v1.CacheRuleMatch
+	(*CertificateRef)(nil),        // 20: edgeweir.node.v1.CertificateRef
+	(*timestamppb.Timestamp)(nil), // 21: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
-	7,  // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
-	8,  // 1: edgeweir.node.v1.NodeConfig.cache_zones:type_name -> edgeweir.node.v1.CacheZone
-	9,  // 2: edgeweir.node.v1.NodeConfig.sites:type_name -> edgeweir.node.v1.Site
-	15, // 3: edgeweir.node.v1.NodeConfig.certificates:type_name -> edgeweir.node.v1.CertificateRef
-	7,  // 4: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
-	8,  // 5: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
-	9,  // 6: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
-	15, // 7: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	8,  // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
+	9,  // 1: edgeweir.node.v1.NodeConfig.cache_zones:type_name -> edgeweir.node.v1.CacheZone
+	10, // 2: edgeweir.node.v1.NodeConfig.sites:type_name -> edgeweir.node.v1.Site
+	20, // 3: edgeweir.node.v1.NodeConfig.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	8,  // 4: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
+	9,  // 5: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
+	10, // 6: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
+	20, // 7: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
 	0,  // 8: edgeweir.node.v1.Listener.protocol:type_name -> edgeweir.node.v1.ListenerProtocol
-	10, // 9: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
-	11, // 10: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
-	13, // 11: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
-	1,  // 12: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
-	12, // 13: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
-	2,  // 14: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
-	14, // 15: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
-	3,  // 16: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
-	4,  // 17: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
-	16, // 18: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	12, // 9: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
+	13, // 10: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
+	18, // 11: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
+	11, // 12: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
+	1,  // 13: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
+	2,  // 14: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
+	16, // 15: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
+	14, // 16: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
+	15, // 17: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
+	3,  // 18: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
+	17, // 19: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
+	19, // 20: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
+	4,  // 21: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
+	5,  // 22: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
+	21, // 23: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
@@ -1395,8 +1959,8 @@ func file_edgeweir_node_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_config_proto_rawDesc), len(file_edgeweir_node_v1_config_proto_rawDesc)),
-			NumEnums:      5,
-			NumMessages:   11,
+			NumEnums:      6,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
