@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1
+
+# edgeweir-node container image: the Go agent supervising OpenResty.
+#
+#   docker build -t edgeweir-node:dev .
+#   docker run -d -p 80:80 -v edgeweir-node:/var/lib/edgeweir-node edgeweir-node:dev
+#   docker exec <container> edgeweir-node enroll --server https://console:8443 \
+#       --token <token> --ca-sha256 <sha256>
+#
+# The agent starts OpenResty immediately with a bootstrap configuration
+# (404 X-Edgeweir-Error: unknown-host on :80), waits until the node is
+# enrolled and then follows the console.
+
+ARG GO_IMAGE=golang:1.27.1-alpine
+ARG OPENRESTY_IMAGE=openresty/openresty:1.31.1.1-bookworm
+
+# ---- build: static agent, cross-compiled on the build platform ----------
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags "-s -w \
+        -X github.com/edgeweir/edgeweir-node/internal/version.Version=${VERSION} \
+        -X github.com/edgeweir/edgeweir-node/internal/version.Commit=${COMMIT} \
+        -X github.com/edgeweir/edgeweir-node/internal/version.Date=${DATE}" \
+      -o /out/edgeweir-node ./cmd/edgeweir-node
+
+# ---- runtime: official OpenResty image, unprivileged user ----------------
+FROM ${OPENRESTY_IMAGE}
+ARG VERSION=dev
+ARG COMMIT=none
+LABEL org.opencontainers.image.title="edgeweir-node" \
+      org.opencontainers.image.description="Edgeweir edge node: Go agent + OpenResty" \
+      org.opencontainers.image.source="https://github.com/edgeweir/edgeweir-node" \
+      org.opencontainers.image.url="https://edgeweir.dev" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}"
+
+# Agent, nginx master and workers all run as uid 10001. Docker lets
+# unprivileged processes bind :80 inside the container network namespace
+# (net.ipv4.ip_unprivileged_port_start=0).
+RUN groupadd --system --gid 10001 edgeweir \
+ && useradd --system --uid 10001 --gid edgeweir --home-dir /var/lib/edgeweir-node \
+      --no-create-home --shell /usr/sbin/nologin edgeweir \
+ && install -d -o edgeweir -g edgeweir -m 0700 /var/lib/edgeweir-node \
+ && install -d -o edgeweir -g edgeweir -m 0750 /run/edgeweir-node /var/cache/edgeweir-node
+
+COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
+COPY lua/ /usr/share/edgeweir-node/lua/
+
+ENV EDGEWEIR_STATE_DIR=/var/lib/edgeweir-node \
+    EDGEWEIR_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \
+    EDGEWEIR_LUA_DIR=/usr/share/edgeweir-node/lua \
+    EDGEWEIR_CACHE_DIR=/var/cache/edgeweir-node \
+    EDGEWEIR_CONTROL_SOCKET=/run/edgeweir-node/control.sock \
+    EDGEWEIR_ORIGIN_SOCKET=/run/edgeweir-node/origin.sock
+
+USER edgeweir
+VOLUME ["/var/lib/edgeweir-node"]
+EXPOSE 80
+# The agent handles SIGTERM and stops OpenResty gracefully (the base image
+# uses SIGQUIT, which would make the Go runtime dump goroutines).
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["/usr/local/bin/edgeweir-node", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/edgeweir-node", "run", "--manage-nginx"]
