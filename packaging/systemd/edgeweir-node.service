@@ -17,7 +17,7 @@
 #   - AF_NETLINK is allowed for enumerating interface addresses reported to
 #     the console.
 # Enroll first (as root is fine: files are handed to the service user):
-#   sudo edgeweir-node enroll --server https://console:8443 --token ... --ca-sha256 ...
+#   sudo EDGEWEIR_TOKEN=... edgeweir-node enroll --server https://console:8443 --ca-sha256 ...
 #   sudo systemctl enable --now edgeweir-node
 
 [Unit]

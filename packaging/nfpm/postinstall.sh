@@ -11,7 +11,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
 fi
 cat <<'MSG'
 edgeweir-node is installed. Next steps (the console's install.sh does this for you):
-  sudo edgeweir-node enroll --server https://<console>:8443 --token <token> --ca-sha256 <sha256>
+  sudo EDGEWEIR_TOKEN=<token> edgeweir-node enroll --server https://<console>:8443 --ca-sha256 <sha256>
   sudo systemctl disable --now openresty.service 2>/dev/null || true
   sudo systemctl enable --now edgeweir-node.service
 MSG

@@ -1,6 +1,7 @@
 // Command edgeweir-node is the Edgeweir edge node agent.
 //
-//	edgeweir-node enroll --server URL --token T --ca-sha256 HEX [--server-name N] [--state-dir DIR] [--force]
+//	EDGEWEIR_TOKEN=T edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name N] [--state-dir DIR] [--force]
+//	edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...  (--token T also works but shows in ps)
 //	edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
 //	                  [--lua-dir DIR] [--control-socket PATH] ...
 //	edgeweir-node healthcheck [--control-socket PATH]
@@ -75,7 +76,8 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `edgeweir-node - Edgeweir edge node agent
 
 Usage:
-  edgeweir-node enroll --server URL --token TOKEN --ca-sha256 HEX [flags]
+  EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [flags]
+  edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX [flags]
   edgeweir-node run [--manage-nginx] [flags]
   edgeweir-node healthcheck [--control-socket PATH]
   edgeweir-node version
@@ -171,8 +173,8 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 	fs := newFlagSet("enroll", stderr)
 	var (
 		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443 (required)")
-		token      = fs.String("token", "", "single-use enrollment token (required; prefer EDGEWEIR_TOKEN or --token-file to keep it out of the process list)")
-		tokenFile  = fs.String("token-file", "", "read the enrollment token from this file")
+		token      = fs.String("token", "", "single-use enrollment token; visible in the process list, prefer the EDGEWEIR_TOKEN environment variable or --token-file")
+		tokenFile  = fs.String("token-file", "", "read the single-use enrollment token from this file (surrounding whitespace is ignored)")
 		caSHA256   = fs.String("ca-sha256", "", "SHA-256 of the console's internal CA certificate (DER, hex) from the install command (required)")
 		serverName = fs.String("server-name", "", "TLS server name to verify (default: host of --server)")
 		stateDir   = fs.String("state-dir", defaultStateDir, "state directory for the node identity")
@@ -189,16 +191,20 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if *tokenFile != "" {
-		b, err := os.ReadFile(*tokenFile)
-		if err != nil {
-			log.Error("cannot read token file", "err", err)
-			return 1
-		}
-		*token = strings.TrimSpace(string(b))
+	cli := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { cli[f.Name] = true })
+	tok, err := enrollToken(*token, *tokenFile, cli["token"], cli["token-file"])
+	if err != nil {
+		fmt.Fprintln(stderr, "enroll:", err)
+		return 2
 	}
-	if *server == "" || *token == "" || *caSHA256 == "" {
-		fmt.Fprintln(stderr, "enroll: --server, --token and --ca-sha256 are required")
+	// The token must not leak into child processes (openresty -v below).
+	_ = os.Unsetenv(envName("token"))
+	if cli["token"] {
+		log.Warn("--token is visible to other users in the process list; prefer EDGEWEIR_TOKEN or --token-file")
+	}
+	if *server == "" || tok == "" || *caSHA256 == "" {
+		fmt.Fprintln(stderr, "enroll: --server, a token (EDGEWEIR_TOKEN, --token-file or --token) and --ca-sha256 are required")
 		fs.Usage()
 		return 2
 	}
@@ -219,7 +225,7 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 	if _, err := enroll.Run(ctx, enroll.Options{
 		Info:       hostinfo.Collect(engineVersion),
 		ServerURL:  *server,
-		Token:      *token,
+		Token:      tok,
 		CASHA256:   *caSHA256,
 		ServerName: *serverName,
 		StateDir:   dir,
@@ -231,6 +237,29 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// enrollToken picks the enrollment token: from --token or --token-file,
+// whichever is set; a command-line flag wins over the environment
+// (EDGEWEIR_TOKEN / EDGEWEIR_TOKEN_FILE), and giving both on the same
+// level is an error.
+func enrollToken(token, tokenFile string, tokenOnCLI, fileOnCLI bool) (string, error) {
+	switch {
+	case token != "" && tokenFile != "" && tokenOnCLI == fileOnCLI:
+		return "", errors.New("give the token either directly (--token / EDGEWEIR_TOKEN) or as a file (--token-file / EDGEWEIR_TOKEN_FILE), not both")
+	case tokenFile != "" && (!tokenOnCLI || fileOnCLI):
+		b, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", fmt.Errorf("read token file: %w", err)
+		}
+		t := strings.TrimSpace(string(b))
+		if t == "" {
+			return "", fmt.Errorf("token file %s is empty", tokenFile)
+		}
+		return t, nil
+	default:
+		return strings.TrimSpace(token), nil
+	}
 }
 
 // tristate is an "auto" | "on" | "off" flag.
