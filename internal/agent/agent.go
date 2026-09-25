@@ -330,7 +330,9 @@ func (a *Agent) triggerReport() {
 func (a *Agent) markConnected() {
 	a.connectedOnce.Do(func() {
 		id := a.channel.Identity()
-		a.log.Info("switched to mTLS channel", "node_id", id.NodeID, "cluster_id", id.ClusterID, "server", id.ServerURL)
+		// The node id is part of the message so the line is easy to grep
+		// for (the console's e2e test waits for it).
+		a.log.Info("switched to mTLS channel node_id="+id.NodeID, "node_id", id.NodeID, "cluster_id", id.ClusterID, "server", id.ServerURL)
 	})
 }
 
