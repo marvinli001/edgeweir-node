@@ -32,9 +32,9 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok   $*"; }
 
-wait_for() { # description, command...
+wait_for() { # description, command... (WAIT_SECS overrides the 90s timeout)
   local what=$1; shift
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 "${WAIT_SECS:-90}"); do
     if "$@" >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
@@ -93,7 +93,8 @@ compose logs node | grep "serving last-known-good configuration" >/dev/null || f
 pass "last-known-good configuration served after restart"
 
 if [ "${E2E_STATS:-0}" = "1" ]; then
-  wait_for "stats uploaded" sh -c "[ \"\$(curl -fsS $HELPER/stats | cut -d' ' -f1)\" != 0 ]"
+  # Buckets are uploaded once their minute is complete (agent drains every 60s).
+  WAIT_SECS=180 wait_for "stats uploaded" sh -c "[ \"\$(curl -fsS $HELPER/stats | cut -d' ' -f1)\" != 0 ]"
   pass "per-minute stats uploaded ($(curl -fsS "$HELPER/stats"))"
 fi
 
