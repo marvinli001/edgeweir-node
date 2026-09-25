@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -38,6 +39,7 @@ type fakeEngine struct {
 	confPath      string
 	dp            *fakedataplane.Server
 	ignoreReloads bool
+	failTests     bool // `nginx -t` rejects every configuration
 }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{started: make(chan struct{}, 1)} }
@@ -56,6 +58,9 @@ func (e *fakeEngine) Test(_ context.Context, conf string) error {
 	defer e.mu.Unlock()
 	e.tests++
 	e.conf = string(b)
+	if e.failTests {
+		return errors.New("nginx: [emerg] injected configuration test failure")
+	}
 	return nil
 }
 

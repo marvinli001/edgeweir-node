@@ -52,3 +52,61 @@ func TestAgentReportsFailedReload(t *testing.T) {
 		t.Fatal("new nginx.conf not installed")
 	}
 }
+
+// TestAgentIgnoresOlderRevisions: a console that serves an older revision
+// than the applied one (e.g. restored from a backup) never makes the node
+// go back; the node keeps its last-known-good configuration and reports
+// it as applied.
+func TestAgentIgnoresOlderRevisions(t *testing.T) {
+	e := startEnrolled(t, "stale", func(c *agent.Config) { c.PollInterval = 100 * time.Millisecond },
+		demoSite("site-a", "site-a.test"))
+	rev2 := e.console.Publish(baseConfig(demoSite("site-a", "site-a.test"), demoSite("site-b", "site-b.test")))
+	eventually(t, "revision 2 applied", statusWith(e.console, rev2, nodev1.ApplyState_APPLY_STATE_APPLIED))
+	e.console.PinLatest(e.rev)
+	calls := len(e.console.GetConfigCalls())
+	eventually(t, "older revision served a few times", func() bool {
+		n := 0
+		for _, c := range e.console.GetConfigCalls()[calls:] {
+			if c.Revision == e.rev && c.Snapshot {
+				n++
+			}
+		}
+		return n >= 3
+	})
+	eventually(t, "a fresh report", func() bool { return len(e.console.Statuses()) > 0 })
+	if st := e.console.LastStatus(); st.GetAppliedRevision() != rev2 || st.GetState() != nodev1.ApplyState_APPLY_STATE_APPLIED {
+		t.Fatalf("status = %v, want revision %d applied", st, rev2)
+	}
+	if tb := e.dp.Table(); tb.Revision != rev2 || len(tb.Sites) != 2 {
+		t.Fatalf("data plane went back to %+v", tb)
+	}
+}
+
+// TestAgentDoesNotRetryRejectedRevision: a revision rejected for a
+// deterministic reason (here `nginx -t`) is not tried again on every poll;
+// a new revision is.
+func TestAgentDoesNotRetryRejectedRevision(t *testing.T) {
+	e := startEnrolled(t, "reject", func(c *agent.Config) { c.PollInterval = 100 * time.Millisecond },
+		demoSite("site-a", "site-a.test"))
+	e.eng.mu.Lock()
+	e.eng.failTests = true
+	e.eng.mu.Unlock()
+	structural := func(port uint32) *nodev1.NodeConfig {
+		c := baseConfig(demoSite("site-a", "site-a.test"))
+		c.Listeners = append(c.Listeners, &nodev1.Listener{Port: port, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP})
+		return c
+	}
+	e.console.Publish(structural(8080))
+	eventually(t, "revision 2 rejected", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
+	if msg := e.console.LastStatus().GetMessage(); !strings.Contains(msg, "injected configuration test failure") {
+		t.Fatalf("message = %q", msg)
+	}
+	tests, _, _ := e.eng.counts()
+	calls := len(e.console.GetConfigCalls())
+	eventually(t, "more polls", func() bool { return len(e.console.GetConfigCalls()) >= calls+5 })
+	if again, _, _ := e.eng.counts(); again != tests {
+		t.Fatalf("rejected revision tested again: %d -> %d nginx -t runs", tests, again)
+	}
+	e.console.Publish(structural(8081))
+	eventually(t, "the next revision is tried", func() bool { n, _, _ := e.eng.counts(); return n > tests })
+}

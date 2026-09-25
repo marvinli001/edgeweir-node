@@ -31,10 +31,11 @@ case " $* " in
     exit 0 ;;
   *" -s reload "*) echo reload >> "$FAKE_NGINX_DIR/reloads"; exit 0 ;;
 esac
-echo $$ > "$FAKE_NGINX_DIR/pid"
-echo start >> "$FAKE_NGINX_DIR/starts"
+# Signal handlers first: the test signals as soon as the pid file exists.
 trap 'echo hup >> "$FAKE_NGINX_DIR/hups"' HUP
 trap 'echo quit >> "$FAKE_NGINX_DIR/quits"; exit 0' QUIT
+echo $$ > "$FAKE_NGINX_DIR/pid"
+echo start >> "$FAKE_NGINX_DIR/starts"
 echo "2026/09/25 00:00:00 [notice] 1#1: start worker processes" >&2
 while :; do sleep 0.05; done
 `

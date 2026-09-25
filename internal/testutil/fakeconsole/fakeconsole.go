@@ -59,6 +59,7 @@ type Console struct {
 	getConfigs      []GetConfigCall
 	stats           []*nodev1.MinuteStats
 	corruptNextDiff bool
+	pinned          uint64 // serve this revision as the latest (0: the newest)
 	renewNext       bool
 	renewals        int
 	enrollments     int
@@ -264,7 +265,18 @@ func (c *Console) latest() *nodev1.NodeConfig {
 	if len(c.revisions) == 0 {
 		return nil
 	}
+	if c.pinned != 0 {
+		return c.revision(c.pinned)
+	}
 	return c.revisions[len(c.revisions)-1]
+}
+
+// PinLatest makes the console serve revision rev as its latest one (a
+// console restored from an older backup); 0 serves the newest again.
+func (c *Console) PinLatest(rev uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pinned = rev
 }
 
 func (c *Console) revision(r uint64) *nodev1.NodeConfig {
