@@ -197,7 +197,14 @@ function _M.balance()
       return ngx.exit(ngx.ERROR)
     end
   end
-  local ok, err = ngx_balancer.set_current_peer(c.ip, o.port, o.scheme == "https" and o.sni_name or nil)
+  -- The name nginx sends as SNI and verifies the certificate against
+  -- (proxy_ssl_name) is set for every attempt: a retry may go to an origin
+  -- with another SNI even when the request itself is unchanged. It equals
+  -- the SNI passed to set_current_peer, which also keys the keep-alive
+  -- pool.
+  local sni = o.scheme == "https" and o.sni_name or nil
+  ngx.var.edgeweir_ssl_name = sni or ""
+  local ok, err = ngx_balancer.set_current_peer(c.ip, o.port, sni)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: set_current_peer ", c.ip, ":", o.port, ": ", err)
     return ngx.exit(ngx.ERROR)

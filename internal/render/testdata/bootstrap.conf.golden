@@ -87,8 +87,15 @@ http {
 
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools
     # (keyed by address, port and SNI) are chosen per request in Lua.
+    # nginx >= 1.29.7 caches upstream connections by default
+    # (`keepalive 32 local`) and matches them on the peer address only: a
+    # TLS connection verified for one name would be reused for a request
+    # that must verify another, and sites that disable keep-alive would be
+    # pooled anyway. The zero value disables that cache; pooling stays with
+    # balancer.enable_keepalive, keyed by address, port and SNI.
     upstream edgeweir_balancer {
         server 0.0.0.1;
+        keepalive 0;
         balancer_by_lua_block { require("edgeweir.origin").balance() }
     }
 
@@ -117,6 +124,7 @@ http {
             set $edgeweir_amz_date "";
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
@@ -131,6 +139,10 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, $proxy_host, would be
+            # "edgeweir_balancer").
+            proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
@@ -156,6 +168,7 @@ http {
             set $edgeweir_amz_date "";
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
@@ -170,6 +183,10 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, $proxy_host, would be
+            # "edgeweir_balancer").
+            proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
             proxy_connect_timeout 10s;

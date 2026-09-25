@@ -7,8 +7,10 @@
 #   4. origin address policy: special-purpose literals and DNS answers
 #      outside the allow list get 502, CDN-Loop is appended and loops get
 #      508;
-#   5. a site-only revision is hot-updated (no reload) and reported;
-#   6. restarting the container serves the last-known-good config.
+#   5. origin HTTPS verification uses the origin's name (SNI): trusted CA +
+#      matching name 200, wrong name 502;
+#   6. a site-only revision is hot-updated (no reload) and reported;
+#   7. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -111,6 +113,19 @@ origin_health_has() { curl -fsS "$HELPER/origin-health" | grep -q -- "$1"; }
 WAIT_SECS=30 wait_for "DNS answer refusal in origin health" origin_health_has "^site-hidden o1 .*dns hidden: every address"
 WAIT_SECS=30 wait_for "literal refusal in origin health" origin_health_has "^site-forbidden o1 .*address 127.0.0.1 is a special-purpose address"
 pass "special-purpose origins refused (literal and DNS answer), allow-listed Docker network served"
+
+# Origin HTTPS verifies the origin's configured name (SNI) against the
+# trusted CA. tls-ok and tls-bad share the same address and port: a
+# connection verified for origin.test must never be reused for wrong.test.
+body=$(curl -s -H 'Host: tls-ok.test' "$NODE/tls-1")
+echo "$body" | grep -q "tls origin ok sni=origin.test" || fail "trusted CA + matching name: got '$body'"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: tls-bad.test' "$NODE/tls-2")
+[ "$code" = 502 ] || fail "trusted CA + wrong name returned $code, want 502"
+body=$(curl -s -H 'Host: tls-ok.test' "$NODE/tls-3")
+echo "$body" | grep -q "tls origin ok sni=origin.test" || fail "matching name after a mismatch: got '$body'"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: tls-bad.test' "$NODE/tls-4")
+[ "$code" = 502 ] || fail "wrong name after a verified connection returned $code, want 502 (connection reused?)"
+pass "origin HTTPS: trusted CA + matching name 200, wrong name 502"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

@@ -8,6 +8,12 @@
 //	forbidden.test  -> 127.0.0.1:80 (special-purpose literal: 502)
 //	hidden.test     -> hidden:80 (DNS answer on a network outside the
 //	                   allow list: 502)
+//	tls-ok.test     -> https://console:8444, SNI origin.test (200)
+//	tls-bad.test    -> https://console:8444, SNI wrong.test (502: the
+//	                   certificate is only valid for origin.test)
+//
+// The HTTPS origin's certificate comes from a separate CA that is written
+// to --origin-ca-out; the node trusts it through --trusted-ca.
 //
 // The origin allow list is the network(s) of this container, which the
 // node and whoami share, so the Docker-internal origins stay reachable
@@ -25,6 +31,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,13 +39,51 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/edgeweir/edgeweir-node/internal/configir"
 	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/edgeweir/edgeweir-node/internal/pki/pkitest"
 	"github.com/edgeweir/edgeweir-node/internal/testutil/fakeconsole"
 )
+
+func tlsSite(id, domain, sni string) *nodev1.Site {
+	s := site(id, domain, "console", 8444)
+	s.OriginPool.Origins[0].Scheme = nodev1.OriginScheme_ORIGIN_SCHEME_HTTPS
+	s.OriginPool.Origins[0].Sni = sni
+	return s
+}
+
+// serveTLSOrigin serves an HTTPS origin whose certificate (for origin.test
+// only) is issued by a fresh CA, and writes that CA to caOut.
+func serveTLSOrigin(addr, caOut string) {
+	ca, err := pkitest.NewCA("Edgeweir e2e origin CA")
+	if err != nil {
+		log.Fatal(err)
+	}
+	cert, err := ca.IssueServer([]string{"origin.test"}, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(caOut+".tmp", ca.PEM, 0o644); err != nil {
+		log.Fatal(err)
+	}
+	if err := os.Rename(caOut+".tmp", caOut); err != nil {
+		log.Fatal(err)
+	}
+	srv := &http.Server{
+		Addr: addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "tls origin ok sni=%s\n", r.TLS.ServerName)
+		}),
+		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Printf("HTTPS origin on %s, CA in %s", addr, caOut)
+	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
 
 func site(id, domain, origin string, port uint32) *nodev1.Site {
 	return &nodev1.Site{
@@ -97,6 +142,8 @@ func baseSites(origin string) []*nodev1.Site {
 		site("site-loop", "loop.test", "node", 80),
 		site("site-forbidden", "forbidden.test", "127.0.0.1", 80),
 		site("site-hidden", "hidden.test", "hidden", 80),
+		tlsSite("site-tls-ok", "tls-ok.test", "origin.test"),
+		tlsSite("site-tls-bad", "tls-bad.test", "wrong.test"),
 	}
 }
 
@@ -107,7 +154,10 @@ func main() {
 	origin := flag.String("origin", "whoami", "origin address")
 	token := flag.String("token", "e2e-token", "enrollment token")
 	allowed := flag.String("origin-allowed-cidrs", "", "comma-separated origin allow list (default: this container's networks)")
+	tlsOrigin := flag.String("origin-tls", ":8444", "HTTPS origin address")
+	caOut := flag.String("origin-ca-out", "/shared/origin-ca.pem", "where to write the HTTPS origin's CA certificate")
 	flag.Parse()
+	go serveTLSOrigin(*tlsOrigin, *caOut)
 	if *allowed != "" {
 		allowList = strings.Split(*allowed, ",")
 	} else {

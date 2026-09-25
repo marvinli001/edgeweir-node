@@ -10,6 +10,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM alpine:3.22
 COPY --from=build /out/fakeconsole /usr/local/bin/fakeconsole
+# /shared receives the HTTPS origin's CA for the node (named volume).
+RUN install -d -o 65534 -g 65534 -m 0755 /shared
 USER 65534:65534
-EXPOSE 8443 8081
+EXPOSE 8443 8444 8081
 ENTRYPOINT ["/usr/local/bin/fakeconsole"]

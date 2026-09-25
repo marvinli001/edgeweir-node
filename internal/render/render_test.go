@@ -196,3 +196,67 @@ func TestRenderOriginLayersAndTrustStore(t *testing.T) {
 		t.Errorf("verifying origin layer not rendered as expected:\n%s", conf)
 	}
 }
+
+// TestRenderOriginTLSName pins the directives that make origin HTTPS
+// verification check the origin's own name (N-H4): the name comes from
+// $edgeweir_ssl_name (set per attempt in balancer_by_lua), SNI is sent,
+// the verifying layer checks the certificate against the trusted CA, and
+// nginx's default upstream connection cache (nginx >= 1.29.7, matched on
+// the address only) is off so a connection verified for one name is never
+// reused for another.
+func TestRenderOriginTLSName(t *testing.T) {
+	p := params()
+	p.TrustedCA = "/etc/edgeweir/origin-ca.pem"
+	got, err := Render(p, configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	balancer := section(t, conf, "upstream edgeweir_balancer {", "}")
+	if !strings.Contains(balancer, "keepalive 0;") {
+		t.Errorf("balancer upstream keeps nginx's default connection cache:\n%s", balancer)
+	}
+	layers := strings.Split(conf, "listen unix:")
+	var verify, noverify string
+	for _, l := range layers {
+		switch {
+		case strings.HasPrefix(l, "/run/edgeweir-node/origin.sock;"):
+			verify = l
+		case strings.HasPrefix(l, "/run/edgeweir-node/origin-noverify.sock;"):
+			noverify = l
+		}
+	}
+	for name, layer := range map[string]string{"verify": verify, "noverify": noverify} {
+		for _, want := range []string{
+			`set $edgeweir_ssl_name "";`,
+			"proxy_ssl_name $edgeweir_ssl_name;",
+			"proxy_ssl_server_name on;",
+		} {
+			if !strings.Contains(layer, want) {
+				t.Errorf("%s origin layer lacks %q", name, want)
+			}
+		}
+	}
+	for _, want := range []string{"proxy_ssl_verify on;", "proxy_ssl_trusted_certificate /etc/edgeweir/origin-ca.pem;"} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("verifying origin layer lacks %q", want)
+		}
+	}
+	if !strings.Contains(noverify, "proxy_ssl_verify off;") {
+		t.Error("origin layer without verification does not turn it off")
+	}
+}
+
+// section returns the text from start up to the first end after it.
+func section(t *testing.T, s, start, end string) string {
+	t.Helper()
+	i := strings.Index(s, start)
+	if i < 0 {
+		t.Fatalf("%q not found", start)
+	}
+	j := strings.Index(s[i:], end)
+	if j < 0 {
+		t.Fatalf("%q not closed", start)
+	}
+	return s[i : i+j+len(end)]
+}

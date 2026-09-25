@@ -15,6 +15,14 @@ services:
       dockerfile: test/e2e/fakeconsole/Dockerfile
     ports:
       - "127.0.0.1:${E2E_HELPER_PORT:-28090}:8081"
+    volumes:
+      - origin-ca:/shared
+    # The node's nginx.conf references the HTTPS origin's CA: start the
+    # node only once the console has written it.
+    healthcheck:
+      test: ["CMD", "test", "-s", "/shared/origin-ca.pem"]
+      interval: 1s
+      retries: 30
     networks: [default]
 
   whoami:
@@ -30,13 +38,20 @@ services:
       context: ../..
     image: edgeweir-node:e2e-smoke
     depends_on:
-      - console
-      - whoami
-      - hidden
+      console:
+        condition: service_healthy
+      whoami:
+        condition: service_started
+      hidden:
+        condition: service_started
+    environment:
+      # Trust store for HTTPS origins (instead of the system bundle).
+      EDGEWEIR_TRUSTED_CA: /etc/edgeweir-e2e/origin-ca.pem
     ports:
       - "127.0.0.1:${E2E_NODE_PORT:-28080}:80"
     volumes:
       - node-state:/var/lib/edgeweir-node
+      - origin-ca:/etc/edgeweir-e2e:ro
     networks: [default, isolated]
 
 networks:
@@ -45,3 +60,4 @@ networks:
 
 volumes:
   node-state:
+  origin-ca:
