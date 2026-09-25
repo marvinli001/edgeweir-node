@@ -32,6 +32,24 @@ var zoneNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 var extensionRE = regexp.MustCompile(`^[a-z0-9]{1,16}$`)
 
+// tokenRE matches RFC 7230 tokens (header and cookie names in cache keys).
+var tokenRE = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$")
+
+var regionRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+var bucketRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+
+// Defaults for zero values in OriginPool.health_check and .connection.
+const (
+	DefaultMaxFails          = 3
+	DefaultRecoverySeconds   = 30
+	DefaultConnectTimeoutMS  = 10_000
+	DefaultSendTimeoutMS     = 60_000
+	DefaultReadTimeoutMS     = 60_000
+	DefaultKeepaliveIdle     = 60
+	DefaultKeepaliveRequests = 1000
+)
+
 // ErrRejected wraps validation failures that reject a whole configuration.
 var ErrRejected = errors.New("configuration rejected")
 
@@ -75,6 +93,53 @@ type Site struct {
 	LoadBalance     string      `json:"load_balance"`
 	Origins         []Origin    `json:"origins"`
 	CacheRules      []CacheRule `json:"cache_rules,omitempty"`
+	// TLSVerify verifies HTTPS origin certificates (default true).
+	TLSVerify bool `json:"tls_verify"`
+	// Health is the passive health check of the origin pool.
+	Health HealthCheck `json:"health"`
+	// Conn holds upstream connection settings.
+	Conn Connection `json:"conn"`
+	// CacheKey is the cache key policy of every request of the site.
+	CacheKey CacheKey `json:"cache_key"`
+	// Slice fetches and caches cacheable GET/HEAD requests in 1 MiB slices.
+	Slice bool `json:"slice,omitempty"`
+	// WebSocket proxies WebSocket upgrades (default true).
+	WebSocket bool `json:"websocket"`
+}
+
+// HealthCheck marks an origin down after MaxFails consecutive failures for
+// RecoverySeconds.
+type HealthCheck struct {
+	MaxFails        uint32 `json:"max_fails"`
+	RecoverySeconds uint32 `json:"recovery_seconds"`
+}
+
+// Connection holds timeouts (milliseconds) and keep-alive settings.
+type Connection struct {
+	ConnectTimeoutMS  uint32 `json:"connect_timeout_ms"`
+	SendTimeoutMS     uint32 `json:"send_timeout_ms"`
+	ReadTimeoutMS     uint32 `json:"read_timeout_ms"`
+	Keepalive         bool   `json:"keepalive"`
+	KeepaliveIdle     uint32 `json:"keepalive_idle"`
+	KeepaliveRequests uint32 `json:"keepalive_requests"`
+}
+
+// CacheKey query modes.
+const (
+	QueryAll     = "all"
+	QueryIgnore  = "ignore"
+	QueryInclude = "include"
+)
+
+// CacheKey is the site's cache key policy.
+type CacheKey struct {
+	Query       string   `json:"query"`
+	QueryParams []string `json:"query_params,omitempty"`
+	SortQuery   bool     `json:"sort_query,omitempty"`
+	Headers     []string `json:"headers,omitempty"`
+	Cookies     []string `json:"cookies,omitempty"`
+	Device      bool     `json:"device,omitempty"`
+	ExcludeHost bool     `json:"exclude_host,omitempty"`
 }
 
 // Domain is a host name (exact) or a single-label wildcard suffix.
@@ -93,6 +158,19 @@ type Origin struct {
 	Backup     bool   `json:"backup,omitempty"`
 	HostHeader string `json:"host_header,omitempty"`
 	SNI        string `json:"sni,omitempty"`
+	// S3 signs requests with AWS Signature V4; the keys are filled in by
+	// the agent from GetOriginCredentials, never from the configuration.
+	S3 *S3Auth `json:"s3,omitempty"`
+}
+
+// S3Auth is the signing configuration of an S3-compatible origin.
+type S3Auth struct {
+	Region            string `json:"region"`
+	Bucket            string `json:"bucket,omitempty"`
+	CredentialID      string `json:"credential_id"`
+	CredentialVersion uint64 `json:"-"`
+	AccessKey         string `json:"access_key,omitempty"`
+	SecretKey         string `json:"secret_key,omitempty"`
 }
 
 // CacheRule actions and origin cache-control modes as used in the site table.
@@ -110,13 +188,35 @@ const (
 )
 
 // CacheRule is an evaluated-in-order cache rule (first match wins).
+// Paths, prefixes and extensions are checked on the request; status codes
+// and size bounds on the response.
 type CacheRule struct {
 	ID           string   `json:"id"`
 	Action       string   `json:"action"`
 	TTL          uint32   `json:"ttl"`
 	Mode         string   `json:"mode"`
 	PathPrefixes []string `json:"path_prefixes,omitempty"`
+	Paths        []string `json:"paths,omitempty"`
 	Extensions   []string `json:"extensions,omitempty"`
+	StatusCodes  []uint32 `json:"status_codes,omitempty"`
+	MinSize      uint64   `json:"min_size,omitempty"`
+	MaxSize      uint64   `json:"max_size,omitempty"`
+	// StaleWhileRevalidate and StaleIfError are seconds (RFC 5861).
+	StaleWhileRevalidate uint32 `json:"swr,omitempty"`
+	StaleIfError         uint32 `json:"sie,omitempty"`
+}
+
+// CredentialRefs returns the S3 credentials the plan needs, id -> version.
+func (p *Plan) CredentialRefs() map[string]uint64 {
+	refs := map[string]uint64{}
+	for _, s := range p.Sites {
+		for _, o := range s.Origins {
+			if o.S3 != nil {
+				refs[o.S3.CredentialID] = o.S3.CredentialVersion
+			}
+		}
+	}
+	return refs
 }
 
 // Options control plan building.
@@ -202,7 +302,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			warn("duplicate listener on port %d skipped", port)
 			continue
 		case l.GetProtocol() == nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS:
-			warn("HTTPS listener on port %d skipped: certificate delivery is not supported by proto v0.1.0", port)
+			warn("HTTPS listener on port %d skipped: certificate delivery is not supported yet", port)
 			continue
 		}
 		if l.GetHttp3() {
@@ -260,12 +360,23 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			warn("site without id skipped")
 			continue
 		}
+		pool := s.GetOriginPool()
 		site := Site{
 			ID:              id,
 			Name:            s.GetName(),
 			CacheGeneration: s.GetCacheGeneration(),
 			CacheZone:       s.GetCacheZone(),
-			LoadBalance:     loadBalance(s.GetOriginPool().GetPolicy()),
+			LoadBalance:     loadBalance(pool.GetPolicy()),
+			TLSVerify:       !pool.GetSkipTlsVerify(),
+			Health:          buildHealth(pool.GetHealthCheck()),
+			Conn:            buildConnection(pool.GetConnection()),
+			Slice:           s.GetRangeSlice(),
+			WebSocket:       !s.GetWebsocketDisabled(),
+		}
+		key, keyWarnings := buildCacheKey(s.GetCacheKey())
+		site.CacheKey = key
+		for _, w := range keyWarnings {
+			warn("site %s: %s", id, w)
 		}
 		if site.CacheZone == "" || !zones[site.CacheZone] {
 			if site.CacheZone != "" {
@@ -337,6 +448,74 @@ func displayDomain(name string, wildcard bool) string {
 	return name
 }
 
+func buildHealth(h *nodev1.PassiveHealthCheck) HealthCheck {
+	out := HealthCheck{MaxFails: h.GetMaxFails(), RecoverySeconds: h.GetRecoverySeconds()}
+	if out.MaxFails == 0 {
+		out.MaxFails = DefaultMaxFails
+	}
+	if out.RecoverySeconds == 0 {
+		out.RecoverySeconds = DefaultRecoverySeconds
+	}
+	return out
+}
+
+func orDefault(v, def uint32) uint32 {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
+func buildConnection(c *nodev1.OriginConnection) Connection {
+	return Connection{
+		ConnectTimeoutMS:  orDefault(c.GetConnectTimeoutMs(), DefaultConnectTimeoutMS),
+		SendTimeoutMS:     orDefault(c.GetSendTimeoutMs(), DefaultSendTimeoutMS),
+		ReadTimeoutMS:     orDefault(c.GetReadTimeoutMs(), DefaultReadTimeoutMS),
+		Keepalive:         !c.GetKeepaliveDisabled(),
+		KeepaliveIdle:     orDefault(c.GetKeepaliveIdleSeconds(), DefaultKeepaliveIdle),
+		KeepaliveRequests: orDefault(c.GetKeepaliveMaxRequests(), DefaultKeepaliveRequests),
+	}
+}
+
+// buildCacheKey validates a cache key policy. Invalid names are dropped
+// with a warning; an INCLUDE policy that loses all its parameters keys on
+// no parameter at all (never widened to the full query string).
+func buildCacheKey(k *nodev1.CacheKeyPolicy) (CacheKey, []string) {
+	var warnings []string
+	out := CacheKey{Query: QueryAll, SortQuery: k.GetSortQuery(), Device: k.GetDeviceType(), ExcludeHost: k.GetExcludeHost()}
+	switch k.GetQuery() {
+	case nodev1.CacheKeyQuery_CACHE_KEY_QUERY_IGNORE:
+		out.Query = QueryIgnore
+	case nodev1.CacheKeyQuery_CACHE_KEY_QUERY_INCLUDE:
+		out.Query = QueryInclude
+	}
+	if out.Query == QueryInclude {
+		for _, q := range k.GetQueryParams() {
+			if q == "" || len(q) > 128 || strings.ContainsAny(q, "&=# \t\r\n") {
+				warnings = append(warnings, fmt.Sprintf("cache key query parameter %q ignored", q))
+				continue
+			}
+			out.QueryParams = append(out.QueryParams, q)
+		}
+	}
+	for _, h := range k.GetHeaders() {
+		h = strings.ToLower(h)
+		if !tokenRE.MatchString(h) || h == "cookie" || h == "host" {
+			warnings = append(warnings, fmt.Sprintf("cache key header %q ignored", h))
+			continue
+		}
+		out.Headers = append(out.Headers, h)
+	}
+	for _, c := range k.GetCookies() {
+		if !tokenRE.MatchString(c) {
+			warnings = append(warnings, fmt.Sprintf("cache key cookie %q ignored", c))
+			continue
+		}
+		out.Cookies = append(out.Cookies, c)
+	}
+	return out, warnings
+}
+
 func loadBalance(p nodev1.LoadBalancePolicy) string {
 	switch p {
 	case nodev1.LoadBalancePolicy_LOAD_BALANCE_POLICY_ROUND_ROBIN:
@@ -387,6 +566,18 @@ func buildOrigin(o *nodev1.Origin) (Origin, error) {
 	if weight == 0 {
 		weight = 1
 	}
+	var s3 *S3Auth
+	if a := o.GetS3(); a != nil {
+		switch {
+		case !regionRE.MatchString(a.GetRegion()):
+			return Origin{}, fmt.Errorf("invalid S3 region %q", a.GetRegion())
+		case a.GetBucket() != "" && !bucketRE.MatchString(a.GetBucket()):
+			return Origin{}, fmt.Errorf("invalid S3 bucket %q", a.GetBucket())
+		case a.GetCredentialId() == "":
+			return Origin{}, errors.New("S3 origin without credential")
+		}
+		s3 = &S3Auth{Region: a.GetRegion(), Bucket: a.GetBucket(), CredentialID: a.GetCredentialId(), CredentialVersion: a.GetCredentialVersion()}
+	}
 	return Origin{
 		ID:         o.GetId(),
 		Scheme:     scheme,
@@ -396,11 +587,17 @@ func buildOrigin(o *nodev1.Origin) (Origin, error) {
 		Backup:     o.GetBackup(),
 		HostHeader: host,
 		SNI:        sni,
+		S3:         s3,
 	}, nil
 }
 
 func buildRule(r *nodev1.CacheRule) (CacheRule, bool, string) {
-	rule := CacheRule{ID: r.GetId(), TTL: r.GetEdgeTtlSeconds()}
+	rule := CacheRule{
+		ID:                   r.GetId(),
+		TTL:                  r.GetEdgeTtlSeconds(),
+		StaleWhileRevalidate: r.GetStaleWhileRevalidateSeconds(),
+		StaleIfError:         r.GetStaleIfErrorSeconds(),
+	}
 	switch r.GetAction() {
 	case nodev1.CacheAction_CACHE_ACTION_CACHE:
 		rule.Action = ActionCache
@@ -436,6 +633,26 @@ func buildRule(r *nodev1.CacheRule) (CacheRule, bool, string) {
 	}
 	if len(m.GetExtensions()) > 0 && len(rule.Extensions) == 0 {
 		return rule, false, "no valid extension"
+	}
+	for _, path := range m.GetPaths() {
+		if strings.HasPrefix(path, "/") && !strings.ContainsAny(path, "\x00\r\n ") {
+			rule.Paths = append(rule.Paths, path)
+		}
+	}
+	if len(m.GetPaths()) > 0 && len(rule.Paths) == 0 {
+		return rule, false, "no valid path"
+	}
+	for _, code := range m.GetStatusCodes() {
+		if code >= 100 && code <= 599 {
+			rule.StatusCodes = append(rule.StatusCodes, code)
+		}
+	}
+	if len(m.GetStatusCodes()) > 0 && len(rule.StatusCodes) == 0 {
+		return rule, false, "no valid status code"
+	}
+	rule.MinSize, rule.MaxSize = m.GetMinSizeBytes(), m.GetMaxSizeBytes()
+	if rule.MaxSize != 0 && rule.MaxSize < rule.MinSize {
+		return rule, false, "maximum size below minimum size"
 	}
 	return rule, true, ""
 }
@@ -486,4 +703,43 @@ func validHostHeader(h string) bool {
 		host = host[:i]
 	}
 	return ValidHostname(host)
+}
+
+// Credential is an S3 access key pair fetched from the console.
+type Credential struct {
+	Version   uint64
+	AccessKey string
+	SecretKey string
+}
+
+// AttachCredentials fills the S3 keys of every S3 origin from creds (keyed
+// by credential id). Origins whose credential is missing or older than the
+// configuration asks for are dropped with a warning, and sites left without
+// origins are skipped: an unsigned request would only collect 403s.
+func (p *Plan) AttachCredentials(creds map[string]Credential) {
+	sites := p.Sites[:0]
+	for _, s := range p.Sites {
+		origins := s.Origins[:0]
+		for _, o := range s.Origins {
+			if o.S3 != nil {
+				c, ok := creds[o.S3.CredentialID]
+				if !ok || c.Version < o.S3.CredentialVersion || c.AccessKey == "" || c.SecretKey == "" {
+					p.Warnings = append(p.Warnings, fmt.Sprintf("site %s: origin %q skipped: S3 credential %s (version %d) unavailable",
+						s.ID, o.ID, o.S3.CredentialID, o.S3.CredentialVersion))
+					continue
+				}
+				auth := *o.S3
+				auth.AccessKey, auth.SecretKey = c.AccessKey, c.SecretKey
+				o.S3 = &auth
+			}
+			origins = append(origins, o)
+		}
+		if len(origins) == 0 {
+			p.Warnings = append(p.Warnings, fmt.Sprintf("site %s skipped: no origin with a usable credential", s.ID))
+			continue
+		}
+		s.Origins = origins
+		sites = append(sites, s)
+	}
+	p.Sites = sites
 }

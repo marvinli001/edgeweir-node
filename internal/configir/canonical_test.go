@@ -307,3 +307,39 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestContentHashVectorM2 checks the M2 vector produced by the console
+// (packages/config-compiler/test/fixtures/content_hash_vector_m2.json):
+// origin pool settings, S3 auth, cache key policies and rule conditions
+// must encode to the same canonical bytes in Go as in protobuf-es.
+func TestContentHashVectorM2(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "content_hash_vector_m2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v hashVector
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &nodev1.NodeConfig{}
+	if err := protojson.Unmarshal(v.Config, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GetSites()[0].GetOriginPool().GetOrigins()[0].GetS3().GetCredentialVersion() != 2 {
+		t.Fatal("vector does not exercise S3 auth")
+	}
+	b, err := CanonicalBytes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(b); got != v.CanonicalHex {
+		t.Fatalf("canonical bytes differ from the console\n got %s\nwant %s", got, v.CanonicalHex)
+	}
+	h, err := ContentHash(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h != v.ContentHash {
+		t.Fatalf("ContentHash = %s, console says %s", h, v.ContentHash)
+	}
+}
