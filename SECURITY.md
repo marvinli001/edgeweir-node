@@ -29,7 +29,7 @@ English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordin
 | 最新的 minor 版本 | 是 |
 | 更早的版本 | 否，请升级 |
 
-Phase 0 阶段只维护 `main` 分支和最新一次 release。
+Phase 0 阶段只维护 `master` 分支和最新一次 release。
 
 ## 信任与安全基线
 

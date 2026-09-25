@@ -18,7 +18,7 @@
 
 ### 协议与契约
 
-1. **Connect-RPC。** 控制面用 connect-es v2（`@connectrpc/connect-node`）实现服务端，节点用 connect-go 实现客户端。服务定义见 [`proto/edgeweir/node/v1/node.proto`](https://github.com/edgeweir/edgeweir/blob/main/proto/edgeweir/node/v1/node.proto) 中的 `NodeService`：
+1. **Connect-RPC。** 控制面用 connect-es v2（`@connectrpc/connect-node`）实现服务端，节点用 connect-go 实现客户端。服务定义见 [`proto/edgeweir/node/v1/node.proto`](https://github.com/edgeweir/edgeweir/blob/master/proto/edgeweir/node/v1/node.proto) 中的 `NodeService`：
 
    | RPC | 类型 | 认证 | 用途 |
    | --- | --- | --- | --- |

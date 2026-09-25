@@ -16,7 +16,7 @@
 
 ### IR
 
-1. `packages/config-compiler` 把数据库中的站点、域名、源站池、缓存规则、证书引用编译成 `NodeConfig`（[`proto/edgeweir/node/v1/config.proto`](https://github.com/edgeweir/edgeweir/blob/main/proto/edgeweir/node/v1/config.proto)）。
+1. `packages/config-compiler` 把数据库中的站点、域名、源站池、缓存规则、证书引用编译成 `NodeConfig`（[`proto/edgeweir/node/v1/config.proto`](https://github.com/edgeweir/edgeweir/blob/master/proto/edgeweir/node/v1/config.proto)）。
 2. IR 描述意图（监听端口、域名、源站池、缓存规则），不包含 nginx 指令，由节点负责渲染到具体引擎。
 3. IR 不内联任何密钥。证书只以 id、域名列表和指纹引用（`CertificateRef`），私钥通过单独的通道获取。
 4. **结构性配置与可热更新配置分开**：`listeners`、`cache_zones` 是结构性配置，变更时节点要重新渲染 nginx.conf 并 reload；`sites`、`certificates` 可以热更新（[ADR-0014](0014-node-agent-responsibilities.md)）。

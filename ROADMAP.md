@@ -1,6 +1,6 @@
 # Edgeweir 节点路线图
 
-本文是 Edgeweir 平台路线图的节点侧（`edgeweir-node`）视图。功能全集来自 BOOTSTRAP §4，这里按主题重新整理，并标出每一项主要在哪一侧实现，以及节点侧的大致做法。平台整体路线图见控制面仓库 [edgeweir/edgeweir 的 ROADMAP.md](https://github.com/edgeweir/edgeweir/blob/main/ROADMAP.md)。
+本文是 Edgeweir 平台路线图的节点侧（`edgeweir-node`）视图。功能全集来自 BOOTSTRAP §4，这里按主题重新整理，并标出每一项主要在哪一侧实现，以及节点侧的大致做法。平台整体路线图见控制面仓库 [edgeweir/edgeweir 的 ROADMAP.md](https://github.com/edgeweir/edgeweir/blob/master/ROADMAP.md)。
 
 标记说明：
 

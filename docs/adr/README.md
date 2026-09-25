@@ -1,8 +1,8 @@
 # 架构决策记录（ADR）
 
-> 本目录镜像自控制面仓库 [edgeweir/edgeweir 的 docs/adr](https://github.com/edgeweir/edgeweir/tree/main/docs/adr)，两边编号和内容一致，以控制面仓库为准。修改 ADR 请在控制面仓库提交后同步到这里。
+> 本目录镜像自控制面仓库 [edgeweir/edgeweir 的 docs/adr](https://github.com/edgeweir/edgeweir/tree/master/docs/adr)，两边编号和内容一致，以控制面仓库为准。修改 ADR 请在控制面仓库提交后同步到这里。
 
-本目录记录 Edgeweir 的架构决策。每篇 ADR 说明一个决策的背景、结论、放弃的备选方案、后果和落地情况。Phase 0 的 18 篇 ADR 与 [BOOTSTRAP.md](https://github.com/edgeweir/edgeweir/blob/main/BOOTSTRAP.md) §2 的决策逐条对应。
+本目录记录 Edgeweir 的架构决策。每篇 ADR 说明一个决策的背景、结论、放弃的备选方案、后果和落地情况。Phase 0 的 18 篇 ADR 与 [BOOTSTRAP.md](https://github.com/edgeweir/edgeweir/blob/master/BOOTSTRAP.md) §2 的决策逐条对应。
 
 ADR 编号在 edgeweir 与 edgeweir-node 两个仓库之间统一，"适用仓库"一列说明该决策约束哪个仓库。
 
