@@ -73,6 +73,9 @@ func markerIdentity(m dataplane.PurgeMarker) string {
 // id identifies the current set.
 func (s *purgeState) id() string { return fmt.Sprintf("%s-%d", s.gen, s.seq) }
 
+// compactID identifies the site-level fallback of the current set.
+func (s *purgeState) compactID() string { return s.id() + "-sites" }
+
 func (s *purgeState) bump() { s.seq++ }
 
 // taskEpoch returns the marker time of a purge task (see purgeState).
@@ -226,7 +229,7 @@ func (s *purgeState) compact() *dataplane.PurgeTable {
 	for _, m := range s.markers {
 		top[m.SiteID] = max(top[m.SiteID], m.Epoch)
 	}
-	t := &dataplane.PurgeTable{ID: s.id() + "-sites", Markers: []dataplane.PurgeMarker{}}
+	t := &dataplane.PurgeTable{ID: s.compactID(), Markers: []dataplane.PurgeMarker{}}
 	for _, site := range slices.Sorted(maps.Keys(top)) {
 		t.Markers = append(t.Markers, dataplane.PurgeMarker{SiteID: site, Type: "site", Epoch: top[site]})
 	}

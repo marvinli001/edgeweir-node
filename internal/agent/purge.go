@@ -212,20 +212,20 @@ func (a *Agent) syncPurgeWithRetry(ctx context.Context) error {
 func (a *Agent) syncPurge(ctx context.Context) error {
 	a.purgeMu.Lock()
 	defer a.purgeMu.Unlock()
-	want, fallback := a.fullPurgeTable()
 	st, err := a.dp.Status(ctx)
 	if err != nil {
 		return err
 	}
-	if st.Purge.ID == want.ID {
-		return nil
-	}
 	a.mu.Lock()
-	holdFallback := st.Purge.ID == a.purgeFallbackID && time.Now().Before(a.purgeRetryAt)
+	inSync := st.Purge.ID == a.purge.id()
+	// The fallback of the current set stays until purgeRetryAt; a fallback
+	// of an older set is replaced at once.
+	holdFallback := st.Purge.ID == a.purge.compactID() && time.Now().Before(a.purgeRetryAt)
 	a.mu.Unlock()
-	if holdFallback {
+	if inSync || holdFallback {
 		return nil
 	}
+	want, fallback := a.fullPurgeTable()
 	res, err := a.dp.PutPurge(ctx, want)
 	if err == nil {
 		a.log.Info("purge markers installed in data plane", "markers", len(want.Markers), "id", want.ID)
@@ -246,7 +246,7 @@ func (a *Agent) syncPurge(ctx context.Context) error {
 		return fmt.Errorf("install purge markers: %w (site-level fallback: %v)", err, ferr)
 	}
 	a.mu.Lock()
-	a.purgeFallbackID, a.purgeRetryAt = fallback.ID, time.Now().Add(purgeFallbackRetry)
+	a.purgeRetryAt = time.Now().Add(purgeFallbackRetry)
 	a.mu.Unlock()
 	a.log.Warn("cannot install the purge markers; installed site-level markers for the affected sites instead",
 		"err", err, "sites", len(fallback.Markers))

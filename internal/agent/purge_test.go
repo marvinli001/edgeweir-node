@@ -172,3 +172,26 @@ func TestAgentPurgeEpochPerTask(t *testing.T) {
 		t.Fatalf("task epochs not persisted: %s", raw)
 	}
 }
+
+// TestAgentInstallsSiteLevelFallbackWhenTheFullSetFails (N-H3): when the
+// full marker set cannot be installed after a restart, a site-level marker
+// per affected site is installed instead, so the fresh data plane never
+// serves purged objects, and the sites are served.
+func TestAgentInstallsSiteLevelFallbackWhenTheFullSetFails(t *testing.T) {
+	e := startEnrolled(t, "fbf", nil, demoSite("site-a", "site-a.test"))
+	e.console.AddTask(purgeTask("t1", time.Now(), urlTarget("site-a", "/1"), urlTarget("site-a", "/2")), false)
+	waitResults(t, e.console, 1)
+	epoch := e.dp.Markers()[0].Epoch
+	e.dp.FailNextPurges(1) // the full set fails once
+	e.dp.Restart()
+	want := []dataplane.PurgeMarker{{SiteID: "site-a", Type: "site", Epoch: epoch}}
+	eventually(t, "site-level fallback and site table", func() bool {
+		tb := e.dp.Table()
+		return tb != nil && tb.Revision == e.rev && slices.Equal(e.dp.Markers(), want)
+	})
+	// The agent's own set is unchanged (only 507 collapses it for good).
+	raw, _ := os.ReadFile(filepath.Join(e.h.stateDir, "purge.json"))
+	if !strings.Contains(string(raw), `"/1"`) || !strings.Contains(string(raw), `"/2"`) {
+		t.Fatalf("purge.json lost the URL markers: %s", raw)
+	}
+}

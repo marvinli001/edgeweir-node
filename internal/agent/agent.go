@@ -150,19 +150,17 @@ type Agent struct {
 	creds     map[string]configir.Credential
 	purge     *purgeState
 	lastPrune time.Time
-	// purgeFallbackID is the id of the site-level fallback set installed
-	// when the full marker set could not be; the full set is retried after
-	// purgeRetryAt.
-	purgeFallbackID string
-	purgeRetryAt    time.Time
-	unreported      []*nodev1.ReportTaskResultRequest
-	conf            []byte // nginx.conf currently installed
-	state           nodev1.ApplyState
-	message         string
-	dpHealthy       bool
-	rejectedKey     string
-	rejectedAt      time.Time
-	lastRenew       time.Time
+	// purgeRetryAt: after installing the site-level fallback of the marker
+	// set, the full set is tried again from then on.
+	purgeRetryAt time.Time
+	unreported   []*nodev1.ReportTaskResultRequest
+	conf         []byte // nginx.conf currently installed
+	state        nodev1.ApplyState
+	message      string
+	dpHealthy    bool
+	rejectedKey  string
+	rejectedAt   time.Time
+	lastRenew    time.Time
 
 	pushMu   sync.Mutex
 	purgeMu  sync.Mutex // serializes purge writes to the data plane
