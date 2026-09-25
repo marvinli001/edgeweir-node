@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +26,12 @@ import (
 // Typed tasks (ADR-0014): the console can ask for purges and prefetches,
 // nothing else. Tasks are idempotent; a task whose result does not reach
 // the console is handed out again and simply runs again.
+//
+// Order and time (N-M7): the purges of a pulled batch run first (they are
+// quick and must never wait behind a slow origin), then its prefetches,
+// which share a time budget counted from the pull (PrefetchBudget, below
+// the console's five minutes before it hands a task out again). URLs not
+// done when the budget runs out are reported as failed.
 
 const (
 	maxTasksPerPull  = 10
@@ -71,8 +80,10 @@ func (a *Agent) runTasks(ctx context.Context) {
 		if len(tasks) == 0 {
 			return
 		}
+		deadline := time.Now().Add(a.cfg.PrefetchBudget)
+		slices.SortStableFunc(tasks, func(x, y *nodev1.NodeTask) int { return cmp.Compare(taskRank(x), taskRank(y)) })
 		for _, task := range tasks {
-			result := a.executeTask(ctx, task)
+			result := a.executeTask(ctx, task, deadline)
 			a.log.Info("task finished", "task_id", task.GetId(), "state", result.GetState().String(),
 				"succeeded", result.GetSucceeded(), "failed", result.GetFailed(), "message", result.GetMessage())
 			a.reportResult(ctx, result)
@@ -120,12 +131,25 @@ func result(task *nodev1.NodeTask, ok, failed uint32, state nodev1.TaskState, ms
 	}
 }
 
-func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask) *nodev1.ReportTaskResultRequest {
+// taskRank orders a batch: purges, then anything else, then prefetches.
+func taskRank(t *nodev1.NodeTask) int {
+	switch t.GetKind().(type) {
+	case *nodev1.NodeTask_Purge:
+		return 0
+	case *nodev1.NodeTask_Prefetch:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// executeTask runs one task; prefetches stop at deadline.
+func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask, deadline time.Time) *nodev1.ReportTaskResultRequest {
 	switch kind := task.GetKind().(type) {
 	case *nodev1.NodeTask_Purge:
 		return a.executePurge(ctx, task, kind.Purge)
 	case *nodev1.NodeTask_Prefetch:
-		return a.executePrefetch(ctx, task, kind.Prefetch)
+		return a.executePrefetch(ctx, task, kind.Prefetch, deadline)
 	default:
 		return result(task, 0, 0, nodev1.TaskState_TASK_STATE_FAILED, "unsupported task type; upgrade edgeweir-node")
 	}
@@ -211,10 +235,18 @@ func (a *Agent) httpPort() uint32 {
 	return a.cfg.DefaultPort
 }
 
+// prefetchOutcome is the result of one prefetch URL.
+type prefetchOutcome struct {
+	done   bool   // false: not attempted or cut off by the time budget
+	err    string // empty on success
+	reason string // status, connect_failed, timeout, https_unsupported, other
+	status int    // HTTP status when reason is "status"
+}
+
 // executePrefetch requests every URL through the node's own edge listener
 // (so the response lands in the cache exactly as for a client) with
-// bounded concurrency. 2xx and 3xx count as success.
-func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *nodev1.PrefetchTask) *nodev1.ReportTaskResultRequest {
+// bounded concurrency until deadline. 2xx and 3xx count as success.
+func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *nodev1.PrefetchTask, deadline time.Time) *nodev1.ReportTaskResultRequest {
 	addr := net.JoinHostPort(a.cfg.PrefetchHost, strconv.Itoa(int(a.httpPort())))
 	client := &http.Client{
 		Timeout: a.cfg.PrefetchTimeout,
@@ -231,32 +263,49 @@ func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *n
 	}
 	defer client.CloseIdleConnections()
 
+	bctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	targets := p.GetTargets()
-	errs := make([]string, len(targets))
+	outcomes := make([]prefetchOutcome, len(targets))
 	sem := make(chan struct{}, a.cfg.PrefetchConcurrency)
 	var wg sync.WaitGroup
 	for i, t := range targets {
+		select {
+		case sem <- struct{}{}:
+		case <-bctx.Done():
+		}
+		if bctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			errs[i] = prefetchOne(ctx, client, t.GetUrl())
+			outcomes[i] = prefetchOne(bctx, client, t.GetUrl())
 		}()
 	}
 	wg.Wait()
+	timedOut := ctx.Err() == nil && bctx.Err() != nil
 
-	var ok, failed uint32
+	var ok, failed, done uint32
 	var msgs []string
-	for i, e := range errs {
-		if e == "" {
+	for i, o := range outcomes {
+		switch {
+		case !o.done:
+			failed++
+		case o.err == "":
 			ok++
-			continue
+			done++
+		default:
+			failed++
+			done++
+			if len(msgs) < 5 {
+				msgs = append(msgs, targets[i].GetUrl()+": "+o.err)
+			}
 		}
-		failed++
-		if len(msgs) < 5 {
-			msgs = append(msgs, targets[i].GetUrl()+": "+e)
-		}
+	}
+	if timedOut && done < uint32(len(targets)) {
+		msgs = append([]string{fmt.Sprintf("prefetch time budget exhausted: %d of %d URLs done", done, len(targets))}, msgs...)
 	}
 	state := nodev1.TaskState_TASK_STATE_SUCCEEDED
 	if failed > 0 {
@@ -265,30 +314,50 @@ func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *n
 	return result(task, ok, failed, state, strings.Join(msgs, "; "))
 }
 
-func prefetchOne(ctx context.Context, client *http.Client, raw string) string {
+func prefetchOne(ctx context.Context, client *http.Client, raw string) prefetchOutcome {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		return "invalid URL"
+		return prefetchOutcome{done: true, err: "invalid URL", reason: "other"}
 	}
 	if u.Scheme != "http" {
-		return "HTTPS prefetch needs an HTTPS listener on the node"
+		return prefetchOutcome{done: true, err: "HTTPS prefetch needs an HTTPS listener on the node", reason: "https_unsupported"}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+u.Host+u.RequestURI(), nil)
 	if err != nil {
-		return err.Error()
+		return prefetchOutcome{done: true, err: err.Error(), reason: "other"}
 	}
 	req.Host = u.Hostname()
 	req.Header.Set("User-Agent", "edgeweir-node-prefetch/"+version.Version)
 	resp, err := client.Do(req)
 	if err != nil {
-		return err.Error()
+		return failedOutcome(ctx, err)
 	}
 	defer resp.Body.Close()
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		return "read body: " + err.Error()
+		o := failedOutcome(ctx, err)
+		o.err = "read body: " + o.err
+		return o
 	}
 	if resp.StatusCode >= 400 {
-		return "HTTP " + strconv.Itoa(resp.StatusCode)
+		return prefetchOutcome{done: true, err: "HTTP " + strconv.Itoa(resp.StatusCode), reason: "status", status: resp.StatusCode}
 	}
-	return ""
+	return prefetchOutcome{done: true}
+}
+
+// failedOutcome classifies a transport error; a request cut off by the
+// task's time budget is not done.
+func failedOutcome(ctx context.Context, err error) prefetchOutcome {
+	if ctx.Err() != nil {
+		return prefetchOutcome{err: err.Error()}
+	}
+	var netErr net.Error
+	var opErr *net.OpError
+	switch {
+	case errors.As(err, &opErr) && opErr.Op == "dial":
+		return prefetchOutcome{done: true, err: err.Error(), reason: "connect_failed"}
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return prefetchOutcome{done: true, err: err.Error(), reason: "timeout"}
+	default:
+		return prefetchOutcome{done: true, err: err.Error(), reason: "other"}
+	}
 }

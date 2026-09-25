@@ -87,6 +87,10 @@ type Config struct {
 	PrefetchHost        string        // default 127.0.0.1
 	PrefetchConcurrency int           // default 4
 	PrefetchTimeout     time.Duration // per URL, default 60s
+	// PrefetchBudget bounds the prefetches of one pulled batch, counted
+	// from the pull (default 4m: the console hands a task out again after
+	// 5 minutes without a result).
+	PrefetchBudget time.Duration
 }
 
 func (c *Config) setDefaults() {
@@ -107,6 +111,7 @@ func (c *Config) setDefaults() {
 	def(&c.RPCTimeout, 30*time.Second)
 	def(&c.TaskPollInterval, 30*time.Second)
 	def(&c.PrefetchTimeout, time.Minute)
+	def(&c.PrefetchBudget, 4*time.Minute)
 	if c.PrefetchHost == "" {
 		c.PrefetchHost = "127.0.0.1"
 	}

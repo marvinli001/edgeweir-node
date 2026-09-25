@@ -31,6 +31,11 @@ type enrolled struct {
 // enrolls it and waits until the configuration with sites is applied.
 func startEnrolled(t *testing.T, name string, mutate func(*agent.Config), sites ...*nodev1.Site) *enrolled {
 	t.Helper()
+	return startEnrolledConfig(t, name, mutate, baseConfig(sites...))
+}
+
+func startEnrolledConfig(t *testing.T, name string, mutate func(*agent.Config), config *nodev1.NodeConfig) *enrolled {
+	t.Helper()
 	console, err := fakeconsole.New(fakeconsole.Options{
 		NodeID: "node-" + name, ClusterID: "cl-" + name, ReportInterval: 1, KeepaliveInterval: 200 * time.Millisecond,
 	})
@@ -40,7 +45,7 @@ func startEnrolled(t *testing.T, name string, mutate func(*agent.Config), sites 
 	srv := console.StartTLS(t)
 	root := t.TempDir()
 	h := &harness{t: t, console: console, url: srv.URL, stateDir: filepath.Join(root, "state"), root: root}
-	rev := console.Publish(baseConfig(sites...))
+	rev := console.Publish(config)
 	dp := fakedataplane.Start(t)
 	cfg := h.agentConfig(dp.Socket)
 	if mutate != nil {

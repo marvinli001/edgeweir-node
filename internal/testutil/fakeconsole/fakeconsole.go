@@ -431,9 +431,16 @@ func (c *Console) CredentialRequests() [][]string {
 // AddTask queues a task and announces it on open watch streams (unless
 // quiet, which leaves discovery to heartbeats and polling).
 func (c *Console) AddTask(task *nodev1.NodeTask, quiet bool) {
+	c.AddTasks(quiet, task)
+}
+
+// AddTasks queues several tasks at once (one PullTasks sees all of them).
+func (c *Console) AddTasks(quiet bool, tasks ...*nodev1.NodeTask) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pendingTasks = append(c.pendingTasks, proto.CloneOf(task))
+	for _, task := range tasks {
+		c.pendingTasks = append(c.pendingTasks, proto.CloneOf(task))
+	}
 	if quiet {
 		return
 	}

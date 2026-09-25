@@ -301,6 +301,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		workers       = fs.String("worker-processes", "auto", "nginx worker_processes")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
+		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -320,6 +321,10 @@ func cmdRun(args []string, stderr io.Writer) int {
 	}
 	if *purgeDictMB < 1 || *purgeDictMB > 65536 {
 		fmt.Fprintln(stderr, "run: --purge-dict-mb must be 1-65536")
+		return 2
+	}
+	if *prefetchTime <= 0 {
+		fmt.Fprintln(stderr, "run: --prefetch-budget must be positive")
 		return 2
 	}
 	if *purgePerSite < 1 {
@@ -413,6 +418,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		Render:              params,
 		DefaultPort:         uint32(*defaultPort),
 		PurgeMarkersPerSite: *purgePerSite,
+		PrefetchBudget:      *prefetchTime,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

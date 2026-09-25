@@ -71,6 +71,9 @@ func TestRealMain(t *testing.T) {
 	if code := realMain([]string{"run", "--purge-dict-mb", "0"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid purge dict size: code=%d", code)
 	}
+	if code := realMain([]string{"run", "--prefetch-budget", "0s"}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("run with invalid prefetch budget: code=%d", code)
+	}
 	if code := realMain([]string{"run", "--purge-markers-per-site", "0"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid purge marker cap: code=%d", code)
 	}
