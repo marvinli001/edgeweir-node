@@ -969,9 +969,15 @@ type OriginHealth struct {
 	// End of the current down period, unset while healthy.
 	DownUntil *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=down_until,json=downUntil,proto3" json:"down_until,omitempty"`
 	// Short description of the last failure, e.g. "connect timeout".
-	LastError     string `protobuf:"bytes,7,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	LastError string `protobuf:"bytes,7,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// Stable code of the last failure, e.g. "connect_timeout", with its
+	// parameters (e.g. "status" for "upstream_status"); the console localizes
+	// the code and falls back to last_error for codes it does not know.
+	// Added in v0.2.1.
+	LastErrorCode   string            `protobuf:"bytes,8,opt,name=last_error_code,json=lastErrorCode,proto3" json:"last_error_code,omitempty"`
+	LastErrorParams map[string]string `protobuf:"bytes,9,rep,name=last_error_params,json=lastErrorParams,proto3" json:"last_error_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *OriginHealth) Reset() {
@@ -1051,6 +1057,20 @@ func (x *OriginHealth) GetLastError() string {
 		return x.LastError
 	}
 	return ""
+}
+
+func (x *OriginHealth) GetLastErrorCode() string {
+	if x != nil {
+		return x.LastErrorCode
+	}
+	return ""
+}
+
+func (x *OriginHealth) GetLastErrorParams() map[string]string {
+	if x != nil {
+		return x.LastErrorParams
+	}
+	return nil
 }
 
 // ReportStatusResponse tells the node what the console expects next.
@@ -1908,9 +1928,15 @@ type ReportTaskResultRequest struct {
 	// Human-readable detail, e.g. the URLs that failed to prefetch.
 	Message string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	// Targets that succeeded and failed.
-	Succeeded     uint32                 `protobuf:"varint,4,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
-	Failed        uint32                 `protobuf:"varint,5,opt,name=failed,proto3" json:"failed,omitempty"`
-	FinishedAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	Succeeded  uint32                 `protobuf:"varint,4,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
+	Failed     uint32                 `protobuf:"varint,5,opt,name=failed,proto3" json:"failed,omitempty"`
+	FinishedAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	// Stable code of the outcome when something failed, e.g.
+	// "prefetch_failed", with its parameters (e.g. "failed", "total",
+	// "first_url", "first_error"); the console localizes the code and falls
+	// back to message for codes it does not know. Added in v0.2.1.
+	ErrorCode     string            `protobuf:"bytes,7,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorParams   map[string]string `protobuf:"bytes,8,rep,name=error_params,json=errorParams,proto3" json:"error_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1983,6 +2009,20 @@ func (x *ReportTaskResultRequest) GetFailed() uint32 {
 func (x *ReportTaskResultRequest) GetFinishedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.FinishedAt
+	}
+	return nil
+}
+
+func (x *ReportTaskResultRequest) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *ReportTaskResultRequest) GetErrorParams() map[string]string {
+	if x != nil {
+		return x.ErrorParams
 	}
 	return nil
 }
@@ -2079,7 +2119,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"applied_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tappliedAt\x12,\n" +
 	"\x12data_plane_healthy\x18\a \x01(\bR\x10dataPlaneHealthy\x12N\n" +
 	"\x15certificate_not_after\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\x13certificateNotAfter\x12C\n" +
-	"\rorigin_health\x18\t \x03(\v2\x1e.edgeweir.node.v1.OriginHealthR\foriginHealth\"\xaf\x02\n" +
+	"\rorigin_health\x18\t \x03(\v2\x1e.edgeweir.node.v1.OriginHealthR\foriginHealth\"\xfc\x03\n" +
 	"\fOriginHealth\x12\x17\n" +
 	"\asite_id\x18\x01 \x01(\tR\x06siteId\x12\x1b\n" +
 	"\torigin_id\x18\x02 \x01(\tR\boriginId\x12\x18\n" +
@@ -2089,7 +2129,12 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"down_until\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tdownUntil\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\a \x01(\tR\tlastError\"\xc9\x01\n" +
+	"last_error\x18\a \x01(\tR\tlastError\x12&\n" +
+	"\x0flast_error_code\x18\b \x01(\tR\rlastErrorCode\x12_\n" +
+	"\x11last_error_params\x18\t \x03(\v23.edgeweir.node.v1.OriginHealth.LastErrorParamsEntryR\x0flastErrorParams\x1aB\n" +
+	"\x14LastErrorParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc9\x01\n" +
 	"\x14ReportStatusResponse\x12'\n" +
 	"\x0flatest_revision\x18\x01 \x01(\x04R\x0elatestRevision\x12+\n" +
 	"\x11renew_certificate\x18\x02 \x01(\bR\x10renewCertificate\x126\n" +
@@ -2145,7 +2190,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\asite_id\x18\x01 \x01(\tR\x06siteId\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\"J\n" +
 	"\fPrefetchTask\x12:\n" +
-	"\atargets\x18\x01 \x03(\v2 .edgeweir.node.v1.PrefetchTargetR\atargets\"\xf2\x01\n" +
+	"\atargets\x18\x01 \x03(\v2 .edgeweir.node.v1.PrefetchTargetR\atargets\"\xb0\x03\n" +
 	"\x17ReportTaskResultRequest\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x121\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1b.edgeweir.node.v1.TaskStateR\x05state\x12\x18\n" +
@@ -2153,7 +2198,13 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\tsucceeded\x18\x04 \x01(\rR\tsucceeded\x12\x16\n" +
 	"\x06failed\x18\x05 \x01(\rR\x06failed\x12;\n" +
 	"\vfinished_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"finishedAt\"\x1a\n" +
+	"finishedAt\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\a \x01(\tR\terrorCode\x12]\n" +
+	"\ferror_params\x18\b \x03(\v2:.edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntryR\verrorParams\x1a>\n" +
+	"\x10ErrorParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1a\n" +
 	"\x18ReportTaskResultResponse*u\n" +
 	"\n" +
 	"WatchEvent\x12\x1b\n" +
@@ -2201,7 +2252,7 @@ func file_edgeweir_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_edgeweir_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_edgeweir_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(WatchEvent)(0),                      // 0: edgeweir.node.v1.WatchEvent
 	(ApplyState)(0),                      // 1: edgeweir.node.v1.ApplyState
@@ -2234,62 +2285,66 @@ var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(*PrefetchTask)(nil),                 // 28: edgeweir.node.v1.PrefetchTask
 	(*ReportTaskResultRequest)(nil),      // 29: edgeweir.node.v1.ReportTaskResultRequest
 	(*ReportTaskResultResponse)(nil),     // 30: edgeweir.node.v1.ReportTaskResultResponse
-	nil,                                  // 31: edgeweir.node.v1.MinuteStats.StatusCodesEntry
-	(*timestamppb.Timestamp)(nil),        // 32: google.protobuf.Timestamp
-	(*NodeConfig)(nil),                   // 33: edgeweir.node.v1.NodeConfig
-	(*NodeConfigDiff)(nil),               // 34: edgeweir.node.v1.NodeConfigDiff
+	nil,                                  // 31: edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
+	nil,                                  // 32: edgeweir.node.v1.MinuteStats.StatusCodesEntry
+	nil,                                  // 33: edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
+	(*timestamppb.Timestamp)(nil),        // 34: google.protobuf.Timestamp
+	(*NodeConfig)(nil),                   // 35: edgeweir.node.v1.NodeConfig
+	(*NodeConfigDiff)(nil),               // 36: edgeweir.node.v1.NodeConfigDiff
 }
 var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
 	4,  // 0: edgeweir.node.v1.EnrollRequest.info:type_name -> edgeweir.node.v1.NodeInfo
-	32, // 1: edgeweir.node.v1.EnrollResponse.not_after:type_name -> google.protobuf.Timestamp
-	32, // 2: edgeweir.node.v1.RenewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	34, // 1: edgeweir.node.v1.EnrollResponse.not_after:type_name -> google.protobuf.Timestamp
+	34, // 2: edgeweir.node.v1.RenewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	0,  // 3: edgeweir.node.v1.WatchConfigResponse.event:type_name -> edgeweir.node.v1.WatchEvent
-	33, // 4: edgeweir.node.v1.GetConfigResponse.snapshot:type_name -> edgeweir.node.v1.NodeConfig
-	34, // 5: edgeweir.node.v1.GetConfigResponse.diff:type_name -> edgeweir.node.v1.NodeConfigDiff
-	32, // 6: edgeweir.node.v1.GetConfigResponse.generated_at:type_name -> google.protobuf.Timestamp
+	35, // 4: edgeweir.node.v1.GetConfigResponse.snapshot:type_name -> edgeweir.node.v1.NodeConfig
+	36, // 5: edgeweir.node.v1.GetConfigResponse.diff:type_name -> edgeweir.node.v1.NodeConfigDiff
+	34, // 6: edgeweir.node.v1.GetConfigResponse.generated_at:type_name -> google.protobuf.Timestamp
 	1,  // 7: edgeweir.node.v1.ReportStatusRequest.state:type_name -> edgeweir.node.v1.ApplyState
 	4,  // 8: edgeweir.node.v1.ReportStatusRequest.info:type_name -> edgeweir.node.v1.NodeInfo
-	32, // 9: edgeweir.node.v1.ReportStatusRequest.applied_at:type_name -> google.protobuf.Timestamp
-	32, // 10: edgeweir.node.v1.ReportStatusRequest.certificate_not_after:type_name -> google.protobuf.Timestamp
+	34, // 9: edgeweir.node.v1.ReportStatusRequest.applied_at:type_name -> google.protobuf.Timestamp
+	34, // 10: edgeweir.node.v1.ReportStatusRequest.certificate_not_after:type_name -> google.protobuf.Timestamp
 	14, // 11: edgeweir.node.v1.ReportStatusRequest.origin_health:type_name -> edgeweir.node.v1.OriginHealth
-	32, // 12: edgeweir.node.v1.OriginHealth.last_failure_at:type_name -> google.protobuf.Timestamp
-	32, // 13: edgeweir.node.v1.OriginHealth.down_until:type_name -> google.protobuf.Timestamp
-	32, // 14: edgeweir.node.v1.MinuteStats.minute:type_name -> google.protobuf.Timestamp
-	31, // 15: edgeweir.node.v1.MinuteStats.status_codes:type_name -> edgeweir.node.v1.MinuteStats.StatusCodesEntry
-	16, // 16: edgeweir.node.v1.ReportStatsRequest.stats:type_name -> edgeweir.node.v1.MinuteStats
-	20, // 17: edgeweir.node.v1.GetOriginCredentialsResponse.credentials:type_name -> edgeweir.node.v1.OriginCredential
-	24, // 18: edgeweir.node.v1.PullTasksResponse.tasks:type_name -> edgeweir.node.v1.NodeTask
-	32, // 19: edgeweir.node.v1.NodeTask.created_at:type_name -> google.protobuf.Timestamp
-	26, // 20: edgeweir.node.v1.NodeTask.purge:type_name -> edgeweir.node.v1.PurgeTask
-	28, // 21: edgeweir.node.v1.NodeTask.prefetch:type_name -> edgeweir.node.v1.PrefetchTask
-	2,  // 22: edgeweir.node.v1.PurgeTarget.type:type_name -> edgeweir.node.v1.PurgeType
-	25, // 23: edgeweir.node.v1.PurgeTask.targets:type_name -> edgeweir.node.v1.PurgeTarget
-	27, // 24: edgeweir.node.v1.PrefetchTask.targets:type_name -> edgeweir.node.v1.PrefetchTarget
-	3,  // 25: edgeweir.node.v1.ReportTaskResultRequest.state:type_name -> edgeweir.node.v1.TaskState
-	32, // 26: edgeweir.node.v1.ReportTaskResultRequest.finished_at:type_name -> google.protobuf.Timestamp
-	5,  // 27: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
-	7,  // 28: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
-	9,  // 29: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
-	11, // 30: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
-	13, // 31: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
-	17, // 32: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
-	19, // 33: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
-	22, // 34: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
-	29, // 35: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
-	6,  // 36: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
-	8,  // 37: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
-	10, // 38: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
-	12, // 39: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
-	15, // 40: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
-	18, // 41: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
-	21, // 42: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
-	23, // 43: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
-	30, // 44: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
-	36, // [36:45] is the sub-list for method output_type
-	27, // [27:36] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	34, // 12: edgeweir.node.v1.OriginHealth.last_failure_at:type_name -> google.protobuf.Timestamp
+	34, // 13: edgeweir.node.v1.OriginHealth.down_until:type_name -> google.protobuf.Timestamp
+	31, // 14: edgeweir.node.v1.OriginHealth.last_error_params:type_name -> edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
+	34, // 15: edgeweir.node.v1.MinuteStats.minute:type_name -> google.protobuf.Timestamp
+	32, // 16: edgeweir.node.v1.MinuteStats.status_codes:type_name -> edgeweir.node.v1.MinuteStats.StatusCodesEntry
+	16, // 17: edgeweir.node.v1.ReportStatsRequest.stats:type_name -> edgeweir.node.v1.MinuteStats
+	20, // 18: edgeweir.node.v1.GetOriginCredentialsResponse.credentials:type_name -> edgeweir.node.v1.OriginCredential
+	24, // 19: edgeweir.node.v1.PullTasksResponse.tasks:type_name -> edgeweir.node.v1.NodeTask
+	34, // 20: edgeweir.node.v1.NodeTask.created_at:type_name -> google.protobuf.Timestamp
+	26, // 21: edgeweir.node.v1.NodeTask.purge:type_name -> edgeweir.node.v1.PurgeTask
+	28, // 22: edgeweir.node.v1.NodeTask.prefetch:type_name -> edgeweir.node.v1.PrefetchTask
+	2,  // 23: edgeweir.node.v1.PurgeTarget.type:type_name -> edgeweir.node.v1.PurgeType
+	25, // 24: edgeweir.node.v1.PurgeTask.targets:type_name -> edgeweir.node.v1.PurgeTarget
+	27, // 25: edgeweir.node.v1.PrefetchTask.targets:type_name -> edgeweir.node.v1.PrefetchTarget
+	3,  // 26: edgeweir.node.v1.ReportTaskResultRequest.state:type_name -> edgeweir.node.v1.TaskState
+	34, // 27: edgeweir.node.v1.ReportTaskResultRequest.finished_at:type_name -> google.protobuf.Timestamp
+	33, // 28: edgeweir.node.v1.ReportTaskResultRequest.error_params:type_name -> edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
+	5,  // 29: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
+	7,  // 30: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
+	9,  // 31: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
+	11, // 32: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
+	13, // 33: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
+	17, // 34: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
+	19, // 35: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
+	22, // 36: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
+	29, // 37: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
+	6,  // 38: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
+	8,  // 39: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
+	10, // 40: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
+	12, // 41: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
+	15, // 42: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
+	18, // 43: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
+	21, // 44: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
+	23, // 45: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
+	30, // 46: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
+	38, // [38:47] is the sub-list for method output_type
+	29, // [29:38] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_node_proto_init() }
@@ -2312,7 +2367,7 @@ func file_edgeweir_node_v1_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_node_proto_rawDesc), len(file_edgeweir_node_v1_node_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   28,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

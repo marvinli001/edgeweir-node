@@ -363,9 +363,14 @@ type NodeConfig struct {
 	// Sites served by the cluster. Hot-updated without reloading the engine.
 	Sites []*Site `protobuf:"bytes,6,rep,name=sites,proto3" json:"sites,omitempty"`
 	// TLS certificates referenced by sites.
-	Certificates  []*CertificateRef `protobuf:"bytes,7,rep,name=certificates,proto3" json:"certificates,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Certificates []*CertificateRef `protobuf:"bytes,7,rep,name=certificates,proto3" json:"certificates,omitempty"`
+	// CIDRs origins may use although they are special-purpose addresses
+	// (loopback, link-local, private, CGNAT...), which nodes otherwise refuse
+	// both as configured literals and as DNS answers. Set by the platform
+	// administrator; empty by default. Added in v0.2.1.
+	OriginAllowedCidrs []string `protobuf:"bytes,8,rep,name=origin_allowed_cidrs,json=originAllowedCidrs,proto3" json:"origin_allowed_cidrs,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *NodeConfig) Reset() {
@@ -447,6 +452,13 @@ func (x *NodeConfig) GetCertificates() []*CertificateRef {
 	return nil
 }
 
+func (x *NodeConfig) GetOriginAllowedCidrs() []string {
+	if x != nil {
+		return x.OriginAllowedCidrs
+	}
+	return nil
+}
+
 // NodeConfigDiff transforms the config at base_revision into revision.
 // Listeners, cache zones and certificates are small and always sent in full.
 type NodeConfigDiff struct {
@@ -468,9 +480,11 @@ type NodeConfigDiff struct {
 	// Ids of sites that were removed.
 	RemovedSiteIds []string `protobuf:"bytes,8,rep,name=removed_site_ids,json=removedSiteIds,proto3" json:"removed_site_ids,omitempty"`
 	// Full certificate reference set of the target revision.
-	Certificates  []*CertificateRef `protobuf:"bytes,9,rep,name=certificates,proto3" json:"certificates,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Certificates []*CertificateRef `protobuf:"bytes,9,rep,name=certificates,proto3" json:"certificates,omitempty"`
+	// Full origin allow list of the target revision (NodeConfig field 8).
+	OriginAllowedCidrs []string `protobuf:"bytes,10,rep,name=origin_allowed_cidrs,json=originAllowedCidrs,proto3" json:"origin_allowed_cidrs,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *NodeConfigDiff) Reset() {
@@ -562,6 +576,13 @@ func (x *NodeConfigDiff) GetRemovedSiteIds() []string {
 func (x *NodeConfigDiff) GetCertificates() []*CertificateRef {
 	if x != nil {
 		return x.Certificates
+	}
+	return nil
+}
+
+func (x *NodeConfigDiff) GetOriginAllowedCidrs() []string {
+	if x != nil {
+		return x.OriginAllowedCidrs
 	}
 	return nil
 }
@@ -1453,8 +1474,13 @@ type CacheRule struct {
 	// Serve a stale object for this long after it expired when the origin
 	// fails (RFC 5861); 0 disables it.
 	StaleIfErrorSeconds uint32 `protobuf:"varint,8,opt,name=stale_if_error_seconds,json=staleIfErrorSeconds,proto3" json:"stale_if_error_seconds,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Cache responses to requests that carry an Authorization header. Off
+	// (the default), such requests bypass the cache and their responses are
+	// never stored (RFC 9111 section 3.5). Added in v0.2.1; older agents
+	// ignore it and keep their previous behavior.
+	CacheAuthorized bool `protobuf:"varint,9,opt,name=cache_authorized,json=cacheAuthorized,proto3" json:"cache_authorized,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CacheRule) Reset() {
@@ -1541,6 +1567,13 @@ func (x *CacheRule) GetStaleIfErrorSeconds() uint32 {
 		return x.StaleIfErrorSeconds
 	}
 	return 0
+}
+
+func (x *CacheRule) GetCacheAuthorized() bool {
+	if x != nil {
+		return x.CacheAuthorized
+	}
+	return false
 }
 
 // CacheRuleMatch is the condition of a cache rule. Empty lists match all
@@ -1722,7 +1755,7 @@ var File_edgeweir_node_v1_config_proto protoreflect.FileDescriptor
 
 const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1dedgeweir/node/v1/config.proto\x12\x10edgeweir.node.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd6\x02\n" +
+	"\x1dedgeweir/node/v1/config.proto\x12\x10edgeweir.node.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x88\x03\n" +
 	"\n" +
 	"NodeConfig\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x04R\brevision\x12!\n" +
@@ -1733,7 +1766,8 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\vcache_zones\x18\x05 \x03(\v2\x1b.edgeweir.node.v1.CacheZoneR\n" +
 	"cacheZones\x12,\n" +
 	"\x05sites\x18\x06 \x03(\v2\x16.edgeweir.node.v1.SiteR\x05sites\x12D\n" +
-	"\fcertificates\x18\a \x03(\v2 .edgeweir.node.v1.CertificateRefR\fcertificates\"\xba\x03\n" +
+	"\fcertificates\x18\a \x03(\v2 .edgeweir.node.v1.CertificateRefR\fcertificates\x120\n" +
+	"\x14origin_allowed_cidrs\x18\b \x03(\tR\x12originAllowedCidrs\"\xec\x03\n" +
 	"\x0eNodeConfigDiff\x12#\n" +
 	"\rbase_revision\x18\x01 \x01(\x04R\fbaseRevision\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12!\n" +
@@ -1745,7 +1779,9 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"cacheZones\x12=\n" +
 	"\x0eupserted_sites\x18\a \x03(\v2\x16.edgeweir.node.v1.SiteR\rupsertedSites\x12(\n" +
 	"\x10removed_site_ids\x18\b \x03(\tR\x0eremovedSiteIds\x12D\n" +
-	"\fcertificates\x18\t \x03(\v2 .edgeweir.node.v1.CertificateRefR\fcertificates\"\xb1\x01\n" +
+	"\fcertificates\x18\t \x03(\v2 .edgeweir.node.v1.CertificateRefR\fcertificates\x120\n" +
+	"\x14origin_allowed_cidrs\x18\n" +
+	" \x03(\tR\x12originAllowedCidrs\"\xb1\x01\n" +
 	"\bListener\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\rR\x04port\x12>\n" +
 	"\bprotocol\x18\x02 \x01(\x0e2\".edgeweir.node.v1.ListenerProtocolR\bprotocol\x12\x14\n" +
@@ -1824,7 +1860,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x06region\x18\x01 \x01(\tR\x06region\x12\x16\n" +
 	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12#\n" +
 	"\rcredential_id\x18\x03 \x01(\tR\fcredentialId\x12-\n" +
-	"\x12credential_version\x18\x04 \x01(\x04R\x11credentialVersion\"\xa2\x03\n" +
+	"\x12credential_version\x18\x04 \x01(\x04R\x11credentialVersion\"\xcd\x03\n" +
 	"\tCacheRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bpriority\x18\x02 \x01(\rR\bpriority\x126\n" +
@@ -1833,7 +1869,8 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x10edge_ttl_seconds\x18\x05 \x01(\rR\x0eedgeTtlSeconds\x12V\n" +
 	"\x14origin_cache_control\x18\x06 \x01(\x0e2$.edgeweir.node.v1.OriginCacheControlR\x12originCacheControl\x12C\n" +
 	"\x1estale_while_revalidate_seconds\x18\a \x01(\rR\x1bstaleWhileRevalidateSeconds\x123\n" +
-	"\x16stale_if_error_seconds\x18\b \x01(\rR\x13staleIfErrorSeconds\"\xfa\x01\n" +
+	"\x16stale_if_error_seconds\x18\b \x01(\rR\x13staleIfErrorSeconds\x12)\n" +
+	"\x10cache_authorized\x18\t \x01(\bR\x0fcacheAuthorized\"\xfa\x01\n" +
 	"\x0eCacheRuleMatch\x12#\n" +
 	"\rpath_prefixes\x18\x01 \x03(\tR\fpathPrefixes\x12\x1e\n" +
 	"\n" +
