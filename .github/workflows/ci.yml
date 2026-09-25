@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go vet + test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go mod verify
+      - name: gofmt
+        run: test -z "$(gofmt -l cmd internal test)" || { gofmt -l cmd internal test; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  proto:
+    name: generated code is fresh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: 1.73.0
+          setup_only: true
+      # Same tag as the Makefile's PROTO_TAG, but fetched from GitHub.
+      - run: make proto-check PROTO_INPUT='https://github.com/edgeweir/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
+
+  lua:
+    name: Lua unit tests (resty)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make lua-test
+
+  goreleaser:
+    name: goreleaser check + snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: anchore/sbom-action/download-syft@v0
+        with:
+          syft-version: v1.52.0
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snapshot-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.sbom.json
+            dist/checksums.txt
+          retention-days: 7
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: edgeweir-node:ci
+      - name: serves 404 unknown-host before enrollment
+        run: |
+          docker run --rm -d --name node -p 18081:80 edgeweir-node:ci
+          for i in $(seq 30); do curl -s -o /dev/null localhost:18081/ && break; sleep 1; done
+          curl -si -H 'Host: x.test' localhost:18081/ | tee /tmp/resp
+          grep -q '^HTTP/1.1 404' /tmp/resp
+          grep -qi '^X-Edgeweir-Error: unknown-host' /tmp/resp
+          docker stop node
+
+  e2e:
+    name: container smoke test (fake console)
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v7
+      - run: make e2e
+        env:
+          E2E_STATS: "1"
