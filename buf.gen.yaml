@@ -1,0 +1,25 @@
+# Go code generation for the node channel contract.
+#
+# The protobuf sources live in the console repository (edgeweir/edgeweir,
+# directory proto/) and are consumed from a git tag, never copied here.
+# Run `make proto` (local sibling checkout) or, as CI does:
+#   buf generate "https://github.com/edgeweir/edgeweir.git#tag=proto/v0.1.0,subdir=proto"
+#
+# The plugins are pinned through the `tool` directives in go.mod, so the
+# generator versions always match the runtime libraries in go.sum.
+version: v2
+clean: true
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/edgeweir/edgeweir-node/internal/gen
+plugins:
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: internal/gen
+    opt:
+      - paths=source_relative
+  - local: ["go", "tool", "protoc-gen-connect-go"]
+    out: internal/gen
+    opt:
+      - paths=source_relative
