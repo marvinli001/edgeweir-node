@@ -16,8 +16,11 @@
 #     writable+executable memory.
 #   - AF_NETLINK is allowed for enumerating interface addresses reported to
 #     the console.
-# Enroll first (as root is fine: files are handed to the service user):
-#   sudo EDGEWEIR_TOKEN=... edgeweir-node enroll --server https://console:8443 --ca-sha256 ...
+# Enroll first (as root is fine: files are handed to the service user). The
+# token goes through the environment or --token-file, never the command line
+# (`sudo EDGEWEIR_TOKEN=...` and --token show it in ps):
+#   export EDGEWEIR_TOKEN='<token>'
+#   sudo --preserve-env=EDGEWEIR_TOKEN edgeweir-node enroll --server https://console:8443 --ca-sha256 ...
 #   sudo systemctl enable --now edgeweir-node
 
 [Unit]

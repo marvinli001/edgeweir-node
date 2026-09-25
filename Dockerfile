@@ -4,8 +4,13 @@
 #
 #   docker build -t edgeweir-node:dev .
 #   docker run -d -p 80:80 -v edgeweir-node:/var/lib/edgeweir-node edgeweir-node:dev
-#   docker exec <container> edgeweir-node enroll --server https://console:8443 \
-#       --token <token> --ca-sha256 <sha256>
+#   read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # paste the one-time token
+#   docker exec -e EDGEWEIR_TOKEN <container> edgeweir-node enroll \
+#       --server https://console:8443 --ca-sha256 <sha256>
+#
+# `-e EDGEWEIR_TOKEN` without a value passes the variable from the current
+# environment, so the token never appears on a command line (--token would
+# show it in ps).
 #
 # The agent starts OpenResty immediately with a bootstrap configuration
 # (404 X-Edgeweir-Error: unknown-host on :80), waits until the node is
