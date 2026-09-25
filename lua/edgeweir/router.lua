@@ -150,8 +150,11 @@ function _M.access()
     var.edgeweir_range_mode = "pass"
     return
   end
-  local chain = rules.chain(site, var.uri)
-  if not rules.may_cache(chain) then
+  -- RFC 9111, section 3.5: responses to requests with Authorization are
+  -- shared only when the applying rule allows it (cache_authorized).
+  local authorized = var.http_authorization ~= nil
+  local chain = rules.chain(site, var.uri, authorized)
+  if not rules.may_cache(chain, authorized) then
     var.edgeweir_range_mode = "pass"
     return
   end

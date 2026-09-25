@@ -10,6 +10,10 @@
 -- and including the first rule that matches every response (later rules can
 -- never apply). decide() picks the first rule of the chain whose response
 -- conditions match.
+--
+-- Requests that carry Authorization (RFC 9111, section 3.5): a caching rule
+-- without cache_authorized acts as a bypass rule for them, so they are
+-- neither looked up nor stored unless the rule that applies allows it.
 local _M = {}
 
 local sub = string.sub
@@ -53,11 +57,24 @@ function _M.prepare(rule)
   rule.max_size = tonumber(rule.max_size) or 0
   rule.swr = tonumber(rule.swr) or 0
   rule.sie = tonumber(rule.sie) or 0
+  rule.cache_authorized = rule.cache_authorized == true
+  -- Acts as a bypass rule for requests with Authorization.
+  rule._auth_bypass = rule.action == "cache" and not rule.cache_authorized
   -- A rule without response conditions that bypasses or respects origin
   -- headers matches every response: rules after it can never apply.
-  rule._always = not rule._has_status and rule.min_size == 0 and rule.max_size == 0
-    and (rule.action ~= "cache" or rule.mode == "respect")
+  local unconditional = not rule._has_status and rule.min_size == 0 and rule.max_size == 0
+  rule._always = unconditional and (rule.action ~= "cache" or rule.mode == "respect")
+  rule._always_auth = unconditional and (rule.action ~= "cache" or rule._auth_bypass or rule.mode == "respect")
   return rule
+end
+
+-- action returns the action of rule for a request (authorized: it carries
+-- Authorization).
+function _M.action(rule, authorized)
+  if authorized and rule._auth_bypass then
+    return "bypass"
+  end
+  return rule.action
 end
 
 -- request_matches checks the request conditions against the normalized
@@ -91,7 +108,7 @@ end
 
 -- chain returns the list of rules that may decide the request (see above),
 -- or nil when none does.
-function _M.chain(site, uri)
+function _M.chain(site, uri, authorized)
   local rules = site.cache_rules
   if not rules then
     return nil
@@ -102,7 +119,7 @@ function _M.chain(site, uri)
     if _M.request_matches(r, uri) then
       out = out or {}
       out[#out + 1] = r
-      if r._always then
+      if (authorized and r._always_auth) or (not authorized and r._always) then
         break
       end
     end
@@ -117,13 +134,13 @@ function _M.match(site, uri)
   return c and c[1] or nil
 end
 
--- may_cache reports whether any rule of the chain caches.
-function _M.may_cache(chain)
+-- may_cache reports whether any rule of the chain caches the request.
+function _M.may_cache(chain, authorized)
   if not chain then
     return false
   end
   for i = 1, #chain do
-    if chain[i].action == "cache" then
+    if _M.action(chain[i], authorized) == "cache" then
       return true
     end
   end
@@ -141,13 +158,13 @@ end
 -- status codes, a caching rule that overrides origin headers only applies to
 -- the default cacheable statuses; bypass rules and rules that respect origin
 -- headers apply to any status.
-function _M.response_matches(rule, status, size)
+function _M.response_matches(rule, status, size, authorized)
   if rule._has_status then
     local s = status == 206 and 200 or status
     if not rule._status_set[s] then
       return false
     end
-  elseif rule.action == "cache" and rule.mode ~= "respect" and not DEFAULT_CACHEABLE[status] then
+  elseif _M.action(rule, authorized) == "cache" and rule.mode ~= "respect" and not DEFAULT_CACHEABLE[status] then
     return false
   end
   if rule.min_size > 0 or rule.max_size > 0 then
@@ -165,12 +182,12 @@ function _M.response_matches(rule, status, size)
 end
 
 -- decide returns the rule of chain that applies to the response, or nil.
-function _M.decide(chain, status, size)
+function _M.decide(chain, status, size, authorized)
   if not chain then
     return nil
   end
   for i = 1, #chain do
-    if _M.response_matches(chain[i], status, size) then
+    if _M.response_matches(chain[i], status, size, authorized) then
       return chain[i]
     end
   end

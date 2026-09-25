@@ -143,6 +143,19 @@ curl -fsS -H 'Host: keyed.test' "${pad[@]}" -H 'Accept-Language: en' "$NODE/keye
   fail "keyed.test served the wrong variant"
 pass "cache key reads every request header"
 
+# RFC 9111 3.5: requests with Authorization bypass the cache unless the
+# rule sets cache_authorized.
+x_cache_auth() { # host path
+  curl -s -o /dev/null -D - -H "Host: $1" -H 'Authorization: Bearer e2e' "$NODE$2" |
+    tr -d '\r' | awk -F': ' 'tolower($1)=="x-cache"{print $2}'
+}
+[ "$(x_cache_auth demo.test /auth)" = BYPASS ] || fail "Authorization request was looked up in the cache"
+[ "$(x_cache_auth demo.test /auth)" = BYPASS ] || fail "Authorization response was stored"
+[ "$(x_cache_path demo.test /auth)" = MISS ] || fail "anonymous request after Authorization requests is not a MISS"
+[ "$(x_cache_auth auth.test /auth)" = MISS ] || fail "cache_authorized rule: first request is not a MISS"
+[ "$(x_cache_auth auth.test /auth)" = HIT ] || fail "cache_authorized rule: second request is not a HIT"
+pass "Authorization bypasses the cache unless the rule allows it"
+
 # Purges match nginx's normalized path: /%73tatic/ is /static/.
 [ "$(x_cache_path demo.test /%73tatic/e2e.js)" = MISS ] || fail "/%73tatic/e2e.js first request is not a MISS"
 [ "$(x_cache_path demo.test /static/e2e.js)" = HIT ] || fail "/static/e2e.js does not share the key of /%73tatic/e2e.js"

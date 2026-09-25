@@ -120,6 +120,8 @@ function _M.access()
   local ctx = ngx.ctx
   ctx.site = site
   ctx.chain = chain_from_header(site, var.http_x_edgeweir_rules)
+  -- The edge forwards the client's Authorization unchanged.
+  ctx.authorized = var.http_authorization ~= nil
   ctx.upgrade = var.http_upgrade ~= nil and var.http_upgrade ~= ""
 
   local now = ngx.now()
@@ -262,13 +264,13 @@ local FRESHNESS = {
   ["public"] = true, ["must-revalidate"] = true, ["proxy-revalidate"] = true,
 }
 
-local function stale_capable(chain)
+local function stale_capable(chain, authorized)
   if not chain then
     return false
   end
   for i = 1, #chain do
     local r = chain[i]
-    if r.action == "cache" and (r.sie > 0 or r.mode == "respect") then
+    if rules.action(r, authorized) == "cache" and (r.sie > 0 or r.mode == "respect") then
       return true
     end
   end
@@ -278,11 +280,12 @@ end
 -- decide returns what the origin layer adds to a response for the edge
 -- cache: { accel_expires = seconds or nil, cache_control = string or nil,
 -- stash = original Cache-Control ("-" when absent) or nil }.
--- cc and expires are the origin's Cache-Control and Expires values.
-function _M.decide(chain, status, size, cc, expires)
+-- cc and expires are the origin's Cache-Control and Expires values;
+-- authorized tells whether the request carried Authorization.
+function _M.decide(chain, status, size, cc, expires, authorized)
   local out = {}
-  local rule = rules.decide(chain, status, size)
-  if not rule or rule.action ~= "cache" then
+  local rule = rules.decide(chain, status, size, authorized)
+  if not rule or rules.action(rule, authorized) ~= "cache" then
     out.accel_expires = 0
     return out
   end
@@ -324,7 +327,7 @@ function _M.header_filter()
   end
   local status = ngx.status
   local chain = ctx.chain
-  if status >= 500 and ngx.var.http_x_edgeweir_cache_status == "EXPIRED" and stale_capable(chain) then
+  if status >= 500 and ngx.var.http_x_edgeweir_cache_status == "EXPIRED" and stale_capable(chain, ctx.authorized) then
     -- Close without a response: the edge sees a transport error and serves
     -- its stale copy if stale-if-error allows it.
     return ngx.exit(ngx.ERROR)
@@ -332,7 +335,7 @@ function _M.header_filter()
   if not chain then
     return -- the edge does not cache this request
   end
-  local d = _M.decide(chain, status, response_size(h, status), flatten(h["Cache-Control"]), h["Expires"])
+  local d = _M.decide(chain, status, response_size(h, status), flatten(h["Cache-Control"]), h["Expires"], ctx.authorized)
   if d.accel_expires ~= nil then
     h["X-Accel-Expires"] = d.accel_expires
   end

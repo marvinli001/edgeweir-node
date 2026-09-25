@@ -149,7 +149,15 @@ func baseSites(origin string) []*nodev1.Site {
 		tlsSite("site-tls-ok", "tls-ok.test", "origin.test"),
 		tlsSite("site-tls-bad", "tls-bad.test", "wrong.test"),
 		keyedSite(origin),
+		authSite(origin),
 	}
+}
+
+// authSite caches requests with Authorization (cache_authorized).
+func authSite(origin string) *nodev1.Site {
+	s := site("site-auth", "auth.test", origin, 80)
+	s.CacheRules[0].CacheAuthorized = true
+	return s
 }
 
 // keyedSite varies its cache key on Accept-Language.

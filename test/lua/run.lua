@@ -383,6 +383,42 @@ test("origin.decide sets TTLs like accel_expires did", function()
   eq(origin.decide(status, 200, 1, nil, nil).accel_expires, 0)
 end)
 
+test("requests with Authorization bypass the cache unless the rule allows them", function()
+  local s = {
+    cache_rules = {
+      rules.prepare({ id = "api", action = "cache", ttl = 60, mode = "override", path_prefixes = { "/api/" }, cache_authorized = true }),
+      rules.prepare({ id = "all", action = "cache", ttl = 60, mode = "override" }),
+    },
+  }
+  -- Without Authorization both rules cache.
+  local chain = rules.chain(s, "/page", false)
+  eq(rules.may_cache(chain, false), true)
+  eq(origin.decide(chain, 200, 10, nil, nil, false).accel_expires, 60)
+  -- With Authorization the rule without cache_authorized neither looks up
+  -- (may_cache false: the edge bypasses) nor stores.
+  chain = rules.chain(s, "/page", true)
+  eq(rules.may_cache(chain, true), false, "no lookup")
+  eq(origin.decide(chain, 200, 10, nil, nil, true).accel_expires, 0, "no store")
+  eq(origin.decide(chain, 200, 10, "public, max-age=600", nil, true).accel_expires, 0, "not even when the origin says public")
+  -- A rule with cache_authorized caches authorized requests.
+  chain = rules.chain(s, "/api/x", true)
+  eq(rules.may_cache(chain, true), true)
+  eq(origin.decide(chain, 200, 10, nil, nil, true).accel_expires, 60)
+  -- A caching rule without cache_authorized ends the chain for authorized
+  -- requests like a bypass rule: later rules cannot apply.
+  local t = {
+    cache_rules = {
+      rules.prepare({ id = "first", action = "cache", ttl = 5, mode = "override" }),
+      rules.prepare({ id = "later", action = "cache", ttl = 9, mode = "override", cache_authorized = true }),
+    },
+  }
+  eq(#rules.chain(t, "/x", true), 1)
+  eq(rules.may_cache(rules.chain(t, "/x", true), true), false)
+  eq(#rules.chain(t, "/x", false), 2, "override rules keep the chain open for others")
+  eq(rules.action(t.cache_rules[1], true), "bypass")
+  eq(rules.action(t.cache_rules[1], false), "cache")
+end)
+
 test("origin.decide carries stale-while-revalidate and stale-if-error", function()
   local override = prepared_chain({ { id = "o", action = "cache", ttl = 60, mode = "override", swr = 30, sie = 600 } })
   local d = origin.decide(override, 200, 10, "no-cache, private, stale-if-error=5, x-custom", nil)

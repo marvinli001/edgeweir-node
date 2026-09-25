@@ -153,3 +153,24 @@ func TestBuildDropsInvalidM2Parts(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCacheAuthorized(t *testing.T) {
+	cfg := vectorConfig()
+	cfg.Sites[0].CacheRules[0].CacheAuthorized = true
+	p, err := Build(cfg, Options{ClusterID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := p.Sites[0].CacheRules[0]
+	if !r.CacheAuthorized {
+		t.Fatalf("rule = %+v", r)
+	}
+	b, _ := json.Marshal(r)
+	if !strings.Contains(string(b), `"cache_authorized":true`) {
+		t.Fatalf("rule JSON %s lacks cache_authorized", b)
+	}
+	p, _ = Build(vectorConfig(), Options{ClusterID: "c1"})
+	if b, _ := json.Marshal(p.Sites[0].CacheRules[0]); strings.Contains(string(b), "cache_authorized") {
+		t.Fatalf("default rule JSON %s must leave cache_authorized out (false)", b)
+	}
+}

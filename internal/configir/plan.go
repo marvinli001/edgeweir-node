@@ -211,6 +211,9 @@ type CacheRule struct {
 	// StaleWhileRevalidate and StaleIfError are seconds (RFC 5861).
 	StaleWhileRevalidate uint32 `json:"swr,omitempty"`
 	StaleIfError         uint32 `json:"sie,omitempty"`
+	// CacheAuthorized lets the rule cache requests that carry
+	// Authorization; otherwise they bypass the cache (RFC 9111, 3.5).
+	CacheAuthorized bool `json:"cache_authorized,omitempty"`
 }
 
 // CredentialRefs returns the S3 credentials the plan needs, id -> version.
@@ -617,6 +620,7 @@ func buildRule(r *nodev1.CacheRule) (CacheRule, bool, string) {
 		TTL:                  r.GetEdgeTtlSeconds(),
 		StaleWhileRevalidate: r.GetStaleWhileRevalidateSeconds(),
 		StaleIfError:         r.GetStaleIfErrorSeconds(),
+		CacheAuthorized:      r.GetCacheAuthorized(),
 	}
 	switch r.GetAction() {
 	case nodev1.CacheAction_CACHE_ACTION_CACHE:
