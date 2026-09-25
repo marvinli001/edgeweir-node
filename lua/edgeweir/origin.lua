@@ -65,6 +65,23 @@ local function chain_from_header(site, value)
   return chain
 end
 
+-- amz_headers returns the client's x-amz-* request header names (sorted).
+-- S3 origins must never receive them: SigV4 covers every x-amz-* header
+-- and this node signs only its own, so a forwarded one
+-- (x-amz-security-token, x-amz-server-side-encryption-customer-key,
+-- x-amz-request-payer, ...) would travel unsigned and either break the
+-- signature or change what the origin does.
+function _M.amz_headers(headers)
+  local out = {}
+  for name in pairs(headers or {}) do
+    if string.lower(sub(name, 1, 6)) == "x-amz-" then
+      out[#out + 1] = name
+    end
+  end
+  table.sort(out)
+  return out
+end
+
 local function raw_path(request_uri)
   local q = find(request_uri, "?", 1, true)
   return q and sub(request_uri, 1, q - 1) or request_uri
@@ -167,6 +184,14 @@ function _M.access()
       return fail(ngx.HTTP_NOT_ALLOWED, "method-not-allowed")
     end
     return fail(ngx.HTTP_BAD_GATEWAY, "no-origin")
+  end
+  for i = 1, #cands do
+    if cands[i].origin.s3 then
+      for _, name in ipairs(_M.amz_headers(ngx.req.get_headers(0))) do
+        ngx.req.clear_header(name)
+      end
+      break
+    end
   end
   ctx.cands = cands
   ctx.tried = {}

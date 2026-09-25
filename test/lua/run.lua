@@ -359,6 +359,16 @@ test("health counts consecutive failures and reports them", function()
   health.success("site-1", "shared")
 end)
 
+test("origin.amz_headers finds the client's x-amz-* headers for S3 origins", function()
+  local names = origin.amz_headers({
+    ["x-amz-security-token"] = "t", ["X-Amz-Server-Side-Encryption-Customer-Key"] = "k",
+    ["x-amz-date"] = "20260101T000000Z", ["range"] = "bytes=0-1", ["x-amzing"] = "no", ["authorization"] = "Bearer x",
+  })
+  eq(table.concat(names, ","), "X-Amz-Server-Side-Encryption-Customer-Key,x-amz-date,x-amz-security-token")
+  eq(#origin.amz_headers({}), 0)
+  eq(#origin.amz_headers(nil), 0)
+end)
+
 test("origin.classify maps attempts to error codes", function()
   local code, params, text = origin.classify("502", false, false)
   eq(code, "connect_failed")
