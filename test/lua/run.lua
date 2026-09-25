@@ -253,6 +253,21 @@ test("health counts consecutive failures and reports them", function()
   eq(entry.healthy, false)
   eq(entry.last_error, "timeout")
   eq(entry.down_until, 2012)
+  -- After the recovery time traffic may try it again, but it stays
+  -- unhealthy until a request succeeds.
+  for _, r in ipairs(health.report(2020)) do
+    if r.origin_id == "x" then
+      eq(r.healthy, false, "unhealthy until a success")
+      eq(r.down_until, 0, "no longer held down")
+    end
+  end
+  eq(health.failure("hs2", "y", "timeout", 3, 10, 2000), false)
+  for _, r in ipairs(health.report(2001)) do
+    if r.origin_id == "y" then
+      eq(r.healthy, true, "below max_fails counts as healthy")
+    end
+  end
+  health.success("y")
   -- One more failure after the recovery time marks it down again at once.
   eq(health.failure("hs2", "x", "timeout", 3, 10, 2013), true)
   health.success("x")
