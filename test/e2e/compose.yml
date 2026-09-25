@@ -1,0 +1,30 @@
+# Container smoke test: fake console + edgeweir-node + whoami origin.
+# Run with `make e2e` (test/e2e/run.sh). The real end-to-end test with the
+# console lives in the edgeweir repository (compose.e2e.yml).
+name: edgeweir-node-e2e
+
+services:
+  console:
+    build:
+      context: ../..
+      dockerfile: test/e2e/fakeconsole/Dockerfile
+    ports:
+      - "127.0.0.1:${E2E_HELPER_PORT:-18090}:8081"
+
+  whoami:
+    image: traefik/whoami:v1.11.0
+
+  node:
+    build:
+      context: ../..
+    image: edgeweir-node:e2e
+    depends_on:
+      - console
+      - whoami
+    ports:
+      - "127.0.0.1:${E2E_NODE_PORT:-18080}:80"
+    volumes:
+      - node-state:/var/lib/edgeweir-node
+
+volumes:
+  node-state:
