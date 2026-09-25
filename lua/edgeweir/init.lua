@@ -7,8 +7,13 @@ local _M = {}
 
 -- init(opts): opts.resolvers are the nameservers of nginx's `resolver`
 -- directive, opts.ipv6 whether AAAA records are used.
+_M.conf_id = ""
+
 function _M.init(opts)
   opts = opts or {}
+  -- Id of the nginx.conf being loaded (reported by GET /v1/status; the
+  -- agent checks it after a reload).
+  _M.conf_id = type(opts.conf_id) == "string" and opts.conf_id or ""
   -- Load every module eagerly: workers inherit them after fork.
   require("edgeweir.ipaddr")
   require("edgeweir.store")

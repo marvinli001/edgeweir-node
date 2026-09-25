@@ -3,7 +3,7 @@
 -- Served only on a unix socket (see nginx.conf); never exposed over TCP.
 --
 --   GET  /v1/health           liveness
---   GET  /v1/status           {version, revision, content_hash, site_count, purge, ...}
+--   GET  /v1/status           {version, revision, content_hash, site_count, purge, conf_id, ...}
 --   PUT  /v1/sites            replace the whole site table atomically
 --   POST /v1/stats/drain      return and delete completed per-minute counters
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
@@ -65,6 +65,7 @@ function _M.handle()
     st.nginx_version = ngx.config.nginx_version
     st.ngx_lua_version = ngx.config.ngx_lua_version
     st.worker_pid = ngx.worker.pid()
+    st.conf_id = require("edgeweir.init").conf_id
     return reply(200, st)
   end
 

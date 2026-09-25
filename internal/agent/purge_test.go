@@ -23,6 +23,8 @@ import (
 type enrolled struct {
 	console *fakeconsole.Console
 	dp      *fakedataplane.Server
+	eng     *fakeEngine
+	cfg     agent.Config
 	h       *harness
 	rev     uint64
 }
@@ -51,7 +53,8 @@ func startEnrolledConfig(t *testing.T, name string, mutate func(*agent.Config), 
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	startAgent(t, cfg, newFakeEngine(), dataplane.NewClient(dp.Socket))
+	eng := newFakeEngine()
+	startAgent(t, cfg, eng, dataplane.NewClient(dp.Socket))
 	console.AddToken(name + "-token")
 	if _, err := enroll.Run(context.Background(), enroll.Options{
 		ServerURL: srv.URL, Token: name + "-token", CASHA256: console.CA.Pin(), StateDir: h.stateDir, Logger: testLogger(t),
@@ -59,7 +62,7 @@ func startEnrolledConfig(t *testing.T, name string, mutate func(*agent.Config), 
 		t.Fatal(err)
 	}
 	eventually(t, "configuration applied", statusWith(console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
-	return &enrolled{console: console, dp: dp, h: h, rev: rev}
+	return &enrolled{console: console, dp: dp, eng: eng, cfg: cfg, h: h, rev: rev}
 }
 
 func purgeTask(id string, created time.Time, targets ...*nodev1.PurgeTarget) *nodev1.NodeTask {

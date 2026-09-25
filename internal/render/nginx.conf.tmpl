@@ -48,6 +48,9 @@ http {
         require("edgeweir.init").init({
             resolvers = { {{- range $i, $r := .Resolvers }}{{ if $i }}, {{ end }}"{{ $r }}"{{ end -}} },
             ipv6 = {{ .ResolverIPv6 }},
+            -- Identifies this file; GET /v1/status reports it, so the agent
+            -- can tell that a reload really loaded it.
+            conf_id = "{{ .ConfID }}",
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }

@@ -43,6 +43,9 @@ http {
         require("edgeweir.init").init({
             resolvers = {"10.0.0.2", "[2001:db8::53]"},
             ipv6 = true,
+            -- Identifies this file; GET /v1/status reports it, so the agent
+            -- can tell that a reload really loaded it.
+            conf_id = "e0ade91e14da026c",
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }

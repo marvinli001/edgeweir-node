@@ -8,7 +8,9 @@ package render
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -151,6 +153,7 @@ func (p Params) validate() error {
 
 type data struct {
 	Params
+	ConfID       string
 	EdgeServers  []edgeServer
 	CacheZones   []configir.CacheZone
 	DefaultZone  string
@@ -205,8 +208,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 			return nil, fmt.Errorf("invalid cache zone name %q", z.Name)
 		}
 	}
-	var buf bytes.Buffer
-	err := tmpl.Execute(&buf, data{
+	d := data{
 		Params:      p,
 		EdgeServers: edgeServers(p, plan.Listeners),
 		CacheZones:  plan.CacheZones,
@@ -215,9 +217,31 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 			{Socket: p.OriginSocket, Verify: true},
 			{Socket: p.OriginSocketNoVerify, Verify: false},
 		},
-	})
-	if err != nil {
+	}
+	// The configuration id is the hash of the file rendered without it:
+	// equal settings give equal files, and the data plane reports the id
+	// of the file its workers loaded.
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, d); err != nil {
+		return nil, fmt.Errorf("render nginx.conf: %w", err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	d.ConfID = hex.EncodeToString(sum[:])[:16]
+	buf.Reset()
+	if err := tmpl.Execute(&buf, d); err != nil {
 		return nil, fmt.Errorf("render nginx.conf: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+var confIDRE = regexp.MustCompile(`(?m)^\s*conf_id = "([0-9a-f]{16})",$`)
+
+// ConfID returns the configuration id of a rendered nginx.conf ("" when it
+// has none).
+func ConfID(conf []byte) string {
+	m := confIDRE.FindSubmatch(conf)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
 }

@@ -76,6 +76,7 @@ type Config struct {
 	WatchBackoffMin    time.Duration // default 1s
 	WatchBackoffMax    time.Duration // default 30s
 	PushTimeout        time.Duration // retry budget for pushing a site table, default 15s
+	ReloadTimeout      time.Duration // wait for workers running a new nginx.conf, default 15s
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
 
@@ -108,6 +109,7 @@ func (c *Config) setDefaults() {
 	def(&c.WatchBackoffMin, time.Second)
 	def(&c.WatchBackoffMax, 30*time.Second)
 	def(&c.PushTimeout, 15*time.Second)
+	def(&c.ReloadTimeout, 15*time.Second)
 	def(&c.RPCTimeout, 30*time.Second)
 	def(&c.TaskPollInterval, 30*time.Second)
 	def(&c.PrefetchTimeout, time.Minute)

@@ -307,3 +307,25 @@ func TestRenderProxyProtocolRealIP(t *testing.T) {
 		t.Error("local edge socket expects the PROXY protocol")
 	}
 }
+
+// TestRenderConfID: every rendered file carries the id the data plane
+// reports after loading it (reload verification); equal settings give
+// equal ids, structural changes new ones.
+func TestRenderConfID(t *testing.T) {
+	a, _ := Render(params(), configir.Bootstrap(80))
+	b, _ := Render(params(), configir.Bootstrap(80))
+	c, _ := Render(params(), configir.Bootstrap(8080))
+	idA, idC := ConfID(a), ConfID(c)
+	if len(idA) != 16 || strings.Trim(idA, "0123456789abcdef") != "" {
+		t.Fatalf("conf id = %q", idA)
+	}
+	if ConfID(b) != idA || !bytes.Equal(a, b) {
+		t.Fatal("same settings, different files or ids")
+	}
+	if idC == idA {
+		t.Fatal("listener change kept the id")
+	}
+	if ConfID([]byte("worker_processes 1;")) != "" {
+		t.Fatal("id found in a file without one")
+	}
+}

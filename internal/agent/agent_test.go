@@ -32,6 +32,12 @@ type fakeEngine struct {
 	running bool
 	conf    string
 	started chan struct{}
+	// Wired by startAgent: Reload makes the fake data plane report the id
+	// of the installed nginx.conf, as nginx workers would; ignoreReloads
+	// simulates nginx rejecting a reload (it keeps the old workers).
+	confPath      string
+	dp            *fakedataplane.Server
+	ignoreReloads bool
 }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{started: make(chan struct{}, 1)} }
@@ -57,6 +63,11 @@ func (e *fakeEngine) Reload(context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.reloads++
+	if e.dp != nil && !e.ignoreReloads {
+		if b, err := os.ReadFile(e.confPath); err == nil {
+			e.dp.LoadConf(render.ConfID(b))
+		}
+	}
 	if !e.running {
 		e.running = true
 		select {
@@ -168,6 +179,13 @@ func (h *harness) agentConfig(controlSocket string) agent.Config {
 
 func startAgent(t *testing.T, cfg agent.Config, eng agent.Engine, dp agent.DataPlane) (stop func()) {
 	t.Helper()
+	if fe, ok := eng.(*fakeEngine); ok {
+		if c, ok := dp.(*dataplane.Client); ok {
+			fe.mu.Lock()
+			fe.confPath, fe.dp = cfg.ConfPath, fakedataplane.Lookup(c.Socket())
+			fe.mu.Unlock()
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a := agent.New(cfg, eng, dp, testLogger(t))
 	done := make(chan error, 1)

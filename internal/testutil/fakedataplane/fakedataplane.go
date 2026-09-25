@@ -38,6 +38,26 @@ type Server struct {
 	events []string
 }
 
+var (
+	registryMu sync.Mutex
+	registry   = map[string]*Server{}
+)
+
+// Lookup returns the server listening on socket (nil if none).
+func Lookup(socket string) *Server {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	return registry[socket]
+}
+
+// LoadConf simulates nginx loading a configuration with id confID: the
+// status reports it from now on (it survives Restart, like the file).
+func (s *Server) LoadConf(confID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status.ConfID = confID
+}
+
 // Start listens on a new unix socket in a short temporary directory (unix
 // socket paths are limited to ~104 bytes on macOS) and stops when the test
 // ends.
@@ -55,7 +75,15 @@ func Start(tb testing.TB) *Server {
 	}
 	srv := &http.Server{Handler: s}
 	go func() { _ = srv.Serve(l) }()
-	tb.Cleanup(func() { _ = srv.Close() })
+	registryMu.Lock()
+	registry[s.Socket] = s
+	registryMu.Unlock()
+	tb.Cleanup(func() {
+		_ = srv.Close()
+		registryMu.Lock()
+		delete(registry, s.Socket)
+		registryMu.Unlock()
+	})
 	return s
 }
 
@@ -90,6 +118,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.pushes = append(s.pushes, &t)
 		s.events = append(s.events, "sites")
 		s.status = dataplane.Status{
+			ConfID:      s.status.ConfID,
 			Version:     s.status.Version + 1,
 			Revision:    t.Revision,
 			ContentHash: t.ContentHash,
@@ -168,7 +197,7 @@ func (s *Server) Pushes() []*dataplane.SiteTable {
 func (s *Server) Restart() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.status = dataplane.Status{}
+	s.status = dataplane.Status{ConfID: s.status.ConfID}
 	s.table = nil
 	s.markers = nil
 }

@@ -63,8 +63,19 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 		if err := fsutil.Rename(next, a.cfg.ConfPath); err != nil {
 			return err
 		}
-		if err := a.engine.Reload(ctx); err != nil {
-			return err
+		err := a.engine.Reload(ctx)
+		if err == nil {
+			err = a.waitForConf(ctx, render.ConfID(conf))
+		}
+		if err != nil {
+			// nginx keeps running the previous file after a failed reload;
+			// put it back so that a restart does not pick up the new one.
+			if current != nil {
+				if rerr := fsutil.WriteFileAtomic(a.cfg.ConfPath, current, 0o644); rerr != nil {
+					a.log.Error("cannot restore the previous nginx.conf", "err", rerr)
+				}
+			}
+			return &permanentError{err}
 		}
 		a.mu.Lock()
 		a.conf = conf
@@ -87,6 +98,36 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 	a.plan = plan
 	a.mu.Unlock()
 	return a.pushWithRetry(ctx, table)
+}
+
+// waitForConf waits until the data plane's workers run the configuration
+// with id want. A HUP (or `-s reload`) only asks nginx to reload: when the
+// new file cannot be applied (e.g. a port is taken) nginx logs the error
+// and keeps the old workers, so success is only known once a worker
+// reports the new id.
+func (a *Agent) waitForConf(ctx context.Context, want string) error {
+	deadline := time.Now().Add(a.cfg.ReloadTimeout)
+	var last string
+	for {
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		st, err := a.dp.Status(cctx)
+		cancel()
+		if err == nil {
+			if st.ConfID == want {
+				return nil
+			}
+			last = st.ConfID
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("nginx did not come up with the new configuration within %s: %w", a.cfg.ReloadTimeout, err)
+			}
+			return fmt.Errorf("nginx did not load the new configuration within %s (still running %q); see the nginx log", a.cfg.ReloadTimeout, last)
+		}
+		if !sleepCtx(ctx, 100*time.Millisecond) {
+			return ctx.Err()
+		}
+	}
 }
 
 // push installs table in the data plane (serialized).

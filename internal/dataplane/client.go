@@ -70,6 +70,9 @@ type Status struct {
 	NginxVersion  int64       `json:"nginx_version,omitempty"`
 	NgxLuaVersion int64       `json:"ngx_lua_version,omitempty"`
 	WorkerPID     int         `json:"worker_pid,omitempty"`
+	// ConfID is the id of the nginx.conf the answering worker runs (see
+	// render.ConfID).
+	ConfID string `json:"conf_id,omitempty"`
 }
 
 // InSync reports whether the data plane serves exactly table t.
