@@ -132,7 +132,11 @@ var allowList []string
 
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
-		Listeners:          []*nodev1.Listener{{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP}},
+		Listeners: []*nodev1.Listener{
+			{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
+			// Behind a load balancer that speaks the PROXY protocol.
+			{Port: 8081, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP, ProxyProtocol: true},
+		},
 		CacheZones:         []*nodev1.CacheZone{{Name: "default", MaxSizeMb: 256, KeysZoneMb: 8, InactiveSeconds: 600}},
 		Sites:              sites,
 		OriginAllowedCidrs: allowList,

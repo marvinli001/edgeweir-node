@@ -109,6 +109,7 @@ func TestRenderRejectsUnsafeInput(t *testing.T) {
 		func(p *Params) { p.User = "root; daemon on" },
 		func(p *Params) { p.TrustedCA = "/etc/ssl/ca.pem; include /etc/passwd" },
 		func(p *Params) { p.OriginSocketNoVerify = p.OriginSocket },
+		func(p *Params) { p.EdgeSocket = "/run/edge sock" },
 		func(p *Params) { p.PurgeDictMB = 100000 },
 		func(p *Params) { p.PurgeDictMB = -1 },
 	}
@@ -274,5 +275,35 @@ func TestRenderPurgeDictSize(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "lua_shared_dict edgeweir_purge 128m;") {
 		t.Fatal("purge dict size not rendered")
+	}
+}
+
+// TestRenderProxyProtocolRealIP: behind a PROXY protocol listener the
+// client address from the header is $remote_addr (what origins and logs
+// see); plain listeners keep the peer address. The local edge socket for
+// prefetches never expects the PROXY protocol.
+func TestRenderProxyProtocolRealIP(t *testing.T) {
+	plan := &configir.Plan{
+		Listeners:  []configir.Listener{{Port: 80}, {Port: 8080, ProxyProtocol: true}},
+		CacheZones: []configir.CacheZone{{Name: "z", MaxSizeMB: 1, KeysZoneMB: 1, InactiveSeconds: 60}},
+	}
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	plain := section(t, conf, "listen 80 default_server;", "location /")
+	pp := section(t, conf, "listen 8080 default_server proxy_protocol;", "location /")
+	local := section(t, conf, "listen unix:/run/edgeweir-node/edge.sock default_server;", "location /")
+	for _, want := range []string{"set_real_ip_from 0.0.0.0/0;", "set_real_ip_from ::/0;", "real_ip_header proxy_protocol;"} {
+		if !strings.Contains(pp, want) {
+			t.Errorf("PROXY protocol listener lacks %q", want)
+		}
+		if strings.Contains(plain, want) || strings.Contains(local, want) {
+			t.Errorf("plain or local listener has %q", want)
+		}
+	}
+	if strings.Contains(local, "proxy_protocol") {
+		t.Error("local edge socket expects the PROXY protocol")
 	}
 }

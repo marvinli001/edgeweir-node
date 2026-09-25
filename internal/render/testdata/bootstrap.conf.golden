@@ -203,9 +203,71 @@ http {
         }
     }
 
-    # Edge layer: one server per listener.
+    # Edge layer: one server per listener, plus a local one on a unix socket
+    # that the agent's prefetch requests use when no listener is plain HTTP
+    # without the PROXY protocol.
     server {
         listen 80 default_server;
+        server_name _;
+
+        location / {
+            set $edgeweir_site "";
+            set $edgeweir_cache_zone "edgeweir_default";
+            set $edgeweir_cache_key "";
+            set $edgeweir_cache_bypass 1;
+            set $edgeweir_no_cache 1;
+            set $edgeweir_rules "";
+            set $edgeweir_range_mode "";
+            set $edgeweir_origin_layer "edgeweir_origin_verify";
+            set $edgeweir_upgrade "";
+            set $edgeweir_connection "";
+            set $edgeweir_cdn_loop "";
+            access_by_lua_block { require("edgeweir.router").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+
+            add_header X-Cache $upstream_cache_status always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+    }
+
+    # Local edge listener (agent prefetches; never PROXY protocol).
+    server {
+        listen unix:/run/edgeweir-node/edge.sock default_server;
         server_name _;
 
         location / {

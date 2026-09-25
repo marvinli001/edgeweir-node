@@ -323,6 +323,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		controlSocket = fs.String("control-socket", defaultControlSocket, "unix socket of the data plane control API")
 		originSocket  = fs.String("origin-socket", defaultOriginSocket, "unix socket of the internal origin layer")
 		noVerifySock  = fs.String("origin-socket-noverify", "", "unix socket of the origin layer without TLS verification (default: origin-noverify.sock next to --origin-socket)")
+		edgeSock      = fs.String("edge-socket", "", "local edge listener for prefetch requests when every listener uses the PROXY protocol (default: edge.sock next to --control-socket)")
 		trustedCA     = fs.String("trusted-ca", "", "CA bundle for verifying HTTPS origins (default: the system bundle)")
 		resolvConf    = fs.String("resolv-conf", "/etc/resolv.conf", "resolv.conf to take nginx resolvers from")
 		resolvers     = fs.String("resolver", "", "comma-separated nginx resolver addresses (overrides --resolv-conf)")
@@ -420,6 +421,9 @@ func cmdRun(args []string, stderr io.Writer) int {
 	if *noVerifySock != "" {
 		params.OriginSocketNoVerify = abs(*noVerifySock)
 	}
+	if *edgeSock != "" {
+		params.EdgeSocket = abs(*edgeSock)
+	}
 	params = params.WithDefaults()
 	if _, err := os.Stat(filepath.Join(params.LuaDir, "edgeweir", "init.lua")); err != nil {
 		log.Warn("Lua modules not found; nginx configuration tests will fail", "lua_dir", params.LuaDir, "err", err)
@@ -438,7 +442,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		Prefix:       prefix,
 		Conf:         conf,
 		Managed:      *manage,
-		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify},
+		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket},
 		Logger:       log,
 	})
 	a := agent.New(agent.Config{

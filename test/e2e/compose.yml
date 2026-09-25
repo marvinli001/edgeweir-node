@@ -49,6 +49,7 @@ services:
       EDGEWEIR_TRUSTED_CA: /etc/edgeweir-e2e/origin-ca.pem
     ports:
       - "127.0.0.1:${E2E_NODE_PORT:-28080}:80"
+      - "127.0.0.1:${E2E_PP_PORT:-28081}:8081"
     volumes:
       - node-state:/var/lib/edgeweir-node
       - origin-ca:/etc/edgeweir-e2e:ro

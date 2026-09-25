@@ -264,14 +264,27 @@ func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *node
 	return result(task, uint32(len(markers)), 0, nodev1.TaskState_TASK_STATE_SUCCEEDED, "")
 }
 
-// httpPort returns the first plain-HTTP listener of the serving plan.
-func (a *Agent) httpPort() uint32 {
+// prefetchTarget is where prefetch requests go: the first listener that
+// speaks plain HTTP without the PROXY protocol (at PrefetchHost), else the
+// local edge socket (a PROXY protocol listener would reject the agent's
+// requests).
+func (a *Agent) prefetchTarget() (network, addr string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	port := a.cfg.DefaultPort
 	if a.plan != nil && len(a.plan.Listeners) > 0 {
-		return a.plan.Listeners[0].Port
+		port = 0
+		for _, l := range a.plan.Listeners {
+			if !l.ProxyProtocol {
+				port = l.Port
+				break
+			}
+		}
+		if port == 0 {
+			return "unix", a.cfg.Render.WithDefaults().EdgeSocket
+		}
 	}
-	return a.cfg.DefaultPort
+	return "tcp", net.JoinHostPort(a.cfg.PrefetchHost, strconv.Itoa(int(port)))
 }
 
 // prefetchOutcome is the result of one prefetch URL.
@@ -286,13 +299,13 @@ type prefetchOutcome struct {
 // (so the response lands in the cache exactly as for a client) with
 // bounded concurrency until deadline. 2xx and 3xx count as success.
 func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *nodev1.PrefetchTask, deadline time.Time) *nodev1.ReportTaskResultRequest {
-	addr := net.JoinHostPort(a.cfg.PrefetchHost, strconv.Itoa(int(a.httpPort())))
+	network, addr := a.prefetchTarget()
 	client := &http.Client{
 		Timeout: a.cfg.PrefetchTimeout,
 		// Redirects are cached as they are, never followed.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
 				return d.DialContext(ctx, network, addr)
 			},

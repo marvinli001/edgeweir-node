@@ -94,6 +94,19 @@ echo "$echoed" | grep "X-Pad-150" >/dev/null || fail "origin did not receive the
 if echo "$echoed" | grep -i "x-edgeweir" >/dev/null; then fail "internal headers reached the origin"; fi
 pass "client-supplied X-Edgeweir-* headers never reach the origin"
 
+# PROXY protocol listener: origins see the client address from the PROXY
+# header, not the load balancer's.
+pp_request() {
+  exec 3<>"/dev/tcp/127.0.0.1/${E2E_PP_PORT:-28081}"
+  printf 'PROXY TCP4 198.51.100.23 10.0.0.1 40000 8081\r\nGET /pp HTTP/1.1\r\nHost: demo.test\r\nConnection: close\r\n\r\n' >&3
+  cat <&3
+  exec 3<&-
+}
+echoed=$(pp_request | tr -d '\r')
+echo "$echoed" | grep -qi "^X-Real-Ip: 198.51.100.23$" || fail "origin did not see the PROXY protocol client address: $(echo "$echoed" | grep -i -e x-real-ip -e x-forwarded-for)"
+echo "$echoed" | grep -qi "^X-Forwarded-For: 198.51.100.23$" || fail "X-Forwarded-For is not the PROXY protocol client address"
+pass "PROXY protocol client address reaches the origin"
+
 # Origin address policy (special-purpose addresses) and CDN-Loop.
 NODE_ID=$(curl -fsS "$HELPER/node-id")
 sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }

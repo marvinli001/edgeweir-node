@@ -175,15 +175,28 @@ http {
     }
 {{- end }}
 
-    # Edge layer: one server per listener.
-{{- range .Listeners }}
+    # Edge layer: one server per listener, plus a local one on a unix socket
+    # that the agent's prefetch requests use when no listener is plain HTTP
+    # without the PROXY protocol.
+{{- range .EdgeServers }}
+{{- if .Local }}
+
+    # Local edge listener (agent prefetches; never PROXY protocol).
+{{- end }}
     server {
-        listen {{ .Port }} default_server{{ if .ProxyProtocol }} proxy_protocol{{ end }};
-{{- if $.ListenIPv6 }}
-        listen [::]:{{ .Port }} default_server{{ if .ProxyProtocol }} proxy_protocol{{ end }};
+{{- range .Listen }}
+        listen {{ . }};
 {{- end }}
 {{- if .HTTP2 }}
         http2 on;
+{{- end }}
+{{- if .ProxyProtocol }}
+        # Every connection here starts with a PROXY protocol header: its
+        # client address becomes $remote_addr (X-Real-IP, X-Forwarded-For
+        # towards origins, logs), not the load balancer's.
+        set_real_ip_from 0.0.0.0/0;
+        set_real_ip_from ::/0;
+        real_ip_header proxy_protocol;
 {{- end }}
         server_name _;
 

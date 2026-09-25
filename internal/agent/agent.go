@@ -282,6 +282,7 @@ func (a *Agent) prepareDirs() error {
 		{filepath.Join(prefix, "tmp"), 0o750},
 		{a.cfg.Render.CacheDir, 0o750},
 		{filepath.Dir(a.cfg.Render.ControlSocket), 0o750},
+		{filepath.Dir(a.cfg.Render.WithDefaults().EdgeSocket), 0o750},
 		{filepath.Dir(a.cfg.Render.OriginSocket), 0o750},
 		{filepath.Dir(a.cfg.ConfPath), 0o750},
 	}

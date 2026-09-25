@@ -43,6 +43,9 @@ type Params struct {
 	CacheDir string
 	// ControlSocket is the unix socket of the control API.
 	ControlSocket string
+	// EdgeSocket is the local edge listener for the agent's prefetch
+	// requests (default: edge.sock next to ControlSocket).
+	EdgeSocket string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
 	// OriginSocketNoVerify is the unix socket of the origin layer for sites
@@ -93,6 +96,9 @@ func (p Params) WithDefaults() Params {
 	if p.PurgeDictMB == 0 {
 		p.PurgeDictMB = 32
 	}
+	if p.EdgeSocket == "" && p.ControlSocket != "" {
+		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
+	}
 	if p.OriginSocketNoVerify == "" && p.OriginSocket != "" {
 		p.OriginSocketNoVerify = filepath.Join(filepath.Dir(p.OriginSocket), "origin-noverify.sock")
 	}
@@ -110,6 +116,7 @@ func (p Params) validate() error {
 		"nginx prefix": p.Prefix, "lua dir": p.LuaDir, "cache dir": p.CacheDir,
 		"control socket": p.ControlSocket, "origin socket": p.OriginSocket, "resolv.conf": p.ResolvConf,
 		"origin socket without verification": p.OriginSocketNoVerify,
+		"edge socket":                        p.EdgeSocket,
 	} {
 		if !safePath.MatchString(v) {
 			return fmt.Errorf("%s %q must be an absolute path without spaces or special characters", name, v)
@@ -144,10 +151,34 @@ func (p Params) validate() error {
 
 type data struct {
 	Params
-	Listeners    []configir.Listener
+	EdgeServers  []edgeServer
 	CacheZones   []configir.CacheZone
 	DefaultZone  string
 	OriginLayers []originLayer
+}
+
+// edgeServer is one server block of the edge layer.
+type edgeServer struct {
+	Listen        []string // listen directive arguments
+	HTTP2         bool
+	ProxyProtocol bool
+	Local         bool // the agent's unix socket listener
+}
+
+func edgeServers(p Params, listeners []configir.Listener) []edgeServer {
+	var out []edgeServer
+	for _, l := range listeners {
+		suffix := " default_server"
+		if l.ProxyProtocol {
+			suffix += " proxy_protocol"
+		}
+		s := edgeServer{Listen: []string{fmt.Sprintf("%d%s", l.Port, suffix)}, HTTP2: l.HTTP2, ProxyProtocol: l.ProxyProtocol}
+		if p.ListenIPv6 {
+			s.Listen = append(s.Listen, fmt.Sprintf("[::]:%d%s", l.Port, suffix))
+		}
+		out = append(out, s)
+	}
+	return append(out, edgeServer{Listen: []string{"unix:" + p.EdgeSocket + " default_server"}, Local: true})
 }
 
 type originLayer struct {
@@ -177,7 +208,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	var buf bytes.Buffer
 	err := tmpl.Execute(&buf, data{
 		Params:      p,
-		Listeners:   plan.Listeners,
+		EdgeServers: edgeServers(p, plan.Listeners),
 		CacheZones:  plan.CacheZones,
 		DefaultZone: plan.CacheZones[0].Name,
 		OriginLayers: []originLayer{
