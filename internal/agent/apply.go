@@ -74,7 +74,9 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 	}
 
 	// Purge markers go in before sites: a data plane that just (re)started
-	// must never serve a purged object.
+	// must never serve a purged object. A failure never blocks the sites
+	// (see syncPurge for the site-level fallback).
+	a.recoverLostPurge(plan)
 	if err := a.syncPurgeWithRetry(ctx); err != nil {
 		a.log.Warn("cannot install purge markers before the site table; retrying in the background", "err", err)
 	}
@@ -197,14 +199,18 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 		return false
 	}
 	a.setDataPlaneHealthy(true)
-	if st.Purge.ID != a.purgeTable().ID {
+	a.maybePrunePurge(time.Now())
+	purgeOK := true
+	if st.Purge.ID != a.purgeID() {
+		// The site table is pushed even when this fails: sites must never
+		// disappear (404) because purge markers could not be installed.
 		if err := a.syncPurge(cctx); err != nil {
-			a.log.Warn("cannot push purge markers", "err", err)
-			return false
+			a.log.Warn("cannot install purge markers; pushing the site table anyway", "err", err)
+			purgeOK = false
 		}
 	}
 	if st.InSync(desired) {
-		return true
+		return purgeOK
 	}
 	a.log.Info("data plane out of sync (nginx restarted?), pushing site table",
 		"data_plane_revision", st.Revision, "data_plane_table_version", st.Version, "revision", desired.Revision)
@@ -218,7 +224,7 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 	if failed && a.channel != nil {
 		a.triggerSync() // retry the apply that failed while the data plane was down
 	}
-	return true
+	return purgeOK
 }
 
 // syncLoop serializes all fetch-and-apply cycles.

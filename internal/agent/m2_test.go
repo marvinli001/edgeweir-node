@@ -133,8 +133,10 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 		}
 	}
 
-	// A purge task announced on the watch stream.
-	created := time.Date(2026, 9, 25, 12, 0, 0, 123_000_000, time.UTC)
+	// A purge task announced on the watch stream. Its marker time is the
+	// node's clock when it first applies the task, not created_at.
+	created := time.Now().Add(24 * time.Hour)
+	appliedFrom := time.Now().UnixMilli()
 	console.AddTask(&nodev1.NodeTask{
 		Id: "task-purge", CreatedAt: timestamppb.New(created),
 		Kind: &nodev1.NodeTask_Purge{Purge: &nodev1.PurgeTask{Targets: []*nodev1.PurgeTarget{
@@ -150,10 +152,14 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 		t.Fatalf("purge result = %v", res)
 	}
 	markers := dp.Markers()
+	epoch := markers[0].Epoch
+	if epoch < appliedFrom || epoch > time.Now().UnixMilli() {
+		t.Fatalf("marker epoch %d is not the node's time of the purge [%d, now] (created_at %d)", epoch, appliedFrom, created.UnixMilli())
+	}
 	want := []dataplane.PurgeMarker{
-		{SiteID: "site-a", Type: "prefix", Host: "a.test", Path: "/static/", Epoch: created.UnixMilli()},
-		{SiteID: "site-a", Type: "url", Host: "a.test", Path: "/img/1.png", Query: "v=2", Epoch: created.UnixMilli()},
-		{SiteID: "site-s3", Type: "site", Epoch: created.UnixMilli()},
+		{SiteID: "site-a", Type: "prefix", Host: "a.test", Path: "/static/", Epoch: epoch},
+		{SiteID: "site-a", Type: "url", Host: "a.test", Path: "/img/1.png", Query: "v=2", Epoch: epoch},
+		{SiteID: "site-s3", Type: "site", Epoch: epoch},
 	}
 	if !slices.Equal(markers, want) {
 		t.Fatalf("markers = %+v\nwant %+v", markers, want)

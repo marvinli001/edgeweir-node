@@ -109,6 +109,8 @@ func TestRenderRejectsUnsafeInput(t *testing.T) {
 		func(p *Params) { p.User = "root; daemon on" },
 		func(p *Params) { p.TrustedCA = "/etc/ssl/ca.pem; include /etc/passwd" },
 		func(p *Params) { p.OriginSocketNoVerify = p.OriginSocket },
+		func(p *Params) { p.PurgeDictMB = 100000 },
+		func(p *Params) { p.PurgeDictMB = -1 },
 	}
 	for i, mutate := range bad {
 		p := params()
@@ -259,4 +261,18 @@ func section(t *testing.T, s, start, end string) string {
 		t.Fatalf("%q not closed", start)
 	}
 	return s[i : i+j+len(end)]
+}
+
+// TestRenderPurgeDictSize: the purge marker store size comes from
+// --purge-dict-mb.
+func TestRenderPurgeDictSize(t *testing.T) {
+	p := params()
+	p.PurgeDictMB = 128
+	got, err := Render(p, configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "lua_shared_dict edgeweir_purge 128m;") {
+		t.Fatal("purge dict size not rendered")
+	}
 }

@@ -68,6 +68,12 @@ func TestRealMain(t *testing.T) {
 	if code := realMain([]string{"run", "--default-port", "0"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid port: code=%d", code)
 	}
+	if code := realMain([]string{"run", "--purge-dict-mb", "0"}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("run with invalid purge dict size: code=%d", code)
+	}
+	if code := realMain([]string{"run", "--purge-markers-per-site", "0"}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("run with invalid purge marker cap: code=%d", code)
+	}
 	if code := realMain([]string{"run", "--listen-ipv6", "sometimes"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid tristate: code=%d", code)
 	}

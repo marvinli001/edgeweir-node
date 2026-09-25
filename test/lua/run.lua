@@ -562,6 +562,59 @@ test("purge markers match encoded variants of their paths", function()
   assert(purge.replace({ id = "empty-enc", markers = {} }))
 end)
 
+test("purge status comes from counters and follows every change", function()
+  local d = ngx.shared.edgeweir_purge
+  local st = assert(purge.replace({ id = "c1", markers = {
+    { site_id = "c", type = "url", host = "c.test", path = "/a", query = "", epoch = 10 },
+    { site_id = "c", type = "url", host = "c.test", path = "/a", query = "v=1", epoch = 10 },
+    { site_id = "c", type = "prefix", host = "c.test", path = "/p/", epoch = 10 },
+    { site_id = "c", type = "site", epoch = 5 },
+  } }))
+  eq(st.id, "c1")
+  eq(st.entries, 3, "u|c|/a, p|c, s|c")
+  eq(st.markers, 4)
+  st = assert(purge.add({ id = "c2", markers = {
+    { site_id = "c", type = "url", host = "c.test", path = "/a", query = "v=2", epoch = 11 },
+    { site_id = "c", type = "url", host = "c.test", path = "/b", query = "", epoch = 11 },
+    { site_id = "c", type = "site", epoch = 6 },
+  } }))
+  eq(st.entries, 4)
+  eq(st.markers, 6)
+  eq(purge.status().markers, 6)
+  -- The counters are what the status reads (no walk over the dict).
+  d:set("#markers", 42)
+  eq(purge.status().markers, 42)
+  assert(purge.replace({ id = "c3", markers = {} }))
+  eq(purge.status().entries, 0)
+  eq(purge.status().markers, 0)
+  eq(#d:get_keys(0) - 4, 0, "only #id, #ver, #entries and #markers are left")
+end)
+
+test("purge replace collapses a site that does not fit into a site-level marker", function()
+  -- More URL markers for one path than the 4 MiB test dict can hold in a
+  -- single entry: that site falls back to a site-level marker at its
+  -- highest epoch, other sites are installed as they are.
+  local markers = {}
+  for i = 1, 150000 do
+    markers[#markers + 1] = { site_id = "big", type = "url", host = "big.test", path = "/same", query = "q=" .. i, epoch = 1000 + i }
+  end
+  markers[#markers + 1] = { site_id = "small", type = "url", host = "small.test", path = "/x", query = "", epoch = 77 }
+  local st = assert(purge.replace({ id = "big-1", markers = markers }))
+  eq(st.id, "big-1")
+  eq(#st.collapsed, 1)
+  eq(st.collapsed[1], "big")
+  local key = cachekey.prepare({ query = "all" })
+  eq(purge.epoch("big", key, "big.test", "/anything", ""), 151000, "whole site purged at the highest epoch")
+  eq(purge.epoch("small", key, "small.test", "/x", ""), 77, "other sites keep their markers")
+  eq(purge.epoch("small", key, "small.test", "/y", ""), 0)
+  eq(ngx.shared.edgeweir_purge:get("u|big|/same"), nil, "the oversized entry is gone")
+  -- add() refuses what does not fit (the agent then replaces the full set).
+  local _, err, code = purge.add({ id = "big-2", markers = markers })
+  eq(code, 507)
+  assert(err:find("no memory"), err)
+  assert(purge.replace({ id = "empty-big", markers = {} }))
+end)
+
 test("purge markers change the epoch of matching requests only", function()
   local key = cachekey.prepare({ query = "all", sort_query = true })
   eq(purge.epoch("p1", key, "a.test", "/x", ""), 0, "no markers")

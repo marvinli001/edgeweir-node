@@ -129,6 +129,11 @@ func (p Params) validate() error {
 	if p.User != "" && !regexp.MustCompile(`^[a-z_][a-z0-9_-]*( [a-z_][a-z0-9_-]*)?$`).MatchString(p.User) {
 		return fmt.Errorf("invalid nginx user %q", p.User)
 	}
+	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB} {
+		if v < 1 || v > 65536 {
+			return fmt.Errorf("%s size %d MiB out of range (1-65536)", name, v)
+		}
+	}
 	for _, r := range p.Resolvers {
 		if !validResolver(r) {
 			return fmt.Errorf("invalid resolver address %q", r)

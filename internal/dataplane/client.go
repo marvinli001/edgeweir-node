@@ -101,6 +101,10 @@ type PurgeTable struct {
 type PurgeStatus struct {
 	ID      string `json:"id"`
 	Entries int    `json:"entries"`
+	Markers int    `json:"markers"`
+	// Collapsed lists the sites (of a PUT) whose markers did not fit and
+	// were replaced by one site-level marker each.
+	Collapsed []string `json:"collapsed,omitempty"`
 }
 
 // OriginHealth is one entry of GET /v1/origins/health (origins with

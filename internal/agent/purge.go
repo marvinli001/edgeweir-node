@@ -2,16 +2,13 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
+	"github.com/edgeweir/edgeweir-node/internal/configir"
 	"github.com/edgeweir/edgeweir-node/internal/dataplane"
 	"github.com/edgeweir/edgeweir-node/internal/fsutil"
 )
@@ -23,50 +20,40 @@ const purgeFile = "purge.json"
 // defaultPurgeRetention applies before any configuration is known.
 const defaultPurgeRetention = 8 * 24 * time.Hour
 
-func markerIdentity(m dataplane.PurgeMarker) string {
-	return m.SiteID + "\x00" + m.Type + "\x00" + m.Host + "\x00" + m.Path + "\x00" + m.Query
-}
+// purgeTaskRetention keeps task epochs at least as long as the console may
+// hand a task out again (7 days).
+const purgeTaskRetention = 8 * 24 * time.Hour
 
-// purgeSetID identifies a marker set (order independent).
-func purgeSetID(markers []dataplane.PurgeMarker) string {
-	if len(markers) == 0 {
-		return "empty"
-	}
-	keys := make([]string, 0, len(markers))
-	for _, m := range markers {
-		keys = append(keys, fmt.Sprintf("%s\x00%d", markerIdentity(m), m.Epoch))
-	}
-	sort.Strings(keys)
-	h := sha256.New()
-	for _, k := range keys {
-		h.Write([]byte(k))
-		h.Write([]byte{'\n'})
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
-}
+// purgeFallbackRetry is how long a site-level fallback set stays installed
+// before the full set is tried again.
+const purgeFallbackRetry = time.Minute
 
 func (a *Agent) purgePath() string { return filepath.Join(a.cfg.StateDir, purgeFile) }
 
-// loadPurge reads the persisted markers (missing file: none).
+// loadPurge reads the persisted markers. A missing file means none; an
+// unreadable one means markers were lost: the first plan then gets a
+// site-level marker for every site (over-purging instead of serving purged
+// objects).
 func (a *Agent) loadPurge() {
+	st := newPurgeState()
 	raw, err := os.ReadFile(a.purgePath())
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			a.log.Warn("cannot read stored purge markers", "err", err)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		a.log.Error("cannot read stored purge markers; every site will be purged once", "err", err)
+		st.lost = true
+	default:
+		if loaded, perr := unmarshalPurge(raw); perr != nil {
+			a.log.Error("stored purge markers are unreadable; every site will be purged once", "err", perr)
+			st.lost = true
+		} else {
+			st = loaded
 		}
-		return
-	}
-	var stored struct {
-		Markers []dataplane.PurgeMarker `json:"markers"`
-	}
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		a.log.Warn("ignoring unreadable purge markers file", "err", err)
-		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.markers = stored.Markers
-	a.pruneMarkersLocked(time.Now())
+	a.purge = st
+	a.prunePurgeLocked(time.Now())
 }
 
 // purgeRetentionLocked is how long a marker must live: until every object
@@ -83,57 +70,118 @@ func (a *Agent) purgeRetentionLocked() time.Duration {
 	return longest + time.Hour
 }
 
-// pruneMarkersLocked drops expired markers; a.mu must be held.
-func (a *Agent) pruneMarkersLocked(now time.Time) {
-	cutoff := now.Add(-a.purgeRetentionLocked()).UnixMilli()
-	kept := a.markers[:0]
-	for _, m := range a.markers {
-		if m.Epoch >= cutoff {
-			kept = append(kept, m)
+// prunePurgeLocked drops expired markers and task epochs; a.mu must be held.
+func (a *Agent) prunePurgeLocked(now time.Time) bool {
+	a.lastPrune = now
+	markerCutoff := now.Add(-a.purgeRetentionLocked()).UnixMilli()
+	taskCutoff := now.Add(-max(a.purgeRetentionLocked(), purgeTaskRetention)).UnixMilli()
+	return a.purge.prune(markerCutoff, taskCutoff)
+}
+
+// maybePrunePurge prunes at most once a minute (markers expire in hours).
+func (a *Agent) maybePrunePurge(now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if now.Sub(a.lastPrune) < time.Minute {
+		return
+	}
+	if a.prunePurgeLocked(now) {
+		if err := a.savePurgeLocked(); err != nil {
+			a.log.Warn("cannot persist purge markers", "err", err)
 		}
 	}
-	a.markers = kept
 }
 
 func (a *Agent) savePurgeLocked() error {
-	raw, err := json.Marshal(struct {
-		Markers []dataplane.PurgeMarker `json:"markers"`
-	}{a.markers})
+	raw, err := a.purge.marshal()
 	if err != nil {
 		return err
 	}
 	return fsutil.WriteFileAtomic(a.purgePath(), raw, 0o600)
 }
 
-// addMarkers merges markers into the persisted set (keeping the highest
-// epoch per identity) and returns the resulting set id.
-func (a *Agent) addMarkers(markers []dataplane.PurgeMarker) (string, error) {
+func (a *Agent) purgeID() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	index := make(map[string]int, len(a.markers))
-	for i, m := range a.markers {
-		index[markerIdentity(m)] = i
-	}
-	for _, m := range markers {
-		if i, ok := index[markerIdentity(m)]; ok {
-			if a.markers[i].Epoch < m.Epoch {
-				a.markers[i].Epoch = m.Epoch
-			}
-			continue
-		}
-		index[markerIdentity(m)] = len(a.markers)
-		a.markers = append(a.markers, m)
-	}
-	a.pruneMarkersLocked(time.Now())
-	return purgeSetID(a.markers), a.savePurgeLocked()
+	return a.purge.id()
 }
 
-func (a *Agent) purgeTable() *dataplane.PurgeTable {
+// taskEpoch assigns (and persists) the marker time of a purge task.
+func (a *Agent) taskEpoch(taskID string) int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pruneMarkersLocked(time.Now())
-	markers := append([]dataplane.PurgeMarker{}, a.markers...)
-	return &dataplane.PurgeTable{ID: purgeSetID(markers), Markers: markers}
+	_, known := a.purge.tasks[taskID]
+	e := a.purge.taskEpoch(taskID, time.Now())
+	if !known {
+		if err := a.savePurgeLocked(); err != nil {
+			a.log.Warn("cannot persist purge task time", "err", err)
+		}
+	}
+	return e
+}
+
+// addMarkers merges markers into the persisted set (bounded per site) and
+// returns what the data plane must merge, the collapsed sites and the id
+// of the resulting set.
+func (a *Agent) addMarkers(markers []dataplane.PurgeMarker) ([]dataplane.PurgeMarker, []string, string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delta, collapsed, changed := a.purge.add(markers, a.cfg.PurgeMarkersPerSite)
+	var err error
+	if changed {
+		err = a.savePurgeLocked()
+	}
+	return delta, collapsed, a.purge.id(), err
+}
+
+// collapsePurgeSites replaces the markers of sites by site-level markers
+// (sites the data plane could not hold).
+func (a *Agent) collapsePurgeSites(sites []string) {
+	if len(sites) == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	changed := false
+	for _, s := range sites {
+		if a.purge.collapse(s) {
+			changed = true
+		}
+	}
+	if changed {
+		a.purge.bump()
+		if err := a.savePurgeLocked(); err != nil {
+			a.log.Warn("cannot persist purge markers", "err", err)
+		}
+	}
+	a.log.Warn("purge markers did not fit in the data plane; replaced by site-level markers", "sites", sites)
+}
+
+// recoverLostPurge adds a site-level marker for every site of plan when the
+// stored markers were lost.
+func (a *Agent) recoverLostPurge(plan *configir.Plan) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.purge.lost || len(plan.Sites) == 0 {
+		return
+	}
+	epoch := a.purge.taskEpoch("", time.Now())
+	var markers []dataplane.PurgeMarker
+	for _, s := range plan.Sites {
+		markers = append(markers, dataplane.PurgeMarker{SiteID: s.ID, Type: "site", Epoch: epoch})
+	}
+	a.purge.add(markers, 0)
+	a.purge.lost = false
+	if err := a.savePurgeLocked(); err != nil {
+		a.log.Warn("cannot persist purge markers", "err", err)
+	}
+	a.log.Warn("stored purge markers were lost: purged every site once", "sites", len(markers))
+}
+
+func (a *Agent) fullPurgeTable() (*dataplane.PurgeTable, *dataplane.PurgeTable) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.purge.table(), a.purge.compact()
 }
 
 // syncPurgeWithRetry is syncPurge with the retry budget of site pushes
@@ -145,8 +193,7 @@ func (a *Agent) syncPurgeWithRetry(ctx context.Context) error {
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		err := a.syncPurge(cctx)
 		cancel()
-		var apiErr *dataplane.APIError
-		if err == nil || (errors.As(err, &apiErr) && apiErr.Status == 400) || time.Now().After(deadline) {
+		if err == nil || time.Now().After(deadline) {
 			return err
 		}
 		if !sleepCtx(ctx, delay) {
@@ -158,9 +205,14 @@ func (a *Agent) syncPurgeWithRetry(ctx context.Context) error {
 
 // syncPurge installs the full marker set unless the data plane already has
 // it. It runs before site tables are pushed after an nginx restart, so a
-// fresh data plane never serves a purged object.
+// fresh data plane never serves a purged object. When the full set cannot
+// be installed, a site-level marker for every site with markers is
+// installed instead (it purges at least as much); the full set is retried
+// later. An error means not even that worked.
 func (a *Agent) syncPurge(ctx context.Context) error {
-	want := a.purgeTable()
+	a.purgeMu.Lock()
+	defer a.purgeMu.Unlock()
+	want, fallback := a.fullPurgeTable()
 	st, err := a.dp.Status(ctx)
 	if err != nil {
 		return err
@@ -168,9 +220,67 @@ func (a *Agent) syncPurge(ctx context.Context) error {
 	if st.Purge.ID == want.ID {
 		return nil
 	}
-	if _, err := a.dp.PutPurge(ctx, want); err != nil {
-		return err
+	a.mu.Lock()
+	holdFallback := st.Purge.ID == a.purgeFallbackID && time.Now().Before(a.purgeRetryAt)
+	a.mu.Unlock()
+	if holdFallback {
+		return nil
 	}
-	a.log.Info("purge markers installed in data plane", "markers", len(want.Markers), "id", want.ID)
+	res, err := a.dp.PutPurge(ctx, want)
+	if err == nil {
+		a.log.Info("purge markers installed in data plane", "markers", len(want.Markers), "id", want.ID)
+		a.collapsePurgeSites(res.Collapsed)
+		return nil
+	}
+	var apiErr *dataplane.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 507 {
+		// Not even one marker per site of the full set fits: keep only
+		// site-level markers from now on.
+		var sites []string
+		for _, m := range fallback.Markers {
+			sites = append(sites, m.SiteID)
+		}
+		a.collapsePurgeSites(sites)
+	}
+	if _, ferr := a.dp.PutPurge(ctx, fallback); ferr != nil {
+		return fmt.Errorf("install purge markers: %w (site-level fallback: %v)", err, ferr)
+	}
+	a.mu.Lock()
+	a.purgeFallbackID, a.purgeRetryAt = fallback.ID, time.Now().Add(purgeFallbackRetry)
+	a.mu.Unlock()
+	a.log.Warn("cannot install the purge markers; installed site-level markers for the affected sites instead",
+		"err", err, "sites", len(fallback.Markers))
 	return nil
+}
+
+// pushMarkers merges markers into the data plane, retrying transient
+// failures within the push timeout. When they do not fit, the full set is
+// installed instead (with the per-site fallback).
+func (a *Agent) pushMarkers(ctx context.Context, t *dataplane.PurgeTable) error {
+	deadline := time.Now().Add(a.cfg.PushTimeout)
+	delay := 100 * time.Millisecond
+	for {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		a.purgeMu.Lock()
+		_, err := a.dp.AddPurge(cctx, t)
+		a.purgeMu.Unlock()
+		cancel()
+		if err == nil {
+			a.log.Info("purge markers added to data plane", "markers", len(t.Markers), "id", t.ID)
+			return nil
+		}
+		var apiErr *dataplane.APIError
+		if errors.As(err, &apiErr) && (apiErr.Status == 507 || apiErr.Status == 400) {
+			cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			return a.syncPurge(cctx)
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		if !sleepCtx(ctx, delay) {
+			return ctx.Err()
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
 }

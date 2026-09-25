@@ -31,6 +31,9 @@ type Server struct {
 	purgeCalls []string
 	health     []dataplane.OriginHealth
 	failPurge  int
+	// purgeCapacity > 0 answers 507 to a purge call that would leave more
+	// markers installed (a full shared dict).
+	purgeCapacity int
 	// events records successful writes in order: "sites", "purge:PUT", "purge:POST".
 	events []string
 }
@@ -106,18 +109,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		if r.Method == http.MethodPut || s.markers == nil {
-			s.markers = map[string]dataplane.PurgeMarker{}
+		next := map[string]dataplane.PurgeMarker{}
+		if r.Method == http.MethodPost {
+			for k, m := range s.markers {
+				next[k] = m
+			}
 		}
 		for _, m := range t.Markers {
 			k := markerKey(m)
-			if old, ok := s.markers[k]; !ok || old.Epoch < m.Epoch {
-				s.markers[k] = m
+			if old, ok := next[k]; !ok || old.Epoch < m.Epoch {
+				next[k] = m
 			}
 		}
+		if s.purgeCapacity > 0 && len(next) > s.purgeCapacity {
+			reply(w, 507, map[string]string{"error": "shared dict edgeweir_purge: no memory"})
+			return
+		}
+		s.markers = next
 		s.purgeCalls = append(s.purgeCalls, r.Method)
 		s.events = append(s.events, "purge:"+r.Method)
-		s.status.Purge = dataplane.PurgeStatus{ID: t.ID, Entries: len(s.markers)}
+		s.status.Purge = dataplane.PurgeStatus{ID: t.ID, Entries: len(s.markers), Markers: len(s.markers)}
 		reply(w, 200, s.status.Purge)
 	case r.URL.Path == "/v1/origins/health" && r.Method == http.MethodGet:
 		if len(s.health) == 0 {
@@ -205,6 +216,14 @@ func (s *Server) SetOriginHealth(h ...dataplane.OriginHealth) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.health = h
+}
+
+// SetPurgeCapacity makes purge calls that would leave more than n markers
+// installed fail with 507 (0: unlimited).
+func (s *Server) SetPurgeCapacity(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeCapacity = n
 }
 
 // FailNextPurges makes the next n purge calls fail.

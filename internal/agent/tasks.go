@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -138,13 +137,8 @@ var purgeTypes = map[nodev1.PurgeType]string{
 	nodev1.PurgeType_PURGE_TYPE_SITE:   "site",
 }
 
-// purgeMarkers converts purge targets into markers whose epoch is the
-// task's creation time.
-func purgeMarkers(task *nodev1.NodeTask, p *nodev1.PurgeTask) ([]dataplane.PurgeMarker, []string) {
-	epoch := time.Now().UnixMilli()
-	if task.GetCreatedAt() != nil {
-		epoch = task.GetCreatedAt().AsTime().UnixMilli()
-	}
+// purgeMarkers converts purge targets into markers with the given epoch.
+func purgeMarkers(p *nodev1.PurgeTask, epoch int64) ([]dataplane.PurgeMarker, []string) {
 	var markers []dataplane.PurgeMarker
 	var invalid []string
 	for _, t := range p.GetTargets() {
@@ -170,18 +164,33 @@ func purgeMarkers(task *nodev1.NodeTask, p *nodev1.PurgeTask) ([]dataplane.Purge
 	return markers, invalid
 }
 
+// executePurge applies a purge task. Its marker time is assigned by the
+// node the first time it sees the task (see purgeState).
 func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *nodev1.PurgeTask) *nodev1.ReportTaskResultRequest {
-	markers, invalid := purgeMarkers(task, p)
+	markers, invalid := purgeMarkers(p, 0)
 	failed := uint32(len(invalid))
 	if len(markers) == 0 {
 		return result(task, 0, failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(invalid, "; "))
 	}
-	id, err := a.addMarkers(markers)
+	epoch := a.taskEpoch(task.GetId())
+	for i := range markers {
+		markers[i].Epoch = epoch
+	}
+	delta, collapsed, id, err := a.addMarkers(markers)
 	if err != nil {
 		// Still in memory and pushed below; the next restart would lose it.
 		a.log.Error("cannot persist purge markers", "err", err)
 	}
-	if err := a.pushMarkers(ctx, &dataplane.PurgeTable{ID: id, Markers: markers}); err != nil {
+	if len(collapsed) > 0 {
+		a.log.Info("purge markers of sites over the per-site limit collapsed into site-level markers",
+			"sites", collapsed, "limit", a.cfg.PurgeMarkersPerSite)
+		cctx, cancel := context.WithTimeout(ctx, a.cfg.PushTimeout)
+		err = a.syncPurge(cctx)
+		cancel()
+	} else {
+		err = a.pushMarkers(ctx, &dataplane.PurgeTable{ID: id, Markers: delta})
+	}
+	if err != nil {
 		return result(task, 0, uint32(len(markers))+failed, nodev1.TaskState_TASK_STATE_FAILED,
 			"data plane unavailable, the purge applies when it recovers: "+err.Error())
 	}
@@ -190,30 +199,6 @@ func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *node
 		state = nodev1.TaskState_TASK_STATE_FAILED
 	}
 	return result(task, uint32(len(markers)), failed, state, strings.Join(invalid, "; "))
-}
-
-// pushMarkers merges markers into the data plane, retrying transient
-// failures within the push timeout.
-func (a *Agent) pushMarkers(ctx context.Context, t *dataplane.PurgeTable) error {
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, err := a.dp.AddPurge(cctx, t)
-		cancel()
-		if err == nil {
-			a.log.Info("purge markers added to data plane", "markers", len(t.Markers), "id", t.ID)
-			return nil
-		}
-		var apiErr *dataplane.APIError
-		if (errors.As(err, &apiErr) && apiErr.Status == 400) || time.Now().After(deadline) {
-			return err
-		}
-		if !sleepCtx(ctx, delay) {
-			return ctx.Err()
-		}
-		delay = min(delay*2, 2*time.Second)
-	}
 }
 
 // httpPort returns the first plain-HTTP listener of the serving plan.

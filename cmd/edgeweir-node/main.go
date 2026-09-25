@@ -299,6 +299,8 @@ func cmdRun(args []string, stderr io.Writer) int {
 		resolvers     = fs.String("resolver", "", "comma-separated nginx resolver addresses (overrides --resolv-conf)")
 		defaultPort   = fs.Uint("default-port", 80, "HTTP port served before any configuration exists")
 		workers       = fs.String("worker-processes", "auto", "nginx worker_processes")
+		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
+		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -314,6 +316,14 @@ func cmdRun(args []string, stderr io.Writer) int {
 	}
 	if *defaultPort == 0 || *defaultPort > 65535 {
 		fmt.Fprintln(stderr, "run: --default-port must be 1-65535")
+		return 2
+	}
+	if *purgeDictMB < 1 || *purgeDictMB > 65536 {
+		fmt.Fprintln(stderr, "run: --purge-dict-mb must be 1-65536")
+		return 2
+	}
+	if *purgePerSite < 1 {
+		fmt.Fprintln(stderr, "run: --purge-markers-per-site must be at least 1")
 		return 2
 	}
 
@@ -371,6 +381,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		WorkerProcesses:    *workers,
 		WorkerRlimitNofile: nofile,
 		WorkerConnections:  workerConnections,
+		PurgeDictMB:        *purgeDictMB,
 	}
 	if *noVerifySock != "" {
 		params.OriginSocketNoVerify = abs(*noVerifySock)
@@ -397,10 +408,11 @@ func cmdRun(args []string, stderr io.Writer) int {
 		Logger:       log,
 	})
 	a := agent.New(agent.Config{
-		StateDir:    state,
-		ConfPath:    conf,
-		Render:      params,
-		DefaultPort: uint32(*defaultPort),
+		StateDir:            state,
+		ConfPath:            conf,
+		Render:              params,
+		DefaultPort:         uint32(*defaultPort),
+		PurgeMarkersPerSite: *purgePerSite,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

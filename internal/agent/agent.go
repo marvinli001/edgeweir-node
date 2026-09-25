@@ -79,6 +79,10 @@ type Config struct {
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
 
+	// PurgeMarkersPerSite bounds a site's URL and prefix purge markers;
+	// beyond it they collapse into one site-level marker (default 1000).
+	PurgeMarkersPerSite int
+
 	// Prefetch tasks request URLs from the node's own edge listener.
 	PrefetchHost        string        // default 127.0.0.1
 	PrefetchConcurrency int           // default 4
@@ -109,6 +113,9 @@ func (c *Config) setDefaults() {
 	if c.PrefetchConcurrency <= 0 {
 		c.PrefetchConcurrency = 4
 	}
+	if c.PurgeMarkersPerSite <= 0 {
+		c.PurgeMarkersPerSite = DefaultPurgeMarkersPerSite
+	}
 	if c.DefaultPort == 0 {
 		c.DefaultPort = 80
 	}
@@ -128,23 +135,30 @@ type Agent struct {
 	nodeID        string // guarded by mu; empty until the identity is known
 	connectedOnce sync.Once
 
-	mu          sync.Mutex
-	applied     *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
-	appliedAt   time.Time
-	plan        *configir.Plan       // plan in effect (listeners and zones for tasks)
-	desired     *dataplane.SiteTable // table the data plane must serve
-	creds       map[string]configir.Credential
-	markers     []dataplane.PurgeMarker
-	unreported  []*nodev1.ReportTaskResultRequest
-	conf        []byte // nginx.conf currently installed
-	state       nodev1.ApplyState
-	message     string
-	dpHealthy   bool
-	rejectedKey string
-	rejectedAt  time.Time
-	lastRenew   time.Time
+	mu        sync.Mutex
+	applied   *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
+	appliedAt time.Time
+	plan      *configir.Plan       // plan in effect (listeners and zones for tasks)
+	desired   *dataplane.SiteTable // table the data plane must serve
+	creds     map[string]configir.Credential
+	purge     *purgeState
+	lastPrune time.Time
+	// purgeFallbackID is the id of the site-level fallback set installed
+	// when the full marker set could not be; the full set is retried after
+	// purgeRetryAt.
+	purgeFallbackID string
+	purgeRetryAt    time.Time
+	unreported      []*nodev1.ReportTaskResultRequest
+	conf            []byte // nginx.conf currently installed
+	state           nodev1.ApplyState
+	message         string
+	dpHealthy       bool
+	rejectedKey     string
+	rejectedAt      time.Time
+	lastRenew       time.Time
 
 	pushMu   sync.Mutex
+	purgeMu  sync.Mutex // serializes purge writes to the data plane
 	syncCh   chan struct{}
 	reportCh chan struct{}
 	taskCh   chan struct{}
@@ -165,6 +179,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		lkg:      configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
 		message:  "waiting for the first configuration",
 		creds:    map[string]configir.Credential{},
+		purge:    newPurgeState(),
 		syncCh:   make(chan struct{}, 1),
 		reportCh: make(chan struct{}, 1),
 		taskCh:   make(chan struct{}, 1),
