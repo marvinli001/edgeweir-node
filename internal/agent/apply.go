@@ -73,9 +73,15 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 			"listeners", len(plan.Listeners), "cache_zones", len(plan.CacheZones), "conf", a.cfg.ConfPath)
 	}
 
+	// Purge markers go in before sites: a data plane that just (re)started
+	// must never serve a purged object.
+	if err := a.syncPurgeWithRetry(ctx); err != nil {
+		a.log.Warn("cannot install purge markers before the site table; retrying in the background", "err", err)
+	}
 	table := dataplane.FromPlan(plan)
 	a.mu.Lock()
 	a.desired = table
+	a.plan = plan
 	a.mu.Unlock()
 	return a.pushWithRetry(ctx, table)
 }
@@ -190,6 +196,12 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 		return false
 	}
 	a.setDataPlaneHealthy(true)
+	if st.Purge.ID != a.purgeTable().ID {
+		if err := a.syncPurge(cctx); err != nil {
+			a.log.Warn("cannot push purge markers", "err", err)
+			return false
+		}
+	}
 	if st.InSync(desired) {
 		return true
 	}
@@ -313,6 +325,11 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		a.fail(cfg, key, &permanentError{err})
 		return
 	}
+	if err := a.ensureCredentials(ctx, plan); err != nil {
+		a.fail(cfg, key, err) // transient: retried with the next sync
+		return
+	}
+	a.attachCredentials(plan)
 	for _, w := range plan.Warnings {
 		a.log.Warn("configuration warning", "revision", cfg.GetRevision(), "warning", w)
 	}

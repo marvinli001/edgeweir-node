@@ -26,6 +26,13 @@ type Server struct {
 	pushes  []*dataplane.SiteTable
 	pending []dataplane.MinuteStats
 	failPut int
+	// Purge markers by identity (site, type, host, path, query) -> epoch.
+	markers    map[string]dataplane.PurgeMarker
+	purgeCalls []string
+	health     []dataplane.OriginHealth
+	failPurge  int
+	// events records successful writes in order: "sites", "purge:PUT", "purge:POST".
+	events []string
 }
 
 // Start listens on a new unix socket in a short temporary directory (unix
@@ -78,6 +85,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.table = &t
 		s.pushes = append(s.pushes, &t)
+		s.events = append(s.events, "sites")
 		s.status = dataplane.Status{
 			Version:     s.status.Version + 1,
 			Revision:    t.Revision,
@@ -85,6 +93,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			SiteCount:   len(t.Sites),
 		}
 		reply(w, 200, s.status)
+	case r.URL.Path == "/v1/purge" && (r.Method == http.MethodPut || r.Method == http.MethodPost):
+		if s.failPurge > 0 {
+			s.failPurge--
+			reply(w, 500, map[string]string{"error": "injected failure"})
+			return
+		}
+		var t dataplane.PurgeTable
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		if r.Method == http.MethodPut || s.markers == nil {
+			s.markers = map[string]dataplane.PurgeMarker{}
+		}
+		for _, m := range t.Markers {
+			k := markerKey(m)
+			if old, ok := s.markers[k]; !ok || old.Epoch < m.Epoch {
+				s.markers[k] = m
+			}
+		}
+		s.purgeCalls = append(s.purgeCalls, r.Method)
+		s.events = append(s.events, "purge:"+r.Method)
+		s.status.Purge = dataplane.PurgeStatus{ID: t.ID, Entries: len(s.markers)}
+		reply(w, 200, s.status.Purge)
+	case r.URL.Path == "/v1/origins/health" && r.Method == http.MethodGet:
+		if len(s.health) == 0 {
+			reply(w, 200, map[string]any{"origins": map[string]any{}})
+			return
+		}
+		reply(w, 200, map[string]any{"origins": s.health})
 	case r.URL.Path == "/v1/stats/drain" && r.Method == http.MethodPost:
 		out := s.pending
 		s.pending = nil
@@ -119,6 +157,59 @@ func (s *Server) Restart() {
 	defer s.mu.Unlock()
 	s.status = dataplane.Status{}
 	s.table = nil
+	s.markers = nil
+}
+
+func markerKey(m dataplane.PurgeMarker) string {
+	return m.SiteID + "\x00" + m.Type + "\x00" + m.Host + "\x00" + m.Path + "\x00" + m.Query
+}
+
+// Markers returns the installed purge markers.
+func (s *Server) Markers() []dataplane.PurgeMarker {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]dataplane.PurgeMarker, 0, len(s.markers))
+	for _, m := range s.markers {
+		out = append(out, m)
+	}
+	slices.SortFunc(out, func(a, b dataplane.PurgeMarker) int {
+		switch {
+		case markerKey(a) < markerKey(b):
+			return -1
+		case markerKey(a) > markerKey(b):
+			return 1
+		}
+		return 0
+	})
+	return out
+}
+
+// Events returns the successful writes in order ("sites", "purge:PUT", "purge:POST").
+func (s *Server) Events() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.events)
+}
+
+// PurgeCalls returns the methods of the purge calls received (PUT / POST).
+func (s *Server) PurgeCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.purgeCalls)
+}
+
+// SetOriginHealth sets what GET /v1/origins/health returns.
+func (s *Server) SetOriginHealth(h ...dataplane.OriginHealth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.health = h
+}
+
+// FailNextPurges makes the next n purge calls fail.
+func (s *Server) FailNextPurges(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failPurge = n
 }
 
 // FailNextPuts makes the next n PUT /v1/sites calls fail.

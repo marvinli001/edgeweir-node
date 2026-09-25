@@ -262,6 +262,24 @@ func (t tristate) resolve(auto func() bool) bool {
 	}
 }
 
+// caBundles are the system CA bundle locations of common distributions.
+var caBundles = []string{
+	"/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Alpine
+	"/etc/pki/tls/certs/ca-bundle.crt",   // RHEL, Fedora, Rocky, Alma
+	"/etc/ssl/ca-bundle.pem",             // openSUSE
+	"/etc/ssl/cert.pem",                  // Arch, macOS
+}
+
+// systemCABundle returns the first existing system CA bundle, or "".
+func systemCABundle() string {
+	for _, p := range caBundles {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
 func cmdRun(args []string, stderr io.Writer) int {
 	fs := newFlagSet("run", stderr)
 	listenIPv6, resolverIPv6 := tristate("auto"), tristate("auto")
@@ -275,6 +293,8 @@ func cmdRun(args []string, stderr io.Writer) int {
 		cacheDir      = fs.String("cache-dir", defaultCacheDir, "parent directory of the proxy cache zones")
 		controlSocket = fs.String("control-socket", defaultControlSocket, "unix socket of the data plane control API")
 		originSocket  = fs.String("origin-socket", defaultOriginSocket, "unix socket of the internal origin layer")
+		noVerifySock  = fs.String("origin-socket-noverify", "", "unix socket of the origin layer without TLS verification (default: origin-noverify.sock next to --origin-socket)")
+		trustedCA     = fs.String("trusted-ca", "", "CA bundle for verifying HTTPS origins (default: the system bundle)")
 		resolvConf    = fs.String("resolv-conf", "/etc/resolv.conf", "resolv.conf to take nginx resolvers from")
 		resolvers     = fs.String("resolver", "", "comma-separated nginx resolver addresses (overrides --resolv-conf)")
 		defaultPort   = fs.Uint("default-port", 80, "HTTP port served before any configuration exists")
@@ -327,12 +347,22 @@ func cmdRun(args []string, stderr io.Writer) int {
 	if nofile > 0 && nofile < 2*uint64(workerConnections) {
 		workerConnections = max(int(nofile/2), 256)
 	}
+	caBundle := *trustedCA
+	if caBundle == "" {
+		caBundle = systemCABundle()
+	}
+	if caBundle == "" {
+		log.Warn("no CA bundle found (set --trusted-ca): HTTPS origins that require certificate verification will fail")
+	} else {
+		caBundle = abs(caBundle)
+	}
 	params := render.Params{
 		Prefix:             prefix,
 		LuaDir:             abs(*luaDir),
 		CacheDir:           abs(*cacheDir),
 		ControlSocket:      abs(*controlSocket),
 		OriginSocket:       abs(*originSocket),
+		TrustedCA:          caBundle,
 		ResolvConf:         abs(*resolvConf),
 		Resolvers:          rs,
 		ResolverIPv6:       resolverIPv6.resolve(hostinfo.HasGlobalIPv6),
@@ -342,6 +372,10 @@ func cmdRun(args []string, stderr io.Writer) int {
 		WorkerRlimitNofile: nofile,
 		WorkerConnections:  workerConnections,
 	}
+	if *noVerifySock != "" {
+		params.OriginSocketNoVerify = abs(*noVerifySock)
+	}
+	params = params.WithDefaults()
 	if _, err := os.Stat(filepath.Join(params.LuaDir, "edgeweir", "init.lua")); err != nil {
 		log.Warn("Lua modules not found; nginx configuration tests will fail", "lua_dir", params.LuaDir, "err", err)
 	}
@@ -359,7 +393,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		Prefix:       prefix,
 		Conf:         conf,
 		Managed:      *manage,
-		StaleSockets: []string{params.ControlSocket, params.OriginSocket},
+		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify},
 		Logger:       log,
 	})
 	a := agent.New(agent.Config{

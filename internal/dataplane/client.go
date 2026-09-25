@@ -38,19 +38,58 @@ func FromPlan(p *configir.Plan) *SiteTable {
 // Status is the response of GET /v1/status. Version is 0 until the first
 // push after nginx (re)started: the shared dicts are empty then.
 type Status struct {
-	Version       int64   `json:"version"`
-	Revision      uint64  `json:"revision,string"`
-	ContentHash   string  `json:"content_hash"`
-	SiteCount     int     `json:"site_count"`
-	PushedAt      float64 `json:"pushed_at"`
-	NginxVersion  int64   `json:"nginx_version,omitempty"`
-	NgxLuaVersion int64   `json:"ngx_lua_version,omitempty"`
-	WorkerPID     int     `json:"worker_pid,omitempty"`
+	Version       int64       `json:"version"`
+	Revision      uint64      `json:"revision,string"`
+	ContentHash   string      `json:"content_hash"`
+	SiteCount     int         `json:"site_count"`
+	PushedAt      float64     `json:"pushed_at"`
+	Purge         PurgeStatus `json:"purge"`
+	NginxVersion  int64       `json:"nginx_version,omitempty"`
+	NgxLuaVersion int64       `json:"ngx_lua_version,omitempty"`
+	WorkerPID     int         `json:"worker_pid,omitempty"`
 }
 
 // InSync reports whether the data plane serves exactly table t.
 func (s *Status) InSync(t *SiteTable) bool {
 	return s.Version > 0 && s.Revision == t.Revision && s.ContentHash == t.ContentHash
+}
+
+// PurgeMarker invalidates cached objects of a site (see lua/edgeweir/purge.lua).
+type PurgeMarker struct {
+	SiteID string `json:"site_id"`
+	// Type is "url", "prefix" or "site".
+	Type  string `json:"type"`
+	Host  string `json:"host,omitempty"`
+	Path  string `json:"path,omitempty"`
+	Query string `json:"query,omitempty"`
+	// Epoch is the purge time in milliseconds; it becomes part of the keys.
+	Epoch int64 `json:"epoch"`
+}
+
+// PurgeTable is the body of PUT and POST /v1/purge. ID identifies the full
+// marker set after the call.
+type PurgeTable struct {
+	ID      string        `json:"id"`
+	Markers []PurgeMarker `json:"markers"`
+}
+
+// PurgeStatus is the data plane's marker set. An empty ID after an nginx
+// restart means the markers must be pushed again.
+type PurgeStatus struct {
+	ID      string `json:"id"`
+	Entries int    `json:"entries"`
+}
+
+// OriginHealth is one entry of GET /v1/origins/health (origins with
+// recorded failures; times are Unix seconds, 0 when unset).
+type OriginHealth struct {
+	SiteID        string  `json:"site_id"`
+	OriginID      string  `json:"origin_id"`
+	Healthy       bool    `json:"healthy"`
+	Failures      uint32  `json:"failures"`
+	LastFailureAt float64 `json:"last_failure_at"`
+	DownUntil     float64 `json:"down_until"`
+	LastError     string  `json:"last_error"`
 }
 
 // MinuteStats is one per-site, per-minute bucket from POST /v1/stats/drain.
@@ -165,6 +204,49 @@ func (c *Client) PutSites(ctx context.Context, t *SiteTable) (*Status, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// PutPurge replaces the purge marker set.
+func (c *Client) PutPurge(ctx context.Context, t *PurgeTable) (*PurgeStatus, error) {
+	return c.purge(ctx, http.MethodPut, t)
+}
+
+// AddPurge merges markers into the data plane's set.
+func (c *Client) AddPurge(ctx context.Context, t *PurgeTable) (*PurgeStatus, error) {
+	return c.purge(ctx, http.MethodPost, t)
+}
+
+func (c *Client) purge(ctx context.Context, method string, t *PurgeTable) (*PurgeStatus, error) {
+	if t == nil {
+		return nil, errors.New("nil purge table")
+	}
+	if t.Markers == nil {
+		t = &PurgeTable{ID: t.ID, Markers: []PurgeMarker{}}
+	}
+	var s PurgeStatus
+	if err := c.do(ctx, method, "/v1/purge", t, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// OriginHealth returns the origins with recorded failures.
+func (c *Client) OriginHealth(ctx context.Context) ([]OriginHealth, error) {
+	var out struct {
+		Origins json.RawMessage `json:"origins"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/origins/health", nil, &out); err != nil {
+		return nil, err
+	}
+	raw := bytes.TrimSpace(out.Origins)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("{}")) || bytes.Equal(raw, []byte("null")) {
+		return nil, nil
+	}
+	var list []OriginHealth
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("decode origin health: %w", err)
+	}
+	return list, nil
 }
 
 // DrainStats returns and deletes the completed per-minute counters.

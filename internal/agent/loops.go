@@ -83,6 +83,10 @@ func (a *Agent) watchOnce(ctx context.Context) (gotMessage bool, err error) {
 			a.log.Info("new configuration revision announced", "revision", msg.GetLatestRevision(), "applied_revision", a.appliedRevision())
 			a.triggerSync()
 		}
+		if msg.GetEvent() == nodev1.WatchEvent_WATCH_EVENT_TASKS {
+			a.log.Info("tasks announced")
+			a.triggerTasks()
+		}
 	}
 	if err := stream.Err(); err != nil {
 		select {
@@ -156,6 +160,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
 	defer cancel()
 	req := a.statusRequest()
+	req.OriginHealth = a.originHealth(cctx)
 	resp, err := a.channel.Client().ReportStatus(cctx, connect.NewRequest(req))
 	if err != nil {
 		if ctx.Err() == nil {
@@ -170,6 +175,9 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	}
 	if resp.Msg.GetLatestRevision() > a.appliedRevision() {
 		a.triggerSync()
+	}
+	if resp.Msg.GetTasksPending() {
+		a.triggerTasks()
 	}
 	id := a.channel.Identity()
 	if resp.Msg.GetRenewCertificate() || pki.NeedsRenewal(id.Certificate, time.Now()) {
@@ -305,4 +313,41 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 		})
 	}
 	return out
+}
+
+// maxOriginHealth bounds the origin health entries of one heartbeat.
+const maxOriginHealth = 2000
+
+// originHealth converts the data plane's passive health state for ReportStatus.
+func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
+	list, err := a.dp.OriginHealth(ctx)
+	if err != nil {
+		a.log.Debug("cannot read origin health", "err", err)
+		return nil
+	}
+	out := make([]*nodev1.OriginHealth, 0, min(len(list), maxOriginHealth))
+	for _, h := range list {
+		if len(out) == maxOriginHealth {
+			break
+		}
+		e := &nodev1.OriginHealth{
+			SiteId:              h.SiteID,
+			OriginId:            h.OriginID,
+			Healthy:             h.Healthy,
+			ConsecutiveFailures: h.Failures,
+			LastError:           h.LastError,
+		}
+		if h.LastFailureAt > 0 {
+			e.LastFailureAt = timestamppb.New(unixFloat(h.LastFailureAt))
+		}
+		if h.DownUntil > 0 {
+			e.DownUntil = timestamppb.New(unixFloat(h.DownUntil))
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func unixFloat(s float64) time.Time {
+	return time.UnixMilli(int64(s * 1000)).UTC()
 }

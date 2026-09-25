@@ -51,6 +51,9 @@ type DataPlane interface {
 	Status(ctx context.Context) (*dataplane.Status, error)
 	PutSites(ctx context.Context, t *dataplane.SiteTable) (*dataplane.Status, error)
 	DrainStats(ctx context.Context) ([]dataplane.MinuteStats, error)
+	PutPurge(ctx context.Context, t *dataplane.PurgeTable) (*dataplane.PurgeStatus, error)
+	AddPurge(ctx context.Context, t *dataplane.PurgeTable) (*dataplane.PurgeStatus, error)
+	OriginHealth(ctx context.Context) ([]dataplane.OriginHealth, error)
 }
 
 // Config configures the agent.
@@ -74,6 +77,12 @@ type Config struct {
 	WatchBackoffMax    time.Duration // default 30s
 	PushTimeout        time.Duration // retry budget for pushing a site table, default 15s
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
+	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
+
+	// Prefetch tasks request URLs from the node's own edge listener.
+	PrefetchHost        string        // default 127.0.0.1
+	PrefetchConcurrency int           // default 4
+	PrefetchTimeout     time.Duration // per URL, default 60s
 }
 
 func (c *Config) setDefaults() {
@@ -92,6 +101,14 @@ func (c *Config) setDefaults() {
 	def(&c.WatchBackoffMax, 30*time.Second)
 	def(&c.PushTimeout, 15*time.Second)
 	def(&c.RPCTimeout, 30*time.Second)
+	def(&c.TaskPollInterval, 30*time.Second)
+	def(&c.PrefetchTimeout, time.Minute)
+	if c.PrefetchHost == "" {
+		c.PrefetchHost = "127.0.0.1"
+	}
+	if c.PrefetchConcurrency <= 0 {
+		c.PrefetchConcurrency = 4
+	}
 	if c.DefaultPort == 0 {
 		c.DefaultPort = 80
 	}
@@ -113,8 +130,12 @@ type Agent struct {
 	mu          sync.Mutex
 	applied     *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
 	appliedAt   time.Time
+	plan        *configir.Plan       // plan in effect (listeners and zones for tasks)
 	desired     *dataplane.SiteTable // table the data plane must serve
-	conf        []byte               // nginx.conf currently installed
+	creds       map[string]configir.Credential
+	markers     []dataplane.PurgeMarker
+	unreported  []*nodev1.ReportTaskResultRequest
+	conf        []byte // nginx.conf currently installed
 	state       nodev1.ApplyState
 	message     string
 	dpHealthy   bool
@@ -125,6 +146,7 @@ type Agent struct {
 	pushMu   sync.Mutex
 	syncCh   chan struct{}
 	reportCh chan struct{}
+	taskCh   chan struct{}
 }
 
 // New creates an agent.
@@ -141,8 +163,10 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		ids:      identity.Store{Dir: cfg.StateDir},
 		lkg:      configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
 		message:  "waiting for the first configuration",
+		creds:    map[string]configir.Credential{},
 		syncCh:   make(chan struct{}, 1),
 		reportCh: make(chan struct{}, 1),
+		taskCh:   make(chan struct{}, 1),
 	}
 }
 
@@ -173,6 +197,8 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.log.Error("engine supervisor stopped", "err", err)
 		}
 	})
+	a.loadCredentials()
+	a.loadPurge()
 	a.serveInitialConfig(ctx)
 	spawn("dataplane", a.dataPlaneLoop)
 
@@ -195,6 +221,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("poll", a.pollLoop)
 	spawn("report", a.reportLoop)
 	spawn("stats", a.statsLoop)
+	spawn("tasks", a.taskLoop)
 	a.triggerSync()
 
 	<-ctx.Done()
@@ -262,6 +289,8 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 	case err == nil:
 		plan, perr := configir.Build(cfg, a.buildOptions())
 		if perr == nil {
+			// No console yet: S3 origins use the stored credentials.
+			a.attachCredentials(plan)
 			perr = a.applyPlan(ctx, plan)
 		}
 		if perr == nil {

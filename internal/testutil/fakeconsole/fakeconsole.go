@@ -64,6 +64,11 @@ type Console struct {
 	enrollments     int
 	mtlsCalls       map[string]int
 	watchStreams    int
+	credentials     map[string]*nodev1.OriginCredential
+	credRequests    [][]string
+	pendingTasks    []*nodev1.NodeTask
+	taskResults     []*nodev1.ReportTaskResultRequest
+	taskWatchers    map[chan struct{}]struct{}
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -94,12 +99,14 @@ func New(opts Options) (*Console, error) {
 		return nil, err
 	}
 	return &Console{
-		CA:        ca,
-		opts:      opts,
-		tokens:    map[string]bool{},
-		watchers:  map[chan struct{}]struct{}{},
-		mtlsCalls: map[string]int{},
-		done:      make(chan struct{}),
+		CA:           ca,
+		opts:         opts,
+		tokens:       map[string]bool{},
+		watchers:     map[chan struct{}]struct{}{},
+		taskWatchers: map[chan struct{}]struct{}{},
+		credentials:  map[string]*nodev1.OriginCredential{},
+		mtlsCalls:    map[string]int{},
+		done:         make(chan struct{}),
 	}, nil
 }
 
@@ -314,13 +321,16 @@ func (c *Console) RenewCertificate(_ context.Context, req *connect.Request[nodev
 // WatchConfig implements NodeService.
 func (c *Console) WatchConfig(ctx context.Context, _ *connect.Request[nodev1.WatchConfigRequest], stream *connect.ServerStream[nodev1.WatchConfigResponse]) error {
 	notify := make(chan struct{}, 1)
+	tasks := make(chan struct{}, 1)
 	c.mu.Lock()
 	c.watchers[notify] = struct{}{}
+	c.taskWatchers[tasks] = struct{}{}
 	c.watchStreams++
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		delete(c.watchers, notify)
+		delete(c.taskWatchers, tasks)
 		c.mu.Unlock()
 	}()
 
@@ -347,6 +357,10 @@ func (c *Console) WatchConfig(ctx context.Context, _ *connect.Request[nodev1.Wat
 			return connect.NewError(connect.CodeUnavailable, errors.New("console shutting down"))
 		case <-notify:
 			if err := sendRevision(); err != nil {
+				return err
+			}
+		case <-tasks:
+			if err := stream.Send(&nodev1.WatchConfigResponse{Event: nodev1.WatchEvent_WATCH_EVENT_TASKS}); err != nil {
 				return err
 			}
 		case <-t.C:
@@ -396,7 +410,81 @@ func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.Re
 		LatestRevision:        c.latest().GetRevision(),
 		RenewCertificate:      renew,
 		ReportIntervalSeconds: c.opts.ReportInterval,
+		TasksPending:          len(c.pendingTasks) > 0,
 	}), nil
+}
+
+// SetCredential makes GetOriginCredentials hand out cred.
+func (c *Console) SetCredential(cred *nodev1.OriginCredential) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.credentials[cred.GetId()] = proto.CloneOf(cred)
+}
+
+// CredentialRequests returns the ids of every GetOriginCredentials call.
+func (c *Console) CredentialRequests() [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.credRequests)
+}
+
+// AddTask queues a task and announces it on open watch streams (unless
+// quiet, which leaves discovery to heartbeats and polling).
+func (c *Console) AddTask(task *nodev1.NodeTask, quiet bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pendingTasks = append(c.pendingTasks, proto.CloneOf(task))
+	if quiet {
+		return
+	}
+	for ch := range c.taskWatchers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// TaskResults returns every reported task result.
+func (c *Console) TaskResults() []*nodev1.ReportTaskResultRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.taskResults)
+}
+
+// GetOriginCredentials implements NodeService.
+func (c *Console) GetOriginCredentials(_ context.Context, req *connect.Request[nodev1.GetOriginCredentialsRequest]) (*connect.Response[nodev1.GetOriginCredentialsResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.credRequests = append(c.credRequests, slices.Clone(req.Msg.GetIds()))
+	resp := &nodev1.GetOriginCredentialsResponse{}
+	for _, id := range req.Msg.GetIds() {
+		if cred, ok := c.credentials[id]; ok {
+			resp.Credentials = append(resp.Credentials, proto.CloneOf(cred))
+		}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// PullTasks implements NodeService: every queued task is handed out once.
+func (c *Console) PullTasks(_ context.Context, req *connect.Request[nodev1.PullTasksRequest]) (*connect.Response[nodev1.PullTasksResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(c.pendingTasks)
+	if m := int(req.Msg.GetMaxTasks()); m > 0 && m < n {
+		n = m
+	}
+	out := c.pendingTasks[:n]
+	c.pendingTasks = slices.Clone(c.pendingTasks[n:])
+	return connect.NewResponse(&nodev1.PullTasksResponse{Tasks: out}), nil
+}
+
+// ReportTaskResult implements NodeService.
+func (c *Console) ReportTaskResult(_ context.Context, req *connect.Request[nodev1.ReportTaskResultRequest]) (*connect.Response[nodev1.ReportTaskResultResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.taskResults = append(c.taskResults, proto.CloneOf(req.Msg))
+	return connect.NewResponse(&nodev1.ReportTaskResultResponse{}), nil
 }
 
 // ReportStats implements NodeService.
