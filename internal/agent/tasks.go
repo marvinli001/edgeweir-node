@@ -49,17 +49,18 @@ func (a *Agent) triggerTasks() {
 }
 
 // taskLoop pulls tasks when the console announces them (watch event or
-// heartbeat) and every TaskPollInterval as a fallback.
+// heartbeat) and about every TaskPollInterval (jittered) as a fallback.
 func (a *Agent) taskLoop(ctx context.Context) {
-	t := time.NewTicker(a.cfg.TaskPollInterval)
-	defer t.Stop()
 	for {
 		a.runTasks(ctx)
+		t := time.NewTimer(jittered(a.cfg.TaskPollInterval))
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return
 		case <-t.C:
 		case <-a.taskCh:
+			t.Stop()
 		}
 	}
 }

@@ -104,18 +104,21 @@ func (a *Agent) watchOnce(ctx context.Context) (gotMessage bool, err error) {
 
 // pollLoop is the fallback when the stream is unavailable or a
 // notification was missed: GetConfig every PollInterval regardless of
-// stream health (cheap: an up-to-date node gets an empty diff).
+// stream health (cheap: an up-to-date node gets an empty diff). Every
+// interval is jittered by ±20% so that nodes started together (a cluster
+// restart, a console outage) do not poll in lockstep (ADR-0014).
 func (a *Agent) pollLoop(ctx context.Context) {
-	t := time.NewTicker(a.cfg.PollInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			a.triggerSync()
-		}
+	for sleepCtx(ctx, jittered(a.cfg.PollInterval)) {
+		a.triggerSync()
 	}
+}
+
+// jittered returns a random duration in [0.8d, 1.2d].
+func jittered(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	return d*8/10 + rand.N(d*4/10+1)
 }
 
 // reportLoop sends ReportStatus immediately, after every apply attempt and
