@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/edgeweir/edgeweir-node/internal/configir"
+	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -275,6 +277,38 @@ func TestRenderPurgeDictSize(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "lua_shared_dict edgeweir_purge 128m;") {
 		t.Fatal("purge dict size not rendered")
+	}
+}
+
+// TestRenderedSharedDictsAreReservedZoneNames: every lua_shared_dict that
+// nginx.conf declares is refused as a cache zone name. nginx keeps all
+// shared memory zones in one namespace, so a keys_zone with the same name
+// fails `nginx -t` and the node would reject every revision.
+func TestRenderedSharedDictsAreReservedZoneNames(t *testing.T) {
+	conf, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dicts := regexp.MustCompile(`(?m)^\s*lua_shared_dict\s+(\S+)\s`).FindAllSubmatch(conf, -1)
+	if len(dicts) < 5 {
+		t.Fatalf("found %d lua_shared_dict directives, want at least 5", len(dicts))
+	}
+	for _, m := range dicts {
+		name := string(m[1])
+		plan, err := configir.Build(&nodev1.NodeConfig{
+			CacheZones: []*nodev1.CacheZone{{Name: name}, {Name: "main"}},
+		}, configir.Options{DefaultPort: 80})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, z := range plan.CacheZones {
+			if z.Name == name {
+				t.Errorf("cache zone %q accepted, but nginx.conf declares lua_shared_dict %s", name, name)
+			}
+		}
+		if _, err := Render(params(), plan); err != nil {
+			t.Errorf("cache zone %q: %v", name, err)
+		}
 	}
 }
 

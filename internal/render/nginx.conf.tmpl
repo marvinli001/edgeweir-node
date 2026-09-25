@@ -36,11 +36,10 @@ http {
     scgi_temp_path {{ .Prefix }}/tmp/scgi;
 
     lua_package_path "{{ .LuaDir }}/?.lua;;";
-    lua_shared_dict edgeweir_sites {{ .SitesDictMB }}m;
-    lua_shared_dict edgeweir_meta 1m;
-    lua_shared_dict edgeweir_stats {{ .StatsDictMB }}m;
-    lua_shared_dict edgeweir_purge {{ .PurgeDictMB }}m;
-    lua_shared_dict edgeweir_health 4m;
+{{- /* configir.SharedDicts: every shared dict is declared there */}}
+{{- range .SharedDicts }}
+    lua_shared_dict {{ .Name }} {{ .SizeMB }}m;
+{{- end }}
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).
     lua_capture_error_log 64k;

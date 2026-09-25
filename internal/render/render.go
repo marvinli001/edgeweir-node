@@ -154,10 +154,38 @@ func (p Params) validate() error {
 type data struct {
 	Params
 	ConfID       string
+	SharedDicts  []sharedDict
 	EdgeServers  []edgeServer
 	CacheZones   []configir.CacheZone
 	DefaultZone  string
 	OriginLayers []originLayer
+}
+
+// sharedDict is one lua_shared_dict of the data plane.
+type sharedDict struct {
+	Name   string
+	SizeMB int
+}
+
+// sharedDicts sizes every dict of configir.SharedDicts, the single list
+// that also keeps cache zones from reusing these names.
+func sharedDicts(p Params) ([]sharedDict, error) {
+	sizes := map[string]int{
+		configir.DictSites:  p.SitesDictMB,
+		configir.DictMeta:   1,
+		configir.DictStats:  p.StatsDictMB,
+		configir.DictPurge:  p.PurgeDictMB,
+		configir.DictHealth: 4,
+	}
+	out := make([]sharedDict, 0, len(configir.SharedDicts))
+	for _, name := range configir.SharedDicts {
+		mb, ok := sizes[name]
+		if !ok {
+			return nil, fmt.Errorf("no size for shared dict %s", name)
+		}
+		out = append(out, sharedDict{Name: name, SizeMB: mb})
+	}
+	return out, nil
 }
 
 // edgeServer is one server block of the edge layer.
@@ -208,8 +236,13 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 			return nil, fmt.Errorf("invalid cache zone name %q", z.Name)
 		}
 	}
+	dicts, err := sharedDicts(p)
+	if err != nil {
+		return nil, err
+	}
 	d := data{
 		Params:      p,
+		SharedDicts: dicts,
 		EdgeServers: edgeServers(p, plan.Listeners),
 		CacheZones:  plan.CacheZones,
 		DefaultZone: plan.CacheZones[0].Name,

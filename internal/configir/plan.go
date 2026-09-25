@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 
 	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
@@ -21,12 +22,26 @@ const (
 	defaultZoneInactive   = 3600
 )
 
-// reservedZoneNames collide with the data plane's own shared memory zones.
-var reservedZoneNames = map[string]bool{
-	"edgeweir_sites": true,
-	"edgeweir_meta":  true,
-	"edgeweir_stats": true,
-}
+// The data plane's shared memory zones (lua_shared_dict). The Lua modules
+// use them by name (ngx.shared.<name>), and internal/render declares
+// exactly SharedDicts in nginx.conf, so this is the one list of them.
+const (
+	DictSites  = "edgeweir_sites"
+	DictMeta   = "edgeweir_meta"
+	DictStats  = "edgeweir_stats"
+	DictPurge  = "edgeweir_purge"
+	DictHealth = "edgeweir_health"
+)
+
+// SharedDicts lists every lua_shared_dict of the data plane in the order
+// nginx.conf declares them. nginx keeps all shared memory zones in one
+// namespace, so a cache zone (proxy_cache_path keys_zone) named like one
+// of them would fail `nginx -t`: Build skips such zones.
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth}
+
+// reservedZoneName reports whether a cache zone name collides with one of
+// the data plane's shared dicts.
+func reservedZoneName(name string) bool { return slices.Contains(SharedDicts, name) }
 
 var zoneNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
@@ -274,7 +289,8 @@ func defaultZone() CacheZone {
 //   - listeners with invalid ports, duplicates, or HTTPS (certificate
 //     delivery is not part of proto v0.1.0) are skipped; http3 is ignored;
 //     without any usable listener the default port is served;
-//   - invalid cache zones are skipped; sites referencing an unknown or
+//   - invalid cache zones and zones named like a shared dict of the data
+//     plane (SharedDicts) are skipped; sites referencing an unknown or
 //     empty zone use the first zone;
 //   - invalid domains are dropped, domains claimed by an earlier site (by
 //     id order) are dropped, sites left without domains are skipped;
@@ -350,7 +366,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	zones := map[string]bool{}
 	for _, z := range c.GetCacheZones() {
 		name := z.GetName()
-		if !zoneNameRE.MatchString(name) || reservedZoneNames[name] {
+		if !zoneNameRE.MatchString(name) || reservedZoneName(name) {
 			warn("cache zone %q skipped: invalid or reserved name", name)
 			continue
 		}

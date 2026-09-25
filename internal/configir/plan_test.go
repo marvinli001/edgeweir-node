@@ -2,6 +2,7 @@ package configir
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -169,6 +170,33 @@ func TestBuildDefaults(t *testing.T) {
 	b := Bootstrap(80)
 	if b.Revision != 0 || len(b.Sites) != 0 || b.Listeners[0].Port != 80 {
 		t.Fatalf("bootstrap = %+v", b)
+	}
+}
+
+// TestBuildSkipsCacheZonesNamedLikeSharedDicts: nginx has one namespace
+// for shared memory zones, so a cache zone named like any lua_shared_dict
+// of the data plane would make `nginx -t` fail for the whole cluster.
+func TestBuildSkipsCacheZonesNamedLikeSharedDicts(t *testing.T) {
+	for _, name := range []string{"edgeweir_sites", "edgeweir_meta", "edgeweir_stats", "edgeweir_purge", "edgeweir_health"} {
+		cfg := &nodev1.NodeConfig{CacheZones: []*nodev1.CacheZone{{Name: name}, {Name: "main"}}}
+		p, err := Build(cfg, Options{DefaultPort: 80})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.CacheZones) != 1 || p.CacheZones[0].Name != "main" {
+			t.Errorf("cache zone %q: zones = %+v, want only main", name, p.CacheZones)
+		}
+		if want := fmt.Sprintf("cache zone %q skipped", name); !strings.Contains(strings.Join(p.Warnings, "\n"), want) {
+			t.Errorf("warnings %v miss %q", p.Warnings, want)
+		}
+	}
+	// Other names with the same prefix stay usable.
+	p, err := Build(&nodev1.NodeConfig{CacheZones: []*nodev1.CacheZone{{Name: "edgeweir_images"}}}, Options{DefaultPort: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.CacheZones) != 1 || p.CacheZones[0].Name != "edgeweir_images" || len(p.Warnings) != 0 {
+		t.Fatalf("zones = %+v, warnings = %v", p.CacheZones, p.Warnings)
 	}
 }
 
