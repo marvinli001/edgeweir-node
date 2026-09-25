@@ -37,6 +37,11 @@ var tokenRE = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$")
 
 var regionRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// idRE matches site, origin and rule ids. The data plane joins them with
+// "|", ":", "," and other separators (cache keys, purge and health keys,
+// X-Edgeweir-Rules), so nothing else is accepted. The console uses UUIDs.
+var idRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
 var bucketRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 
 // Defaults for zero values in OriginPool.health_check and .connection.
@@ -259,6 +264,8 @@ func defaultZone() CacheZone {
 //
 // Whole-config rejections (returned as errors wrapping ErrRejected):
 //   - cluster_id differs from the node's cluster;
+//   - a site, origin or cache rule id contains anything but letters,
+//     digits, "_" and "-" (they are used as separators in the data plane);
 //   - any cache rule uses the rule-engine expression (not supported by
 //     Phase 0 nodes, per the proto contract).
 //
@@ -287,6 +294,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if opts.ClusterID != "" && c.GetClusterId() != "" && c.GetClusterId() != opts.ClusterID {
 		return nil, fmt.Errorf("%w: configuration is for cluster %q but this node belongs to %q",
 			ErrRejected, c.GetClusterId(), opts.ClusterID)
+	}
+	if err := validateIDs(c); err != nil {
+		return nil, err
 	}
 	for _, s := range c.GetSites() {
 		for _, r := range s.GetCacheRules() {
@@ -463,6 +473,38 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	return p, nil
 }
 
+// validateIDs rejects configurations whose site, origin or rule ids
+// contain anything but letters, digits, "_" and "-" (see idRE). Empty ids
+// are handled per item by Build.
+func validateIDs(c *nodev1.NodeConfig) error {
+	check := func(kind, id, site string) error {
+		if id == "" || idRE.MatchString(id) {
+			return nil
+		}
+		where := ""
+		if site != "" {
+			where = fmt.Sprintf(" in site %q", site)
+		}
+		return fmt.Errorf("%w: %s id %q%s may only contain letters, digits, \"_\" and \"-\" (at most 128)", ErrRejected, kind, id, where)
+	}
+	for _, s := range c.GetSites() {
+		if err := check("site", s.GetId(), ""); err != nil {
+			return err
+		}
+		for _, o := range s.GetOriginPool().GetOrigins() {
+			if err := check("origin", o.GetId(), s.GetId()); err != nil {
+				return err
+			}
+		}
+		for _, r := range s.GetCacheRules() {
+			if err := check("cache rule", r.GetId(), s.GetId()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func displayDomain(name string, wildcard bool) string {
 	if wildcard {
 		return "*." + name
@@ -551,6 +593,9 @@ func loadBalance(p nodev1.LoadBalancePolicy) string {
 }
 
 func buildOrigin(o *nodev1.Origin) (Origin, error) {
+	if o.GetId() == "" {
+		return Origin{}, errors.New("origin without id")
+	}
 	addr := strings.ToLower(strings.TrimSpace(o.GetAddress()))
 	if addr == "" {
 		return Origin{}, errors.New("empty address")
@@ -615,6 +660,9 @@ func buildOrigin(o *nodev1.Origin) (Origin, error) {
 }
 
 func buildRule(r *nodev1.CacheRule) (CacheRule, bool, string) {
+	if r.GetId() == "" {
+		return CacheRule{}, false, "rule without id"
+	}
 	rule := CacheRule{
 		ID:                   r.GetId(),
 		TTL:                  r.GetEdgeTtlSeconds(),

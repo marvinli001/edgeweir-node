@@ -198,3 +198,44 @@ func domainNames(ds []Domain) string {
 	}
 	return strings.Join(out, ",")
 }
+
+// TestBuildRejectsUnsafeIDs: ids are separators in the data plane (cache,
+// purge and health keys, X-Edgeweir-Rules), so a config with any other
+// character is rejected as a whole.
+func TestBuildRejectsUnsafeIDs(t *testing.T) {
+	for _, mutate := range []func(*nodev1.NodeConfig){
+		func(c *nodev1.NodeConfig) { c.Sites[0].Id = "s|1" },
+		func(c *nodev1.NodeConfig) { c.Sites[0].Id = "s 1" },
+		func(c *nodev1.NodeConfig) { c.Sites[0].Id = "s:1" },
+		func(c *nodev1.NodeConfig) { c.Sites[0].Id = strings.Repeat("s", 129) },
+		func(c *nodev1.NodeConfig) { c.Sites[0].OriginPool.Origins[0].Id = "o/1" },
+		func(c *nodev1.NodeConfig) { c.Sites[0].OriginPool.Origins[0].Id = "o\x00" },
+		func(c *nodev1.NodeConfig) { c.Sites[0].CacheRules[0].Id = "r,1" },
+		func(c *nodev1.NodeConfig) { c.Sites[0].CacheRules[0].Id = "règle" },
+	} {
+		cfg := vectorConfig()
+		mutate(cfg)
+		if _, err := Build(cfg, Options{}); !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "may only contain") {
+			t.Errorf("config accepted or wrong error: %v", err)
+		}
+	}
+	cfg := vectorConfig()
+	cfg.Sites[0].Id = "Site_A-1"
+	cfg.Sites[0].OriginPool.Origins[0].Id = "0b2c6f1e-4c1d-4a8e-9f0a-2d7c3e5b6a91"
+	cfg.Sites[0].CacheRules[0].Id = "rule_1"
+	if _, err := Build(cfg, Options{}); err != nil {
+		t.Fatalf("valid ids rejected: %v", err)
+	}
+	// Empty origin and rule ids drop the item only.
+	cfg = vectorConfig()
+	cfg.Sites[0].OriginPool.Origins = append(cfg.Sites[0].OriginPool.Origins, &nodev1.Origin{Address: "b.test", Port: 80})
+	cfg.Sites[0].CacheRules = append(cfg.Sites[0].CacheRules, &nodev1.CacheRule{Priority: 99, Action: nodev1.CacheAction_CACHE_ACTION_CACHE})
+	p, err := Build(cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Sites[0].Origins) != 1 || len(p.Sites[0].CacheRules) != 1 ||
+		!strings.Contains(strings.Join(p.Warnings, "\n"), "origin without id") || !strings.Contains(strings.Join(p.Warnings, "\n"), "rule without id") {
+		t.Fatalf("origins %+v rules %+v warnings %v", p.Sites[0].Origins, p.Sites[0].CacheRules, p.Warnings)
+	}
+}
