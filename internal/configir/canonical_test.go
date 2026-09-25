@@ -343,3 +343,110 @@ func TestContentHashVectorM2(t *testing.T) {
 		t.Fatalf("ContentHash = %s, console says %s", h, v.ContentHash)
 	}
 }
+
+// TestContentHashVectorV021 checks the proto v0.2.1 vector shared with the
+// console: the M2 vector plus origin_allowed_cidrs (unsorted, with a
+// duplicate) and cache_authorized on the first cache rule of the first site
+// of the file. The canonical form sorts the allow list by byte order and
+// removes duplicates. Run with -update to recompute canonical_hex and
+// content_hash from the Go encoding (the console must then match them).
+func TestContentHashVectorV021(t *testing.T) {
+	path := filepath.Join("testdata", "content_hash_vector_v021.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v hashVector
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &nodev1.NodeConfig{}
+	if err := protojson.Unmarshal(v.Config, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// The vector is exactly the M2 vector plus the two v0.2.1 fields.
+	m2 := m2VectorConfig(t)
+	want := proto.CloneOf(m2)
+	want.OriginAllowedCidrs = []string{"172.16.0.0/12", "10.0.0.0/8", "172.16.0.0/12"}
+	want.Sites[0].CacheRules[0].CacheAuthorized = true
+	if !proto.Equal(cfg, want) {
+		t.Fatalf("vector config is not the M2 vector plus the v0.2.1 fields:\n%v", cfg)
+	}
+
+	b, err := CanonicalBytes(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Independent check of the allow list encoding: the canonical bytes of
+	// the config without it, followed by field 8 with the sorted,
+	// deduplicated CIDRs.
+	noList := proto.CloneOf(cfg)
+	noList.OriginAllowedCidrs = nil
+	expected, err := CanonicalBytes(noList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12"} {
+		expected = protowire.AppendTag(expected, 8, protowire.BytesType)
+		expected = protowire.AppendString(expected, cidr)
+	}
+	if hex.EncodeToString(b) != hex.EncodeToString(expected) {
+		t.Fatalf("canonical bytes do not end with the sorted, deduplicated allow list\n got %x\nwant %x", b, expected)
+	}
+	// cache_authorized is part of the canonical bytes.
+	unauthorized := proto.CloneOf(noList)
+	unauthorized.Sites[0].CacheRules[0].CacheAuthorized = false
+	ub, err := CanonicalBytes(unauthorized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutList, _ := CanonicalBytes(noList)
+	if hex.EncodeToString(ub) == hex.EncodeToString(withoutList) {
+		t.Fatal("cache_authorized is not part of the canonical bytes")
+	}
+	h, err := ContentHash(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Canonicalize must not have modified the input.
+	if cfg.OriginAllowedCidrs[0] != "172.16.0.0/12" || len(cfg.OriginAllowedCidrs) != 3 {
+		t.Fatalf("ContentHash modified its input: %v", cfg.OriginAllowedCidrs)
+	}
+
+	if *update {
+		v.CanonicalHex, v.ContentHash = hex.EncodeToString(b), h
+		out, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v.CanonicalHex != hex.EncodeToString(b) {
+		t.Fatalf("canonical bytes differ from the vector\n got %x\nwant %s", b, v.CanonicalHex)
+	}
+	if h != v.ContentHash {
+		t.Fatalf("ContentHash = %s, vector says %s", h, v.ContentHash)
+	}
+}
+
+func TestCanonicalizeOriginAllowList(t *testing.T) {
+	a := &nodev1.NodeConfig{OriginAllowedCidrs: []string{"fc00::/7", "10.0.0.0/8", "fc00::/7", "10.0.0.0/8", "100.64.0.0/10"}}
+	b := &nodev1.NodeConfig{OriginAllowedCidrs: []string{"100.64.0.0/10", "fc00::/7", "10.0.0.0/8"}}
+	ha, _ := ContentHash(a)
+	hb, _ := ContentHash(b)
+	if ha != hb {
+		t.Fatal("allow list order or duplicates change the hash")
+	}
+	Canonicalize(a)
+	if want := []string{"10.0.0.0/8", "100.64.0.0/10", "fc00::/7"}; !equalStrings(a.OriginAllowedCidrs, want) {
+		t.Fatalf("canonical allow list = %v, want %v", a.OriginAllowedCidrs, want)
+	}
+	c := &nodev1.NodeConfig{OriginAllowedCidrs: []string{"10.0.0.0/8"}}
+	hc, _ := ContentHash(c)
+	if hc == ha {
+		t.Fatal("allow list content does not change the hash")
+	}
+}

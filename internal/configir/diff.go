@@ -16,7 +16,8 @@ var ErrBaseMismatch = errors.New("diff base revision mismatch")
 // ApplyDiff transforms base (the locally applied config) into the target
 // revision described by d:
 //
-//   - listeners, cache zones and certificates are replaced wholesale;
+//   - listeners, cache zones, certificates and the origin allow list are
+//     replaced wholesale;
 //   - sites listed in removed_site_ids are dropped;
 //   - upserted sites replace sites with the same id or are added;
 //   - the result is canonicalized and its content hash must equal
@@ -47,6 +48,8 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 		Listeners:    cloneAll(d.GetListeners()),
 		CacheZones:   cloneAll(d.GetCacheZones()),
 		Certificates: cloneAll(d.GetCertificates()),
+		// A v0.2.0 console never sends the allow list: the target has none.
+		OriginAllowedCidrs: slices.Clone(d.GetOriginAllowedCidrs()),
 	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
@@ -87,13 +90,14 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 // documents the exact semantics ApplyDiff expects.
 func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 	d := &nodev1.NodeConfigDiff{
-		BaseRevision: base.GetRevision(),
-		Revision:     target.GetRevision(),
-		ContentHash:  target.GetContentHash(),
-		ClusterId:    target.GetClusterId(),
-		Listeners:    cloneAll(target.GetListeners()),
-		CacheZones:   cloneAll(target.GetCacheZones()),
-		Certificates: cloneAll(target.GetCertificates()),
+		BaseRevision:       base.GetRevision(),
+		Revision:           target.GetRevision(),
+		ContentHash:        target.GetContentHash(),
+		ClusterId:          target.GetClusterId(),
+		Listeners:          cloneAll(target.GetListeners()),
+		CacheZones:         cloneAll(target.GetCacheZones()),
+		Certificates:       cloneAll(target.GetCertificates()),
+		OriginAllowedCidrs: slices.Clone(target.GetOriginAllowedCidrs()),
 	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {

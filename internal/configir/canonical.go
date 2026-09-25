@@ -7,7 +7,8 @@
 // console (protobuf-es) and the node (protobuf-go):
 //
 //   - listeners sorted by port, cache_zones by name, sites by id,
-//     certificates by id;
+//     certificates by id; origin_allowed_cidrs sorted ascending (byte
+//     order) with duplicates removed (proto v0.2.1);
 //   - inside a site: domains by name, origins by id, cache_rules by
 //     (priority, id);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
@@ -15,7 +16,8 @@
 //
 // Both protobuf runtimes emit known fields in field-number order and omit
 // proto3 default values, and NodeConfig contains no map fields, so the
-// encodings are byte-identical.
+// encodings are byte-identical. Cross-language vectors live in
+// testdata/content_hash_vector*.json.
 package configir
 
 import (
@@ -53,6 +55,9 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	slices.SortStableFunc(c.Sites, func(a, b *nodev1.Site) int {
 		return cmp.Compare(a.GetId(), b.GetId())
 	})
+	// Go compares strings byte by byte, which is the canonical order.
+	slices.Sort(c.OriginAllowedCidrs)
+	c.OriginAllowedCidrs = slices.Compact(c.OriginAllowedCidrs)
 	for _, s := range c.Sites {
 		CanonicalizeSite(s)
 	}

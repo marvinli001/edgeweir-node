@@ -116,3 +116,32 @@ func TestApplyDiffNoop(t *testing.T) {
 		t.Fatal("no-op diff changed the config")
 	}
 }
+
+// TestApplyDiffOriginAllowList: the allow list of the target revision
+// replaces the base's (NodeConfigDiff field 10), including removal.
+func TestApplyDiffOriginAllowList(t *testing.T) {
+	base := withHash(t, &nodev1.NodeConfig{Revision: 1, Sites: []*nodev1.Site{site("a", "a.test")}})
+	target := withHash(t, &nodev1.NodeConfig{
+		Revision: 2, Sites: []*nodev1.Site{site("a", "a.test")},
+		OriginAllowedCidrs: []string{"172.16.0.0/12", "10.0.0.0/8"},
+	})
+	d := Diff(base, target)
+	if len(d.GetUpsertedSites()) != 0 || len(d.GetOriginAllowedCidrs()) != 2 {
+		t.Fatalf("diff = %v", d)
+	}
+	got, err := ApplyDiff(base, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(got, target) || got.GetOriginAllowedCidrs()[0] != "10.0.0.0/8" {
+		t.Fatalf("ApplyDiff = %v, want %v", got, target)
+	}
+	cleared := withHash(t, &nodev1.NodeConfig{Revision: 3, Sites: []*nodev1.Site{site("a", "a.test")}})
+	got, err = ApplyDiff(target, Diff(target, cleared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.GetOriginAllowedCidrs()) != 0 {
+		t.Fatalf("allow list not cleared: %v", got.GetOriginAllowedCidrs())
+	}
+}
