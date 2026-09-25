@@ -281,14 +281,15 @@ func defaultZone() CacheZone {
 //   - cluster_id differs from the node's cluster;
 //   - a site, origin or cache rule id contains anything but letters,
 //     digits, "_" and "-" (they are used as separators in the data plane);
-//   - any cache rule uses the rule-engine expression (not supported by
-//     Phase 0 nodes, per the proto contract).
+//   - any cache rule uses the rule-engine expression (the proto contract
+//     reserves it; nodes reject configs that set it).
 //
 // Everything else is handled per item with a warning, so that one bad site
 // cannot take down the rest of the cluster:
-//   - listeners with invalid ports, duplicates, or HTTPS (certificate
-//     delivery is not part of proto v0.1.0) are skipped; http3 is ignored;
-//     without any usable listener the default port is served;
+//   - listeners with invalid ports, duplicates, or HTTPS (the contract
+//     does not deliver certificate material yet, MVP M3) are skipped;
+//     http3 is ignored; without any usable listener the default port is
+//     served;
 //   - invalid cache zones and zones named like a shared dict of the data
 //     plane (SharedDicts) are skipped; sites referencing an unknown or
 //     empty zone use the first zone;
