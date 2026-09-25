@@ -10,8 +10,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-NODE="http://127.0.0.1:${E2E_NODE_PORT:-18080}"
-HELPER="http://127.0.0.1:${E2E_HELPER_PORT:-18090}"
+NODE="http://127.0.0.1:${E2E_NODE_PORT:-28080}"
+HELPER="http://127.0.0.1:${E2E_HELPER_PORT:-28090}"
 compose() { docker compose -f compose.yml "$@"; }
 
 cleanup() {
@@ -75,9 +75,15 @@ second=$(x_cache demo.test)
 curl -fsS -H 'Host: demo.test' "$NODE/" | grep "Hostname:" >/dev/null || fail "response is not from the whoami origin"
 pass "demo.test: MISS then HIT, served by the origin"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.test' -H 'X-Edgeweir-Site: site-other' -H 'X-Edgeweir-TTL: 99999' "$NODE/spoof")
-[ "$code" = 200 ] || fail "request with spoofed internal headers returned $code"
-pass "client-supplied X-Edgeweir-* headers are ignored"
+# whoami echoes the request headers it received: no X-Edgeweir-* header
+# may reach the origin, even behind 150 other headers.
+pad=()
+for i in $(seq 1 150); do pad+=(-H "X-Pad-$i: v"); done
+echoed=$(curl -fsS -H 'Host: demo.test' "${pad[@]}" -H 'X-Edgeweir-Site: site-other' \
+  -H 'X-Edgeweir-TTL: 99999' -H 'X-Edgeweir-Injected: evil' "$NODE/spoof")
+echo "$echoed" | grep "X-Pad-150" >/dev/null || fail "origin did not receive the request"
+if echo "$echoed" | grep -i "x-edgeweir" >/dev/null; then fail "internal headers reached the origin"; fi
+pass "client-supplied X-Edgeweir-* headers never reach the origin"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

@@ -9,7 +9,7 @@ services:
       context: ../..
       dockerfile: test/e2e/fakeconsole/Dockerfile
     ports:
-      - "127.0.0.1:${E2E_HELPER_PORT:-18090}:8081"
+      - "127.0.0.1:${E2E_HELPER_PORT:-28090}:8081"
 
   whoami:
     image: traefik/whoami:v1.11.0
@@ -17,12 +17,12 @@ services:
   node:
     build:
       context: ../..
-    image: edgeweir-node:e2e
+    image: edgeweir-node:e2e-smoke
     depends_on:
       - console
       - whoami
     ports:
-      - "127.0.0.1:${E2E_NODE_PORT:-18080}:80"
+      - "127.0.0.1:${E2E_NODE_PORT:-28080}:80"
     volumes:
       - node-state:/var/lib/edgeweir-node
 
