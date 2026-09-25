@@ -5,10 +5,19 @@
 -- init_worker() runs once per worker process.
 local _M = {}
 
-function _M.init()
+-- init(opts): opts.resolvers are the nameservers of nginx's `resolver`
+-- directive, opts.ipv6 whether AAAA records are used.
+function _M.init(opts)
+  opts = opts or {}
   -- Load every module eagerly: workers inherit them after fork.
   require("edgeweir.store")
   require("edgeweir.rules")
+  require("edgeweir.cachekey")
+  require("edgeweir.purge")
+  require("edgeweir.health")
+  require("edgeweir.lb")
+  require("edgeweir.sigv4")
+  require("edgeweir.dns").configure(opts.resolvers, opts.ipv6)
   require("edgeweir.router")
   require("edgeweir.origin")
   require("edgeweir.stats")

@@ -52,8 +52,10 @@ proto-check: proto ## Regenerate and fail if the committed code differs
 
 .PHONY: lua-test
 lua-test: ## Run Lua unit tests with resty inside the OpenResty image
-	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) \
-		resty -I /lua --shdict 'edgeweir_sites 4m' --shdict 'edgeweir_meta 1m' --shdict 'edgeweir_stats 4m' /t/run.lua
+	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) sh -c '\
+		resty -I /lua --shdict "edgeweir_sites 4m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_stats 4m" \
+			--shdict "edgeweir_purge 4m" --shdict "edgeweir_health 1m" /t/run.lua && \
+		resty -I /lua /t/sigv4.lua'
 
 .PHONY: docker
 docker: ## Build the node container image

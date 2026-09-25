@@ -16,6 +16,7 @@
 local cjson = require("cjson.safe")
 local lrucache = require("resty.lrucache")
 local rules = require("edgeweir.rules")
+local cachekey = require("edgeweir.cachekey")
 
 local _M = {}
 
@@ -72,9 +73,32 @@ local function validate(site)
   return nil
 end
 
--- prepare precomputes per-site data used on the hot path.
+local DEFAULT_HEALTH = { max_fails = 3, recovery_seconds = 30 }
+local DEFAULT_CONN = {
+  connect_timeout_ms = 10000, send_timeout_ms = 60000, read_timeout_ms = 60000,
+  keepalive = true, keepalive_idle = 60, keepalive_requests = 1000,
+}
+
+local function with_defaults(t, defaults)
+  t = type(t) == "table" and t or {}
+  for k, v in pairs(defaults) do
+    if t[k] == nil or t[k] == 0 then
+      t[k] = v
+    end
+  end
+  return t
+end
+
+-- prepare precomputes per-site data used on the hot path. Missing fields
+-- (site tables pushed by older agents) take the defaults.
 function _M.prepare(s)
   s.cache_generation = tostring(s.cache_generation or "0")
+  s.tls_verify = s.tls_verify ~= false
+  s.websocket = s.websocket ~= false
+  s.slice = s.slice == true
+  s.health = with_defaults(s.health, DEFAULT_HEALTH)
+  s.conn = with_defaults(s.conn, DEFAULT_CONN)
+  s.cache_key = cachekey.prepare(s.cache_key)
   local primaries, backups, pw, bw = {}, {}, 0, 0
   for _, o in ipairs(s.origins or {}) do
     local w = tonumber(o.weight) or 1
@@ -87,6 +111,10 @@ function _M.prepare(s)
       host = "[" .. host .. "]" -- IPv6 literal
     end
     o.url = o.scheme .. "://" .. host .. ":" .. tostring(o.port)
+    -- Host header for S3 origins without an explicit one: the default port
+    -- of the scheme is left out, as HTTP clients (and SigV4 signers) do.
+    local default_port = (o.scheme == "https") and 443 or 80
+    o._s3_host = (o.port == default_port) and host or (host .. ":" .. tostring(o.port))
     local sni = o.sni
     if not is_nonempty_string(sni) then
       sni = o.host_header

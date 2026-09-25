@@ -2,12 +2,18 @@
 -- image with the resty CLI (see `make lua-test`):
 --
 --   resty -I lua --shdict 'edgeweir_sites 4m' --shdict 'edgeweir_meta 1m' \
---         --shdict 'edgeweir_stats 4m' test/lua/run.lua
+--         --shdict 'edgeweir_stats 4m' --shdict 'edgeweir_purge 4m' \
+--         --shdict 'edgeweir_health 1m' test/lua/run.lua
 local cjson = require("cjson.safe")
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
 local origin = require("edgeweir.origin")
 local stats = require("edgeweir.stats")
+local cachekey = require("edgeweir.cachekey")
+local purge = require("edgeweir.purge")
+local health = require("edgeweir.health")
+local lb = require("edgeweir.lb")
+local dns = require("edgeweir.dns")
 
 local passed, failed = 0, 0
 
@@ -132,7 +138,7 @@ test("store.prepare precomputes origins", function()
   eq(s._bw, 3)
 end)
 
-test("origin.pick weights and backups", function()
+test("lb.order weights and backups", function()
   local s = store.prepare(site("w", { { name = "w.test" } }, {
     origins = {
       { id = "heavy", scheme = "http", address = "h", port = 80, weight = 9 },
@@ -142,25 +148,293 @@ test("origin.pick weights and backups", function()
   }))
   local counts = { heavy = 0, light = 0, spare = 0 }
   for _ = 1, 10000 do
-    local o = origin.pick(s)
-    counts[o.id] = counts[o.id] + 1
+    local order = lb.order(s, "/x", 1000)
+    counts[order[1].id] = counts[order[1].id] + 1
+    eq(#order, 3, "primaries then backups as retries")
+    eq(order[3].id, "spare", "backup only after every primary")
   end
   eq(counts.spare, 0, "backup used while primaries exist")
   assert(counts.heavy > 8500 and counts.heavy < 9500, "heavy share " .. counts.heavy)
   local b = store.prepare(site("b", { { name = "b.test" } }, {
-    origins = { { id = "spare", scheme = "http", address = "s", port = 80, weight = 1, backup = true } },
+    origins = { { id = "spare-only", scheme = "http", address = "s", port = 80, weight = 1, backup = true } },
   }))
-  eq(origin.pick(b).id, "spare", "backup used without primaries")
-  eq(origin.pick({ _primaries = {}, _backups = {} }), nil)
+  eq(lb.order(b, "/", 1000)[1].id, "spare-only", "backup used without primaries")
+  eq(#lb.order({ _primaries = {}, _backups = {} }, "/", 1000), 0)
 end)
 
-test("origin.accel_expires", function()
-  eq(origin.accel_expires(60, "override", 200, "no-store", nil), 60)
-  eq(origin.accel_expires(60, "override", 502, nil, nil), nil, "errors are not cached by rule TTL")
-  eq(origin.accel_expires(60, "respect", 200, nil, nil), 60)
-  eq(origin.accel_expires(60, "respect", 200, "max-age=5", nil), nil)
-  eq(origin.accel_expires(60, "respect", 200, nil, "Thu, 01 Jan 2099 00:00:00 GMT"), nil)
-  eq(origin.accel_expires(0, "override", 200, nil, nil), nil)
+test("lb.order skips origins marked down and fails open", function()
+  local s = store.prepare(site("hs", { { name = "hs.test" } }, {
+    origins = {
+      { id = "p1", scheme = "http", address = "a", port = 80, weight = 1 },
+      { id = "b1", scheme = "http", address = "b", port = 80, weight = 1, backup = true },
+    },
+  }))
+  health.failure("hs", "p1", "timeout", 1, 30, 1000)
+  local order = lb.order(s, "/", 1001)
+  eq(#order, 1)
+  eq(order[1].id, "b1", "backup takes over while the primary is down")
+  eq(lb.order(s, "/", 1031)[1].id, "p1", "primary tried again after recovery")
+  health.failure("hs", "b1", "timeout", 1, 30, 1000)
+  order = lb.order(s, "/", 1001)
+  eq(order[1].id, "p1", "all down: fail open, primaries first")
+  eq(order[2].id, "b1")
+  health.success("p1")
+  health.success("b1")
+end)
+
+test("lb round robin is smooth and weighted", function()
+  local s = store.prepare(site("rr", { { name = "rr.test" } }, {
+    load_balance = "round_robin",
+    origins = {
+      { id = "a", scheme = "http", address = "a", port = 80, weight = 5 },
+      { id = "b", scheme = "http", address = "b", port = 80, weight = 1 },
+      { id = "c", scheme = "http", address = "c", port = 80, weight = 1 },
+    },
+  }))
+  local seq = {}
+  for i = 1, 7 do
+    seq[i] = lb.order(s, "/", 1000)[1].id
+  end
+  -- nginx's smooth weighted round robin for weights 5, 1, 1.
+  eq(table.concat(seq), "aabacaa")
+  local order = lb.order(s, "/", 1000)
+  eq(#order, 3, "retries go to the other origins")
+  assert(order[2].id ~= order[1].id and order[3].id ~= order[1].id)
+end)
+
+test("lb consistent hash is stable and moves only a down origin's keys", function()
+  local origins = {}
+  for i = 1, 4 do
+    origins[i] = { id = "o" .. i, scheme = "http", address = "o" .. i, port = 80, weight = 1 }
+  end
+  local s = store.prepare(site("ch", { { name = "ch.test" } }, { load_balance = "consistent_hash", origins = origins }))
+  local first, per = {}, {}
+  for i = 1, 400 do
+    local key = "/asset/" .. i
+    first[key] = lb.order(s, key, 1000)[1].id
+    eq(lb.order(s, key, 1000)[1].id, first[key], "same key, same origin")
+    per[first[key]] = (per[first[key]] or 0) + 1
+  end
+  for id, n in pairs(per) do
+    assert(n > 50, id .. " got only " .. n .. " of 400 keys")
+  end
+  health.failure("ch", "o2", "down", 1, 30, 1000)
+  local moved = 0
+  for key, id in pairs(first) do
+    local now = lb.order(s, key, 1001)[1].id
+    assert(now ~= "o2", "down origin chosen")
+    if id ~= "o2" then
+      eq(now, id, "keys of healthy origins stay")
+    else
+      moved = moved + 1
+    end
+  end
+  assert(moved > 0)
+  health.success("o2")
+  eq(#lb.order(s, "/x", 1000), lb.MAX_TRIES, "at most MAX_TRIES candidates")
+end)
+
+test("health counts consecutive failures and reports them", function()
+  eq(health.failure("hs2", "x", "connection failed", 3, 10, 2000), false)
+  eq(health.failure("hs2", "x", "connection failed", 3, 10, 2001), false)
+  eq(health.is_down("x", 2002), false)
+  eq(health.failure("hs2", "x", "timeout", 3, 10, 2002), true)
+  eq(health.is_down("x", 2003), true)
+  eq(health.is_down("x", 2013), false, "recovered after the recovery time")
+  local report = health.report(2003)
+  local entry
+  for _, r in ipairs(report) do
+    if r.origin_id == "x" then
+      entry = r
+    end
+  end
+  eq(entry.site_id, "hs2")
+  eq(entry.failures, 3)
+  eq(entry.healthy, false)
+  eq(entry.last_error, "timeout")
+  eq(entry.down_until, 2012)
+  -- One more failure after the recovery time marks it down again at once.
+  eq(health.failure("hs2", "x", "timeout", 3, 10, 2013), true)
+  health.success("x")
+  eq(health.is_down("x", 2014), false)
+  for _, r in ipairs(health.report(2014)) do
+    assert(r.origin_id ~= "x", "success clears the entry")
+  end
+end)
+
+test("rules chain and response conditions", function()
+  local s = {
+    cache_rules = {
+      rules.prepare({ id = "notfound", action = "cache", ttl = 30, mode = "override", status_codes = { 404 } }),
+      rules.prepare({ id = "big", action = "bypass", ttl = 0, mode = "override", min_size = 1000 }),
+      rules.prepare({ id = "index", action = "cache", ttl = 5, mode = "override", paths = { "/index.html" } }),
+      rules.prepare({ id = "all", action = "cache", ttl = 60, mode = "override" }),
+      rules.prepare({ id = "never", action = "cache", ttl = 1, mode = "respect" }),
+    },
+  }
+  local chain = rules.chain(s, "/a.js")
+  local ids = {}
+  for i, r in ipairs(chain) do
+    ids[i] = r.id
+  end
+  eq(table.concat(ids, ","), "notfound,big,all,never", "exact path rule skipped; respect rule ends the chain")
+  eq(rules.decide(chain, 404, nil).id, "notfound")
+  eq(rules.decide(chain, 200, 5000).id, "big")
+  eq(rules.decide(chain, 200, 10).id, "all")
+  eq(rules.decide(chain, 200, nil).id, "all", "unknown size fails size bounds")
+  eq(rules.decide(chain, 206, 10).id, "all", "206 counts as cacheable")
+  eq(rules.decide(chain, 500, 10).id, "never", "override rule without status list skips errors")
+  eq(rules.chain(s, "/index.html")[3].id, "index")
+  eq(rules.may_cache(chain), true)
+  eq(rules.may_cache({ rules.prepare({ id = "b", action = "bypass", mode = "override" }) }), false)
+  eq(rules.chain({ cache_rules = { rules.prepare({ id = "x", action = "cache", mode = "override", paths = { "/y" } }) } }, "/x"), nil)
+end)
+
+local function prepared_chain(list)
+  local chain = {}
+  for i, r in ipairs(list) do
+    chain[i] = rules.prepare(r)
+  end
+  return chain
+end
+
+test("origin.decide sets TTLs like accel_expires did", function()
+  local override = prepared_chain({ { id = "o", action = "cache", ttl = 60, mode = "override" } })
+  local respect = prepared_chain({ { id = "r", action = "cache", ttl = 60, mode = "respect" } })
+  eq(origin.decide(override, 200, 10, "no-store", nil).accel_expires, 60)
+  eq(origin.decide(override, 502, 10, nil, nil).accel_expires, 0, "errors are not cached by rule TTL")
+  eq(origin.decide(respect, 200, 10, nil, nil).accel_expires, 60)
+  eq(origin.decide(respect, 200, 10, "max-age=5", nil).accel_expires, nil, "origin headers win")
+  eq(origin.decide(respect, 200, 10, nil, "Thu, 01 Jan 2099 00:00:00 GMT").accel_expires, nil)
+  eq(origin.decide(respect, 500, 10, nil, nil).accel_expires, 0, "no fallback TTL for errors")
+  eq(origin.decide(prepared_chain({ { id = "z", action = "cache", ttl = 0, mode = "override" } }), 200, 1, nil, nil).accel_expires, 0)
+  eq(origin.decide(prepared_chain({ { id = "b", action = "bypass", mode = "override" } }), 200, 1, nil, nil).accel_expires, 0)
+  eq(origin.decide(nil, 200, 1, nil, nil).accel_expires, 0, "no rule, no caching")
+  local status = prepared_chain({ { id = "s", action = "cache", ttl = 20, mode = "override", status_codes = { 404 } } })
+  eq(origin.decide(status, 404, 1, nil, nil).accel_expires, 20)
+  eq(origin.decide(status, 200, 1, nil, nil).accel_expires, 0)
+end)
+
+test("origin.decide carries stale-while-revalidate and stale-if-error", function()
+  local override = prepared_chain({ { id = "o", action = "cache", ttl = 60, mode = "override", swr = 30, sie = 600 } })
+  local d = origin.decide(override, 200, 10, "no-cache, private, stale-if-error=5, x-custom", nil)
+  eq(d.accel_expires, 60)
+  eq(d.stash, "no-cache, private, stale-if-error=5, x-custom")
+  eq(d.cache_control, "x-custom, max-age=60, stale-while-revalidate=30, stale-if-error=600")
+  d = origin.decide(override, 200, 10, nil, nil)
+  eq(d.stash, "-", "absent Cache-Control is restored as absent")
+  local respect = prepared_chain({ { id = "r", action = "cache", ttl = 60, mode = "respect", sie = 120 } })
+  d = origin.decide(respect, 200, 10, "public, max-age=10, stale-if-error=1", nil)
+  eq(d.accel_expires, nil)
+  eq(d.cache_control, "public, max-age=10, stale-if-error=120")
+  eq(origin.decide(override, 404, 10, nil, nil).cache_control, nil, "uncached responses keep their headers")
+end)
+
+test("cachekey keeps the Phase 0 key by default", function()
+  local s = store.prepare(site("k", { { name = "k.test" } }, { cache_generation = "7" }))
+  local req = { scheme = "http", host = "k.test", path = "/a/b.js", args = "v=1&x=2" }
+  eq(cachekey.build(s, req, 0), "k:7:http://k.test/a/b.js?v=1&x=2")
+  req.args = ""
+  eq(cachekey.build(s, req, 0), "k:7:http://k.test/a/b.js")
+  eq(cachekey.build(s, req, 1759000000123), "k:7:http://k.test/a/b.js#1759000000123", "epoch as an integer")
+end)
+
+test("cachekey query modes, sorting, device, headers, cookies and host", function()
+  local key = cachekey.prepare({ query = "ignore" })
+  eq(cachekey.normalize_query("a=1", key), "")
+  key = cachekey.prepare({ query = "all", sort_query = true })
+  eq(cachekey.normalize_query("b=2&a=1", key), "a=1&b=2")
+  eq(cachekey.normalize_query("a=1&b=2", key), "a=1&b=2")
+  key = cachekey.prepare({ query = "include", query_params = { "v", "lang" }, sort_query = true })
+  eq(cachekey.normalize_query("utm=x&v=3&lang=de&%76=4", key), "%76=4&lang=de&v=3", "names compared raw and unescaped")
+  eq(cachekey.normalize_query("utm=x", key), "")
+  eq(cachekey.device("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"), "m")
+  eq(cachekey.device("Mozilla/5.0 (Linux; Android 14; Pixel 8)"), "m")
+  eq(cachekey.device("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "d")
+  eq(cachekey.device(nil), "d")
+  local s = store.prepare(site("v", { { name = "v.test" } }, {
+    cache_key = { query = "all", device = true, headers = { "accept-language" }, cookies = { "ab" }, exclude_host = true },
+  }))
+  local req = {
+    scheme = "http", host = "v.test", path = "/p", args = "",
+    user_agent = "Android", headers = { ["accept-language"] = { "de", "en" } },
+    cookie = function(name)
+      return name == "ab" and "b" or nil
+    end,
+  }
+  eq(cachekey.build(s, req, 0), "v:1:http:///p|d=m|h:accept-language=de,en|c:ab=b")
+end)
+
+test("purge markers change the epoch of matching requests only", function()
+  local key = cachekey.prepare({ query = "all", sort_query = true })
+  eq(purge.epoch("p1", key, "a.test", "/x", ""), 0, "no markers")
+  local st = assert(purge.add({
+    id = "set-1",
+    markers = {
+      { site_id = "p1", type = "url", host = "a.test", path = "/img/1.png", query = "b=2&a=1", epoch = 100 },
+      { site_id = "p1", type = "prefix", host = "a.test", path = "/static/", epoch = 200 },
+    },
+  }))
+  eq(st.id, "set-1")
+  eq(purge.epoch("p1", key, "a.test", "/img/1.png", "a=1&b=2"), 100, "query compared after normalization")
+  eq(purge.epoch("p1", key, "a.test", "/img/1.png", "a=1"), 0, "other query untouched")
+  eq(purge.epoch("p1", key, "b.test", "/img/1.png", "a=1&b=2"), 0, "other host untouched")
+  eq(purge.epoch("p1", key, "a.test", "/static/app.js", ""), 200)
+  eq(purge.epoch("p1", key, "a.test", "/staticx", ""), 0, "prefix is a plain string prefix")
+  eq(purge.epoch("p2", key, "a.test", "/static/app.js", ""), 0, "other site untouched")
+  local nohost = cachekey.prepare({ query = "all", sort_query = true, exclude_host = true })
+  eq(purge.epoch("p1", nohost, "b.test", "/static/app.js", ""), 200, "host ignored when the key excludes it")
+  -- Later purges raise the epoch; older ones never lower it.
+  assert(purge.add({ id = "set-2", markers = {
+    { site_id = "p1", type = "prefix", host = "a.test", path = "/static/", epoch = 150 },
+    { site_id = "p1", type = "site", epoch = 300 },
+  } }))
+  eq(purge.epoch("p1", key, "a.test", "/static/app.js", ""), 300, "site marker covers everything")
+  eq(purge.epoch("p1", key, "z.test", "/anything", "q=1"), 300)
+  -- replace installs exactly the given set.
+  st = assert(purge.replace({ id = "set-3", markers = {
+    { site_id = "p1", type = "url", host = "a.test", path = "/img/1.png", query = "a=1&b=2", epoch = 400 },
+  } }))
+  eq(st.id, "set-3")
+  eq(st.entries, 1)
+  eq(purge.epoch("p1", key, "a.test", "/static/app.js", ""), 0, "replaced markers are gone")
+  eq(purge.epoch("p1", key, "a.test", "/img/1.png", "b=2&a=1"), 400)
+  local _, err, code = purge.add({ id = "bad", markers = { { site_id = "p1", type = "nope", epoch = 1 } } })
+  eq(code, 400)
+  assert(err:find("invalid marker"), err)
+  assert(purge.replace({ id = "empty", markers = {} }))
+end)
+
+test("store.prepare applies M2 defaults", function()
+  local s = store.prepare(site("d", { { name = "d.test" } }))
+  eq(s.tls_verify, true)
+  eq(s.websocket, true)
+  eq(s.slice, false)
+  eq(s.health.max_fails, 3)
+  eq(s.conn.connect_timeout_ms, 10000)
+  eq(s.conn.keepalive, true)
+  eq(s.cache_key.query, "all")
+  local t = store.prepare(site("e", { { name = "e.test" } }, {
+    tls_verify = false, websocket = false, slice = true,
+    conn = { keepalive = false, connect_timeout_ms = 1500 },
+    origins = {
+      { id = "s3", scheme = "https", address = "s3.test", port = 443, weight = 1 },
+      { id = "m", scheme = "http", address = "minio", port = 9000, weight = 1 },
+    },
+  }))
+  eq(t.tls_verify, false)
+  eq(t.websocket, false)
+  eq(t.slice, true)
+  eq(t.conn.keepalive, false, "explicit false kept")
+  eq(t.conn.connect_timeout_ms, 1500)
+  eq(t.conn.read_timeout_ms, 60000, "missing values defaulted")
+  eq(t._primaries[1]._s3_host, "s3.test", "default port left out")
+  eq(t._primaries[2]._s3_host, "minio:9000")
+end)
+
+test("dns passes IP literals through", function()
+  eq(dns.resolve("10.0.0.7"), "10.0.0.7")
+  eq(dns.resolve("2001:db8::1"), "2001:db8::1")
 end)
 
 test("stats.drain aggregates completed minutes", function()

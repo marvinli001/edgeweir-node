@@ -2,13 +2,18 @@
 --
 -- Served only on a unix socket (see nginx.conf); never exposed over TCP.
 --
---   GET  /v1/health       liveness
---   GET  /v1/status       {version, revision, content_hash, site_count, ...}
---   PUT  /v1/sites        replace the whole site table atomically
---   POST /v1/stats/drain  return and delete completed per-minute counters
+--   GET  /v1/health           liveness
+--   GET  /v1/status           {version, revision, content_hash, site_count, purge, ...}
+--   PUT  /v1/sites            replace the whole site table atomically
+--   POST /v1/stats/drain      return and delete completed per-minute counters
+--   PUT  /v1/purge            replace the purge marker set {id, markers}
+--   POST /v1/purge            merge purge markers {id, markers}
+--   GET  /v1/origins/health   origins with recorded failures
 local cjson = require("cjson.safe")
 local store = require("edgeweir.store")
 local stats = require("edgeweir.stats")
+local purge = require("edgeweir.purge")
+local health = require("edgeweir.health")
 
 local _M = {}
 
@@ -56,6 +61,7 @@ function _M.handle()
       return reply(405, { error = "method not allowed" })
     end
     local st = store.status()
+    st.purge = purge.status()
     st.nginx_version = ngx.config.nginx_version
     st.ngx_lua_version = ngx.config.ngx_lua_version
     st.worker_pid = ngx.worker.pid()
@@ -89,6 +95,47 @@ function _M.handle()
       return reply(405, { error = "method not allowed" })
     end
     return reply(200, { stats = stats.drain() })
+  end
+
+  if uri == "/v1/purge" then
+    if method == "GET" then
+      return reply(200, purge.status())
+    end
+    if method ~= "PUT" and method ~= "POST" then
+      return reply(405, { error = "method not allowed" })
+    end
+    local body, err = read_body()
+    if not body then
+      return reply(400, { error = "read body: " .. tostring(err) })
+    end
+    local doc, derr = cjson.decode(body)
+    if type(doc) ~= "table" then
+      return reply(400, { error = "invalid JSON: " .. tostring(derr) })
+    end
+    local res, perr, code
+    if method == "PUT" then
+      res, perr, code = purge.replace(doc)
+    else
+      res, perr, code = purge.add(doc)
+    end
+    if not res then
+      ngx.log(ngx.ERR, "edgeweir: purge markers rejected: ", perr)
+      return reply(code or 500, { error = perr })
+    end
+    ngx.log(ngx.NOTICE, "edgeweir: purge markers ", method == "PUT" and "replaced" or "added",
+      ": ", res.entries, " entries")
+    return reply(200, res)
+  end
+
+  if uri == "/v1/origins/health" then
+    if method ~= "GET" then
+      return reply(405, { error = "method not allowed" })
+    end
+    local list = health.report()
+    if cjson.array_mt then
+      setmetatable(list, cjson.array_mt)
+    end
+    return reply(200, { origins = list })
   end
 
   return reply(404, { error = "not found" })
