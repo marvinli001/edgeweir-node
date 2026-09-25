@@ -1,0 +1,308 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"math/rand/v2"
+	"strconv"
+	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/edgeweir/edgeweir-node/internal/controlplane"
+	"github.com/edgeweir/edgeweir-node/internal/dataplane"
+	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/edgeweir/edgeweir-node/internal/hostinfo"
+	"github.com/edgeweir/edgeweir-node/internal/pki"
+)
+
+func (a *Agent) logRPCError(msg string, err error) {
+	if controlplane.IsAuthError(err) {
+		a.log.Error(msg+": the console rejected this node's credentials (node deleted or certificate revoked/expired?); "+
+			"still serving the last-known-good configuration; re-enroll with `edgeweir-node enroll --force` if needed", "err", err)
+		return
+	}
+	a.log.Warn(msg, "err", err)
+}
+
+// watchLoop keeps a WatchConfig stream open, reconnecting with jittered
+// exponential backoff (1s → 30s).
+func (a *Agent) watchLoop(ctx context.Context) {
+	backoff := a.cfg.WatchBackoffMin
+	for {
+		gotMessage, err := a.watchOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if gotMessage {
+			backoff = a.cfg.WatchBackoffMin
+		}
+		wait := backoff/2 + rand.N(backoff/2+1)
+		if err != nil {
+			a.logRPCError("config watch stream ended; reconnecting in "+wait.Round(time.Millisecond).String(), err)
+		}
+		if !sleepCtx(ctx, wait) {
+			return
+		}
+		backoff = min(backoff*2, a.cfg.WatchBackoffMax)
+	}
+}
+
+func (a *Agent) watchOnce(ctx context.Context) (gotMessage bool, err error) {
+	changed := a.channel.Changed()
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-changed: // credentials renewed: reconnect with the new certificate
+			cancel()
+		case <-wctx.Done():
+		}
+	}()
+
+	stream, err := a.channel.Client().WatchConfig(wctx, connect.NewRequest(&nodev1.WatchConfigRequest{
+		KnownRevision: a.appliedRevision(),
+	}))
+	if err != nil {
+		return false, err
+	}
+	defer stream.Close()
+
+	// A dead connection is detected when neither a revision nor a
+	// keepalive (every ~15s) arrives within WatchIdleTimeout.
+	idle := time.AfterFunc(a.cfg.WatchIdleTimeout, cancel)
+	defer idle.Stop()
+
+	for stream.Receive() {
+		idle.Reset(a.cfg.WatchIdleTimeout)
+		gotMessage = true
+		a.markConnected()
+		msg := stream.Msg()
+		if msg.GetEvent() == nodev1.WatchEvent_WATCH_EVENT_REVISION && msg.GetLatestRevision() > a.appliedRevision() {
+			a.log.Info("new configuration revision announced", "revision", msg.GetLatestRevision(), "applied_revision", a.appliedRevision())
+			a.triggerSync()
+		}
+	}
+	if err := stream.Err(); err != nil {
+		select {
+		case <-changed:
+			return gotMessage, nil
+		default:
+		}
+		if wctx.Err() != nil && ctx.Err() == nil {
+			return gotMessage, errors.New("no message or keepalive within " + a.cfg.WatchIdleTimeout.String())
+		}
+		return gotMessage, err
+	}
+	return gotMessage, errors.New("stream closed by the console")
+}
+
+// pollLoop is the fallback when the stream is unavailable or a
+// notification was missed: GetConfig every PollInterval regardless of
+// stream health (cheap: an up-to-date node gets an empty diff).
+func (a *Agent) pollLoop(ctx context.Context) {
+	t := time.NewTicker(a.cfg.PollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			a.triggerSync()
+		}
+	}
+}
+
+// reportLoop sends ReportStatus immediately, after every apply attempt and
+// every report interval (heartbeat).
+func (a *Agent) reportLoop(ctx context.Context) {
+	interval := a.cfg.ReportInterval
+	t := time.NewTimer(0)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-a.reportCh:
+		}
+		interval = a.reportOnce(ctx, interval)
+		t.Reset(interval)
+	}
+}
+
+func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
+	a.mu.Lock()
+	req := &nodev1.ReportStatusRequest{
+		AppliedRevision:    a.applied.GetRevision(),
+		AppliedContentHash: a.applied.GetContentHash(),
+		State:              a.state,
+		Message:            a.message,
+		DataPlaneHealthy:   a.dpHealthy,
+	}
+	if !a.appliedAt.IsZero() {
+		req.AppliedAt = timestamppb.New(a.appliedAt)
+	}
+	a.mu.Unlock()
+	req.Info = hostinfo.Collect(a.engineVersion)
+	if id := a.channel.Identity(); id != nil {
+		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
+	}
+	return req
+}
+
+func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Duration {
+	cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
+	defer cancel()
+	req := a.statusRequest()
+	resp, err := a.channel.Client().ReportStatus(cctx, connect.NewRequest(req))
+	if err != nil {
+		if ctx.Err() == nil {
+			a.logRPCError("ReportStatus failed", err)
+		}
+		return interval
+	}
+	a.markConnected()
+	a.log.Debug("status reported", "applied_revision", req.GetAppliedRevision(), "state", req.GetState().String())
+	if s := resp.Msg.GetReportIntervalSeconds(); s > 0 {
+		interval = min(max(time.Duration(s)*time.Second, time.Second), 5*time.Minute)
+	}
+	if resp.Msg.GetLatestRevision() > a.appliedRevision() {
+		a.triggerSync()
+	}
+	id := a.channel.Identity()
+	if resp.Msg.GetRenewCertificate() || pki.NeedsRenewal(id.Certificate, time.Now()) {
+		reason := "less than 1/3 of the certificate lifetime left"
+		if resp.Msg.GetRenewCertificate() {
+			reason = "requested by the console"
+		}
+		a.renew(ctx, reason)
+	}
+	return interval
+}
+
+// renew obtains a certificate for a freshly generated key and swaps the
+// key pair atomically, then rebuilds the TLS client.
+func (a *Agent) renew(ctx context.Context, reason string) {
+	a.mu.Lock()
+	if time.Since(a.lastRenew) < time.Minute {
+		a.mu.Unlock()
+		return
+	}
+	a.lastRenew = time.Now()
+	a.mu.Unlock()
+
+	if err := a.doRenew(ctx); err != nil {
+		a.logRPCError("certificate renewal failed", err)
+		return
+	}
+	id := a.channel.Identity()
+	a.log.Info("node certificate renewed", "reason", reason,
+		"not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339))
+	a.triggerReport()
+}
+
+func (a *Agent) doRenew(ctx context.Context) error {
+	id := a.channel.Identity()
+	key, err := pki.GenerateKey()
+	if err != nil {
+		return err
+	}
+	csr, err := pki.CreateCSR(key, id.NodeID)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
+	defer cancel()
+	resp, err := a.channel.Client().RenewCertificate(cctx, connect.NewRequest(&nodev1.RenewCertificateRequest{CsrPem: string(csr)}))
+	if err != nil {
+		return err
+	}
+	cert, err := pki.ParseCertificatePEM([]byte(resp.Msg.GetCertificatePem()))
+	if err != nil {
+		return err
+	}
+	// The pinned CA stays authoritative; CA rotation is not supported yet.
+	if err := pki.VerifyNodeCertificate(cert, id.CA, key, time.Now()); err != nil {
+		return err
+	}
+	if caPEM := resp.Msg.GetCaCertificatePem(); caPEM != "" {
+		if ca, err := pki.ParseCertificatePEM([]byte(caPEM)); err != nil || !ca.Equal(id.CA) {
+			a.log.Warn("console returned a different CA certificate; CA rotation is not supported yet, keeping the pinned CA")
+		}
+	}
+	keyPEM, err := pki.MarshalPrivateKeyPEM(key)
+	if err != nil {
+		return err
+	}
+	if err := a.ids.SwapCertificate(keyPEM, []byte(resp.Msg.GetCertificatePem())); err != nil {
+		return err
+	}
+	return a.channel.Reload()
+}
+
+// statsLoop drains the Lua per-minute counters and uploads them. Batches
+// that fail to upload are retried next time (bounded).
+func (a *Agent) statsLoop(ctx context.Context) {
+	const maxPending = 50000
+	const batch = 1000
+	var pending []*nodev1.MinuteStats
+	t := time.NewTicker(a.cfg.StatsInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		items, err := a.dp.DrainStats(dctx)
+		cancel()
+		if err != nil {
+			a.log.Debug("cannot drain data plane stats", "err", err)
+		}
+		pending = append(pending, convertStats(items)...)
+		if over := len(pending) - maxPending; over > 0 {
+			a.log.Warn("dropping unsent traffic stats", "buckets", over)
+			pending = pending[over:]
+		}
+		for len(pending) > 0 {
+			n := min(batch, len(pending))
+			cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
+			_, err := a.channel.Client().ReportStats(cctx, connect.NewRequest(&nodev1.ReportStatsRequest{Stats: pending[:n]}))
+			cancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					a.logRPCError("ReportStats failed; will retry", err)
+				}
+				break
+			}
+			a.markConnected()
+			pending = pending[n:]
+		}
+	}
+}
+
+func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
+	out := make([]*nodev1.MinuteStats, 0, len(items))
+	for _, m := range items {
+		codes := make(map[uint32]uint64, len(m.StatusCodes))
+		for k, v := range m.StatusCodes {
+			if c, err := strconv.ParseUint(k, 10, 32); err == nil {
+				codes[uint32(c)] += v
+			}
+		}
+		out = append(out, &nodev1.MinuteStats{
+			Minute:        timestamppb.New(time.Unix(m.Minute, 0).UTC()),
+			SiteId:        m.SiteID,
+			Requests:      m.Requests,
+			BytesSent:     m.BytesSent,
+			BytesReceived: m.BytesReceived,
+			CacheHits:     m.CacheHits,
+			CacheMisses:   m.CacheMisses,
+			StatusCodes:   codes,
+		})
+	}
+	return out
+}
