@@ -1,0 +1,78 @@
+# systemd unit for the Edgeweir edge node.
+#
+# Mode: the agent runs OpenResty as its own child process (--manage-nginx),
+# so there is exactly one unit to manage. The distribution's
+# openresty.service must stay disabled (it would bind the same ports);
+# Conflicts= stops it when this unit starts.
+#
+# Security trade-offs:
+#   - Runs as the unprivileged system user "edgeweir"; the only capability
+#     is CAP_NET_BIND_SERVICE (ambient, inherited by OpenResty) so that the
+#     data plane can listen on :80/:443. nginx workers therefore run as the
+#     same user and no `user` directive is needed.
+#   - The filesystem is read-only except the state, cache and runtime
+#     directories systemd creates for the unit.
+#   - MemoryDenyWriteExecute= is NOT set: LuaJIT's JIT compiler needs
+#     writable+executable memory.
+#   - AF_NETLINK is allowed for enumerating interface addresses reported to
+#     the console.
+# Enroll first (as root is fine: files are handed to the service user):
+#   sudo edgeweir-node enroll --server https://console:8443 --token ... --ca-sha256 ...
+#   sudo systemctl enable --now edgeweir-node
+
+[Unit]
+Description=Edgeweir edge node (agent + OpenResty)
+Documentation=https://edgeweir.dev https://github.com/edgeweir/edgeweir-node
+Wants=network-online.target
+After=network-online.target
+Conflicts=openresty.service
+
+[Service]
+Type=simple
+User=edgeweir
+Group=edgeweir
+Environment=EDGEWEIR_NGINX_BIN=/usr/bin/openresty
+Environment=EDGEWEIR_LUA_DIR=/usr/share/edgeweir-node/lua
+EnvironmentFile=-/etc/default/edgeweir-node
+ExecStart=/usr/bin/edgeweir-node run --manage-nginx
+Restart=always
+RestartSec=2s
+# SIGTERM goes to the agent, which stops OpenResty gracefully; anything
+# left after the timeout is killed.
+KillMode=mixed
+TimeoutStopSec=30s
+LimitNOFILE=1048576
+
+StateDirectory=edgeweir-node
+StateDirectoryMode=0700
+CacheDirectory=edgeweir-node
+CacheDirectoryMode=0750
+RuntimeDirectory=edgeweir-node
+RuntimeDirectoryMode=0750
+UMask=0027
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

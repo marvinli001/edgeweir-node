@@ -1,0 +1,14 @@
+# Environment for edgeweir-node.service. Every `edgeweir-node run` flag
+# can be set as EDGEWEIR_<FLAG> (flags on the command line win).
+#
+# EDGEWEIR_STATE_DIR=/var/lib/edgeweir-node
+# EDGEWEIR_CACHE_DIR=/var/cache/edgeweir-node
+# EDGEWEIR_CONTROL_SOCKET=/run/edgeweir-node/control.sock
+# EDGEWEIR_ORIGIN_SOCKET=/run/edgeweir-node/origin.sock
+# EDGEWEIR_NGINX_BIN=/usr/bin/openresty
+# EDGEWEIR_LUA_DIR=/usr/share/edgeweir-node/lua
+# EDGEWEIR_DEFAULT_PORT=80
+# EDGEWEIR_LISTEN_IPV6=auto
+# EDGEWEIR_RESOLVER=
+# EDGEWEIR_LOG_LEVEL=info
+# EDGEWEIR_LOG_FORMAT=text
