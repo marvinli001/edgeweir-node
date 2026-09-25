@@ -18,8 +18,8 @@ The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir
 ## How it works
 
 1. **Enroll**: `edgeweir-node enroll` generates an ECDSA P-256 key locally (it never leaves the node), pins the console's internal CA by the SHA-256 in the install command, and exchanges a single-use token and a CSR for a node certificate.
-2. **mTLS channel**: every later RPC uses the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is also polled every 30 s as a fallback.
-3. **Apply**: snapshots and diffs are verified against the `content_hash`, validated, and persisted as the last-known-good (LKG) configuration. Only structural changes (listeners, cache zones, resolver) re-render `nginx.conf` and reload OpenResty after `openresty -t`; sites, origins and cache rules are hot-updated through a local unix socket.
+2. **mTLS channel**: every later RPC uses the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is also polled about every 30 s (with ±20 % jitter, so that nodes do not poll in lockstep) as a fallback.
+3. **Apply**: snapshots and diffs are verified against the `content_hash` and validated. Only structural changes (listeners, cache zones, resolver) re-render `nginx.conf` and reload OpenResty after `openresty -t`; sites, origins and cache rules are hot-updated through a local unix socket. A configuration that applied is persisted as the last-known-good (LKG) configuration.
 4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (responses carry `X-Cache: MISS/HIT/BYPASS`), balances over origin pools with passive health checks, and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`. Origins may not point at special-purpose addresses (loopback, link-local/cloud metadata, private networks, ...) unless the platform administrator allows them, and every upstream request carries `CDN-Loop`, so loops end with `508`.
 5. **Tasks and reports**: purge and prefetch tasks, status heartbeats with the applied revision and origin health, per-site per-minute traffic stats, and automatic certificate renewal.
 
@@ -29,16 +29,16 @@ If the console is unreachable the node keeps serving its LKG configuration. See 
 
 ### One-line install (recommended)
 
-The console shows an install command for each node. `install.sh` is served by your own console. Before executing anything it downloads the release artifacts (optionally mirrored by the console, useful where GitHub is slow) and verifies their SHA-256 **and** cosign signature; it then installs OpenResty and the `edgeweir-node` package, enrolls the node with the pinned CA fingerprint (the one-time token is handed over in the `EDGEWEIR_TOKEN` environment variable, never on a command line) and starts the service. The console never stores SSH credentials.
+The console shows an install command for each node. `install.sh` is served by your own console. Before executing anything it downloads the release artifacts (optionally mirrored by the console, useful where GitHub is slow) and verifies their SHA-256 **and** cosign signature (the only exception is `--allow-unsigned`, meant for development, which skips the signature check but still verifies the SHA-256); it then installs OpenResty and the `edgeweir-node` package, enrolls the node with the pinned CA fingerprint (the one-time token is handed over in the `EDGEWEIR_TOKEN` environment variable, never on a command line) and starts the service. The console never stores SSH credentials.
 
 ### Manual install (deb / rpm)
 
 1. Install OpenResty from the [official repositories](https://openresty.org/en/linux-packages.html) and disable its own service (the agent runs OpenResty as a child process): `sudo systemctl disable --now openresty`.
-2. Download `edgeweir-node_<version>_linux_<arch>.deb` (or `.rpm`) and `checksums.txt*` from the release page and [verify them](#verify-release-artifacts).
+2. Download `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`) or `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`) and `checksums.txt*` from the release page and [verify them](#verify-release-artifacts).
 3. Install, enroll and start:
 
    ```sh
-   sudo apt install ./edgeweir-node_<version>_linux_amd64.deb   # or: sudo dnf install ./edgeweir-node-<version>.x86_64.rpm
+   sudo apt install ./edgeweir-node_<version>_amd64.deb   # or: sudo dnf install ./edgeweir-node-<version>-1.x86_64.rpm
    # the token file keeps the one-time token out of the process list
    sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
    sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
@@ -86,7 +86,7 @@ Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for exa
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | state (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
+| `/var/lib/edgeweir-node` | state (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
 | `/var/cache/edgeweir-node` | proxy cache zones |
 | `/run/edgeweir-node/control.sock` | local control API of the Lua data plane (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | local edge listener and the internal origin layers |
@@ -104,9 +104,14 @@ make test-race     # tests with the race detector
 make lua-test      # Lua unit tests with resty in the OpenResty image
 make docker        # docker build -t edgeweir-node:dev .
 make e2e           # container smoke test: fake console + node + whoami origins
-                   # (COMPOSE_PROJECT_NAME=<name> keeps it apart from other stacks)
 make proto-check   # regenerate from the proto git tag and fail on drift
 make snapshot      # goreleaser release --snapshot --clean (unsigned)
+```
+
+`make e2e` publishes host ports on 127.0.0.1, by default 28080 (node), 28081 (PROXY protocol listener) and 28090 (fake console helper). `COMPOSE_PROJECT_NAME` alone only separates the containers, networks and volumes; to run next to another stack (or a second run), also choose free ports with `E2E_NODE_PORT`, `E2E_PP_PORT` and `E2E_HELPER_PORT`:
+
+```sh
+COMPOSE_PROJECT_NAME=node-e2e-2 E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER_PORT=38090 make e2e
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the proto regeneration flow and conventions.

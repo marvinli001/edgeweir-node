@@ -15,7 +15,8 @@ Edgeweir 边缘节点：Go agent（`edgeweir-node`）+ OpenResty/Lua 数据面�
 ```sh
 go vet ./... && go test ./...        # 必须通过
 make test-race lua-test e2e           # race、Lua（resty）、容器冒烟测试
-COMPOSE_PROJECT_NAME=<名字> make e2e   # 与本机其他 compose 项目隔离
+COMPOSE_PROJECT_NAME=<名字> E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER_PORT=38090 make e2e
+                                      # 与其他 compose 项目并行：项目名只隔开容器、网络和卷，宿主机端口（默认 28080/28081/28090）也要换
 make proto / make proto-check         # 从 tag 重新生成 / 检查漂移
 go test ./internal/render -update     # 更新 nginx.conf golden 文件（review diff）
 make docker && make snapshot          # 镜像、goreleaser 本地快照

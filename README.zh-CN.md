@@ -18,8 +18,8 @@
 ## 工作方式
 
 1. **注册**：`edgeweir-node enroll` 在本机生成 ECDSA P-256 私钥（私钥从不离开节点），按安装命令里的 SHA-256 固定（pin）控制台的内部 CA，然后用一次性 token 和 CSR 换取节点证书。
-2. **mTLS 通道**：之后所有 RPC 都用节点证书认证。`WatchConfig` 服务端流推送 revision 通知，另外每 30 秒轮询一次 `GetConfig` 兜底。
-3. **应用配置**：快照和增量 diff 都先校验 `content_hash`，再做合法性检查，然后作为 last-known-good（LKG）配置落盘。只有结构性变更（监听端口、缓存 zone、resolver）才重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；站点、源站、缓存规则通过本地 unix socket 热更新，不 reload。
+2. **mTLS 通道**：之后所有 RPC 都用节点证书认证。`WatchConfig` 服务端流推送 revision 通知，另外约每 30 秒轮询一次 `GetConfig` 兜底（间隔带 ±20% 的随机抖动，避免节点同时轮询）。
+3. **应用配置**：快照和增量 diff 都先校验 `content_hash`，再做合法性检查。只有结构性变更（监听端口、缓存 zone、resolver）才重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；站点、源站、缓存规则通过本地 unix socket 热更新，不 reload。应用成功的配置作为 last-known-good（LKG）配置落盘。
 4. **服务流量**：Lua 数据面按 `Host` 路由，用 `proxy_cache` 缓存（响应头 `X-Cache: MISS/HIT/BYPASS`），在源站池之间负载均衡并做被动健康检查；未知域名返回 `404` 和 `X-Edgeweir-Error: unknown-host`。源站不能指向特殊地址段（回环、链路本地/云元数据、私网等），除非平台管理员放行；发往源站的每个请求都带 `CDN-Loop`，回环请求以 `508` 结束。
 5. **任务与回报**：清缓存和预热任务、状态心跳（带已应用的 revision 和源站健康状态）、按站点按分钟的流量统计、证书自动续期。
 
@@ -29,16 +29,16 @@
 
 ### 一键安装（推荐）
 
-控制台会为每个节点生成安装命令。`install.sh` 由你自己的控制台提供。它在执行任何内容之前，先下载发布物（可以由控制台镜像转发，适合访问 GitHub 慢的环境），并同时校验 SHA-256 **和** cosign 签名；然后安装 OpenResty 和 `edgeweir-node` 包，用固定的 CA 指纹完成注册（一次性 token 通过 `EDGEWEIR_TOKEN` 环境变量传递，不出现在命令行上）并启动服务。控制台从不保存 SSH 凭据。
+控制台会为每个节点生成安装命令。`install.sh` 由你自己的控制台提供。它在执行任何内容之前，先下载发布物（可以由控制台镜像转发，适合访问 GitHub 慢的环境），并同时校验 SHA-256 **和** cosign 签名（唯一的例外是仅供开发使用的 `--allow-unsigned`：它跳过签名校验，SHA-256 照常校验）；然后安装 OpenResty 和 `edgeweir-node` 包，用固定的 CA 指纹完成注册（一次性 token 通过 `EDGEWEIR_TOKEN` 环境变量传递，不出现在命令行上）并启动服务。控制台从不保存 SSH 凭据。
 
 ### 手动安装（deb / rpm）
 
 1. 从 [OpenResty 官方仓库](https://openresty.org/cn/linux-packages.html) 安装 OpenResty，并停用它自带的服务（agent 会把 OpenResty 作为子进程运行）：`sudo systemctl disable --now openresty`。
-2. 从 release 页面下载 `edgeweir-node_<版本>_linux_<架构>.deb`（或 `.rpm`）和 `checksums.txt*`，并[验证发布物](#验证发布物)。
+2. 从 release 页面下载 `edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）或 `edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）和 `checksums.txt*`，并[验证发布物](#验证发布物)。
 3. 安装、注册、启动：
 
    ```sh
-   sudo apt install ./edgeweir-node_<版本>_linux_amd64.deb   # 或：sudo dnf install ./edgeweir-node-<版本>.x86_64.rpm
+   sudo apt install ./edgeweir-node_<版本>_amd64.deb   # 或：sudo dnf install ./edgeweir-node-<版本>-1.x86_64.rpm
    # 用 token 文件，一次性 token 不会出现在进程列表里
    sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
    sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
@@ -86,7 +86,7 @@ edgeweir-node version
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`nginx/`（prefix 和渲染出的 `nginx.conf`） |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`nginx/`（prefix 和渲染出的 `nginx.conf`） |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | Lua 数据面的本地控制 API（只有 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听和内部回源层 |
@@ -104,9 +104,14 @@ make test-race     # 带 race detector 跑测试
 make lua-test      # 在 OpenResty 镜像里用 resty 跑 Lua 单元测试
 make docker        # docker build -t edgeweir-node:dev .
 make e2e           # 容器冒烟测试：假控制台 + 节点 + whoami 源站
-                   # （设置 COMPOSE_PROJECT_NAME=<名字> 与其他 compose 项目隔离）
 make proto-check   # 从 proto git tag 重新生成，与已提交代码不一致则失败
 make snapshot      # goreleaser release --snapshot --clean（不签名）
+```
+
+`make e2e` 在 127.0.0.1 上发布宿主机端口，默认 28080（节点）、28081（PROXY protocol 监听）和 28090（假控制台的辅助接口）。`COMPOSE_PROJECT_NAME` 只能隔开容器、网络和卷；要和其他 compose 项目（或另一次运行）同时跑，还要用 `E2E_NODE_PORT`、`E2E_PP_PORT`、`E2E_HELPER_PORT` 换成空闲端口：
+
+```sh
+COMPOSE_PROJECT_NAME=node-e2e-2 E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER_PORT=38090 make e2e
 ```
 
 proto 重新生成流程和提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
