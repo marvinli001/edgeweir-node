@@ -1,0 +1,186 @@
+# GoReleaser v2 configuration for edgeweir-node.
+#
+#   goreleaser check
+#   goreleaser release --snapshot --clean      # local, unsigned
+#
+# Releases (tags v*) run in .github/workflows/release.yml, which provides
+# the OIDC identity for cosign keyless signing and adds SLSA build
+# provenance attestations for every artifact.
+#
+# Reproducibility: -trimpath, no local paths or build time in the binary
+# (the date is the commit date), and every file timestamp (binaries,
+# archive members, packages) is the commit timestamp, so rebuilding a tag
+# yields byte-identical artifacts (SOURCE_DATE_EPOCH-style).
+version: 2
+
+project_name: edgeweir-node
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: edgeweir-node
+    main: ./cmd/edgeweir-node
+    binary: edgeweir-node
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/edgeweir/edgeweir-node/internal/version.Version={{ .Version }}
+      - -X github.com/edgeweir/edgeweir-node/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/edgeweir/edgeweir-node/internal/version.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    ids:
+      - edgeweir-node
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.zh-CN.md
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: SECURITY.md
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: lua/edgeweir/*.lua
+        dst: lua/edgeweir
+        strip_parent: true
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: packaging/systemd/edgeweir-node.service
+        dst: systemd
+        strip_parent: true
+        info:
+          mtime: "{{ .CommitDate }}"
+
+nfpms:
+  - id: packages
+    ids:
+      - edgeweir-node
+    package_name: edgeweir-node
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Edgeweir
+    homepage: https://edgeweir.dev
+    maintainer: Edgeweir maintainers <maintainers@edgeweir.dev>
+    description: |-
+      Edgeweir edge node: Go agent and OpenResty data plane of the
+      Edgeweir self-hosted CDN/WAF. Enrolls with an Edgeweir console,
+      receives configuration over mTLS and serves traffic.
+    license: AGPL-3.0-only
+    section: net
+    priority: optional
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    mtime: "{{ .CommitDate }}"
+    dependencies:
+      - openresty
+    contents:
+      - src: lua/edgeweir/
+        dst: /usr/share/edgeweir-node/lua/edgeweir/
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: packaging/systemd/edgeweir-node.service
+        dst: /usr/lib/systemd/system/edgeweir-node.service
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: packaging/default/edgeweir-node
+        dst: /etc/default/edgeweir-node
+        type: config|noreplace
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        dst: /usr/share/doc/edgeweir-node/LICENSE
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+    scripts:
+      preinstall: packaging/nfpm/preinstall.sh
+      postinstall: packaging/nfpm/postinstall.sh
+      preremove: packaging/nfpm/preremove.sh
+      postremove: packaging/nfpm/postremove.sh
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: archive-sbom
+    artifacts: archive
+  - id: package-sbom
+    artifacts: package
+
+# Keyless cosign signature of checksums.txt (which covers every archive,
+# package and SBOM) as a Sigstore bundle: checksums.txt.sigstore.json.
+#
+# GoReleaser OSS has no `if:` on signs (it is a GoReleaser Pro feature) and
+# `cmd` is not templated, but `args` are: the command is wrapped in `sh -c`
+# so snapshot builds skip signing instead of starting an interactive OIDC
+# login. Release builds always sign (and fail if signing fails).
+signs:
+  - id: cosign
+    artifacts: checksum
+    cmd: sh
+    signature: "${artifact}.sigstore.json"
+    args:
+      - -c
+      - >-
+        {{ if .IsSnapshot }}echo "snapshot build: skipping cosign keyless signature of $1"{{ else }}exec cosign sign-blob --yes --bundle="$0" "$1"{{ end }}
+      - "${signature}"
+      - "${artifact}"
+    output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: edgeweir
+    name: edgeweir-node
+  draft: true
+  footer: |
+    ## Verify
+
+    ```sh
+    cosign verify-blob \
+      --bundle checksums.txt.sigstore.json \
+      --certificate-identity-regexp '^https://github\.com/edgeweir/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      checksums.txt
+    sha256sum --ignore-missing -c checksums.txt
+    gh attestation verify <artifact> --repo edgeweir/edgeweir-node
+    ```
