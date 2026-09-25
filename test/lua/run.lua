@@ -111,6 +111,34 @@ test("store.replace flips versions and keeps previous table", function()
   end
 end)
 
+test("store: a Host flood cannot evict decoded sites or their balancing state", function()
+  assert(store.replace({ revision = "40", content_hash = "flood", sites = {
+    site("fl", { { name = "fl.test" }, { name = "wild-fl.test", wildcard = true } }),
+  } }))
+  local s1 = store.lookup_host("fl.test")
+  local w1 = store.lookup_host("a.wild-fl.test")
+  eq(s1, w1, "one decoded site per id")
+  -- Round-robin counters and hash rings live on the decoded site object.
+  s1._probe = "kept"
+  local n = store.SITE_CACHE_SIZE + store.HOST_CACHE_SIZE
+  for i = 1, n do
+    eq(store.lookup_host("unknown-" .. i .. ".test"), nil)
+  end
+  for i = 1, n do
+    assert(store.lookup_host("r" .. i .. ".wild-fl.test"), "wildcard")
+  end
+  eq(store.lookup_host("fl.test")._probe, "kept", "site survived the flood")
+  eq(store.lookup_host("zz.wild-fl.test")._probe, "kept")
+  eq(store.lookup_host("unknown-1.test"), nil, "misses still resolve")
+  assert(store.MISS_CACHE_SIZE < store.HOST_CACHE_SIZE, "misses use a small separate cache")
+  -- A new table version invalidates cached misses and hits.
+  assert(store.replace({ revision = "41", content_hash = "flood2", sites = {
+    site("fl2", { { name = "unknown-1.test" } }),
+  } }))
+  eq(store.lookup_host("unknown-1.test").id, "fl2", "cached miss dropped on flip")
+  eq(store.lookup_host("fl.test"), nil, "cached hit dropped on flip")
+end)
+
 test("store.replace rejects invalid sites atomically", function()
   assert(store.replace({ revision = "6", content_hash = "ok", sites = { site("good", { { name = "good.test" } }) } }))
   local st, err, code = store.replace({

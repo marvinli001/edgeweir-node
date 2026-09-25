@@ -12,8 +12,15 @@
 -- edgeweir_meta["version"]; requests never observe a half-written table.
 -- The previous table is kept until the next replacement so requests that
 -- started before the flip can still resolve. Each worker caches decoded
--- sites and host lookups in a lua-resty-lrucache keyed by version, so a
--- flip invalidates the cache implicitly.
+-- sites and host lookups in lua-resty-lrucache instances keyed by version,
+-- so a flip invalidates them implicitly:
+--
+--   sites   decoded sites (with their round-robin and hash-ring state)
+--           and table settings;
+--   hosts   host -> site id for exact names, "*.<parent>" -> site id for
+--           wildcards (random subdomains of a wildcard site add nothing);
+--   misses  unknown hosts, a small separate cache: a flood of made-up Host
+--           headers only churns this one and never evicts sites or hosts.
 local cjson = require("cjson.safe")
 local lrucache = require("resty.lrucache")
 local rules = require("edgeweir.rules")
@@ -27,18 +34,35 @@ local sub, find = string.sub, string.find
 local sites = ngx.shared.edgeweir_sites
 local meta = ngx.shared.edgeweir_meta
 
-local LRU_SIZE = 20000
-local cache
+_M.SITE_CACHE_SIZE = 20000
+_M.HOST_CACHE_SIZE = 20000
+_M.MISS_CACHE_SIZE = 1024
 
-local function lru()
-  if not cache then
-    local c, err = lrucache.new(LRU_SIZE)
+local caches = {}
+
+local function new_cache(name, size)
+  local c = caches[name]
+  if not c then
+    local err
+    c, err = lrucache.new(size)
     if not c then
       error("failed to create lrucache: " .. tostring(err))
     end
-    cache = c
+    caches[name] = c
   end
-  return cache
+  return c
+end
+
+local function lru()
+  return new_cache("sites", _M.SITE_CACHE_SIZE)
+end
+
+local function hosts()
+  return new_cache("hosts", _M.HOST_CACHE_SIZE)
+end
+
+local function misses()
+  return new_cache("misses", _M.MISS_CACHE_SIZE)
 end
 
 local function is_nonempty_string(v)
@@ -342,25 +366,36 @@ function _M.lookup_host(host)
   if not ver or not host or host == "" then
     return nil
   end
-  local c = lru()
-  local ck = "h:" .. host
-  local hit = c:get(ck)
+  local hc = hosts()
+  local hit = hc:get(host)
   if hit and hit[1] == ver then
-    return hit[2] or nil
+    return _M.site(ver, hit[2])
+  end
+  local mc = misses()
+  if mc:get(host) == ver then
+    return nil
   end
   local id = sites:get("v" .. ver .. ":host:" .. host)
-  if not id then
-    local dot = find(host, ".", 1, true)
-    if dot then
-      id = sites:get("v" .. ver .. ":wild:" .. sub(host, dot + 1))
+  if id then
+    hc:set(host, { ver, id })
+    return _M.site(ver, id)
+  end
+  local dot = find(host, ".", 1, true)
+  if dot then
+    local parent = sub(host, dot + 1)
+    local wk = "*." .. parent
+    local w = hc:get(wk)
+    if w and w[1] == ver then
+      return _M.site(ver, w[2])
+    end
+    id = sites:get("v" .. ver .. ":wild:" .. parent)
+    if id then
+      hc:set(wk, { ver, id })
+      return _M.site(ver, id)
     end
   end
-  local site = false
-  if id then
-    site = _M.site(ver, id) or false
-  end
-  c:set(ck, { ver, site })
-  return site or nil
+  mc:set(host, ver)
+  return nil
 end
 
 return _M
