@@ -1,0 +1,410 @@
+// Package fakeconsole is a minimal in-memory implementation of the
+// console's NodeService (connect-go) used by the integration tests and the
+// container smoke test. It enforces the same authentication rules as the
+// real console: Enroll is authorised by a single-use token, every other RPC
+// requires an mTLS client certificate issued by the internal CA whose CN is
+// the node id.
+package fakeconsole
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"slices"
+	"sync"
+	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/edgeweir/edgeweir-node/internal/configir"
+	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1/nodev1connect"
+	"github.com/edgeweir/edgeweir-node/internal/pki/pkitest"
+)
+
+// Options configure a Console.
+type Options struct {
+	NodeID            string
+	ClusterID         string
+	NodeName          string
+	CertLifetime      time.Duration
+	KeepaliveInterval time.Duration
+	ReportInterval    uint32
+}
+
+// GetConfigCall records one GetConfig exchange.
+type GetConfigCall struct {
+	Request  *nodev1.GetConfigRequest
+	Snapshot bool
+	Revision uint64
+}
+
+// Console is the fake NodeService.
+type Console struct {
+	nodev1connect.UnimplementedNodeServiceHandler
+
+	CA   *pkitest.CA
+	opts Options
+
+	mu              sync.Mutex
+	tokens          map[string]bool
+	revisions       []*nodev1.NodeConfig
+	watchers        map[chan struct{}]struct{}
+	statuses        []*nodev1.ReportStatusRequest
+	getConfigs      []GetConfigCall
+	stats           []*nodev1.MinuteStats
+	corruptNextDiff bool
+	renewNext       bool
+	renewals        int
+	enrollments     int
+	mtlsCalls       map[string]int
+	watchStreams    int
+
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// New creates a console with a fresh internal CA.
+func New(opts Options) (*Console, error) {
+	if opts.NodeID == "" {
+		opts.NodeID = "node-1"
+	}
+	if opts.ClusterID == "" {
+		opts.ClusterID = "cluster-1"
+	}
+	if opts.NodeName == "" {
+		opts.NodeName = "edge-1"
+	}
+	if opts.CertLifetime == 0 {
+		opts.CertLifetime = 24 * time.Hour
+	}
+	if opts.KeepaliveInterval == 0 {
+		opts.KeepaliveInterval = 15 * time.Second
+	}
+	if opts.ReportInterval == 0 {
+		opts.ReportInterval = 15
+	}
+	ca, err := pkitest.NewCA("Edgeweir Fake Internal CA")
+	if err != nil {
+		return nil, err
+	}
+	return &Console{
+		CA:        ca,
+		opts:      opts,
+		tokens:    map[string]bool{},
+		watchers:  map[chan struct{}]struct{}{},
+		mtlsCalls: map[string]int{},
+		done:      make(chan struct{}),
+	}, nil
+}
+
+// Close ends all open WatchConfig streams.
+func (c *Console) Close() {
+	c.closeOnce.Do(func() { close(c.done) })
+}
+
+// Options returns the effective options.
+func (c *Console) Options() Options { return c.opts }
+
+// TLSConfig returns the server TLS configuration (leaf + CA chain, client
+// certificates verified when presented).
+func (c *Console) TLSConfig(dnsNames []string, ips []net.IP) (*tls.Config, error) {
+	cert, err := c.CA.IssueServer(dnsNames, ips)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientCAs:    c.CA.Pool(),
+		NextProtos:   []string{"h2", "http/1.1"},
+	}, nil
+}
+
+// Handler returns the HTTP handler serving NodeService.
+func (c *Console) Handler() http.Handler {
+	path, h := nodev1connect.NewNodeServiceHandler(c)
+	mux := http.NewServeMux()
+	mux.Handle(path, c.authenticate(h))
+	return mux
+}
+
+var errWriter = connect.NewErrorWriter()
+
+func (c *Console) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == nodev1connect.NodeServiceEnrollProcedure {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			_ = errWriter.Write(w, r, connect.NewError(connect.CodeUnauthenticated, errors.New("client certificate required")))
+			return
+		}
+		cn := r.TLS.PeerCertificates[0].Subject.CommonName
+		if cn != c.opts.NodeID {
+			_ = errWriter.Write(w, r, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("unknown node %q", cn)))
+			return
+		}
+		c.mu.Lock()
+		c.mtlsCalls[r.URL.Path]++
+		c.mu.Unlock()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// AddToken registers a single-use enrollment token.
+func (c *Console) AddToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tokens[token] = true
+}
+
+// Publish stores cfg as the next revision (canonicalized and hashed) and
+// notifies watchers. It returns the new revision.
+func (c *Console) Publish(cfg *nodev1.NodeConfig) uint64 {
+	cfg = proto.CloneOf(cfg)
+	c.mu.Lock()
+	rev := uint64(len(c.revisions) + 1)
+	cfg.Revision = rev
+	cfg.ClusterId = c.opts.ClusterID
+	configir.Canonicalize(cfg)
+	h, err := configir.ContentHash(cfg)
+	if err != nil {
+		c.mu.Unlock()
+		panic(err)
+	}
+	cfg.ContentHash = h
+	c.revisions = append(c.revisions, cfg)
+	watchers := make([]chan struct{}, 0, len(c.watchers))
+	for w := range c.watchers {
+		watchers = append(watchers, w)
+	}
+	c.mu.Unlock()
+	for _, w := range watchers {
+		select {
+		case w <- struct{}{}:
+		default:
+		}
+	}
+	return rev
+}
+
+// CorruptNextDiff makes the next diff announce a wrong content hash.
+func (c *Console) CorruptNextDiff() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.corruptNextDiff = true
+}
+
+// RequestRenewal sets renew_certificate in the next ReportStatus response.
+func (c *Console) RequestRenewal() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.renewNext = true
+}
+
+// Statuses returns all ReportStatus requests received so far.
+func (c *Console) Statuses() []*nodev1.ReportStatusRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.statuses)
+}
+
+// LastStatus returns the latest ReportStatus request, or nil.
+func (c *Console) LastStatus() *nodev1.ReportStatusRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.statuses) == 0 {
+		return nil
+	}
+	return c.statuses[len(c.statuses)-1]
+}
+
+// GetConfigCalls returns all GetConfig exchanges.
+func (c *Console) GetConfigCalls() []GetConfigCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.getConfigs)
+}
+
+// Stats returns all uploaded minute stats.
+func (c *Console) Stats() []*nodev1.MinuteStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.stats)
+}
+
+// Counters returns enrollments, renewals, watch streams and per-procedure
+// mTLS call counts.
+func (c *Console) Counters() (enrollments, renewals, watchStreams int, mtls map[string]int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := make(map[string]int, len(c.mtlsCalls))
+	for k, v := range c.mtlsCalls {
+		m[k] = v
+	}
+	return c.enrollments, c.renewals, c.watchStreams, m
+}
+
+func (c *Console) latest() *nodev1.NodeConfig {
+	if len(c.revisions) == 0 {
+		return nil
+	}
+	return c.revisions[len(c.revisions)-1]
+}
+
+func (c *Console) revision(r uint64) *nodev1.NodeConfig {
+	if r == 0 || r > uint64(len(c.revisions)) {
+		return nil
+	}
+	return c.revisions[r-1]
+}
+
+// Enroll implements NodeService.
+func (c *Console) Enroll(_ context.Context, req *connect.Request[nodev1.EnrollRequest]) (*connect.Response[nodev1.EnrollResponse], error) {
+	c.mu.Lock()
+	ok := c.tokens[req.Msg.GetToken()]
+	if ok {
+		delete(c.tokens, req.Msg.GetToken())
+	}
+	c.mu.Unlock()
+	if !ok {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invalid or already used enrollment token"))
+	}
+	certPEM, cert, err := c.CA.SignCSR([]byte(req.Msg.GetCsrPem()), c.opts.NodeID, c.opts.CertLifetime)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	c.mu.Lock()
+	c.enrollments++
+	c.mu.Unlock()
+	return connect.NewResponse(&nodev1.EnrollResponse{
+		NodeId:           c.opts.NodeID,
+		ClusterId:        c.opts.ClusterID,
+		NodeName:         c.opts.NodeName,
+		CertificatePem:   string(certPEM),
+		CaCertificatePem: string(c.CA.PEM),
+		NotAfter:         timestamppb.New(cert.NotAfter),
+	}), nil
+}
+
+// RenewCertificate implements NodeService.
+func (c *Console) RenewCertificate(_ context.Context, req *connect.Request[nodev1.RenewCertificateRequest]) (*connect.Response[nodev1.RenewCertificateResponse], error) {
+	certPEM, cert, err := c.CA.SignCSR([]byte(req.Msg.GetCsrPem()), c.opts.NodeID, c.opts.CertLifetime)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	c.mu.Lock()
+	c.renewals++
+	c.mu.Unlock()
+	return connect.NewResponse(&nodev1.RenewCertificateResponse{
+		CertificatePem:   string(certPEM),
+		CaCertificatePem: string(c.CA.PEM),
+		NotAfter:         timestamppb.New(cert.NotAfter),
+	}), nil
+}
+
+// WatchConfig implements NodeService.
+func (c *Console) WatchConfig(ctx context.Context, _ *connect.Request[nodev1.WatchConfigRequest], stream *connect.ServerStream[nodev1.WatchConfigResponse]) error {
+	notify := make(chan struct{}, 1)
+	c.mu.Lock()
+	c.watchers[notify] = struct{}{}
+	c.watchStreams++
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.watchers, notify)
+		c.mu.Unlock()
+	}()
+
+	sendRevision := func() error {
+		c.mu.Lock()
+		l := c.latest()
+		c.mu.Unlock()
+		return stream.Send(&nodev1.WatchConfigResponse{
+			Event:          nodev1.WatchEvent_WATCH_EVENT_REVISION,
+			LatestRevision: l.GetRevision(),
+			ContentHash:    l.GetContentHash(),
+		})
+	}
+	if err := sendRevision(); err != nil {
+		return err
+	}
+	t := time.NewTicker(c.opts.KeepaliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-c.done:
+			return connect.NewError(connect.CodeUnavailable, errors.New("console shutting down"))
+		case <-notify:
+			if err := sendRevision(); err != nil {
+				return err
+			}
+		case <-t.C:
+			if err := stream.Send(&nodev1.WatchConfigResponse{Event: nodev1.WatchEvent_WATCH_EVENT_KEEPALIVE}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// GetConfig implements NodeService.
+func (c *Console) GetConfig(_ context.Context, req *connect.Request[nodev1.GetConfigRequest]) (*connect.Response[nodev1.GetConfigResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	target := c.latest()
+	if req.Msg.GetRevision() != 0 {
+		target = c.revision(req.Msg.GetRevision())
+	}
+	if target == nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such revision"))
+	}
+	resp := &nodev1.GetConfigResponse{GeneratedAt: timestamppb.Now()}
+	call := GetConfigCall{Request: proto.CloneOf(req.Msg), Revision: target.GetRevision()}
+	if base := c.revision(req.Msg.GetBaseRevision()); base != nil && base.GetRevision() <= target.GetRevision() {
+		d := configir.Diff(base, target)
+		if c.corruptNextDiff {
+			c.corruptNextDiff = false
+			d.ContentHash = "deadbeef" + d.ContentHash[8:]
+		}
+		resp.Payload = &nodev1.GetConfigResponse_Diff{Diff: d}
+	} else {
+		call.Snapshot = true
+		resp.Payload = &nodev1.GetConfigResponse_Snapshot{Snapshot: proto.CloneOf(target)}
+	}
+	c.getConfigs = append(c.getConfigs, call)
+	return connect.NewResponse(resp), nil
+}
+
+// ReportStatus implements NodeService.
+func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.ReportStatusRequest]) (*connect.Response[nodev1.ReportStatusResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.statuses = append(c.statuses, proto.CloneOf(req.Msg))
+	renew := c.renewNext
+	c.renewNext = false
+	return connect.NewResponse(&nodev1.ReportStatusResponse{
+		LatestRevision:        c.latest().GetRevision(),
+		RenewCertificate:      renew,
+		ReportIntervalSeconds: c.opts.ReportInterval,
+	}), nil
+}
+
+// ReportStats implements NodeService.
+func (c *Console) ReportStats(_ context.Context, req *connect.Request[nodev1.ReportStatsRequest]) (*connect.Response[nodev1.ReportStatsResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range req.Msg.GetStats() {
+		c.stats = append(c.stats, proto.CloneOf(s))
+	}
+	return connect.NewResponse(&nodev1.ReportStatsResponse{Accepted: uint32(len(req.Msg.GetStats()))}), nil
+}
