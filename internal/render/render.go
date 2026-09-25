@@ -54,12 +54,14 @@ type Params struct {
 	ListenIPv6 bool
 	// User is rendered as the `user` directive when the master runs as
 	// root; empty keeps nginx's default.
-	User              string
-	WorkerProcesses   string
-	WorkerConnections int
-	ErrorLogLevel     string
-	SitesDictMB       int
-	StatsDictMB       int
+	User            string
+	WorkerProcesses string
+	// WorkerRlimitNofile raises the workers' open file limit (0: unset).
+	WorkerRlimitNofile uint64
+	WorkerConnections  int
+	ErrorLogLevel      string
+	SitesDictMB        int
+	StatsDictMB        int
 }
 
 // WithDefaults fills zero values with production defaults.

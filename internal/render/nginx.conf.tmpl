@@ -5,6 +5,9 @@
 # control socket into lua_shared_dict and never cause a reload.
 
 worker_processes {{ .WorkerProcesses }};
+{{- if .WorkerRlimitNofile }}
+worker_rlimit_nofile {{ .WorkerRlimitNofile }};
+{{- end }}
 {{- if .User }}
 user {{ .User }};
 {{- end }}

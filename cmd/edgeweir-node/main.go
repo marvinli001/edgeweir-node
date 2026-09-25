@@ -305,18 +305,27 @@ func cmdRun(args []string, stderr io.Writer) int {
 	} else {
 		rs = render.Resolvers(*resolvConf)
 	}
+	// Let nginx workers use the hard open-file limit (os/exec children only
+	// inherit the default soft limit) and size worker_connections to fit.
+	nofile := min(hostinfo.NofileHardLimit(), 1<<20)
+	workerConnections := 4096
+	if nofile > 0 && nofile < 2*uint64(workerConnections) {
+		workerConnections = max(int(nofile/2), 256)
+	}
 	params := render.Params{
-		Prefix:          prefix,
-		LuaDir:          abs(*luaDir),
-		CacheDir:        abs(*cacheDir),
-		ControlSocket:   abs(*controlSocket),
-		OriginSocket:    abs(*originSocket),
-		ResolvConf:      abs(*resolvConf),
-		Resolvers:       rs,
-		ResolverIPv6:    resolverIPv6.resolve(hostinfo.HasGlobalIPv6),
-		ListenIPv6:      listenIPv6.resolve(hostinfo.CanListenIPv6),
-		User:            *nginxUser,
-		WorkerProcesses: *workers,
+		Prefix:             prefix,
+		LuaDir:             abs(*luaDir),
+		CacheDir:           abs(*cacheDir),
+		ControlSocket:      abs(*controlSocket),
+		OriginSocket:       abs(*originSocket),
+		ResolvConf:         abs(*resolvConf),
+		Resolvers:          rs,
+		ResolverIPv6:       resolverIPv6.resolve(hostinfo.HasGlobalIPv6),
+		ListenIPv6:         listenIPv6.resolve(hostinfo.CanListenIPv6),
+		User:               *nginxUser,
+		WorkerProcesses:    *workers,
+		WorkerRlimitNofile: nofile,
+		WorkerConnections:  workerConnections,
 	}
 	if _, err := os.Stat(filepath.Join(params.LuaDir, "edgeweir", "init.lua")); err != nil {
 		log.Warn("Lua modules not found; nginx configuration tests will fail", "lua_dir", params.LuaDir, "err", err)

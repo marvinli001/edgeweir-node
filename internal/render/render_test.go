@@ -57,6 +57,7 @@ func TestRenderFullGolden(t *testing.T) {
 	p.ResolverIPv6 = true
 	p.ListenIPv6 = true
 	p.WorkerConnections = 8192
+	p.WorkerRlimitNofile = 65536
 	plan := &configir.Plan{
 		Listeners: []configir.Listener{
 			{Port: 80, HTTP2: true},
