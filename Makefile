@@ -1,0 +1,76 @@
+# edgeweir-node developer tasks. Run `make help` for a list.
+
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
+# --- Protobuf contract -------------------------------------------------------
+# The node channel contract lives in the console repository (edgeweir/proto)
+# and is consumed from an immutable git tag. Locally we read the sibling
+# checkout; CI overrides PROTO_INPUT with the GitHub URL:
+#   make proto-check PROTO_INPUT='https://github.com/edgeweir/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
+PROTO_TAG   ?= proto/v0.1.0
+PROTO_INPUT ?= ../edgeweir/.git\#tag=$(PROTO_TAG),subdir=proto
+
+# --- Build metadata ----------------------------------------------------------
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
+DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
+PKG     := github.com/edgeweir/edgeweir-node/internal/version
+LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
+
+IMAGE          ?= edgeweir-node:dev
+OPENRESTY_FAT  ?= openresty/openresty:1.31.1.1-bookworm-fat
+
+.PHONY: help
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+.PHONY: build
+build: ## Build a static binary into bin/
+	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o bin/edgeweir-node ./cmd/edgeweir-node
+
+.PHONY: vet
+vet: ## Run go vet
+	go vet ./...
+
+.PHONY: test
+test: ## Run unit and in-process integration tests
+	go test ./...
+
+.PHONY: test-race
+test-race: ## Run tests with the race detector
+	go test -race ./...
+
+.PHONY: proto
+proto: ## Regenerate Go code from the edgeweir proto git tag
+	buf generate "$(PROTO_INPUT)"
+
+.PHONY: proto-check
+proto-check: proto ## Regenerate and fail if the committed code differs
+	@git diff --exit-code -- internal/gen || { echo "generated code is stale: run 'make proto' and commit"; exit 1; }
+	@test -z "$$(git status --porcelain -- internal/gen)" || { git status --porcelain -- internal/gen; echo "untracked generated files: run 'make proto' and commit"; exit 1; }
+
+.PHONY: lua-test
+lua-test: ## Run Lua unit tests with resty inside the OpenResty image
+	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) \
+		resty -I /lua --shdict 'edgeweir_sites 4m' --shdict 'edgeweir_meta 1m' --shdict 'edgeweir_stats 4m' /t/run.lua
+
+.PHONY: docker
+docker: ## Build the node container image
+	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t $(IMAGE) .
+
+.PHONY: e2e
+e2e: ## Run the container smoke test (fake console + node + origin)
+	./test/e2e/run.sh
+
+.PHONY: release-check
+release-check: ## Validate the goreleaser configuration
+	goreleaser check
+
+.PHONY: snapshot
+snapshot: ## Build release artifacts locally without publishing (unsigned)
+	goreleaser release --snapshot --clean
+
+.PHONY: clean
+clean: ## Remove build output
+	rm -rf bin dist coverage.out

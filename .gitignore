@@ -1,0 +1,15 @@
+# Build output
+/bin/
+/dist/
+/coverage.out
+*.test
+
+# Local state from running the agent outside a container
+/.state/
+/tmp/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
