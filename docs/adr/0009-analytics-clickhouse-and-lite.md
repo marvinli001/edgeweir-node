@@ -24,7 +24,7 @@ CDN 需要统计（请求数、流量、带宽、命中率、状态码、Top URL
    | lite（默认） | PostgreSQL | 节点预聚合的分钟级统计 | 默认启用 |
    | analytics | ClickHouse | 分钟级统计，加上可采样的原始访问日志 | `docker compose --profile analytics` |
 
-2. **节点侧先预聚合再上报。** 每个节点按（分钟，站点）汇总请求数、发送和接收字节、缓存命中与未命中次数、状态码分布，通过 `ReportStats` 批量上报（[`MinuteStats`](https://github.com/edgeweir/edgeweir/blob/master/proto/edgeweir/node/v1/node.proto)）。控制面不接收逐条请求的统计。
+2. **节点侧先预聚合再上报。** 每个节点按（分钟，站点）汇总请求数、发送和接收字节、缓存命中与未命中次数、状态码分布，通过 `ReportStats` 批量上报（[`MinuteStats`](https://github.com/marvinli001/edgeweir/blob/master/proto/edgeweir/node/v1/node.proto)）。控制面不接收逐条请求的统计。
 3. **lite 模式**：分钟级数据写入 PostgreSQL，由 pg-boss 定时任务汇总成小时和天粒度，并按保留期清理分钟明细。
 4. **analytics 模式**：
    - 原始日志写入 ClickHouse 的 MergeTree 表：按天分区，按站点和时间排序，用 TTL 控制保留期。
