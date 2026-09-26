@@ -308,6 +308,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: empty configuration", ErrRejected)
 	}
+	if err := validateEnums(c.ProtoReflect()); err != nil {
+		return nil, err
+	}
 	if opts.ClusterID != "" && c.GetClusterId() != "" && c.GetClusterId() != opts.ClusterID {
 		return nil, fmt.Errorf("%w: configuration is for cluster %q but this node belongs to %q",
 			ErrRejected, c.GetClusterId(), opts.ClusterID)
