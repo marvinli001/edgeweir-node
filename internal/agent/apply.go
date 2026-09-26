@@ -450,7 +450,10 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		if previousConfig != nil {
 			restoreErr = errors.Join(restoreErr, a.lkg.Save(previousConfig))
 		}
-		a.fail(cfg, key, errors.Join(fmt.Errorf("cannot persist last-known-good configuration: %w", err), restoreErr))
+		// Repeated disk failures must not briefly reactivate the rejected table on
+		// every watch/poll. Retry after the same cooldown as a rejected revision,
+		// or immediately when a new revision arrives.
+		a.fail(cfg, key, &permanentError{errors.Join(fmt.Errorf("cannot persist last-known-good configuration: %w", err), restoreErr)})
 		return
 	}
 	a.mu.Lock()

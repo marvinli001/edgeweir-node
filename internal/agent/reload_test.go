@@ -23,7 +23,7 @@ func TestUnknownEnumKeepsLastKnownGood(t *testing.T) {
 }
 
 func TestPersistenceFailureDoesNotReportNewRevisionApplied(t *testing.T) {
-	e := startEnrolled(t, "persist-failure", nil, demoSite("site-a", "site-a.test"))
+	e := startEnrolled(t, "persist-failure", func(c *agent.Config) { c.PollInterval = 40 * time.Millisecond }, demoSite("site-a", "site-a.test"))
 	current := filepath.Join(e.cfg.StateDir, "config", "current.binpb")
 	if err := os.Remove(current); err != nil {
 		t.Fatal(err)
@@ -35,6 +35,13 @@ func TestPersistenceFailureDoesNotReportNewRevisionApplied(t *testing.T) {
 	eventually(t, "persistence failure reported", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
 	if table := e.dp.Table(); table.Revision != e.rev || table.Sites[0].ID != "site-a" {
 		t.Fatalf("uncommitted configuration stayed active: %+v", table)
+	}
+	// Poll retries must not keep reactivating the revision that cannot be saved.
+	for range 20 {
+		time.Sleep(20 * time.Millisecond)
+		if table := e.dp.Table(); table.Revision != e.rev {
+			t.Fatalf("retry reactivated unsaved revision: %d", table.Revision)
+		}
 	}
 }
 
