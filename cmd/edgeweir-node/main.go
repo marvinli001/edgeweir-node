@@ -329,6 +329,8 @@ func cmdRun(args []string, stderr io.Writer) int {
 		resolvers     = fs.String("resolver", "", "comma-separated nginx resolver addresses (overrides --resolv-conf)")
 		defaultPort   = fs.Uint("default-port", 80, "HTTP port served before any configuration exists")
 		workers       = fs.String("worker-processes", "auto", "nginx worker_processes")
+		geoCity       = fs.String("geoip-city", "", "operator-provided City MMDB path")
+		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
 		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
@@ -452,6 +454,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 		DefaultPort:         uint32(*defaultPort),
 		PurgeMarkersPerSite: *purgePerSite,
 		PrefetchBudget:      *prefetchTime,
+		GeoIPCityPath:       *geoCity, GeoIPASNPath: *geoASN,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

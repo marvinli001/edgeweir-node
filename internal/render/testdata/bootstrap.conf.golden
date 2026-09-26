@@ -35,6 +35,7 @@ http {
     lua_shared_dict edgeweir_stats 16m;
     lua_shared_dict edgeweir_purge 32m;
     lua_shared_dict edgeweir_health 4m;
+    lua_shared_dict edgeweir_limits 16m;
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).
     lua_capture_error_log 64k;
@@ -44,7 +45,8 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "3025031dfb811e8e",
+            conf_id = "d0bc3671600badfc",
+            geoip_socket = "/run/edgeweir-node/control.sock.geo",
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }

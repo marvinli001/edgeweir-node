@@ -13,11 +13,13 @@
 | [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，一个应用、一个镜像。把站点和规则编译成与引擎无关的 `NodeConfig` IR，运行内部 CA 和节点通道（默认 `:8443`）。 |
 | **edgeweir/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.3.0`）生成 Go 代码，从不复制 `.proto` 文件。
+两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.4.0`）生成 Go 代码，从不复制 `.proto` 文件。
 
 ## 当前状态
 
 M3 已加入 SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS 和 Gzip。证书轮换热更新；结构性策略变更验证后重载，激活失败会恢复旧配置。当前引擎不提供 Brotli 和 Zstd。证书材料保存在 0600 的 `certificates.json` 中，主机管理员仍可读取。详见 [HTTPS 指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md)。
+
+M4 已加入 IP/GeoIP 名单、分阶段规则、WAF、限速及请求/响应变换，均走热更新。GeoIP 读取本地 MMDB，不向第三方发送客户 IP。详见 [规则指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md)。
 
 目前没有正式二进制发布，下方安装说明描述的是发布流程。当前评估请从源码构建；MVP 尚不适合生产使用。
 
@@ -115,6 +117,8 @@ edgeweir-node version
 | `--listen-ipv6` | `auto` | 同时监听 IPv6：`auto`（本机能绑定 IPv6 时）、`on` 或 `off` |
 | `--default-port` | `80` | 收到配置之前提供服务的 HTTP 端口 |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--geoip-city` | empty | 运维者提供的 MMDB 路径；为空时不启用对应能力 |
+| `--geoip-asn` | empty | 运维者提供的 MMDB 路径；为空时不启用对应能力 |
 | `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`）的大小，单位 MiB |
 | `--purge-markers-per-site` | `1000` | 每个站点的 URL 与前缀标记上限，超过后合并为一个全站标记 |
 | `--prefetch-budget` | `4m` | 一次拉取的预热任务可用的时间 |

@@ -153,6 +153,7 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	}
 	a.mu.Unlock()
 	req.Info = hostinfo.Collect(a.engineVersion)
+	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.geoFeatures...)
 	if id := a.channel.Identity(); id != nil {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
 	}

@@ -50,6 +50,7 @@ http {
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
             conf_id = "{{ .ConfID }}",
+            geoip_socket = "{{ .GeoIPSocket }}",
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }

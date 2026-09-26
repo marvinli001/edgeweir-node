@@ -15,6 +15,7 @@ function _M.init(opts)
   -- agent checks it after a reload).
   _M.conf_id = type(opts.conf_id) == "string" and opts.conf_id or ""
   -- Load every module eagerly: workers inherit them after fork.
+  require("edgeweir.geoip").socket = opts.geoip_socket or ""
   require("edgeweir.ipaddr")
   require("edgeweir.store")
   require("edgeweir.rules")

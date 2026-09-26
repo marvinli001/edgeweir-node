@@ -39,6 +39,15 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
         -X github.com/marvinli001/edgeweir-node/internal/version.Date=${DATE}" \
       -o /out/edgeweir-node ./cmd/edgeweir-node
 
+# Synthetic MMDBs for compose.e2e.yml; never copied into the release image.
+FROM build AS geoip-build
+COPY test/geoip ./test/geoip
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -o /out/geoip-fixture ./test/geoip
+FROM scratch AS geoip-fixture
+COPY --from=geoip-build /out/geoip-fixture /geoip-fixture
+ENTRYPOINT ["/geoip-fixture", "/data"]
+
 # ---- runtime: official OpenResty image, unprivileged user ----------------
 FROM ${OPENRESTY_IMAGE}
 ARG VERSION=dev

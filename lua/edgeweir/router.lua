@@ -16,6 +16,7 @@ local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local purge = require("edgeweir.purge")
+local policy = require("edgeweir.policy")
 
 local _M = {}
 
@@ -144,9 +145,18 @@ function _M.access()
   if var.scheme == "https" and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
-  if site.tls and site.tls.force_https and var.scheme ~= "https" then
-    return ngx.redirect("https://" .. host .. var.request_uri, 301)
+  local original_path = var.uri
+  local ok, result = pcall(policy.access, site, headers)
+  if not ok then
+    ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)
+    return deny(503, "policy-unavailable", "policy unavailable")
   end
+  if result then
+    if result.location then return ngx.redirect(result.location, result.status) end
+    if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
+    return deny(result.status, "policy-denied", "request denied")
+  end
+  headers = ngx.req.get_headers(0)
 
   var.edgeweir_site = site.id
   var.edgeweir_cache_zone = site.cache_zone
@@ -173,7 +183,11 @@ function _M.access()
   -- RFC 9111, section 3.5: responses to requests with Authorization are
   -- shared only when the applying rule allows it (cache_authorized).
   local authorized = var.http_authorization ~= nil
-  local chain = rules.chain(site, var.uri, authorized)
+  if ngx.ctx.edgeweir_policy and ngx.ctx.edgeweir_policy.cache_bypass then
+    var.edgeweir_range_mode = "pass"
+    return
+  end
+  local chain = rules.chain(site, original_path, authorized)
   if not rules.may_cache(chain, authorized) then
     var.edgeweir_range_mode = "pass"
     return
@@ -188,7 +202,7 @@ function _M.access()
 
   -- Cache rules, purge markers and the key all use nginx's normalized
   -- path, so an encoded variant of a URL can never escape a purge.
-  local path = var.uri
+  local path = original_path
   local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
   var.edgeweir_cache_key = cachekey.build(site, key_request(site, var, path, headers), epoch)
 end
@@ -213,6 +227,10 @@ function _M.header_filter()
     else
       h["Cache-Control"] = stashed
     end
+  end
+  if site then
+    local ok = pcall(policy.response, site)
+    if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
   end
 end
 

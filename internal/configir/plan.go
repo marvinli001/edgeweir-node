@@ -31,13 +31,14 @@ const (
 	DictStats  = "edgeweir_stats"
 	DictPurge  = "edgeweir_purge"
 	DictHealth = "edgeweir_health"
+	DictLimits = "edgeweir_limits"
 )
 
 // SharedDicts lists every lua_shared_dict of the data plane in the order
 // nginx.conf declares them. nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictLimits}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.
@@ -91,6 +92,8 @@ type Plan struct {
 	Warnings       []string
 	Certificates   map[string]string
 	HTTPChallenges []HTTPChallenge
+	IPLists        []*nodev1.IpList
+	PlatformRules  []*nodev1.EdgeRule
 }
 
 // Listener is a plain-HTTP port served by the edge layer.
@@ -131,10 +134,11 @@ type Site struct {
 	// Slice fetches and caches cacheable GET/HEAD requests in 1 MiB slices.
 	Slice bool `json:"slice,omitempty"`
 	// WebSocket proxies WebSocket upgrades (default true).
-	WebSocket     bool         `json:"websocket"`
-	CertificateID string       `json:"certificate_id,omitempty"`
-	TLS           *TLSOptions  `json:"tls,omitempty"`
-	Certificate   *Certificate `json:"certificate,omitempty"`
+	WebSocket     bool               `json:"websocket"`
+	CertificateID string             `json:"certificate_id,omitempty"`
+	TLS           *TLSOptions        `json:"tls,omitempty"`
+	Certificate   *Certificate       `json:"certificate,omitempty"`
+	Rules         []*nodev1.EdgeRule `json:"rules,omitempty"`
 }
 
 type TLSOptions struct {
@@ -167,7 +171,7 @@ type HTTPChallenge struct {
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1"}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1"}
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
@@ -293,7 +297,8 @@ type Options struct {
 	// DefaultPort is served when the configuration has no usable listener.
 	DefaultPort uint32
 	// ClusterID, when set, must equal the config's cluster_id.
-	ClusterID string
+	ClusterID     string
+	ExtraFeatures []string
 }
 
 // Bootstrap returns the plan used before any configuration exists: a
@@ -316,33 +321,13 @@ func defaultZone() CacheZone {
 
 // Build validates a canonical, hash-verified NodeConfig and produces a Plan.
 //
-// Whole-config rejections (returned as errors wrapping ErrRejected):
-//   - cluster_id differs from the node's cluster;
-//   - a site, origin or cache rule id contains anything but letters,
-//     digits, "_" and "-" (they are used as separators in the data plane);
-//   - any cache rule uses the rule-engine expression (the proto contract
-//     reserves it; nodes reject configs that set it).
-//
-// Everything else is handled per item with a warning, so that one bad site
-// cannot take down the rest of the cluster:
-//   - listeners with invalid ports, duplicates, or HTTPS (the contract
-//     does not deliver certificate material yet, MVP M3) are skipped;
-//     http3 is ignored; without any usable listener the default port is
-//     served;
-//   - invalid cache zones and zones named like a shared dict of the data
-//     plane (SharedDicts) are skipped; sites referencing an unknown or
-//     empty zone use the first zone;
-//   - invalid domains are dropped, domains claimed by an earlier site (by
-//     id order) are dropped, sites left without domains are skipped;
-//   - invalid origins are dropped, sites left without origins are skipped;
-//   - origins whose IP literal is a special-purpose address (see
-//     address.go) outside origin_allowed_cidrs stay in the site but are
-//     marked forbidden, so the data plane answers 502 instead of
-//     connecting;
-//   - cache rules with an unknown action or with a condition list that
-//     becomes empty after dropping invalid entries are skipped (never
-//     widened to "match everything");
-//   - disabled sites are not served.
+// Whole-config rejections include unsupported capabilities/enums, invalid IDs,
+// invalid typed rules/list references, missing certificate references, invalid
+// TLS policy, and the legacy CacheRuleMatch.expression placeholder. M4 rules
+// use Site.rules instead. Invalid listeners/empty sites/cache conditions are
+// handled conservatively without widening a condition to match everything.
+// Special-purpose origins outside the platform allow list remain marked
+// forbidden and return 502. Disabled sites are not served.
 func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: empty configuration", ErrRejected)
@@ -351,13 +336,16 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		return nil, err
 	}
 	for _, feature := range c.GetRequiredFeatures() {
-		if !slices.Contains(SupportedFeatures, feature) {
+		if !slices.Contains(SupportedFeatures, feature) && !slices.Contains(opts.ExtraFeatures, feature) {
 			return nil, fmt.Errorf("%w: unsupported required feature %q", ErrRejected, feature)
 		}
 	}
 	if opts.ClusterID != "" && c.GetClusterId() != "" && c.GetClusterId() != opts.ClusterID {
 		return nil, fmt.Errorf("%w: configuration is for cluster %q but this node belongs to %q",
 			ErrRejected, c.GetClusterId(), opts.ClusterID)
+	}
+	if err := validateRules(c, opts.ExtraFeatures); err != nil {
+		return nil, err
 	}
 	if err := validateIDs(c); err != nil {
 		return nil, err
@@ -383,6 +371,8 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		p.Certificates[cert.GetId()] = cert.GetSha256Fingerprint()
 	}
+	p.IPLists = c.GetIpLists()
+	p.PlatformRules = c.GetPlatformRules()
 	for _, ch := range c.GetHttpChallenges() {
 		if !idRE.MatchString(ch.GetToken()) || len(ch.GetKeyAuthorization()) > 512 || ch.GetExpiresAt() == nil {
 			return nil, fmt.Errorf("%w: invalid HTTP challenge", ErrRejected)
@@ -475,6 +465,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			Slice:           s.GetRangeSlice(),
 			WebSocket:       !s.GetWebsocketDisabled(),
 			CertificateID:   s.GetCertificateId(),
+			Rules:           s.GetRules(),
 		}
 		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
 			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)

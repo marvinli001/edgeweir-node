@@ -26,6 +26,7 @@ local lrucache = require("resty.lrucache")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local ipaddr = require("edgeweir.ipaddr")
+local policy = require("edgeweir.policy")
 
 local _M = {}
 
@@ -117,7 +118,16 @@ end
 
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
-function _M.prepare(s)
+function _M.prepare(s, cfg)
+  s._config = cfg or policy.prepare_config({})
+  s._rule_groups = policy.prepare_rules(s.rules, s._config.lists)
+  local function geo(r)
+    if (r.field or ""):sub(1,9) == "ip.geoip." then return true end
+    for _, c in ipairs(r.children or {}) do if geo(c) then return true end end
+    return false
+  end
+  for _, r in ipairs(s.rules or {}) do if geo(r.expression) then s._geo = true end end
+  for _, r in ipairs(s._config.platform_rules or {}) do if geo(r.expression) then s._geo = true end end
   s.cache_generation = tostring(s.cache_generation or "0")
   s.tls_verify = s.tls_verify ~= false
   s.websocket = s.websocket ~= false
@@ -217,15 +227,21 @@ function _M.replace(doc)
   if type(allowed) ~= "table" then
     allowed = {}
   end
-  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "", http_challenges = doc.http_challenges or {} }
+  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "", http_challenges = doc.http_challenges or {}, ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {} }
   if cjson.empty_array_mt and #allowed == 0 then
     setmetatable(allowed, cjson.empty_array_mt)
   end
+  local compiled_ok, compiled_cfg = pcall(policy.prepare_config, {ip_lists = cfg.ip_lists, platform_rules = cfg.platform_rules})
+  if not compiled_ok then meta:delete("lock"); return nil, "invalid policy configuration", 400 end
   local count = 0
   local n = put("cfg", cjson.encode(cfg)) and #list or 0
   for i = 1, n do
     local site = list[i]
     local err = validate(site)
+    if not err then
+      local ok = pcall(policy.prepare_rules, site.rules, compiled_cfg.lists)
+      if not ok then err = "invalid site policy" end
+    end
     if err then
       failure, failure_status = err, 400
       break
@@ -296,8 +312,8 @@ end
 --   cdn_id = CDN-Loop identifier or "" }.
 local EMPTY_CONFIG = { allowed = {}, cdn_id = "" }
 
-function _M.config()
-  local ver = meta:get("version")
+function _M.config(version)
+  local ver = version or meta:get("version")
   if not ver then
     return EMPTY_CONFIG
   end
@@ -315,7 +331,9 @@ function _M.config()
       allowed = ipaddr.prefixes(doc.origin_allowed_cidrs),
       cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "",
       http_challenges = doc.http_challenges or {},
+      ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {},
     }
+    policy.prepare_config(cfg)
   end
   c:set(ck, cfg)
   return cfg
@@ -337,7 +355,7 @@ function _M.site(ver, id)
   if type(s) ~= "table" then
     return nil
   end
-  _M.prepare(s)
+  _M.prepare(s, _M.config(ver))
   c:set(ck, s)
   return s
 end

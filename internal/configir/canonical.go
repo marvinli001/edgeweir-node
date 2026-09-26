@@ -63,6 +63,11 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	slices.SortStableFunc(c.HttpChallenges, func(a, b *nodev1.HttpChallenge) int {
 		return cmp.Compare(a.GetDomain()+"/"+a.GetToken(), b.GetDomain()+"/"+b.GetToken())
 	})
+	slices.SortStableFunc(c.IpLists, func(a, b *nodev1.IpList) int { return cmp.Compare(a.GetId(), b.GetId()) })
+	for _, l := range c.IpLists {
+		slices.Sort(l.Entries)
+		l.Entries = slices.Compact(l.Entries)
+	}
 	for _, s := range c.Sites {
 		CanonicalizeSite(s)
 	}

@@ -13,11 +13,13 @@ English | [简体中文](README.zh-CN.md)
 | [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
 | **edgeweir/edgeweir-node** (this repo) | The node: Go agent `edgeweir-node` + OpenResty (Lua). |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.3.0`) and never copies `.proto` files.
+The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.4.0`) and never copies `.proto` files.
 
 ## Status
 
 M3 adds SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS and Gzip. Certificate rotation is hot; structural policy changes reload only after validation and recover on activation failure. Brotli and Zstd are unavailable in the stock engine. Node certificate materials live in `certificates.json` with mode 0600; host administrators can read them. See the [HTTPS guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md).
+
+M4 adds IP/GeoIP lists, phased rules, WAF, rate limits and request/response transforms through hot updates. GeoIP reads local MMDBs without sending client IPs to a third party. See the [rule guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md).
 
 There is no official binary release yet. Installation instructions below describe the release workflow; build from source for current evaluation. This is an experimental MVP.
 
@@ -115,6 +117,8 @@ Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for exa
 | `--listen-ipv6` | `auto` | also listen on IPv6: `auto` (when the host can bind IPv6), `on` or `off` |
 | `--default-port` | `80` | HTTP port served before any configuration exists |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--geoip-city` | empty | Operator-provided MMDB; empty disables the capability |
+| `--geoip-asn` | empty | Operator-provided MMDB; empty disables the capability |
 | `--purge-dict-mb` | `32` | size of the purge marker store (`lua_shared_dict edgeweir_purge`) in MiB |
 | `--purge-markers-per-site` | `1000` | URL and prefix purge markers per site before they collapse into one site-level marker |
 | `--prefetch-budget` | `4m` | time the prefetches of one pulled batch may take |

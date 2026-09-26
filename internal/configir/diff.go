@@ -52,6 +52,8 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 		OriginAllowedCidrs: slices.Clone(d.GetOriginAllowedCidrs()),
 		RequiredFeatures:   slices.Clone(d.GetRequiredFeatures()),
 		HttpChallenges:     cloneAll(d.GetHttpChallenges()),
+		IpLists:            cloneAll(d.GetIpLists()),
+		PlatformRules:      cloneAll(d.GetPlatformRules()),
 	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
@@ -102,6 +104,8 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 		OriginAllowedCidrs: slices.Clone(target.GetOriginAllowedCidrs()),
 		RequiredFeatures:   slices.Clone(target.GetRequiredFeatures()),
 		HttpChallenges:     cloneAll(target.GetHttpChallenges()),
+		IpLists:            cloneAll(target.GetIpLists()),
+		PlatformRules:      cloneAll(target.GetPlatformRules()),
 	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {

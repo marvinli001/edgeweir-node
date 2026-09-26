@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"io"
 	"net"
 	"net/http"
@@ -33,12 +34,16 @@ type SiteTable struct {
 	// the node is enrolled.
 	CDNID          string                   `json:"cdn_id,omitempty"`
 	HTTPChallenges []configir.HTTPChallenge `json:"http_challenges,omitempty"`
+	IPLists        []*nodev1.IpList         `json:"ip_lists,omitempty"`
+	PlatformRules  []*nodev1.EdgeRule       `json:"platform_rules,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
 func FromPlan(p *configir.Plan) *SiteTable {
 	t := &SiteTable{Revision: p.Revision, ContentHash: p.ContentHash, Sites: p.Sites, OriginAllowedCIDRs: p.OriginAllowedCIDRs}
 	t.HTTPChallenges = p.HTTPChallenges
+	t.IPLists = p.IPLists
+	t.PlatformRules = p.PlatformRules
 	if t.Sites == nil {
 		t.Sites = []configir.Site{}
 	}

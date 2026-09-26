@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点当前（MVP M2 与 2026-09-25 收尾之后）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.3.0`）里的 `edgeweir.node.v1`。
+本文描述节点当前（MVP M4）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.4.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -111,11 +111,11 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 情况 | 处理 |
 | --- | --- |
 | 哈希不符（快照或 diff 回退后的快照） | 整个配置拒绝 |
-| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（节点尚不支持规则表达式） |
+| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（旧占位字段；M4 使用类型化 `Site.rules`） |
 | `cluster_id` 与节点所属集群不同 | 整个配置拒绝 |
 | 站点、源站、缓存规则 id 含 `[A-Za-z0-9_-]` 以外的字符或超过 128 个字符 | 整个配置拒绝（id 在数据面里作为分隔符的一部分） |
 | listener 端口非法 / 重复 | 跳过该 listener 并告警 |
-| HTTPS listener | 跳过并告警：证书下发属于 MVP M3 |
+| HTTPS listener | M3 起支持，证书材料通过 mTLS 单独获取 |
 | 没有可用 listener | 使用默认端口（80）并告警 |
 | cache zone 名非法或与内部 shared dict 重名 | 跳过并告警；没有 zone 时使用内置 `edgeweir_default` |
 | 站点引用不存在的 zone / 未指定 zone | 使用第一个 zone |
@@ -363,7 +363,7 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 
 ## 6. 已知限制
 
-- HTTPS 监听被跳过：证书下发属于 MVP M3（proto 只有 `CertificateRef`）。预热也因此只支持 http URL。
+- HTTPS 监听与证书下发已在 M3 实现，具体见下方 M3 记录。
 - `CacheRuleMatch.expression` 非空的配置会被拒绝（规则引擎属于后续里程碑）。
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
@@ -375,3 +375,12 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 ## MVP M3（2026-09-27）
 
 支持 HTTPS、HTTP/2、HTTP/3 与 SNI 证书热更新。证书材料在 certificates.json（0600）中保存当前与前一份 LKG 的引用；节点身份私钥与网站 TLS 私钥分别管理。激活后推送失败会恢复，配置未持久化不能回报 APPLIED。详情见控制面 docs/guide/https.md。
+
+## MVP M4（2026-09-27）
+
+- `Site.rules`、`NodeConfig.ip_lists/platform_rules` 进入热更新表，Go 验证后 Lua 编译为固定闭包。禁止运行用户 Lua。每阶段平台规则先执行，平台 IP 白名单仅覆盖平台 IP 黑名单；站点放行不能绕过平台 WAF。
+- IP 前缀树、有限 PCRE 工作量、不会淘汰现有键的固定窗口限速；规则或依赖数据执行错误时拒绝请求。
+- `internal/geoip` 读取运维提供的 City/ASN MMDB，经 0600 Unix socket 服务同机 worker。数据库通过完整性与类型检查才上报能力；GeoIP 请求不离开节点。
+- 缓存和刷新使用改写前路径；配置与列表更新不 reload。`rules-v1`、`geoip-city-v1`、`geoip-asn-v1` 分开协商。
+- 持久化失败在恢复旧配置后退避五分钟或等下一版本，避免每次轮询重新激活未持久化内容。
+- `test/lua/expression-vectors.json` 镜像控制面规则包的 19 个共享向量；GeoIP MMDB 为 `internal/testutil/geofixture` 自行生成的数据。

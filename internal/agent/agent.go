@@ -27,6 +27,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/controlplane"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 )
@@ -65,7 +66,9 @@ type Config struct {
 	// Render holds the node-local nginx.conf settings.
 	Render render.Params
 	// DefaultPort is served before any configuration exists.
-	DefaultPort uint32
+	DefaultPort   uint32
+	GeoIPCityPath string
+	GeoIPASNPath  string
 
 	EnrollPollInterval time.Duration // default 2s
 	PollInterval       time.Duration // GetConfig fallback poll, default 30s
@@ -137,6 +140,7 @@ type Agent struct {
 	ids    identity.Store
 	lkg    configstore.Store
 
+	geoFeatures   []string
 	engineVersion string
 	channel       *controlplane.Channel
 	nodeID        string // guarded by mu; empty until the identity is known
@@ -198,6 +202,22 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 func (a *Agent) Run(ctx context.Context) error {
 	if err := a.prepareDirs(); err != nil {
 		return err
+	}
+	databases, err := geoip.Open(a.cfg.GeoIPCityPath, a.cfg.GeoIPASNPath)
+	if err != nil {
+		return fmt.Errorf("load GeoIP: %w", err)
+	}
+	defer databases.Close()
+	a.geoFeatures = databases.Features()
+	if len(a.geoFeatures) > 0 {
+		l, err := databases.Serve(ctx, a.cfg.Render.WithDefaults().GeoIPSocket)
+		if err != nil {
+			return err
+		}
+		defer l.Close()
+		if err := chownToUser(a.cfg.Render.User, a.cfg.Render.WithDefaults().GeoIPSocket); err != nil {
+			return err
+		}
 	}
 	if v, err := a.engine.Version(ctx); err != nil {
 		a.log.Warn("cannot determine engine version", "err", err)
@@ -303,7 +323,7 @@ func (a *Agent) prepareDirs() error {
 }
 
 func (a *Agent) buildOptions() configir.Options {
-	opts := configir.Options{DefaultPort: a.cfg.DefaultPort}
+	opts := configir.Options{DefaultPort: a.cfg.DefaultPort, ExtraFeatures: a.geoFeatures}
 	if a.channel != nil {
 		opts.ClusterID = a.channel.Identity().ClusterID
 	}

@@ -46,16 +46,16 @@
 
 回源证书校验、负载均衡策略和被动健康检查已在 MVP M2 实现；当前限制见 ARCHITECTURE.md §6，主要是：
 
-- HTTPS 监听暂时跳过：proto 还没有下发证书和私钥材料的途径（MVP M3）。
+- HTTPS、证书、HTTP/2/3 已在 MVP M3 实现；Brotli/Zstd 仍需后续构建。
 - 访问日志关闭，只有聚合统计；访问日志采样上报属于 MVP M6。
-- 带规则表达式（`CacheRuleMatch.expression`）的缓存规则会被节点拒绝。
+- 旧 `CacheRuleMatch.expression` 占位字段仍被拒绝；M4 规则使用结构化 `Site.rules`。
 
 ## MVP
 
 ### 集群与站点
 
 - [x] [控制面] 多集群、节点组、区域（MVP M1）
-- [ ] [节点+控制面] 站点支持 HTTP 和 HTTPS
+- [x] [节点+控制面] 站点支持 HTTP 和 HTTPS
   - 节点侧：先扩展 proto 下发证书材料；`ssl_certificate_by_lua` 按 SNI 从共享内存加载证书，换证书不需要 reload
 - [x] [节点+控制面] 多域名，含泛域名（MVP M1）
   - 节点侧：Phase 0 已支持多域名和单级泛域名（`*.example.com` 只匹配最左边一级标签），Lua 路由先精确匹配 Host，再查上一级域名的泛域名
@@ -94,25 +94,26 @@
 
 ### 协议与证书
 
-- [ ] [控制面] ACME 自动证书（`edgeweir-certd`：lego + libdns，支持 ARI 和 DNS-01）
-- [ ] [控制面] 上传证书
+- [x] [控制面] ACME 自动证书（`edgeweir-certd`：lego + libdns，支持 ARI 和 DNS-01）
+- [x] [控制面] 上传证书
   - 两种证书到节点都走上面"站点支持 HTTPS"里的证书下发
-- [ ] **[节点]** HSTS
-- [ ] **[节点]** HTTP/2
-- [ ] **[节点]** HTTP/3
-  - 节点侧：依赖带 `http_v3` 的 OpenResty 自定义构建；QUIC 监听属于结构性变更，走 reload
-- [ ] **[节点]** Gzip、Brotli、Zstd
+- [x] **[节点]** HSTS
+- [x] **[节点]** HTTP/2
+- [x] **[节点]** HTTP/3
+  - 节点侧：官方 OpenResty 1.31.1.1 已包含 `http_v3`；QUIC 监听属于结构性变更，走 reload
+- [x] **[节点]** Gzip
+- [ ] **[节点]** Brotli、Zstd（当前官方引擎不含模块）
   - 节点侧：Gzip 官方包即可；Brotli 和 Zstd 依赖自定义构建
 
 ### 访问控制与规则
 
-- [ ] [节点+控制面] IP、CIDR 黑白名单
+- [x] [节点+控制面] IP、CIDR 黑白名单
   - 节点侧：IP 名单经 unix socket 热更新，不 reload
-- [ ] [节点+控制面] 国家、省份、ASN 黑白名单
-  - 节点侧：geoip2 模块（自定义构建）或 Lua 读取 mmdb，数据库由 agent 更新
-- [ ] **[节点]** 限速
-  - 节点侧：lua-resty-limit-traffic，计数放在 `lua_shared_dict`
-- [ ] [节点+控制面] 重定向、改写、请求头和响应头规则
+- [x] [节点+控制面] 国家、省份、ASN 黑白名单
+  - 节点侧：Go 读取运维提供的本地 MMDB，经 0600 Unix socket 提供结果；默认 DB-IP Lite CC BY 4.0
+- [x] **[节点]** 限速
+  - 节点侧：有界固定窗口计数放在 `lua_shared_dict`，内存不足失败关闭
+- [x] [节点+控制面] 重定向、改写、请求头和响应头规则
   - 节点侧：控制面把表达式编译进 IR，节点再编译成 Lua，按 request-transform → redirect → config → waf-custom → ratelimit → cache → origin → response-transform 的阶段执行
 
 ### DNS

@@ -47,7 +47,8 @@ type Params struct {
 	ControlSocket string
 	// EdgeSocket is the local edge listener for the agent's prefetch
 	// requests (default: edge.sock next to ControlSocket).
-	EdgeSocket string
+	EdgeSocket  string
+	GeoIPSocket string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
 	// OriginSocketNoVerify is the unix socket of the origin layer for sites
@@ -98,6 +99,9 @@ func (p Params) WithDefaults() Params {
 	if p.PurgeDictMB == 0 {
 		p.PurgeDictMB = 32
 	}
+	if p.GeoIPSocket == "" && p.ControlSocket != "" {
+		p.GeoIPSocket = p.ControlSocket + ".geo"
+	}
 	if p.EdgeSocket == "" && p.ControlSocket != "" {
 		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
 	}
@@ -119,6 +123,7 @@ func (p Params) validate() error {
 		"control socket": p.ControlSocket, "origin socket": p.OriginSocket, "resolv.conf": p.ResolvConf,
 		"origin socket without verification": p.OriginSocketNoVerify,
 		"edge socket":                        p.EdgeSocket,
+		"GeoIP socket":                       p.GeoIPSocket,
 	} {
 		if !safePath.MatchString(v) {
 			return fmt.Errorf("%s %q must be an absolute path without spaces or special characters", name, v)
@@ -176,6 +181,7 @@ func sharedDicts(p Params) ([]sharedDict, error) {
 		configir.DictStats:  p.StatsDictMB,
 		configir.DictPurge:  p.PurgeDictMB,
 		configir.DictHealth: 4,
+		configir.DictLimits: 16,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {
