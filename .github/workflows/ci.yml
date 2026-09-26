@@ -40,7 +40,7 @@ jobs:
           version: 1.73.0
           setup_only: true
       # Same tag as the Makefile's PROTO_TAG, but fetched from GitHub.
-      - run: make proto-check PROTO_INPUT='https://github.com/edgeweir/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
+      - run: make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
 
   lua:
     name: Lua unit tests (resty)
