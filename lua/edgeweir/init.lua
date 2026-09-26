@@ -41,6 +41,7 @@ end
 function _M.init_worker()
   -- Weighted origin selection uses math.random: seed per worker so that
   -- workers do not all pick the same sequence.
+  require("edgeweir.topstats").init_worker()
   math.randomseed(ngx.now() * 1000 + ngx.worker.pid())
 end
 

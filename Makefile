@@ -8,7 +8,7 @@ SHELL := /bin/bash
 # and is consumed from an immutable git tag. Locally we read the sibling
 # checkout; CI overrides PROTO_INPUT with the GitHub URL:
 #   make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
-PROTO_TAG   ?= proto/v0.4.0
+PROTO_TAG   ?= proto/v0.5.0
 PROTO_INPUT ?= ../edgeweir/.git\#tag=$(PROTO_TAG),subdir=proto
 
 # --- Build metadata ----------------------------------------------------------
@@ -62,7 +62,7 @@ adr-check: ## Fail if docs/adr differs from the console's ADRs (needs ../edgewei
 lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) sh -c '\
 		resty -I /lua --shdict "edgeweir_sites 4m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_stats 4m" \
-			--shdict "edgeweir_purge 4m" --shdict "edgeweir_health 1m" --shdict "edgeweir_limits 4m" /t/run.lua && \
+			--shdict "edgeweir_purge 4m" --shdict "edgeweir_health 1m" --shdict "edgeweir_limits 4m" --shdict "edgeweir_topstats 4m" /t/run.lua && \
 		resty -I /lua /t/sigv4.lua && resty -I /lua /t/expressions.lua'
 
 .PHONY: docker

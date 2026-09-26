@@ -13,13 +13,15 @@
 | [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，一个应用、一个镜像。把站点和规则编译成与引擎无关的 `NodeConfig` IR，运行内部 CA 和节点通道（默认 `:8443`）。 |
 | **edgeweir/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.4.0`）生成 Go 代码，从不复制 `.proto` 文件。
+两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.5.0`）生成 Go 代码，从不复制 `.proto` 文件。
 
 ## 当前状态
 
 M3 已加入 SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS 和 Gzip。证书轮换热更新；结构性策略变更验证后重载，激活失败会恢复旧配置。当前引擎不提供 Brotli 和 Zstd。证书材料保存在 0600 的 `certificates.json` 中，主机管理员仍可读取。详见 [HTTPS 指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md)。
 
 M4 已加入 IP/GeoIP 名单、分阶段规则、WAF、限速及请求/响应变换，均走热更新。GeoIP 读取本地 MMDB，不向第三方发送客户 IP。详见 [规则指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md)。
+
+M5 已加入统计批次持久化、回执丢失和重启后的序号恢复，以及有界的 Top URL/IP 估算。新节点不回退到会重复计数的旧统计 RPC；控制面与节点应一同升级。
 
 目前没有正式二进制发布，下方安装说明描述的是发布流程。当前评估请从源码构建；MVP 尚不适合生产使用。
 

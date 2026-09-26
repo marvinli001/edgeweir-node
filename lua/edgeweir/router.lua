@@ -146,6 +146,8 @@ function _M.access()
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
   local original_path = var.uri
+  ngx.ctx.edgeweir_original_path = original_path
+  var.edgeweir_site = site.id
   local ok, result = pcall(policy.access, site, headers)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)

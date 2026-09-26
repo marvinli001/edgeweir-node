@@ -374,7 +374,7 @@ func TestAgentEndToEnd(t *testing.T) {
 	}
 	for _, p := range []string{
 		nodev1connect.NodeServiceGetConfigProcedure, nodev1connect.NodeServiceReportStatusProcedure,
-		nodev1connect.NodeServiceWatchConfigProcedure, nodev1connect.NodeServiceReportStatsProcedure,
+		nodev1connect.NodeServiceWatchConfigProcedure, nodev1connect.NodeServiceReportStatsV2Procedure,
 		nodev1connect.NodeServiceRenewCertificateProcedure,
 	} {
 		if mtls[p] == 0 {

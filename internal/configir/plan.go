@@ -26,19 +26,20 @@ const (
 // use them by name (ngx.shared.<name>), and internal/render declares
 // exactly SharedDicts in nginx.conf, so this is the one list of them.
 const (
-	DictSites  = "edgeweir_sites"
-	DictMeta   = "edgeweir_meta"
-	DictStats  = "edgeweir_stats"
-	DictPurge  = "edgeweir_purge"
-	DictHealth = "edgeweir_health"
-	DictLimits = "edgeweir_limits"
+	DictSites    = "edgeweir_sites"
+	DictMeta     = "edgeweir_meta"
+	DictStats    = "edgeweir_stats"
+	DictPurge    = "edgeweir_purge"
+	DictHealth   = "edgeweir_health"
+	DictLimits   = "edgeweir_limits"
+	DictTopStats = "edgeweir_topstats"
 )
 
 // SharedDicts lists every lua_shared_dict of the data plane in the order
 // nginx.conf declares them. nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictLimits}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictLimits, DictTopStats}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.
@@ -171,7 +172,7 @@ type HTTPChallenge struct {
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1"}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1"}
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.

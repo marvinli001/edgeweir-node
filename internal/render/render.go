@@ -176,12 +176,13 @@ type sharedDict struct {
 // that also keeps cache zones from reusing these names.
 func sharedDicts(p Params) ([]sharedDict, error) {
 	sizes := map[string]int{
-		configir.DictSites:  p.SitesDictMB,
-		configir.DictMeta:   1,
-		configir.DictStats:  p.StatsDictMB,
-		configir.DictPurge:  p.PurgeDictMB,
-		configir.DictHealth: 4,
-		configir.DictLimits: 16,
+		configir.DictSites:    p.SitesDictMB,
+		configir.DictMeta:     1,
+		configir.DictStats:    p.StatsDictMB,
+		configir.DictPurge:    p.PurgeDictMB,
+		configir.DictHealth:   4,
+		configir.DictLimits:   16,
+		configir.DictTopStats: 8,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {

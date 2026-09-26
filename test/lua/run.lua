@@ -906,6 +906,24 @@ test("stats.drain aggregates completed minutes", function()
   eq(cjson.encode(stats.drain(now)), "[]", "empty drain encodes as a JSON array")
 end)
 
+test("Space-Saving Top-K is bounded and completed summaries drain once", function()
+  local top = require("edgeweir.topstats")
+  local counts = {}
+  for i=1,1000 do top.observe(counts,"/rare/" .. i) end
+  for _=1,1000 do top.observe(counts,"/popular") end
+  local size=0; for _ in pairs(counts) do size=size+1 end
+  eq(size,32); assert(counts["/popular"]>=1000)
+  local now=1800000000
+  top.log("top-site",now-60,"/popular","192.0.2.1")
+  top.log("top-site",now-60,"/private?token=secret","192.0.2.1")
+  top.flush(now)
+  local result=stats.drain(now)
+  eq(#result,1);eq(result[1].top_urls["/popular"],1)
+  eq(result[1].top_urls["/private?token=secret"],nil)
+  eq(result[1].top_ips["192.0.2.1"],2)
+  eq(#stats.drain(now),0)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

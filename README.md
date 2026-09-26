@@ -13,13 +13,15 @@ English | [简体中文](README.zh-CN.md)
 | [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
 | **edgeweir/edgeweir-node** (this repo) | The node: Go agent `edgeweir-node` + OpenResty (Lua). |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.4.0`) and never copies `.proto` files.
+The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.5.0`) and never copies `.proto` files.
 
 ## Status
 
 M3 adds SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS and Gzip. Certificate rotation is hot; structural policy changes reload only after validation and recover on activation failure. Brotli and Zstd are unavailable in the stock engine. Node certificate materials live in `certificates.json` with mode 0600; host administrators can read them. See the [HTTPS guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md).
 
 M4 adds IP/GeoIP lists, phased rules, WAF, rate limits and request/response transforms through hot updates. GeoIP reads local MMDBs without sending client IPs to a third party. See the [rule guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md).
+
+M5 persists sequenced statistics before upload, recovers from lost acknowledgements and restarts, and reports bounded approximate Top URL/IP counters. The V2 statistics RPC prevents unsafe fallback to an older console. Update the console and nodes together.
 
 There is no official binary release yet. Installation instructions below describe the release workflow; build from source for current evaluation. This is an experimental MVP.
 

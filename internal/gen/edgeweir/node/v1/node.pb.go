@@ -1327,6 +1327,8 @@ type MinuteStats struct {
 	CacheMisses   uint64                 `protobuf:"varint,7,opt,name=cache_misses,json=cacheMisses,proto3" json:"cache_misses,omitempty"`
 	// Response count per HTTP status code.
 	StatusCodes   map[uint32]uint64 `protobuf:"bytes,8,rep,name=status_codes,json=statusCodes,proto3" json:"status_codes,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	TopUrls       []*TopCounter     `protobuf:"bytes,9,rep,name=top_urls,json=topUrls,proto3" json:"top_urls,omitempty"`
+	TopIps        []*TopCounter     `protobuf:"bytes,10,rep,name=top_ips,json=topIps,proto3" json:"top_ips,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1417,17 +1419,87 @@ func (x *MinuteStats) GetStatusCodes() map[uint32]uint64 {
 	return nil
 }
 
+func (x *MinuteStats) GetTopUrls() []*TopCounter {
+	if x != nil {
+		return x.TopUrls
+	}
+	return nil
+}
+
+func (x *MinuteStats) GetTopIps() []*TopCounter {
+	if x != nil {
+		return x.TopIps
+	}
+	return nil
+}
+
+// TopCounter is a bounded, approximate heavy-hitter counter (no query strings).
+type TopCounter struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         string                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	Count         uint64                 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TopCounter) Reset() {
+	*x = TopCounter{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TopCounter) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TopCounter) ProtoMessage() {}
+
+func (x *TopCounter) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TopCounter.ProtoReflect.Descriptor instead.
+func (*TopCounter) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TopCounter) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *TopCounter) GetCount() uint64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
 // ReportStatsRequest uploads a batch of minute buckets.
 type ReportStatsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stats         []*MinuteStats         `protobuf:"bytes,1,rep,name=stats,proto3" json:"stats,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Stats []*MinuteStats         `protobuf:"bytes,1,rep,name=stats,proto3" json:"stats,omitempty"`
+	// Persisted monotonic counter. Zero queries the cursor when stats is empty;
+	// zero with a non-empty legacy batch is rejected.
+	BatchSequence uint64 `protobuf:"varint,2,opt,name=batch_sequence,json=batchSequence,proto3" json:"batch_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReportStatsRequest) Reset() {
 	*x = ReportStatsRequest{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[16]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1439,7 +1511,7 @@ func (x *ReportStatsRequest) String() string {
 func (*ReportStatsRequest) ProtoMessage() {}
 
 func (x *ReportStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[16]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1452,7 +1524,7 @@ func (x *ReportStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportStatsRequest.ProtoReflect.Descriptor instead.
 func (*ReportStatsRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{16}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ReportStatsRequest) GetStats() []*MinuteStats {
@@ -1462,17 +1534,26 @@ func (x *ReportStatsRequest) GetStats() []*MinuteStats {
 	return nil
 }
 
+func (x *ReportStatsRequest) GetBatchSequence() uint64 {
+	if x != nil {
+		return x.BatchSequence
+	}
+	return 0
+}
+
 // ReportStatsResponse acknowledges a stats batch.
 type ReportStatsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Accepted      uint32                 `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Accepted uint32                 `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	// Acknowledges this exact sequence, including already-accepted retries.
+	BatchSequence uint64 `protobuf:"varint,2,opt,name=batch_sequence,json=batchSequence,proto3" json:"batch_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReportStatsResponse) Reset() {
 	*x = ReportStatsResponse{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[17]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1484,7 +1565,7 @@ func (x *ReportStatsResponse) String() string {
 func (*ReportStatsResponse) ProtoMessage() {}
 
 func (x *ReportStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[17]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1497,12 +1578,125 @@ func (x *ReportStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportStatsResponse.ProtoReflect.Descriptor instead.
 func (*ReportStatsResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{17}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ReportStatsResponse) GetAccepted() uint32 {
 	if x != nil {
 		return x.Accepted
+	}
+	return 0
+}
+
+func (x *ReportStatsResponse) GetBatchSequence() uint64 {
+	if x != nil {
+		return x.BatchSequence
+	}
+	return 0
+}
+
+// ReportStatsV2Request is a sequenced batch or an empty cursor query.
+type ReportStatsV2Request struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Stats         []*MinuteStats         `protobuf:"bytes,1,rep,name=stats,proto3" json:"stats,omitempty"`
+	BatchSequence uint64                 `protobuf:"varint,2,opt,name=batch_sequence,json=batchSequence,proto3" json:"batch_sequence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportStatsV2Request) Reset() {
+	*x = ReportStatsV2Request{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportStatsV2Request) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportStatsV2Request) ProtoMessage() {}
+
+func (x *ReportStatsV2Request) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportStatsV2Request.ProtoReflect.Descriptor instead.
+func (*ReportStatsV2Request) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ReportStatsV2Request) GetStats() []*MinuteStats {
+	if x != nil {
+		return x.Stats
+	}
+	return nil
+}
+
+func (x *ReportStatsV2Request) GetBatchSequence() uint64 {
+	if x != nil {
+		return x.BatchSequence
+	}
+	return 0
+}
+
+// ReportStatsV2Response acknowledges the sequence (or returns the durable cursor).
+type ReportStatsV2Response struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      uint32                 `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	BatchSequence uint64                 `protobuf:"varint,2,opt,name=batch_sequence,json=batchSequence,proto3" json:"batch_sequence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportStatsV2Response) Reset() {
+	*x = ReportStatsV2Response{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportStatsV2Response) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportStatsV2Response) ProtoMessage() {}
+
+func (x *ReportStatsV2Response) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportStatsV2Response.ProtoReflect.Descriptor instead.
+func (*ReportStatsV2Response) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ReportStatsV2Response) GetAccepted() uint32 {
+	if x != nil {
+		return x.Accepted
+	}
+	return 0
+}
+
+func (x *ReportStatsV2Response) GetBatchSequence() uint64 {
+	if x != nil {
+		return x.BatchSequence
 	}
 	return 0
 }
@@ -1518,7 +1712,7 @@ type GetOriginCredentialsRequest struct {
 
 func (x *GetOriginCredentialsRequest) Reset() {
 	*x = GetOriginCredentialsRequest{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[18]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1530,7 +1724,7 @@ func (x *GetOriginCredentialsRequest) String() string {
 func (*GetOriginCredentialsRequest) ProtoMessage() {}
 
 func (x *GetOriginCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[18]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1543,7 +1737,7 @@ func (x *GetOriginCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOriginCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*GetOriginCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{18}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetOriginCredentialsRequest) GetIds() []string {
@@ -1567,7 +1761,7 @@ type OriginCredential struct {
 
 func (x *OriginCredential) Reset() {
 	*x = OriginCredential{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[19]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1579,7 +1773,7 @@ func (x *OriginCredential) String() string {
 func (*OriginCredential) ProtoMessage() {}
 
 func (x *OriginCredential) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[19]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1592,7 +1786,7 @@ func (x *OriginCredential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginCredential.ProtoReflect.Descriptor instead.
 func (*OriginCredential) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{19}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *OriginCredential) GetId() string {
@@ -1634,7 +1828,7 @@ type GetOriginCredentialsResponse struct {
 
 func (x *GetOriginCredentialsResponse) Reset() {
 	*x = GetOriginCredentialsResponse{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[20]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1646,7 +1840,7 @@ func (x *GetOriginCredentialsResponse) String() string {
 func (*GetOriginCredentialsResponse) ProtoMessage() {}
 
 func (x *GetOriginCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[20]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1659,7 +1853,7 @@ func (x *GetOriginCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOriginCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*GetOriginCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{20}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetOriginCredentialsResponse) GetCredentials() []*OriginCredential {
@@ -1680,7 +1874,7 @@ type PullTasksRequest struct {
 
 func (x *PullTasksRequest) Reset() {
 	*x = PullTasksRequest{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[21]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1692,7 +1886,7 @@ func (x *PullTasksRequest) String() string {
 func (*PullTasksRequest) ProtoMessage() {}
 
 func (x *PullTasksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[21]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1705,7 +1899,7 @@ func (x *PullTasksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullTasksRequest.ProtoReflect.Descriptor instead.
 func (*PullTasksRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{21}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PullTasksRequest) GetMaxTasks() uint32 {
@@ -1725,7 +1919,7 @@ type PullTasksResponse struct {
 
 func (x *PullTasksResponse) Reset() {
 	*x = PullTasksResponse{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[22]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1737,7 +1931,7 @@ func (x *PullTasksResponse) String() string {
 func (*PullTasksResponse) ProtoMessage() {}
 
 func (x *PullTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[22]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1750,7 +1944,7 @@ func (x *PullTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullTasksResponse.ProtoReflect.Descriptor instead.
 func (*PullTasksResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{22}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *PullTasksResponse) GetTasks() []*NodeTask {
@@ -1780,7 +1974,7 @@ type NodeTask struct {
 
 func (x *NodeTask) Reset() {
 	*x = NodeTask{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[23]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1792,7 +1986,7 @@ func (x *NodeTask) String() string {
 func (*NodeTask) ProtoMessage() {}
 
 func (x *NodeTask) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[23]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1805,7 +1999,7 @@ func (x *NodeTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeTask.ProtoReflect.Descriptor instead.
 func (*NodeTask) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{23}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *NodeTask) GetId() string {
@@ -1880,7 +2074,7 @@ type PurgeTarget struct {
 
 func (x *PurgeTarget) Reset() {
 	*x = PurgeTarget{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[24]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1892,7 +2086,7 @@ func (x *PurgeTarget) String() string {
 func (*PurgeTarget) ProtoMessage() {}
 
 func (x *PurgeTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[24]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1905,7 +2099,7 @@ func (x *PurgeTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurgeTarget.ProtoReflect.Descriptor instead.
 func (*PurgeTarget) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{24}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *PurgeTarget) GetSiteId() string {
@@ -1954,7 +2148,7 @@ type PurgeTask struct {
 
 func (x *PurgeTask) Reset() {
 	*x = PurgeTask{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[25]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1966,7 +2160,7 @@ func (x *PurgeTask) String() string {
 func (*PurgeTask) ProtoMessage() {}
 
 func (x *PurgeTask) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[25]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1979,7 +2173,7 @@ func (x *PurgeTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurgeTask.ProtoReflect.Descriptor instead.
 func (*PurgeTask) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{25}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PurgeTask) GetTargets() []*PurgeTarget {
@@ -2001,7 +2195,7 @@ type PrefetchTarget struct {
 
 func (x *PrefetchTarget) Reset() {
 	*x = PrefetchTarget{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[26]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2013,7 +2207,7 @@ func (x *PrefetchTarget) String() string {
 func (*PrefetchTarget) ProtoMessage() {}
 
 func (x *PrefetchTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[26]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2026,7 +2220,7 @@ func (x *PrefetchTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrefetchTarget.ProtoReflect.Descriptor instead.
 func (*PrefetchTarget) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{26}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *PrefetchTarget) GetSiteId() string {
@@ -2054,7 +2248,7 @@ type PrefetchTask struct {
 
 func (x *PrefetchTask) Reset() {
 	*x = PrefetchTask{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[27]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2066,7 +2260,7 @@ func (x *PrefetchTask) String() string {
 func (*PrefetchTask) ProtoMessage() {}
 
 func (x *PrefetchTask) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[27]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2079,7 +2273,7 @@ func (x *PrefetchTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrefetchTask.ProtoReflect.Descriptor instead.
 func (*PrefetchTask) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{27}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *PrefetchTask) GetTargets() []*PrefetchTarget {
@@ -2115,7 +2309,7 @@ type ReportTaskResultRequest struct {
 
 func (x *ReportTaskResultRequest) Reset() {
 	*x = ReportTaskResultRequest{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[28]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2127,7 +2321,7 @@ func (x *ReportTaskResultRequest) String() string {
 func (*ReportTaskResultRequest) ProtoMessage() {}
 
 func (x *ReportTaskResultRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[28]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2140,7 +2334,7 @@ func (x *ReportTaskResultRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportTaskResultRequest.ProtoReflect.Descriptor instead.
 func (*ReportTaskResultRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{28}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ReportTaskResultRequest) GetTaskId() string {
@@ -2208,7 +2402,7 @@ type ReportTaskResultResponse struct {
 
 func (x *ReportTaskResultResponse) Reset() {
 	*x = ReportTaskResultResponse{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[29]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2220,7 +2414,7 @@ func (x *ReportTaskResultResponse) String() string {
 func (*ReportTaskResultResponse) ProtoMessage() {}
 
 func (x *ReportTaskResultResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[29]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2233,7 +2427,7 @@ func (x *ReportTaskResultResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportTaskResultResponse.ProtoReflect.Descriptor instead.
 func (*ReportTaskResultResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{29}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{32}
 }
 
 var File_edgeweir_node_v1_node_proto protoreflect.FileDescriptor
@@ -2321,7 +2515,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x0flatest_revision\x18\x01 \x01(\x04R\x0elatestRevision\x12+\n" +
 	"\x11renew_certificate\x18\x02 \x01(\bR\x10renewCertificate\x126\n" +
 	"\x17report_interval_seconds\x18\x03 \x01(\rR\x15reportIntervalSeconds\x12#\n" +
-	"\rtasks_pending\x18\x04 \x01(\bR\ftasksPending\"\x91\x03\n" +
+	"\rtasks_pending\x18\x04 \x01(\bR\ftasksPending\"\x81\x04\n" +
 	"\vMinuteStats\x122\n" +
 	"\x06minute\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x06minute\x12\x17\n" +
 	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x1a\n" +
@@ -2332,14 +2526,29 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\n" +
 	"cache_hits\x18\x06 \x01(\x04R\tcacheHits\x12!\n" +
 	"\fcache_misses\x18\a \x01(\x04R\vcacheMisses\x12Q\n" +
-	"\fstatus_codes\x18\b \x03(\v2..edgeweir.node.v1.MinuteStats.StatusCodesEntryR\vstatusCodes\x1a>\n" +
+	"\fstatus_codes\x18\b \x03(\v2..edgeweir.node.v1.MinuteStats.StatusCodesEntryR\vstatusCodes\x127\n" +
+	"\btop_urls\x18\t \x03(\v2\x1c.edgeweir.node.v1.TopCounterR\atopUrls\x125\n" +
+	"\atop_ips\x18\n" +
+	" \x03(\v2\x1c.edgeweir.node.v1.TopCounterR\x06topIps\x1a>\n" +
 	"\x10StatusCodesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"I\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"8\n" +
+	"\n" +
+	"TopCounter\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\tR\x05value\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x04R\x05count\"p\n" +
 	"\x12ReportStatsRequest\x123\n" +
-	"\x05stats\x18\x01 \x03(\v2\x1d.edgeweir.node.v1.MinuteStatsR\x05stats\"1\n" +
+	"\x05stats\x18\x01 \x03(\v2\x1d.edgeweir.node.v1.MinuteStatsR\x05stats\x12%\n" +
+	"\x0ebatch_sequence\x18\x02 \x01(\x04R\rbatchSequence\"X\n" +
 	"\x13ReportStatsResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\rR\baccepted\"/\n" +
+	"\baccepted\x18\x01 \x01(\rR\baccepted\x12%\n" +
+	"\x0ebatch_sequence\x18\x02 \x01(\x04R\rbatchSequence\"r\n" +
+	"\x14ReportStatsV2Request\x123\n" +
+	"\x05stats\x18\x01 \x03(\v2\x1d.edgeweir.node.v1.MinuteStatsR\x05stats\x12%\n" +
+	"\x0ebatch_sequence\x18\x02 \x01(\x04R\rbatchSequence\"Z\n" +
+	"\x15ReportStatsV2Response\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\rR\baccepted\x12%\n" +
+	"\x0ebatch_sequence\x18\x02 \x01(\x04R\rbatchSequence\"/\n" +
 	"\x1bGetOriginCredentialsRequest\x12\x10\n" +
 	"\x03ids\x18\x01 \x03(\tR\x03ids\"\x8c\x01\n" +
 	"\x10OriginCredential\x12\x0e\n" +
@@ -2408,14 +2617,15 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\tTaskState\x12\x1a\n" +
 	"\x16TASK_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14TASK_STATE_SUCCEEDED\x10\x01\x12\x15\n" +
-	"\x11TASK_STATE_FAILED\x10\x022\xd4\a\n" +
+	"\x11TASK_STATE_FAILED\x10\x022\xb6\b\n" +
 	"\vNodeService\x12K\n" +
 	"\x06Enroll\x12\x1f.edgeweir.node.v1.EnrollRequest\x1a .edgeweir.node.v1.EnrollResponse\x12i\n" +
 	"\x10RenewCertificate\x12).edgeweir.node.v1.RenewCertificateRequest\x1a*.edgeweir.node.v1.RenewCertificateResponse\x12\\\n" +
 	"\vWatchConfig\x12$.edgeweir.node.v1.WatchConfigRequest\x1a%.edgeweir.node.v1.WatchConfigResponse0\x01\x12T\n" +
 	"\tGetConfig\x12\".edgeweir.node.v1.GetConfigRequest\x1a#.edgeweir.node.v1.GetConfigResponse\x12]\n" +
 	"\fReportStatus\x12%.edgeweir.node.v1.ReportStatusRequest\x1a&.edgeweir.node.v1.ReportStatusResponse\x12Z\n" +
-	"\vReportStats\x12$.edgeweir.node.v1.ReportStatsRequest\x1a%.edgeweir.node.v1.ReportStatsResponse\x12u\n" +
+	"\vReportStats\x12$.edgeweir.node.v1.ReportStatsRequest\x1a%.edgeweir.node.v1.ReportStatsResponse\x12`\n" +
+	"\rReportStatsV2\x12&.edgeweir.node.v1.ReportStatsV2Request\x1a'.edgeweir.node.v1.ReportStatsV2Response\x12u\n" +
 	"\x14GetOriginCredentials\x12-.edgeweir.node.v1.GetOriginCredentialsRequest\x1a..edgeweir.node.v1.GetOriginCredentialsResponse\x12f\n" +
 	"\x0fGetCertificates\x12(.edgeweir.node.v1.GetCertificatesRequest\x1a).edgeweir.node.v1.GetCertificatesResponse\x12T\n" +
 	"\tPullTasks\x12\".edgeweir.node.v1.PullTasksRequest\x1a#.edgeweir.node.v1.PullTasksResponse\x12i\n" +
@@ -2435,7 +2645,7 @@ func file_edgeweir_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_edgeweir_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_edgeweir_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(WatchEvent)(0),                      // 0: edgeweir.node.v1.WatchEvent
 	(ApplyState)(0),                      // 1: edgeweir.node.v1.ApplyState
@@ -2457,83 +2667,91 @@ var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(*OriginHealth)(nil),                 // 17: edgeweir.node.v1.OriginHealth
 	(*ReportStatusResponse)(nil),         // 18: edgeweir.node.v1.ReportStatusResponse
 	(*MinuteStats)(nil),                  // 19: edgeweir.node.v1.MinuteStats
-	(*ReportStatsRequest)(nil),           // 20: edgeweir.node.v1.ReportStatsRequest
-	(*ReportStatsResponse)(nil),          // 21: edgeweir.node.v1.ReportStatsResponse
-	(*GetOriginCredentialsRequest)(nil),  // 22: edgeweir.node.v1.GetOriginCredentialsRequest
-	(*OriginCredential)(nil),             // 23: edgeweir.node.v1.OriginCredential
-	(*GetOriginCredentialsResponse)(nil), // 24: edgeweir.node.v1.GetOriginCredentialsResponse
-	(*PullTasksRequest)(nil),             // 25: edgeweir.node.v1.PullTasksRequest
-	(*PullTasksResponse)(nil),            // 26: edgeweir.node.v1.PullTasksResponse
-	(*NodeTask)(nil),                     // 27: edgeweir.node.v1.NodeTask
-	(*PurgeTarget)(nil),                  // 28: edgeweir.node.v1.PurgeTarget
-	(*PurgeTask)(nil),                    // 29: edgeweir.node.v1.PurgeTask
-	(*PrefetchTarget)(nil),               // 30: edgeweir.node.v1.PrefetchTarget
-	(*PrefetchTask)(nil),                 // 31: edgeweir.node.v1.PrefetchTask
-	(*ReportTaskResultRequest)(nil),      // 32: edgeweir.node.v1.ReportTaskResultRequest
-	(*ReportTaskResultResponse)(nil),     // 33: edgeweir.node.v1.ReportTaskResultResponse
-	nil,                                  // 34: edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
-	nil,                                  // 35: edgeweir.node.v1.MinuteStats.StatusCodesEntry
-	nil,                                  // 36: edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
-	(*timestamppb.Timestamp)(nil),        // 37: google.protobuf.Timestamp
-	(*NodeConfig)(nil),                   // 38: edgeweir.node.v1.NodeConfig
-	(*NodeConfigDiff)(nil),               // 39: edgeweir.node.v1.NodeConfigDiff
+	(*TopCounter)(nil),                   // 20: edgeweir.node.v1.TopCounter
+	(*ReportStatsRequest)(nil),           // 21: edgeweir.node.v1.ReportStatsRequest
+	(*ReportStatsResponse)(nil),          // 22: edgeweir.node.v1.ReportStatsResponse
+	(*ReportStatsV2Request)(nil),         // 23: edgeweir.node.v1.ReportStatsV2Request
+	(*ReportStatsV2Response)(nil),        // 24: edgeweir.node.v1.ReportStatsV2Response
+	(*GetOriginCredentialsRequest)(nil),  // 25: edgeweir.node.v1.GetOriginCredentialsRequest
+	(*OriginCredential)(nil),             // 26: edgeweir.node.v1.OriginCredential
+	(*GetOriginCredentialsResponse)(nil), // 27: edgeweir.node.v1.GetOriginCredentialsResponse
+	(*PullTasksRequest)(nil),             // 28: edgeweir.node.v1.PullTasksRequest
+	(*PullTasksResponse)(nil),            // 29: edgeweir.node.v1.PullTasksResponse
+	(*NodeTask)(nil),                     // 30: edgeweir.node.v1.NodeTask
+	(*PurgeTarget)(nil),                  // 31: edgeweir.node.v1.PurgeTarget
+	(*PurgeTask)(nil),                    // 32: edgeweir.node.v1.PurgeTask
+	(*PrefetchTarget)(nil),               // 33: edgeweir.node.v1.PrefetchTarget
+	(*PrefetchTask)(nil),                 // 34: edgeweir.node.v1.PrefetchTask
+	(*ReportTaskResultRequest)(nil),      // 35: edgeweir.node.v1.ReportTaskResultRequest
+	(*ReportTaskResultResponse)(nil),     // 36: edgeweir.node.v1.ReportTaskResultResponse
+	nil,                                  // 37: edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
+	nil,                                  // 38: edgeweir.node.v1.MinuteStats.StatusCodesEntry
+	nil,                                  // 39: edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
+	(*timestamppb.Timestamp)(nil),        // 40: google.protobuf.Timestamp
+	(*NodeConfig)(nil),                   // 41: edgeweir.node.v1.NodeConfig
+	(*NodeConfigDiff)(nil),               // 42: edgeweir.node.v1.NodeConfigDiff
 }
 var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
 	6,  // 0: edgeweir.node.v1.GetCertificatesResponse.certificates:type_name -> edgeweir.node.v1.CertificateMaterial
 	4,  // 1: edgeweir.node.v1.EnrollRequest.info:type_name -> edgeweir.node.v1.NodeInfo
-	37, // 2: edgeweir.node.v1.EnrollResponse.not_after:type_name -> google.protobuf.Timestamp
-	37, // 3: edgeweir.node.v1.RenewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	40, // 2: edgeweir.node.v1.EnrollResponse.not_after:type_name -> google.protobuf.Timestamp
+	40, // 3: edgeweir.node.v1.RenewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	0,  // 4: edgeweir.node.v1.WatchConfigResponse.event:type_name -> edgeweir.node.v1.WatchEvent
-	38, // 5: edgeweir.node.v1.GetConfigResponse.snapshot:type_name -> edgeweir.node.v1.NodeConfig
-	39, // 6: edgeweir.node.v1.GetConfigResponse.diff:type_name -> edgeweir.node.v1.NodeConfigDiff
-	37, // 7: edgeweir.node.v1.GetConfigResponse.generated_at:type_name -> google.protobuf.Timestamp
+	41, // 5: edgeweir.node.v1.GetConfigResponse.snapshot:type_name -> edgeweir.node.v1.NodeConfig
+	42, // 6: edgeweir.node.v1.GetConfigResponse.diff:type_name -> edgeweir.node.v1.NodeConfigDiff
+	40, // 7: edgeweir.node.v1.GetConfigResponse.generated_at:type_name -> google.protobuf.Timestamp
 	1,  // 8: edgeweir.node.v1.ReportStatusRequest.state:type_name -> edgeweir.node.v1.ApplyState
 	4,  // 9: edgeweir.node.v1.ReportStatusRequest.info:type_name -> edgeweir.node.v1.NodeInfo
-	37, // 10: edgeweir.node.v1.ReportStatusRequest.applied_at:type_name -> google.protobuf.Timestamp
-	37, // 11: edgeweir.node.v1.ReportStatusRequest.certificate_not_after:type_name -> google.protobuf.Timestamp
+	40, // 10: edgeweir.node.v1.ReportStatusRequest.applied_at:type_name -> google.protobuf.Timestamp
+	40, // 11: edgeweir.node.v1.ReportStatusRequest.certificate_not_after:type_name -> google.protobuf.Timestamp
 	17, // 12: edgeweir.node.v1.ReportStatusRequest.origin_health:type_name -> edgeweir.node.v1.OriginHealth
-	37, // 13: edgeweir.node.v1.OriginHealth.last_failure_at:type_name -> google.protobuf.Timestamp
-	37, // 14: edgeweir.node.v1.OriginHealth.down_until:type_name -> google.protobuf.Timestamp
-	34, // 15: edgeweir.node.v1.OriginHealth.last_error_params:type_name -> edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
-	37, // 16: edgeweir.node.v1.MinuteStats.minute:type_name -> google.protobuf.Timestamp
-	35, // 17: edgeweir.node.v1.MinuteStats.status_codes:type_name -> edgeweir.node.v1.MinuteStats.StatusCodesEntry
-	19, // 18: edgeweir.node.v1.ReportStatsRequest.stats:type_name -> edgeweir.node.v1.MinuteStats
-	23, // 19: edgeweir.node.v1.GetOriginCredentialsResponse.credentials:type_name -> edgeweir.node.v1.OriginCredential
-	27, // 20: edgeweir.node.v1.PullTasksResponse.tasks:type_name -> edgeweir.node.v1.NodeTask
-	37, // 21: edgeweir.node.v1.NodeTask.created_at:type_name -> google.protobuf.Timestamp
-	29, // 22: edgeweir.node.v1.NodeTask.purge:type_name -> edgeweir.node.v1.PurgeTask
-	31, // 23: edgeweir.node.v1.NodeTask.prefetch:type_name -> edgeweir.node.v1.PrefetchTask
-	2,  // 24: edgeweir.node.v1.PurgeTarget.type:type_name -> edgeweir.node.v1.PurgeType
-	28, // 25: edgeweir.node.v1.PurgeTask.targets:type_name -> edgeweir.node.v1.PurgeTarget
-	30, // 26: edgeweir.node.v1.PrefetchTask.targets:type_name -> edgeweir.node.v1.PrefetchTarget
-	3,  // 27: edgeweir.node.v1.ReportTaskResultRequest.state:type_name -> edgeweir.node.v1.TaskState
-	37, // 28: edgeweir.node.v1.ReportTaskResultRequest.finished_at:type_name -> google.protobuf.Timestamp
-	36, // 29: edgeweir.node.v1.ReportTaskResultRequest.error_params:type_name -> edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
-	8,  // 30: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
-	10, // 31: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
-	12, // 32: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
-	14, // 33: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
-	16, // 34: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
-	20, // 35: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
-	22, // 36: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
-	5,  // 37: edgeweir.node.v1.NodeService.GetCertificates:input_type -> edgeweir.node.v1.GetCertificatesRequest
-	25, // 38: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
-	32, // 39: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
-	9,  // 40: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
-	11, // 41: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
-	13, // 42: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
-	15, // 43: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
-	18, // 44: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
-	21, // 45: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
-	24, // 46: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
-	7,  // 47: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
-	26, // 48: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
-	33, // 49: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
-	40, // [40:50] is the sub-list for method output_type
-	30, // [30:40] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	40, // 13: edgeweir.node.v1.OriginHealth.last_failure_at:type_name -> google.protobuf.Timestamp
+	40, // 14: edgeweir.node.v1.OriginHealth.down_until:type_name -> google.protobuf.Timestamp
+	37, // 15: edgeweir.node.v1.OriginHealth.last_error_params:type_name -> edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
+	40, // 16: edgeweir.node.v1.MinuteStats.minute:type_name -> google.protobuf.Timestamp
+	38, // 17: edgeweir.node.v1.MinuteStats.status_codes:type_name -> edgeweir.node.v1.MinuteStats.StatusCodesEntry
+	20, // 18: edgeweir.node.v1.MinuteStats.top_urls:type_name -> edgeweir.node.v1.TopCounter
+	20, // 19: edgeweir.node.v1.MinuteStats.top_ips:type_name -> edgeweir.node.v1.TopCounter
+	19, // 20: edgeweir.node.v1.ReportStatsRequest.stats:type_name -> edgeweir.node.v1.MinuteStats
+	19, // 21: edgeweir.node.v1.ReportStatsV2Request.stats:type_name -> edgeweir.node.v1.MinuteStats
+	26, // 22: edgeweir.node.v1.GetOriginCredentialsResponse.credentials:type_name -> edgeweir.node.v1.OriginCredential
+	30, // 23: edgeweir.node.v1.PullTasksResponse.tasks:type_name -> edgeweir.node.v1.NodeTask
+	40, // 24: edgeweir.node.v1.NodeTask.created_at:type_name -> google.protobuf.Timestamp
+	32, // 25: edgeweir.node.v1.NodeTask.purge:type_name -> edgeweir.node.v1.PurgeTask
+	34, // 26: edgeweir.node.v1.NodeTask.prefetch:type_name -> edgeweir.node.v1.PrefetchTask
+	2,  // 27: edgeweir.node.v1.PurgeTarget.type:type_name -> edgeweir.node.v1.PurgeType
+	31, // 28: edgeweir.node.v1.PurgeTask.targets:type_name -> edgeweir.node.v1.PurgeTarget
+	33, // 29: edgeweir.node.v1.PrefetchTask.targets:type_name -> edgeweir.node.v1.PrefetchTarget
+	3,  // 30: edgeweir.node.v1.ReportTaskResultRequest.state:type_name -> edgeweir.node.v1.TaskState
+	40, // 31: edgeweir.node.v1.ReportTaskResultRequest.finished_at:type_name -> google.protobuf.Timestamp
+	39, // 32: edgeweir.node.v1.ReportTaskResultRequest.error_params:type_name -> edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
+	8,  // 33: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
+	10, // 34: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
+	12, // 35: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
+	14, // 36: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
+	16, // 37: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
+	21, // 38: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
+	23, // 39: edgeweir.node.v1.NodeService.ReportStatsV2:input_type -> edgeweir.node.v1.ReportStatsV2Request
+	25, // 40: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
+	5,  // 41: edgeweir.node.v1.NodeService.GetCertificates:input_type -> edgeweir.node.v1.GetCertificatesRequest
+	28, // 42: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
+	35, // 43: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
+	9,  // 44: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
+	11, // 45: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
+	13, // 46: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
+	15, // 47: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
+	18, // 48: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
+	22, // 49: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
+	24, // 50: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
+	27, // 51: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
+	7,  // 52: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
+	29, // 53: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
+	36, // 54: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
+	44, // [44:55] is the sub-list for method output_type
+	33, // [33:44] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_node_proto_init() }
@@ -2546,7 +2764,7 @@ func file_edgeweir_node_v1_node_proto_init() {
 		(*GetConfigResponse_Snapshot)(nil),
 		(*GetConfigResponse_Diff)(nil),
 	}
-	file_edgeweir_node_v1_node_proto_msgTypes[23].OneofWrappers = []any{
+	file_edgeweir_node_v1_node_proto_msgTypes[26].OneofWrappers = []any{
 		(*NodeTask_Purge)(nil),
 		(*NodeTask_Prefetch)(nil),
 	}
@@ -2556,7 +2774,7 @@ func file_edgeweir_node_v1_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_node_proto_rawDesc), len(file_edgeweir_node_v1_node_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   33,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

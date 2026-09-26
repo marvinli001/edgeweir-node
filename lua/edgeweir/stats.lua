@@ -6,6 +6,7 @@
 -- through the control API every minute and uploads the buckets with
 -- ReportStats. Undrained counters expire after two hours.
 local cjson = require("cjson.safe")
+local top = require("edgeweir.topstats")
 
 local _M = {}
 
@@ -24,6 +25,7 @@ function _M.log()
   local dict = ngx.shared.edgeweir_stats
   local p = (floor(ngx.time() / 60) * 60) .. "|" .. site .. "|"
   dict:incr(p .. "req", 1, 0, TTL)
+  top.log(site, floor(ngx.time()/60)*60, ngx.ctx.edgeweir_original_path or var.uri, var.remote_addr)
   local out = tonumber(var.bytes_sent)
   if out and out > 0 then
     dict:incr(p .. "out", out, 0, TTL)
@@ -84,6 +86,25 @@ function _M.drain(now)
           b.status_codes[code] = (b.status_codes[code] or 0) + v
         end
       end
+    end
+  end
+  for _, record in ipairs(top.drain(now)) do
+    local key = tostring(record.minute) .. "|" .. record.site_id
+    local bucket = buckets[key]
+    if not bucket then
+      bucket = { minute=record.minute, site_id=record.site_id, requests=0, bytes_sent=0, bytes_received=0, cache_hits=0, cache_misses=0, status_codes={} }
+      buckets[key] = bucket; list[#list+1] = bucket
+    end
+    bucket.top_urls = bucket.top_urls or {}; bucket.top_ips = bucket.top_ips or {}
+    for value, count in pairs(record.urls or {}) do bucket.top_urls[value] = (bucket.top_urls[value] or 0) + count end
+    for value, count in pairs(record.ips or {}) do bucket.top_ips[value] = (bucket.top_ips[value] or 0) + count end
+  end
+  for _, bucket in ipairs(list) do
+    for _, field in ipairs({"top_urls", "top_ips"}) do
+      local sorted = {}; for value,count in pairs(bucket[field] or {}) do sorted[#sorted+1] = {value=value,count=count} end
+      table.sort(sorted,function(a,b) return a.count>b.count or (a.count==b.count and a.value<b.value) end)
+      local selected = {}; for i=1,math.min(50,#sorted) do selected[sorted[i].value] = sorted[i].count end
+      bucket[field] = selected
     end
   end
   if cjson.array_mt then

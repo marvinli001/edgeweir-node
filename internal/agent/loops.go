@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"sort"
 	"strconv"
 	"time"
 
@@ -254,48 +255,6 @@ func (a *Agent) doRenew(ctx context.Context) error {
 	return a.channel.Reload()
 }
 
-// statsLoop drains the Lua per-minute counters and uploads them. Batches
-// that fail to upload are retried next time (bounded).
-func (a *Agent) statsLoop(ctx context.Context) {
-	const maxPending = 50000
-	const batch = 1000
-	var pending []*nodev1.MinuteStats
-	t := time.NewTicker(a.cfg.StatsInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		items, err := a.dp.DrainStats(dctx)
-		cancel()
-		if err != nil {
-			a.log.Debug("cannot drain data plane stats", "err", err)
-		}
-		pending = append(pending, convertStats(items)...)
-		if over := len(pending) - maxPending; over > 0 {
-			a.log.Warn("dropping unsent traffic stats", "buckets", over)
-			pending = pending[over:]
-		}
-		for len(pending) > 0 {
-			n := min(batch, len(pending))
-			cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
-			_, err := a.channel.Client().ReportStats(cctx, connect.NewRequest(&nodev1.ReportStatsRequest{Stats: pending[:n]}))
-			cancel()
-			if err != nil {
-				if ctx.Err() == nil {
-					a.logRPCError("ReportStats failed; will retry", err)
-				}
-				break
-			}
-			a.markConnected()
-			pending = pending[n:]
-		}
-	}
-}
-
 func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 	out := make([]*nodev1.MinuteStats, 0, len(items))
 	for _, m := range items {
@@ -314,6 +273,7 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			CacheHits:     m.CacheHits,
 			CacheMisses:   m.CacheMisses,
 			StatusCodes:   codes,
+			TopUrls:       topCounters(m.TopURLs), TopIps: topCounters(m.TopIPs),
 		})
 	}
 	return out
@@ -356,4 +316,21 @@ func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
 
 func unixFloat(s float64) time.Time {
 	return time.UnixMilli(int64(s * 1000)).UTC()
+}
+
+func topCounters(input map[string]uint64) []*nodev1.TopCounter {
+	out := make([]*nodev1.TopCounter, 0, len(input))
+	for value, count := range input {
+		out = append(out, &nodev1.TopCounter{Value: value, Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count == out[j].Count {
+			return out[i].Value < out[j].Value
+		}
+		return out[i].Count > out[j].Count
+	})
+	if len(out) > 50 {
+		out = out[:50]
+	}
+	return out
 }

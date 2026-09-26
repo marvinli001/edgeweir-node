@@ -47,6 +47,9 @@ const (
 	NodeServiceReportStatusProcedure = "/edgeweir.node.v1.NodeService/ReportStatus"
 	// NodeServiceReportStatsProcedure is the fully-qualified name of the NodeService's ReportStats RPC.
 	NodeServiceReportStatsProcedure = "/edgeweir.node.v1.NodeService/ReportStats"
+	// NodeServiceReportStatsV2Procedure is the fully-qualified name of the NodeService's ReportStatsV2
+	// RPC.
+	NodeServiceReportStatsV2Procedure = "/edgeweir.node.v1.NodeService/ReportStatsV2"
 	// NodeServiceGetOriginCredentialsProcedure is the fully-qualified name of the NodeService's
 	// GetOriginCredentials RPC.
 	NodeServiceGetOriginCredentialsProcedure = "/edgeweir.node.v1.NodeService/GetOriginCredentials"
@@ -76,6 +79,9 @@ type NodeServiceClient interface {
 	ReportStatus(context.Context, *connect.Request[v1.ReportStatusRequest]) (*connect.Response[v1.ReportStatusResponse], error)
 	// ReportStats uploads per-minute pre-aggregated traffic statistics.
 	ReportStats(context.Context, *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error)
+	// Sequenced statistics endpoint. A pre-M5 console returns Unimplemented
+	// instead of processing retryable batches without deduplication.
+	ReportStatsV2(context.Context, *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error)
 	// GetOriginCredentials returns origin credentials (e.g. S3 access keys)
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
@@ -136,6 +142,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportStats")),
 			connect.WithClientOptions(opts...),
 		),
+		reportStatsV2: connect.NewClient[v1.ReportStatsV2Request, v1.ReportStatsV2Response](
+			httpClient,
+			baseURL+NodeServiceReportStatsV2Procedure,
+			connect.WithSchema(nodeServiceMethods.ByName("ReportStatsV2")),
+			connect.WithClientOptions(opts...),
+		),
 		getOriginCredentials: connect.NewClient[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse](
 			httpClient,
 			baseURL+NodeServiceGetOriginCredentialsProcedure,
@@ -171,6 +183,7 @@ type nodeServiceClient struct {
 	getConfig            *connect.Client[v1.GetConfigRequest, v1.GetConfigResponse]
 	reportStatus         *connect.Client[v1.ReportStatusRequest, v1.ReportStatusResponse]
 	reportStats          *connect.Client[v1.ReportStatsRequest, v1.ReportStatsResponse]
+	reportStatsV2        *connect.Client[v1.ReportStatsV2Request, v1.ReportStatsV2Response]
 	getOriginCredentials *connect.Client[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse]
 	getCertificates      *connect.Client[v1.GetCertificatesRequest, v1.GetCertificatesResponse]
 	pullTasks            *connect.Client[v1.PullTasksRequest, v1.PullTasksResponse]
@@ -205,6 +218,11 @@ func (c *nodeServiceClient) ReportStatus(ctx context.Context, req *connect.Reque
 // ReportStats calls edgeweir.node.v1.NodeService.ReportStats.
 func (c *nodeServiceClient) ReportStats(ctx context.Context, req *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error) {
 	return c.reportStats.CallUnary(ctx, req)
+}
+
+// ReportStatsV2 calls edgeweir.node.v1.NodeService.ReportStatsV2.
+func (c *nodeServiceClient) ReportStatsV2(ctx context.Context, req *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error) {
+	return c.reportStatsV2.CallUnary(ctx, req)
 }
 
 // GetOriginCredentials calls edgeweir.node.v1.NodeService.GetOriginCredentials.
@@ -243,6 +261,9 @@ type NodeServiceHandler interface {
 	ReportStatus(context.Context, *connect.Request[v1.ReportStatusRequest]) (*connect.Response[v1.ReportStatusResponse], error)
 	// ReportStats uploads per-minute pre-aggregated traffic statistics.
 	ReportStats(context.Context, *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error)
+	// Sequenced statistics endpoint. A pre-M5 console returns Unimplemented
+	// instead of processing retryable batches without deduplication.
+	ReportStatsV2(context.Context, *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error)
 	// GetOriginCredentials returns origin credentials (e.g. S3 access keys)
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
@@ -299,6 +320,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportStats")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceReportStatsV2Handler := connect.NewUnaryHandler(
+		NodeServiceReportStatsV2Procedure,
+		svc.ReportStatsV2,
+		connect.WithSchema(nodeServiceMethods.ByName("ReportStatsV2")),
+		connect.WithHandlerOptions(opts...),
+	)
 	nodeServiceGetOriginCredentialsHandler := connect.NewUnaryHandler(
 		NodeServiceGetOriginCredentialsProcedure,
 		svc.GetOriginCredentials,
@@ -337,6 +364,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceReportStatusHandler.ServeHTTP(w, r)
 		case NodeServiceReportStatsProcedure:
 			nodeServiceReportStatsHandler.ServeHTTP(w, r)
+		case NodeServiceReportStatsV2Procedure:
+			nodeServiceReportStatsV2Handler.ServeHTTP(w, r)
 		case NodeServiceGetOriginCredentialsProcedure:
 			nodeServiceGetOriginCredentialsHandler.ServeHTTP(w, r)
 		case NodeServiceGetCertificatesProcedure:
@@ -376,6 +405,10 @@ func (UnimplementedNodeServiceHandler) ReportStatus(context.Context, *connect.Re
 
 func (UnimplementedNodeServiceHandler) ReportStats(context.Context, *connect.Request[v1.ReportStatsRequest]) (*connect.Response[v1.ReportStatsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportStats is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) ReportStatsV2(context.Context, *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportStatsV2 is not implemented"))
 }
 
 func (UnimplementedNodeServiceHandler) GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error) {

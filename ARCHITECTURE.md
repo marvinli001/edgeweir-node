@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点当前（MVP M4）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.4.0`）里的 `edgeweir.node.v1`。
+本文描述节点当前（MVP M4）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.5.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -384,3 +384,7 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 - 缓存和刷新使用改写前路径；配置与列表更新不 reload。`rules-v1`、`geoip-city-v1`、`geoip-asn-v1` 分开协商。
 - 持久化失败在恢复旧配置后退避五分钟或等下一版本，避免每次轮询重新激活未持久化内容。
 - `test/lua/expression-vectors.json` 镜像控制面规则包的 19 个共享向量；GeoIP MMDB 为 `internal/testutil/geofixture` 自行生成的数据。
+
+## M5 statistics (2026-09-27)
+
+`traffic-spool.json` (0600) keeps immutable batches and monotonic sequence numbers before `ReportStatsV2`. A cursor query recovers after local state loss. The queue is bounded to 10000 buckets / 32 MiB. Lua Space-Saving summaries use a separate shared dictionary and omit query strings and headers; they are approximate. See the console DNS/alert guide for retention and delivery semantics.

@@ -51,25 +51,28 @@ type Console struct {
 	CA   *pkitest.CA
 	opts Options
 
-	mu              sync.Mutex
-	tokens          map[string]bool
-	revisions       []*nodev1.NodeConfig
-	watchers        map[chan struct{}]struct{}
-	statuses        []*nodev1.ReportStatusRequest
-	getConfigs      []GetConfigCall
-	stats           []*nodev1.MinuteStats
-	corruptNextDiff bool
-	pinned          uint64 // serve this revision as the latest (0: the newest)
-	renewNext       bool
-	renewals        int
-	enrollments     int
-	mtlsCalls       map[string]int
-	watchStreams    int
-	credentials     map[string]*nodev1.OriginCredential
-	credRequests    [][]string
-	pendingTasks    []*nodev1.NodeTask
-	taskResults     []*nodev1.ReportTaskResultRequest
-	taskWatchers    map[chan struct{}]struct{}
+	mu               sync.Mutex
+	tokens           map[string]bool
+	revisions        []*nodev1.NodeConfig
+	watchers         map[chan struct{}]struct{}
+	statuses         []*nodev1.ReportStatusRequest
+	getConfigs       []GetConfigCall
+	stats            []*nodev1.MinuteStats
+	statsSequence    uint64
+	statsAckFailures int
+	statsSequences   []uint64
+	corruptNextDiff  bool
+	pinned           uint64 // serve this revision as the latest (0: the newest)
+	renewNext        bool
+	renewals         int
+	enrollments      int
+	mtlsCalls        map[string]int
+	watchStreams     int
+	credentials      map[string]*nodev1.OriginCredential
+	credRequests     [][]string
+	pendingTasks     []*nodev1.NodeTask
+	taskResults      []*nodev1.ReportTaskResultRequest
+	taskWatchers     map[chan struct{}]struct{}
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -510,8 +513,40 @@ func (c *Console) ReportTaskResult(_ context.Context, req *connect.Request[nodev
 func (c *Console) ReportStats(_ context.Context, req *connect.Request[nodev1.ReportStatsRequest]) (*connect.Response[nodev1.ReportStatsResponse], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, s := range req.Msg.GetStats() {
-		c.stats = append(c.stats, proto.CloneOf(s))
+	if req.Msg.BatchSequence == 0 && len(req.Msg.Stats) == 0 {
+		return connect.NewResponse(&nodev1.ReportStatsResponse{BatchSequence: c.statsSequence}), nil
 	}
-	return connect.NewResponse(&nodev1.ReportStatsResponse{Accepted: uint32(len(req.Msg.GetStats()))}), nil
+	accepted := uint32(0)
+	c.statsSequences = append(c.statsSequences, req.Msg.BatchSequence)
+	if req.Msg.BatchSequence > c.statsSequence {
+		for _, s := range req.Msg.Stats {
+			c.stats = append(c.stats, proto.CloneOf(s))
+		}
+		accepted = uint32(len(req.Msg.Stats))
+		c.statsSequence = req.Msg.BatchSequence
+	}
+	if c.statsAckFailures > 0 {
+		c.statsAckFailures--
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test acknowledgement lost after commit"))
+	}
+	return connect.NewResponse(&nodev1.ReportStatsResponse{Accepted: accepted, BatchSequence: req.Msg.BatchSequence}), nil
+}
+
+func (c *Console) ReportStatsV2(ctx context.Context, req *connect.Request[nodev1.ReportStatsV2Request]) (*connect.Response[nodev1.ReportStatsV2Response], error) {
+	result, err := c.ReportStats(ctx, connect.NewRequest(&nodev1.ReportStatsRequest{Stats: req.Msg.Stats, BatchSequence: req.Msg.BatchSequence}))
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&nodev1.ReportStatsV2Response{Accepted: result.Msg.Accepted, BatchSequence: result.Msg.BatchSequence}), nil
+}
+
+func (c *Console) FailStatsAcknowledgements(count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.statsAckFailures = count
+}
+func (c *Console) StatsSequences() []uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.statsSequences)
 }

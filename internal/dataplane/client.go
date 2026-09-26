@@ -143,6 +143,8 @@ type MinuteStats struct {
 	CacheHits     uint64            `json:"cache_hits"`
 	CacheMisses   uint64            `json:"cache_misses"`
 	StatusCodes   map[string]uint64 `json:"status_codes"`
+	TopURLs       map[string]uint64 `json:"top_urls"`
+	TopIPs        map[string]uint64 `json:"top_ips"`
 }
 
 // Client talks to the control socket.
