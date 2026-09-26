@@ -11,11 +11,11 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
-	"github.com/edgeweir/edgeweir-node/internal/dataplane"
-	"github.com/edgeweir/edgeweir-node/internal/fsutil"
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
-	"github.com/edgeweir/edgeweir-node/internal/render"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	"github.com/marvinli001/edgeweir-node/internal/fsutil"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/render"
 )
 
 // permanentError marks failures that will recur for the same configuration
@@ -33,7 +33,17 @@ const rejectRetryAfter = 5 * time.Minute
 //     zones, resolver) or the engine is not running: write it next to the
 //     live file, `openresty -t`, install it and reload;
 //   - push the site table through the control socket (hot update, no reload).
-func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
+func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr error) {
+	a.activationMu.Lock()
+	defer a.activationMu.Unlock()
+	for _, listener := range plan.Listeners {
+		if listener.TLS {
+			if err := a.ensureBootstrapCertificate(); err != nil {
+				return err
+			}
+			break
+		}
+	}
 	conf, err := render.Render(a.cfg.Render, plan)
 	if err != nil {
 		return &permanentError{err}
@@ -50,7 +60,33 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 
 	a.mu.Lock()
 	current := a.conf
+	previousTable := a.desired
 	a.mu.Unlock()
+	touched := false
+	defer func() {
+		if resultErr == nil || !touched {
+			return
+		}
+		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.ReloadTimeout+a.cfg.PushTimeout+5*time.Second)
+		defer cancel()
+		var restoreErr error
+		if current != nil && !bytes.Equal(current, conf) {
+			restoreErr = fsutil.WriteFileAtomic(a.cfg.ConfPath, current, 0o644)
+			if restoreErr == nil {
+				restoreErr = a.engine.Reload(recovery)
+			}
+			if restoreErr == nil {
+				restoreErr = a.waitForConf(recovery, render.ConfID(current))
+			}
+		}
+		if previousTable != nil {
+			restoreErr = errors.Join(restoreErr, a.pushWithRetry(recovery, previousTable))
+		}
+		if restoreErr != nil {
+			a.setDataPlaneHealthy(false)
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore previous data plane: %w", restoreErr))
+		}
+	}()
 	if !bytes.Equal(conf, current) || !a.engine.Running() {
 		next := a.cfg.ConfPath + ".next"
 		if err := fsutil.WriteFileAtomic(next, conf, 0o644); err != nil {
@@ -63,6 +99,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 		if err := fsutil.Rename(next, a.cfg.ConfPath); err != nil {
 			return err
 		}
+		touched = true
 		err := a.engine.Reload(ctx)
 		if err == nil {
 			err = a.waitForConf(ctx, render.ConfID(conf))
@@ -77,9 +114,6 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 			}
 			return &permanentError{err}
 		}
-		a.mu.Lock()
-		a.conf = conf
-		a.mu.Unlock()
 		a.log.Info("nginx configuration installed and reloaded",
 			"listeners", len(plan.Listeners), "cache_zones", len(plan.CacheZones), "conf", a.cfg.ConfPath)
 	}
@@ -93,11 +127,16 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) error {
 	}
 	table := dataplane.FromPlan(plan)
 	table.CDNID = a.cdnID()
+	touched = true
+	if err := a.pushWithRetry(ctx, table); err != nil {
+		return err
+	}
 	a.mu.Lock()
+	a.conf = conf
 	a.desired = table
 	a.plan = plan
 	a.mu.Unlock()
-	return a.pushWithRetry(ctx, table)
+	return nil
 }
 
 // waitForConf waits until the data plane's workers run the configuration
@@ -140,6 +179,8 @@ func (a *Agent) push(ctx context.Context, table *dataplane.SiteTable) error {
 // pushDesired installs the current desired table. Reading it under pushMu
 // guarantees a concurrent apply cannot be overwritten by an older table.
 func (a *Agent) pushDesired(ctx context.Context) error {
+	a.activationMu.Lock()
+	defer a.activationMu.Unlock()
 	a.pushMu.Lock()
 	defer a.pushMu.Unlock()
 	a.mu.Lock()
@@ -367,6 +408,9 @@ func (a *Agent) consider(ctx context.Context, cfg *nodev1.NodeConfig) {
 }
 
 func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
+	a.mu.Lock()
+	previousPlan, previousConfig := a.plan, a.applied
+	a.mu.Unlock()
 	a.log.Info("applying configuration", "revision", cfg.GetRevision(), "content_hash", cfg.GetContentHash(), "sites", len(cfg.GetSites()))
 	plan, err := configir.Build(cfg, a.buildOptions())
 	if err != nil {
@@ -378,6 +422,17 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		return
 	}
 	a.attachCredentials(plan)
+	if err := a.ensureCertificates(ctx, plan); err != nil {
+		a.fail(cfg, key, err)
+		return
+	}
+	ocspCtx, ocspCancel := context.WithTimeout(ctx, 30*time.Second)
+	a.refreshOCSP(ocspCtx, plan)
+	ocspCancel()
+	if err := a.attachCertificates(plan); err != nil {
+		a.fail(cfg, key, err)
+		return
+	}
 	for _, w := range plan.Warnings {
 		a.log.Warn("configuration warning", "revision", cfg.GetRevision(), "warning", w)
 	}
@@ -386,7 +441,17 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		return
 	}
 	if err := a.lkg.Save(cfg); err != nil {
-		a.log.Error("cannot persist last-known-good configuration", "err", err)
+		if previousPlan == nil {
+			previousPlan = configir.Bootstrap(a.cfg.DefaultPort)
+		}
+		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.ReloadTimeout+a.cfg.PushTimeout+5*time.Second)
+		restoreErr := a.applyPlan(recovery, previousPlan)
+		cancel()
+		if previousConfig != nil {
+			restoreErr = errors.Join(restoreErr, a.lkg.Save(previousConfig))
+		}
+		a.fail(cfg, key, errors.Join(fmt.Errorf("cannot persist last-known-good configuration: %w", err), restoreErr))
+		return
 	}
 	a.mu.Lock()
 	a.applied, a.appliedAt = cfg, time.Now()
@@ -394,6 +459,7 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.message = summarizeWarnings(plan.Warnings)
 	a.rejectedKey = ""
 	a.mu.Unlock()
+	a.pruneSecrets(cfg, previousConfig)
 	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings))
 	a.triggerReport()
 }

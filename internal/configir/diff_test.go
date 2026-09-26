@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 func site(id string, domains ...string) *nodev1.Site {

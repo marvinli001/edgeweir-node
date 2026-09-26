@@ -38,13 +38,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # SLSA v1 build provenance for every file listed in checksums.txt
       # (archives, deb/rpm packages, SBOMs); verify with
-      # `gh attestation verify <file> --repo edgeweir/edgeweir-node`.
+      # `gh attestation verify <file> --repo marvinli001/edgeweir-node`.
       - uses: actions/attest-build-provenance@v4
         with:
           subject-checksums: ./dist/checksums.txt
 
   image:
-    name: container image (ghcr.io/edgeweir/edgeweir-node)
+    name: container image (ghcr.io/marvinli001/edgeweir-node)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,7 +52,7 @@ jobs:
       id-token: write
       attestations: write
     env:
-      IMAGE: ghcr.io/edgeweir/edgeweir-node
+      IMAGE: ghcr.io/marvinli001/edgeweir-node
     steps:
       - uses: actions/checkout@v7
       - name: build metadata

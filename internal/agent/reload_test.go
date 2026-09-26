@@ -2,13 +2,65 @@ package agent_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/edgeweir/edgeweir-node/internal/agent"
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/agent"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
+
+func TestUnknownEnumKeepsLastKnownGood(t *testing.T) {
+	e := startEnrolled(t, "unknown-enum", nil, demoSite("site-a", "site-a.test"))
+	next := baseConfig(demoSite("site-b", "site-b.test"))
+	next.Listeners[0].Protocol = 999
+	e.console.Publish(next)
+	eventually(t, "unknown enum rejected", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
+	if table := e.dp.Table(); table.Revision != e.rev || table.Sites[0].ID != "site-a" {
+		t.Fatalf("unknown semantics replaced LKG: %+v", table)
+	}
+}
+
+func TestPersistenceFailureDoesNotReportNewRevisionApplied(t *testing.T) {
+	e := startEnrolled(t, "persist-failure", nil, demoSite("site-a", "site-a.test"))
+	current := filepath.Join(e.cfg.StateDir, "config", "current.binpb")
+	if err := os.Remove(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(current, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.console.Publish(baseConfig(demoSite("site-b", "site-b.test")))
+	eventually(t, "persistence failure reported", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
+	if table := e.dp.Table(); table.Revision != e.rev || table.Sites[0].ID != "site-a" {
+		t.Fatalf("uncommitted configuration stayed active: %+v", table)
+	}
+}
+
+func TestRejectedTableRestoresReloadedListeners(t *testing.T) {
+	e := startEnrolled(t, "activation", nil, demoSite("site-a", "site-a.test"))
+	before, err := os.ReadFile(e.cfg.ConfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.dp.RejectRevision(e.rev + 1)
+	next := baseConfig(demoSite("site-a", "site-a.test"), demoSite("site-b", "site-b.test"))
+	next.Listeners = append(next.Listeners, &nodev1.Listener{Port: 8443, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS})
+	e.console.Publish(next)
+	eventually(t, "table rejection reported", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
+	after, err := os.ReadFile(e.cfg.ConfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed activation left new listeners installed")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if table := e.dp.Table(); table.Revision != e.rev || len(table.Sites) != 1 {
+		t.Fatalf("reconciliation activated failed table: %+v", table)
+	}
+}
 
 // TestAgentReportsFailedReload (N-L): after SIGHUP the agent waits for
 // workers running the new nginx.conf; when nginx keeps the old workers

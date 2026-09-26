@@ -1,6 +1,6 @@
 # 参与贡献
 
-欢迎参与 Edgeweir 边缘节点的开发。本仓库是节点侧：Go agent（`edgeweir-node`）加 OpenResty（Lua）。控制面在 [edgeweir/edgeweir](https://github.com/edgeweir/edgeweir)。
+欢迎参与 Edgeweir 边缘节点的开发。本仓库是节点侧：Go agent（`edgeweir-node`）加 OpenResty（Lua）。控制面在 [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir)。
 
 ## 许可证
 
@@ -83,7 +83,7 @@ feat(proto): bump contract to proto/v0.1.1
 CI 会运行：
 
 ```bash
-make proto-check PROTO_INPUT='https://github.com/edgeweir/edgeweir.git#tag=<tag>,subdir=proto'
+make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=<tag>,subdir=proto'
 ```
 
 如果已提交的生成代码过期，CI 失败。

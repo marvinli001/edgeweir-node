@@ -2,7 +2,7 @@
 
 English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordinated disclosure.
 
-本文适用于边缘节点 `edgeweir-node`。控制面 [edgeweir/edgeweir](https://github.com/edgeweir/edgeweir) 遵循同一套信任基线，它的漏洞也请发到同一个邮箱。
+本文适用于边缘节点 `edgeweir-node`。控制面 [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) 遵循同一套信任基线，它的漏洞也请发到同一个邮箱。
 
 ## 报告漏洞
 
@@ -100,7 +100,7 @@ English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordin
 # 1. 验证 checksums.txt 的签名（cosign v3）
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/edgeweir/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-identity-regexp '^https://github\.com/marvinli001/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 
@@ -108,14 +108,14 @@ cosign verify-blob \
 sha256sum --ignore-missing -c checksums.txt
 
 # 3. 验证构建来源（GitHub artifact attestations）
-gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo edgeweir/edgeweir-node
+gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli001/edgeweir-node
 ```
 
-容器镜像 `ghcr.io/edgeweir/edgeweir-node` 同样用 cosign keyless 签名：
+容器镜像 `ghcr.io/marvinli001/edgeweir-node` 同样用 cosign keyless 签名：
 
 ```bash
-cosign verify ghcr.io/edgeweir/edgeweir-node:<tag> \
-  --certificate-identity-regexp '^https://github\.com/edgeweir/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
+cosign verify ghcr.io/marvinli001/edgeweir-node:<tag> \
+  --certificate-identity-regexp '^https://github\.com/marvinli001/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

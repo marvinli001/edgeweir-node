@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 // DefaultCacheZone is created when a configuration defines no cache zone,
@@ -88,13 +88,17 @@ type Plan struct {
 	OriginAllowedCIDRs []string
 	// Warnings lists parts of the configuration that were skipped or
 	// adjusted; they are reported to the console with the apply result.
-	Warnings []string
+	Warnings       []string
+	Certificates   map[string]string
+	HTTPChallenges []HTTPChallenge
 }
 
 // Listener is a plain-HTTP port served by the edge layer.
 type Listener struct {
 	Port          uint32
+	TLS           bool
 	HTTP2         bool
+	HTTP3         bool
 	ProxyProtocol bool
 }
 
@@ -127,8 +131,43 @@ type Site struct {
 	// Slice fetches and caches cacheable GET/HEAD requests in 1 MiB slices.
 	Slice bool `json:"slice,omitempty"`
 	// WebSocket proxies WebSocket upgrades (default true).
-	WebSocket bool `json:"websocket"`
+	WebSocket     bool         `json:"websocket"`
+	CertificateID string       `json:"certificate_id,omitempty"`
+	TLS           *TLSOptions  `json:"tls,omitempty"`
+	Certificate   *Certificate `json:"certificate,omitempty"`
 }
+
+type TLSOptions struct {
+	ForceHTTPS            bool     `json:"force_https"`
+	HSTSMaxAge            uint32   `json:"hsts_max_age"`
+	HSTSIncludeSubdomains bool     `json:"hsts_include_subdomains"`
+	HSTSPreload           bool     `json:"hsts_preload"`
+	MinimumVersion        string   `json:"minimum_version"`
+	CipherProfile         string   `json:"cipher_profile"`
+	HTTP2                 bool     `json:"http2"`
+	HTTP3                 bool     `json:"http3"`
+	Gzip                  bool     `json:"gzip"`
+	GzipMinLength         uint32   `json:"gzip_min_length"`
+	GzipTypes             []string `json:"gzip_types"`
+	OCSPStapling          bool     `json:"ocsp_stapling"`
+}
+
+type Certificate struct {
+	ChainPEM      string `json:"chain_pem"`
+	PrivateKeyPEM string `json:"private_key_pem"`
+	Fingerprint   string `json:"fingerprint"`
+	OCSP          string `json:"ocsp,omitempty"`
+	OCSPUntil     int64  `json:"ocsp_until,omitempty"`
+}
+
+type HTTPChallenge struct {
+	Domain           string `json:"domain"`
+	Token            string `json:"token"`
+	KeyAuthorization string `json:"key_authorization"`
+	ExpiresAt        int64  `json:"expires_at"`
+}
+
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1"}
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
@@ -311,6 +350,11 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if err := validateEnums(c.ProtoReflect()); err != nil {
 		return nil, err
 	}
+	for _, feature := range c.GetRequiredFeatures() {
+		if !slices.Contains(SupportedFeatures, feature) {
+			return nil, fmt.Errorf("%w: unsupported required feature %q", ErrRejected, feature)
+		}
+	}
 	if opts.ClusterID != "" && c.GetClusterId() != "" && c.GetClusterId() != opts.ClusterID {
 		return nil, fmt.Errorf("%w: configuration is for cluster %q but this node belongs to %q",
 			ErrRejected, c.GetClusterId(), opts.ClusterID)
@@ -332,6 +376,19 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	}
 
 	p := &Plan{Revision: c.GetRevision(), ContentHash: c.GetContentHash(), ClusterID: c.GetClusterId()}
+	p.Certificates = map[string]string{}
+	for _, cert := range c.GetCertificates() {
+		if !idRE.MatchString(cert.GetId()) || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(cert.GetSha256Fingerprint()) {
+			return nil, fmt.Errorf("%w: invalid certificate reference", ErrRejected)
+		}
+		p.Certificates[cert.GetId()] = cert.GetSha256Fingerprint()
+	}
+	for _, ch := range c.GetHttpChallenges() {
+		if !idRE.MatchString(ch.GetToken()) || len(ch.GetKeyAuthorization()) > 512 || ch.GetExpiresAt() == nil {
+			return nil, fmt.Errorf("%w: invalid HTTP challenge", ErrRejected)
+		}
+		p.HTTPChallenges = append(p.HTTPChallenges, HTTPChallenge{Domain: ch.GetDomain(), Token: ch.GetToken(), KeyAuthorization: ch.GetKeyAuthorization(), ExpiresAt: ch.GetExpiresAt().GetSeconds()})
+	}
 	warn := func(format string, args ...any) { p.Warnings = append(p.Warnings, fmt.Sprintf(format, args...)) }
 
 	policy, allowed, policyWarnings := NewAddressPolicy(c.GetOriginAllowedCidrs())
@@ -349,15 +406,12 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		case seenPorts[port]:
 			warn("duplicate listener on port %d skipped", port)
 			continue
-		case l.GetProtocol() == nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS:
-			warn("HTTPS listener on port %d skipped: certificate delivery is not supported yet", port)
-			continue
 		}
-		if l.GetHttp3() {
-			warn("listener %d: http3 ignored (requires TLS)", port)
+		if l.GetHttp3() && l.GetProtocol() != nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS {
+			return nil, fmt.Errorf("%w: HTTP/3 requires TLS", ErrRejected)
 		}
 		seenPorts[port] = true
-		p.Listeners = append(p.Listeners, Listener{Port: port, HTTP2: l.GetHttp2(), ProxyProtocol: l.GetProxyProtocol()})
+		p.Listeners = append(p.Listeners, Listener{Port: port, TLS: l.GetProtocol() == nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS, HTTP2: l.GetHttp2(), HTTP3: l.GetHttp3(), ProxyProtocol: l.GetProxyProtocol()})
 	}
 	if len(p.Listeners) == 0 {
 		if len(c.GetListeners()) > 0 {
@@ -420,6 +474,24 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			Conn:            buildConnection(pool.GetConnection()),
 			Slice:           s.GetRangeSlice(),
 			WebSocket:       !s.GetWebsocketDisabled(),
+			CertificateID:   s.GetCertificateId(),
+		}
+		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
+			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)
+		}
+		if tls := s.GetTls(); tls != nil {
+			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
+				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
+			}
+			for _, mime := range tls.GetGzipTypes() {
+				if !regexp.MustCompile(`^[a-z0-9.+-]+/[a-z0-9.+-]+$`).MatchString(mime) {
+					return nil, fmt.Errorf("%w: invalid compression type", ErrRejected)
+				}
+			}
+			if site.CertificateID == "" && (tls.GetForceHttps() || tls.GetHstsMaxAge() > 0) {
+				return nil, fmt.Errorf("%w: HTTPS policy without a certificate", ErrRejected)
+			}
+			site.TLS = &TLSOptions{ForceHTTPS: tls.GetForceHttps(), HSTSMaxAge: tls.GetHstsMaxAge(), HSTSIncludeSubdomains: tls.GetHstsIncludeSubdomains(), HSTSPreload: tls.GetHstsPreload(), MinimumVersion: tls.GetMinimumVersion(), CipherProfile: tls.GetCipherProfile(), HTTP2: tls.GetHttp2(), HTTP3: tls.GetHttp3(), Gzip: tls.GetGzip(), GzipMinLength: tls.GetGzipMinLength(), GzipTypes: tls.GetGzipTypes(), OCSPStapling: tls.GetOcspStapling()}
 		}
 		key, keyWarnings := buildCacheKey(s.GetCacheKey())
 		site.CacheKey = key

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
-	"github.com/edgeweir/edgeweir-node/internal/dataplane"
-	"github.com/edgeweir/edgeweir-node/internal/testutil/fakedataplane"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 )
 
 func TestClientAgainstFakeSocket(t *testing.T) {

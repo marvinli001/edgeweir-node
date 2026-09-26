@@ -7,15 +7,15 @@ SHELL := /bin/bash
 # The node channel contract lives in the console repository (edgeweir/proto)
 # and is consumed from an immutable git tag. Locally we read the sibling
 # checkout; CI overrides PROTO_INPUT with the GitHub URL:
-#   make proto-check PROTO_INPUT='https://github.com/edgeweir/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
-PROTO_TAG   ?= proto/v0.2.2
+#   make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
+PROTO_TAG   ?= proto/v0.3.0
 PROTO_INPUT ?= ../edgeweir/.git\#tag=$(PROTO_TAG),subdir=proto
 
 # --- Build metadata ----------------------------------------------------------
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
-PKG     := github.com/edgeweir/edgeweir-node/internal/version
+PKG     := github.com/marvinli001/edgeweir-node/internal/version
 LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
 IMAGE          ?= edgeweir-node:dev

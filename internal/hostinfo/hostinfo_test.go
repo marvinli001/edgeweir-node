@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/edgeweir/edgeweir-node/internal/version"
+	"github.com/marvinli001/edgeweir-node/internal/version"
 )
 
 func TestCollect(t *testing.T) {

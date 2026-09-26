@@ -16,7 +16,7 @@
 
 ### IR
 
-1. `packages/config-compiler` 把数据库中的站点、域名、源站池、缓存规则、证书引用编译成 `NodeConfig`（[`proto/edgeweir/node/v1/config.proto`](https://github.com/edgeweir/edgeweir/blob/master/proto/edgeweir/node/v1/config.proto)）。
+1. `packages/config-compiler` 把数据库中的站点、域名、源站池、缓存规则、证书引用编译成 `NodeConfig`（[`proto/edgeweir/node/v1/config.proto`](https://github.com/marvinli001/edgeweir/blob/master/proto/edgeweir/node/v1/config.proto)）。
 2. IR 描述意图（监听端口、域名、源站池、缓存规则），不包含 nginx 指令，由节点负责渲染到具体引擎。
 3. IR 不内联任何密钥。证书只以 id、域名列表和指纹引用（`CertificateRef`），私钥通过单独的通道获取。
 4. **结构性配置与可热更新配置分开**：`listeners`、`cache_zones` 是结构性配置，变更时节点要重新渲染 nginx.conf 并 reload；`sites`、`certificates` 可以热更新（[ADR-0014](0014-node-agent-responsibilities.md)）。
@@ -113,3 +113,5 @@ Phase 0 范围：
 >   - `CacheRule.cache_authorized`（默认 false）：为 false 时带 `Authorization` 的请求不查缓存、响应也不存入缓存（RFC 9111 §3.5），即使规则覆盖源站缓存头。
 >   - 第三组跨语言哈希向量 `content_hash_vector_v021.json`：M2 向量加上一个未排序、含重复项的允许清单，并在第一个站点的第一条规则上打开 `cache_authorized`；TS 与 Go 两端测试断言同一个哈希。
 >   - 节点侧校验收紧：站点、源站、规则的 id 只能由 `[A-Za-z0-9_-]` 组成且不超过 128 个字符，否则整个配置被拒绝（控制台用 UUID）；IP 字面量落在特殊用途地址且不在允许清单里的源站留在站点里、标为禁止并告警，只有这类源站的站点返回 502 而不是 404。
+
+> 更新记录（2026-09-27，MVP M3）：M3 证书引用按 ID/指纹下发，私钥不进 IR。HTTP-01 挑战是有过期时间的公开配置。回滚重绑定当前证书材料，并拒绝已释放的站点/域名或不可用证书；不回滚短期挑战。当前与前一份 LKG 所需密钥保留在节点。

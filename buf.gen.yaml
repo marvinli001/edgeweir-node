@@ -4,7 +4,7 @@
 # directory proto/) and are consumed from a git tag, never copied here.
 # Run `make proto` (local sibling checkout) or, as CI does, with the tag in
 # the Makefile's PROTO_TAG:
-#   buf generate "https://github.com/edgeweir/edgeweir.git#tag=<PROTO_TAG>,subdir=proto"
+#   buf generate "https://github.com/marvinli001/edgeweir.git#tag=<PROTO_TAG>,subdir=proto"
 #
 # The plugins are pinned through the `tool` directives in go.mod, so the
 # generator versions always match the runtime libraries in go.sum.
@@ -14,7 +14,7 @@ managed:
   enabled: true
   override:
     - file_option: go_package_prefix
-      value: github.com/edgeweir/edgeweir-node/internal/gen
+      value: github.com/marvinli001/edgeweir-node/internal/gen
 plugins:
   - local: ["go", "tool", "protoc-gen-go"]
     out: internal/gen

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/edgeweir/edgeweir-node/internal/testutil/fakeconsole"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
 )
 
 func TestEnvName(t *testing.T) {

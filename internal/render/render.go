@@ -18,7 +18,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 )
 
 //go:embed nginx.conf.tmpl
@@ -191,25 +191,72 @@ func sharedDicts(p Params) ([]sharedDict, error) {
 // edgeServer is one server block of the edge layer.
 type edgeServer struct {
 	Listen        []string // listen directive arguments
+	QUICListen    []string
+	HTTP3         bool
 	HTTP2         bool
 	ProxyProtocol bool
 	Local         bool // the agent's unix socket listener
+	TLS           bool
+	ServerName    string
+	Gzip          bool
+	GzipMinLength uint32
+	GzipTypes     string
+	CipherProfile string
 }
 
-func edgeServers(p Params, listeners []configir.Listener) []edgeServer {
+func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
-	for _, l := range listeners {
+	for _, l := range plan.Listeners {
 		suffix := " default_server"
+		if l.TLS {
+			suffix += " ssl"
+		}
 		if l.ProxyProtocol {
 			suffix += " proxy_protocol"
 		}
-		s := edgeServer{Listen: []string{fmt.Sprintf("%d%s", l.Port, suffix)}, HTTP2: l.HTTP2, ProxyProtocol: l.ProxyProtocol}
+		s := edgeServer{Listen: []string{fmt.Sprintf("%d%s", l.Port, suffix)}, HTTP2: l.HTTP2, ProxyProtocol: l.ProxyProtocol, TLS: l.TLS, ServerName: "_"}
 		if p.ListenIPv6 {
 			s.Listen = append(s.Listen, fmt.Sprintf("[::]:%d%s", l.Port, suffix))
 		}
+		if l.HTTP3 {
+			s.HTTP3 = true
+			s.QUICListen = []string{fmt.Sprintf("%d quic reuseport default_server", l.Port)}
+			if p.ListenIPv6 {
+				s.QUICListen = append(s.QUICListen, fmt.Sprintf("[::]:%d quic reuseport default_server", l.Port))
+			}
+		}
 		out = append(out, s)
+		for _, site := range plan.Sites {
+			if site.TLS == nil || (l.TLS && site.CertificateID == "") {
+				continue
+			}
+			var names []string
+			for _, domain := range site.Domains {
+				name := domain.Name
+				if domain.Wildcard {
+					name = "*." + name
+				}
+				names = append(names, name)
+			}
+			custom := s
+			custom.Listen = make([]string, len(s.Listen))
+			for i, listen := range s.Listen {
+				custom.Listen[i] = strings.ReplaceAll(listen, " default_server", "")
+			}
+			custom.ServerName = strings.Join(names, " ")
+			custom.HTTP2 = l.TLS && site.TLS.HTTP2
+			custom.HTTP3 = l.TLS && site.TLS.HTTP3
+			custom.QUICListen = make([]string, len(s.QUICListen))
+			for i, listen := range s.QUICListen {
+				custom.QUICListen[i] = strings.ReplaceAll(strings.ReplaceAll(listen, " default_server", ""), " reuseport", "")
+			}
+			custom.Gzip, custom.GzipMinLength = site.TLS.Gzip, max(site.TLS.GzipMinLength, 1)
+			custom.GzipTypes = strings.Join(site.TLS.GzipTypes, " ")
+			custom.CipherProfile = site.TLS.CipherProfile
+			out = append(out, custom)
+		}
 	}
-	return append(out, edgeServer{Listen: []string{"unix:" + p.EdgeSocket + " default_server"}, Local: true})
+	return append(out, edgeServer{Listen: []string{"unix:" + p.EdgeSocket + " default_server"}, Local: true, ServerName: "_"})
 }
 
 type originLayer struct {
@@ -243,7 +290,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	d := data{
 		Params:      p,
 		SharedDicts: dicts,
-		EdgeServers: edgeServers(p, plan.Listeners),
+		EdgeServers: edgeServers(p, plan),
 		CacheZones:  plan.CacheZones,
 		DefaultZone: plan.CacheZones[0].Name,
 		OriginLayers: []originLayer{

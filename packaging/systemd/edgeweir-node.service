@@ -25,7 +25,7 @@
 
 [Unit]
 Description=Edgeweir edge node (agent + OpenResty)
-Documentation=https://edgeweir.dev https://github.com/edgeweir/edgeweir-node
+Documentation=https://edgeweir.dev https://github.com/marvinli001/edgeweir-node
 Wants=network-online.target
 After=network-online.target
 Conflicts=openresty.service

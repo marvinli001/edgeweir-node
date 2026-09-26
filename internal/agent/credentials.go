@@ -11,9 +11,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
-	"github.com/edgeweir/edgeweir-node/internal/fsutil"
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/fsutil"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 // credentialsFile keeps the S3 credentials of the current configuration so
@@ -100,16 +100,11 @@ func (a *Agent) ensureCredentials(ctx context.Context, plan *configir.Plan) erro
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	changed := len(missing) > 0
-	for id := range a.creds {
-		if _, used := refs[id]; !used {
-			delete(a.creds, id)
-			changed = true
-		}
-	}
-	if changed {
+	// Preserve prior credentials until both activation and LKG persistence
+	// succeed. Retry persistence even if a previous fetch populated memory.
+	if len(refs) > 0 {
 		if err := a.saveCredentialsLocked(); err != nil {
-			a.log.Warn("cannot persist origin credentials", "err", err)
+			return fmt.Errorf("persist origin credentials: %w", err)
 		}
 	}
 	return nil

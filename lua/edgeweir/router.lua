@@ -123,9 +123,29 @@ function _M.access()
   end
 
   local host = var.host
+  local token = var.uri:match("^/%.well%-known/acme%-challenge/([A-Za-z0-9_-]+)$")
+  if token then
+    for _, challenge in ipairs(store.config().http_challenges or {}) do
+      if challenge.domain == host and challenge.token == token and challenge.expires_at > ngx.time() then
+        ngx.header["Content-Type"] = "text/plain"
+        ngx.header["Cache-Control"] = "no-store"
+        ngx.print(challenge.key_authorization)
+        return ngx.exit(ngx.HTTP_OK)
+      end
+    end
+    return deny(404, "challenge-not-found", "challenge not found")
+  end
   local site = store.lookup_host(host)
   if not site then
     return deny(ngx.HTTP_NOT_FOUND, "unknown-host", "unknown host")
+  end
+
+  ngx.ctx.edgeweir_site = site
+  if var.scheme == "https" and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
+    return deny(421, "sni-host-mismatch", "SNI and Host must match")
+  end
+  if site.tls and site.tls.force_https and var.scheme ~= "https" then
+    return ngx.redirect("https://" .. host .. var.request_uri, 301)
   end
 
   var.edgeweir_site = site.id
@@ -175,6 +195,16 @@ end
 
 function _M.header_filter()
   local h = ngx.header
+  local site = ngx.ctx.edgeweir_site
+  if ngx.var.scheme == "https" and site and site.tls and site.tls.hsts_max_age > 0 then
+    local value = "max-age=" .. tostring(site.tls.hsts_max_age)
+    if site.tls.hsts_include_subdomains then value = value .. "; includeSubDomains" end
+    if site.tls.hsts_preload then value = value .. "; preload" end
+    h["Strict-Transport-Security"] = value
+  end
+  if ngx.var.scheme == "https" and site and site.tls and site.tls.http3 then
+    h["Alt-Svc"] = 'h3=":443"; ma=86400'
+  end
   local stashed = h["X-Edgeweir-CC"]
   if stashed then
     h["X-Edgeweir-CC"] = nil

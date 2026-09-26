@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 // ErrBaseMismatch is returned when a diff does not apply to the local base.
@@ -50,6 +50,8 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 		Certificates: cloneAll(d.GetCertificates()),
 		// A v0.2.0 console never sends the allow list: the target has none.
 		OriginAllowedCidrs: slices.Clone(d.GetOriginAllowedCidrs()),
+		RequiredFeatures:   slices.Clone(d.GetRequiredFeatures()),
+		HttpChallenges:     cloneAll(d.GetHttpChallenges()),
 	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
@@ -98,6 +100,8 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 		CacheZones:         cloneAll(target.GetCacheZones()),
 		Certificates:       cloneAll(target.GetCertificates()),
 		OriginAllowedCidrs: slices.Clone(target.GetOriginAllowedCidrs()),
+		RequiredFeatures:   slices.Clone(target.GetRequiredFeatures()),
+		HttpChallenges:     cloneAll(target.GetHttpChallenges()),
 	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {

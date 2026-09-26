@@ -34,9 +34,9 @@ COPY internal ./internal
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags "-s -w \
-        -X github.com/edgeweir/edgeweir-node/internal/version.Version=${VERSION} \
-        -X github.com/edgeweir/edgeweir-node/internal/version.Commit=${COMMIT} \
-        -X github.com/edgeweir/edgeweir-node/internal/version.Date=${DATE}" \
+        -X github.com/marvinli001/edgeweir-node/internal/version.Version=${VERSION} \
+        -X github.com/marvinli001/edgeweir-node/internal/version.Commit=${COMMIT} \
+        -X github.com/marvinli001/edgeweir-node/internal/version.Date=${DATE}" \
       -o /out/edgeweir-node ./cmd/edgeweir-node
 
 # ---- runtime: official OpenResty image, unprivileged user ----------------
@@ -45,7 +45,7 @@ ARG VERSION=dev
 ARG COMMIT=none
 LABEL org.opencontainers.image.title="edgeweir-node" \
       org.opencontainers.image.description="Edgeweir edge node: Go agent + OpenResty" \
-      org.opencontainers.image.source="https://github.com/edgeweir/edgeweir-node" \
+      org.opencontainers.image.source="https://github.com/marvinli001/edgeweir-node" \
       org.opencontainers.image.url="https://edgeweir.dev" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \

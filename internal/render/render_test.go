@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")

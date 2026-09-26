@@ -217,7 +217,7 @@ function _M.replace(doc)
   if type(allowed) ~= "table" then
     allowed = {}
   end
-  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "" }
+  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "", http_challenges = doc.http_challenges or {} }
   if cjson.empty_array_mt and #allowed == 0 then
     setmetatable(allowed, cjson.empty_array_mt)
   end
@@ -314,6 +314,7 @@ function _M.config()
     cfg = {
       allowed = ipaddr.prefixes(doc.origin_allowed_cidrs),
       cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "",
+      http_challenges = doc.http_challenges or {},
     }
   end
   c:set(ck, cfg)

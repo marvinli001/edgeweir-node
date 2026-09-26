@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`edgeweir-node` is the edge node of [Edgeweir](https://edgeweir.dev), an open-source, self-hosted CDN / WAF / edge traffic platform. A node is a small Go agent that supervises an OpenResty data plane. It enrolls with an Edgeweir console, receives its configuration over mutually authenticated TLS, and serves and caches traffic for the sites of its cluster.
+`edgeweir-node` is the edge node of [Edgeweir](https://github.com/marvinli001/edgeweir), an open-source, self-hosted CDN / WAF / edge traffic platform. A node is a small Go agent that supervises an OpenResty data plane. It enrolls with an Edgeweir console, receives its configuration over mutually authenticated TLS, and serves and caches traffic for the sites of its cluster.
 
 > **Why "weir"?** Edgeweir is named after a weir. Around 256 BC, Li Bing built the Dujiangyan irrigation system on the Min River. One of its parts, the Feisha ("flying sand") Weir, sits at the edge of the inner channel: in normal times it lets water flow on through the Bottle-Neck Channel to irrigate the Chengdu Plain; in floods, the river bend flings sand and excess water over the weir back into the outer channel. Edgeweir aims to do the same at the network edge: let good traffic through, shed attacks, and steer the flow.
 
@@ -10,10 +10,16 @@ English | [简体中文](README.zh-CN.md)
 
 | Repository | What it is |
 | --- | --- |
-| [edgeweir/edgeweir](https://github.com/edgeweir/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
+| [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
 | **edgeweir/edgeweir-node** (this repo) | The node: Go agent `edgeweir-node` + OpenResty (Lua). |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.2.2`) and never copies `.proto` files.
+The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.3.0`) and never copies `.proto` files.
+
+## Status
+
+M3 adds SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS and Gzip. Certificate rotation is hot; structural policy changes reload only after validation and recover on activation failure. Brotli and Zstd are unavailable in the stock engine. Node certificate materials live in `certificates.json` with mode 0600; host administrators can read them. See the [HTTPS guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md).
+
+There is no official binary release yet. Installation instructions below describe the release workflow; build from source for current evaluation. This is an experimental MVP.
 
 ## How it works
 
@@ -53,7 +59,7 @@ The package installs `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/ed
 ```sh
 docker run -d --name edgeweir-node -p 80:80 \
   -v edgeweir-node:/var/lib/edgeweir-node \
-  ghcr.io/edgeweir/edgeweir-node:<version>
+  ghcr.io/marvinli001/edgeweir-node:<version>
 read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # paste the one-time token
 docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
@@ -154,16 +160,16 @@ Releases are built in GitHub Actions from the tagged source (reproducible: `-tri
 ```sh
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/edgeweir/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-identity-regexp '^https://github\.com/marvinli001/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 sha256sum --ignore-missing -c checksums.txt
-gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo edgeweir/edgeweir-node
+gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli001/edgeweir-node
 ```
 
 ## Security
 
-No phone-home, no license checks, no telemetry. The node talks only to the console you enrolled it with. Report vulnerabilities to security@edgeweir.dev; see [SECURITY.md](SECURITY.md).
+No vendor phone-home or license checks. The control channel talks to your console; the data plane reaches your configured origins, and enabled OCSP checks reach certificate responders. Use [GitHub private vulnerability reporting](https://github.com/marvinli001/edgeweir-node/security/advisories/new); see [SECURITY.md](SECURITY.md).
 
 ## License
 

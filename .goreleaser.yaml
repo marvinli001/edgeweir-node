@@ -34,9 +34,9 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/edgeweir/edgeweir-node/internal/version.Version={{ .Version }}
-      - -X github.com/edgeweir/edgeweir-node/internal/version.Commit={{ .FullCommit }}
-      - -X github.com/edgeweir/edgeweir-node/internal/version.Date={{ .CommitDate }}
+      - -X github.com/marvinli001/edgeweir-node/internal/version.Version={{ .Version }}
+      - -X github.com/marvinli001/edgeweir-node/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/marvinli001/edgeweir-node/internal/version.Date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
@@ -179,9 +179,9 @@ release:
     ```sh
     cosign verify-blob \
       --bundle checksums.txt.sigstore.json \
-      --certificate-identity-regexp '^https://github\.com/edgeweir/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
+      --certificate-identity-regexp '^https://github\.com/marvinli001/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       checksums.txt
     sha256sum --ignore-missing -c checksums.txt
-    gh attestation verify <artifact> --repo edgeweir/edgeweir-node
+    gh attestation verify <artifact> --repo marvinli001/edgeweir-node
     ```

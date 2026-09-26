@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/edgeweir/edgeweir-node/internal/pki"
-	"github.com/edgeweir/edgeweir-node/internal/pki/pkitest"
+	"github.com/marvinli001/edgeweir-node/internal/pki"
+	"github.com/marvinli001/edgeweir-node/internal/pki/pkitest"
 )
 
 func TestNormalizePin(t *testing.T) {

@@ -22,13 +22,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
-	"github.com/edgeweir/edgeweir-node/internal/configstore"
-	"github.com/edgeweir/edgeweir-node/internal/controlplane"
-	"github.com/edgeweir/edgeweir-node/internal/dataplane"
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
-	"github.com/edgeweir/edgeweir-node/internal/identity"
-	"github.com/edgeweir/edgeweir-node/internal/render"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/configstore"
+	"github.com/marvinli001/edgeweir-node/internal/controlplane"
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/identity"
+	"github.com/marvinli001/edgeweir-node/internal/render"
 )
 
 // Engine is the data plane process controller (see package engine).
@@ -142,14 +142,15 @@ type Agent struct {
 	nodeID        string // guarded by mu; empty until the identity is known
 	connectedOnce sync.Once
 
-	mu        sync.Mutex
-	applied   *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
-	appliedAt time.Time
-	plan      *configir.Plan       // plan in effect (listeners and zones for tasks)
-	desired   *dataplane.SiteTable // table the data plane must serve
-	creds     map[string]configir.Credential
-	purge     *purgeState
-	lastPrune time.Time
+	mu           sync.Mutex
+	applied      *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
+	appliedAt    time.Time
+	plan         *configir.Plan       // plan in effect (listeners and zones for tasks)
+	desired      *dataplane.SiteTable // table the data plane must serve
+	creds        map[string]configir.Credential
+	certificates map[string]configir.Certificate
+	purge        *purgeState
+	lastPrune    time.Time
 	// purgeRetryAt: after installing the site-level fallback of the marker
 	// set, the full set is tried again from then on.
 	purgeRetryAt time.Time
@@ -162,11 +163,12 @@ type Agent struct {
 	rejectedAt   time.Time
 	lastRenew    time.Time
 
-	pushMu   sync.Mutex
-	purgeMu  sync.Mutex // serializes purge writes to the data plane
-	syncCh   chan struct{}
-	reportCh chan struct{}
-	taskCh   chan struct{}
+	pushMu       sync.Mutex
+	activationMu sync.Mutex // structural reload and table activation/compensation
+	purgeMu      sync.Mutex // serializes purge writes to the data plane
+	syncCh       chan struct{}
+	reportCh     chan struct{}
+	taskCh       chan struct{}
 }
 
 // New creates an agent.
@@ -176,18 +178,19 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		log = slog.Default()
 	}
 	return &Agent{
-		cfg:      cfg,
-		log:      log,
-		engine:   eng,
-		dp:       dp,
-		ids:      identity.Store{Dir: cfg.StateDir},
-		lkg:      configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
-		message:  "waiting for the first configuration",
-		creds:    map[string]configir.Credential{},
-		purge:    newPurgeState(),
-		syncCh:   make(chan struct{}, 1),
-		reportCh: make(chan struct{}, 1),
-		taskCh:   make(chan struct{}, 1),
+		cfg:          cfg,
+		log:          log,
+		engine:       eng,
+		dp:           dp,
+		ids:          identity.Store{Dir: cfg.StateDir},
+		lkg:          configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
+		message:      "waiting for the first configuration",
+		creds:        map[string]configir.Credential{},
+		certificates: map[string]configir.Certificate{},
+		purge:        newPurgeState(),
+		syncCh:       make(chan struct{}, 1),
+		reportCh:     make(chan struct{}, 1),
+		taskCh:       make(chan struct{}, 1),
 	}
 }
 
@@ -219,9 +222,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	})
 	a.loadCredentials()
+	a.loadCertificates()
 	a.loadPurge()
 	a.serveInitialConfig(ctx)
 	spawn("dataplane", a.dataPlaneLoop)
+	spawn("ocsp", a.ocspLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down
@@ -316,7 +321,10 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 		if perr == nil {
 			// No console yet: S3 origins use the stored credentials.
 			a.attachCredentials(plan)
-			perr = a.applyPlan(ctx, plan)
+			perr = a.attachCertificates(plan)
+			if perr == nil {
+				perr = a.applyPlan(ctx, plan)
+			}
 		}
 		if perr == nil {
 			a.mu.Lock()

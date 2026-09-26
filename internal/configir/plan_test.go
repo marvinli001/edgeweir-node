@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 func TestBuildHappyPath(t *testing.T) {
@@ -112,7 +112,7 @@ func TestBuildSkipsInvalidParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Listeners) != 1 || p.Listeners[0] != (Listener{Port: 8080, HTTP2: true}) {
+	if len(p.Listeners) != 2 || p.Listeners[0] != (Listener{Port: 443, TLS: true}) || p.Listeners[1] != (Listener{Port: 8080, HTTP2: true}) {
 		t.Fatalf("listeners = %+v", p.Listeners)
 	}
 	if len(p.CacheZones) != 1 || p.CacheZones[0].Name != "main" || p.CacheZones[0].MaxSizeMB != defaultZoneMaxSizeMB {
@@ -140,7 +140,7 @@ func TestBuildSkipsInvalidParts(t *testing.T) {
 	}
 	joined := strings.Join(p.Warnings, "\n")
 	for _, want := range []string{
-		"invalid port 0", "invalid port 70000", "HTTPS listener on port 443", "duplicate listener on port 8080",
+		"invalid port 0", "invalid port 70000", "duplicate listener on port 8080",
 		`cache zone "bad name"`, `cache zone "edgeweir_sites"`, `unknown cache zone "missing"`,
 		`invalid domain "bad_domain.test"`, `invalid domain "*.x.test"`, `wildcard over a top-level label "com"`,
 		`origin "bad-port"`, `origin "bad-addr"`, `origin "bad-host"`,

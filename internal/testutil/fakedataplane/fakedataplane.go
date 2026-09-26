@@ -13,19 +13,20 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/edgeweir/edgeweir-node/internal/dataplane"
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 )
 
 // Server is a fake control API.
 type Server struct {
 	Socket string
 
-	mu      sync.Mutex
-	status  dataplane.Status
-	table   *dataplane.SiteTable
-	pushes  []*dataplane.SiteTable
-	pending []dataplane.MinuteStats
-	failPut int
+	mu             sync.Mutex
+	status         dataplane.Status
+	table          *dataplane.SiteTable
+	pushes         []*dataplane.SiteTable
+	pending        []dataplane.MinuteStats
+	failPut        int
+	rejectRevision uint64
 	// Purge markers by identity (site, type, host, path, query) -> epoch.
 	markers    map[string]dataplane.PurgeMarker
 	purgeCalls []string
@@ -112,6 +113,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var t dataplane.SiteTable
 		if err := json.Unmarshal(body, &t); err != nil {
 			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		if t.Revision == s.rejectRevision && s.rejectRevision != 0 {
+			reply(w, 400, map[string]string{"error": "injected revision rejection"})
 			return
 		}
 		s.table = &t
@@ -267,6 +272,12 @@ func (s *Server) FailNextPuts(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failPut = n
+}
+
+func (s *Server) RejectRevision(revision uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectRevision = revision
 }
 
 // AddStats queues buckets returned by the next drain.

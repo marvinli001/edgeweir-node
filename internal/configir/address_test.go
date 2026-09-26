@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 func TestAddressPolicyForbiddenRanges(t *testing.T) {

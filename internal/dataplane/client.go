@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/edgeweir/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 )
 
 // SiteTable is the body of PUT /v1/sites.
@@ -31,12 +31,14 @@ type SiteTable struct {
 	OriginAllowedCIDRs []string `json:"origin_allowed_cidrs"`
 	// CDNID is this node's CDN-Loop identifier (RFC 8586); empty before
 	// the node is enrolled.
-	CDNID string `json:"cdn_id,omitempty"`
+	CDNID          string                   `json:"cdn_id,omitempty"`
+	HTTPChallenges []configir.HTTPChallenge `json:"http_challenges,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
 func FromPlan(p *configir.Plan) *SiteTable {
 	t := &SiteTable{Revision: p.Revision, ContentHash: p.ContentHash, Sites: p.Sites, OriginAllowedCIDRs: p.OriginAllowedCIDRs}
+	t.HTTPChallenges = p.HTTPChallenges
 	if t.Sites == nil {
 		t.Sites = []configir.Site{}
 	}

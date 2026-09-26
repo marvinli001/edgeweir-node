@@ -16,7 +16,7 @@ if [ "${1:-}" = "--check" ]; then
 fi
 src="${1:-../edgeweir}/docs/adr"
 dst="docs/adr"
-base="https://github.com/edgeweir/edgeweir/blob/master"
+base="https://github.com/marvinli001/edgeweir/blob/master"
 [ -d "$src" ] || { echo "no ADR directory at $src" >&2; exit 2; }
 
 tmp="$(mktemp -d)"

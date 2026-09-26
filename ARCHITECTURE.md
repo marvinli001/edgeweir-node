@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点当前（MVP M2 与 2026-09-25 收尾之后）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.2.2`）里的 `edgeweir.node.v1`。
+本文描述节点当前（MVP M2 与 2026-09-25 收尾之后）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.3.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -371,3 +371,7 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 - 预热只预热桌面变体；前缀与全站预热在 v1。
 - 没有最低 agent 版本门槛：旧节点遇到新的枚举值会退回默认值（控制面延后项 D1，M3）。
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。
+
+## MVP M3（2026-09-27）
+
+支持 HTTPS、HTTP/2、HTTP/3 与 SNI 证书热更新。证书材料在 certificates.json（0600）中保存当前与前一份 LKG 的引用；节点身份私钥与网站 TLS 私钥分别管理。激活后推送失败会恢复，配置未持久化不能回报 APPLIED。详情见控制面 docs/guide/https.md。

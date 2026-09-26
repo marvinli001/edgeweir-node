@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-`edgeweir-node` 是 [Edgeweir](https://edgeweir.dev) 的边缘节点。Edgeweir 是一个开源、自托管的 CDN / WAF / 边缘调度平台。每个节点由一个 Go agent 和它管理的 OpenResty 数据面组成：agent 向 Edgeweir 控制台注册，通过双向 TLS 接收配置，OpenResty 为所属集群的站点提供回源和缓存。
+`edgeweir-node` 是 [Edgeweir](https://github.com/marvinli001/edgeweir) 的边缘节点。Edgeweir 是一个开源、自托管的 CDN / WAF / 边缘调度平台。每个节点由一个 Go agent 和它管理的 OpenResty 数据面组成：agent 向 Edgeweir 控制台注册，通过双向 TLS 接收配置，OpenResty 为所属集群的站点提供回源和缓存。
 
 > **名字的由来**：Edgeweir 的名字来自「堰」（weir）。公元前 256 年前后，李冰主持修建都江堰，其中的飞沙堰位于内江的边缘：平时它让江水顺畅流向宝瓶口，灌溉成都平原；洪水来时，弯道环流把泥沙和多余的水甩过堰顶、排回外江。Edgeweir 想在网络的边缘做同样的事：放行正常流量，筛掉攻击，按需调度分流。
 
@@ -10,10 +10,16 @@
 
 | 仓库 | 内容 |
 | --- | --- |
-| [edgeweir/edgeweir](https://github.com/edgeweir/edgeweir) | 控制台（控制面）：TypeScript，一个应用、一个镜像。把站点和规则编译成与引擎无关的 `NodeConfig` IR，运行内部 CA 和节点通道（默认 `:8443`）。 |
+| [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，一个应用、一个镜像。把站点和规则编译成与引擎无关的 `NodeConfig` IR，运行内部 CA 和节点通道（默认 `:8443`）。 |
 | **edgeweir/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.2.2`）生成 Go 代码，从不复制 `.proto` 文件。
+两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.3.0`）生成 Go 代码，从不复制 `.proto` 文件。
+
+## 当前状态
+
+M3 已加入 SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS 和 Gzip。证书轮换热更新；结构性策略变更验证后重载，激活失败会恢复旧配置。当前引擎不提供 Brotli 和 Zstd。证书材料保存在 0600 的 `certificates.json` 中，主机管理员仍可读取。详见 [HTTPS 指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md)。
+
+目前没有正式二进制发布，下方安装说明描述的是发布流程。当前评估请从源码构建；MVP 尚不适合生产使用。
 
 ## 工作方式
 
@@ -53,7 +59,7 @@
 ```sh
 docker run -d --name edgeweir-node -p 80:80 \
   -v edgeweir-node:/var/lib/edgeweir-node \
-  ghcr.io/edgeweir/edgeweir-node:<版本>
+  ghcr.io/marvinli001/edgeweir-node:<版本>
 read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # 粘贴一次性 token
 docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
@@ -154,11 +160,11 @@ proto 重新生成流程和提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 ```sh
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/edgeweir/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-identity-regexp '^https://github\.com/marvinli001/edgeweir-node/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 sha256sum --ignore-missing -c checksums.txt
-gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo edgeweir/edgeweir-node
+gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli001/edgeweir-node
 ```
 
 ## 安全

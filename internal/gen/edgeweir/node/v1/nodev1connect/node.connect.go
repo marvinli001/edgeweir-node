@@ -8,7 +8,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	v1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	v1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	http "net/http"
 	strings "strings"
 )
@@ -50,6 +50,9 @@ const (
 	// NodeServiceGetOriginCredentialsProcedure is the fully-qualified name of the NodeService's
 	// GetOriginCredentials RPC.
 	NodeServiceGetOriginCredentialsProcedure = "/edgeweir.node.v1.NodeService/GetOriginCredentials"
+	// NodeServiceGetCertificatesProcedure is the fully-qualified name of the NodeService's
+	// GetCertificates RPC.
+	NodeServiceGetCertificatesProcedure = "/edgeweir.node.v1.NodeService/GetCertificates"
 	// NodeServicePullTasksProcedure is the fully-qualified name of the NodeService's PullTasks RPC.
 	NodeServicePullTasksProcedure = "/edgeweir.node.v1.NodeService/PullTasks"
 	// NodeServiceReportTaskResultProcedure is the fully-qualified name of the NodeService's
@@ -77,6 +80,8 @@ type NodeServiceClient interface {
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
 	GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error)
+	// Certificate material is returned only to nodes serving the referencing site.
+	GetCertificates(context.Context, *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error)
 	// PullTasks hands out pending typed tasks (cache purge, prefetch). Tasks
 	// are idempotent: a task is handed out again when no result arrives.
 	PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error)
@@ -137,6 +142,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("GetOriginCredentials")),
 			connect.WithClientOptions(opts...),
 		),
+		getCertificates: connect.NewClient[v1.GetCertificatesRequest, v1.GetCertificatesResponse](
+			httpClient,
+			baseURL+NodeServiceGetCertificatesProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("GetCertificates")),
+			connect.WithClientOptions(opts...),
+		),
 		pullTasks: connect.NewClient[v1.PullTasksRequest, v1.PullTasksResponse](
 			httpClient,
 			baseURL+NodeServicePullTasksProcedure,
@@ -161,6 +172,7 @@ type nodeServiceClient struct {
 	reportStatus         *connect.Client[v1.ReportStatusRequest, v1.ReportStatusResponse]
 	reportStats          *connect.Client[v1.ReportStatsRequest, v1.ReportStatsResponse]
 	getOriginCredentials *connect.Client[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse]
+	getCertificates      *connect.Client[v1.GetCertificatesRequest, v1.GetCertificatesResponse]
 	pullTasks            *connect.Client[v1.PullTasksRequest, v1.PullTasksResponse]
 	reportTaskResult     *connect.Client[v1.ReportTaskResultRequest, v1.ReportTaskResultResponse]
 }
@@ -200,6 +212,11 @@ func (c *nodeServiceClient) GetOriginCredentials(ctx context.Context, req *conne
 	return c.getOriginCredentials.CallUnary(ctx, req)
 }
 
+// GetCertificates calls edgeweir.node.v1.NodeService.GetCertificates.
+func (c *nodeServiceClient) GetCertificates(ctx context.Context, req *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error) {
+	return c.getCertificates.CallUnary(ctx, req)
+}
+
 // PullTasks calls edgeweir.node.v1.NodeService.PullTasks.
 func (c *nodeServiceClient) PullTasks(ctx context.Context, req *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error) {
 	return c.pullTasks.CallUnary(ctx, req)
@@ -230,6 +247,8 @@ type NodeServiceHandler interface {
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
 	GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error)
+	// Certificate material is returned only to nodes serving the referencing site.
+	GetCertificates(context.Context, *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error)
 	// PullTasks hands out pending typed tasks (cache purge, prefetch). Tasks
 	// are idempotent: a task is handed out again when no result arrives.
 	PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error)
@@ -286,6 +305,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("GetOriginCredentials")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceGetCertificatesHandler := connect.NewUnaryHandler(
+		NodeServiceGetCertificatesProcedure,
+		svc.GetCertificates,
+		connect.WithSchema(nodeServiceMethods.ByName("GetCertificates")),
+		connect.WithHandlerOptions(opts...),
+	)
 	nodeServicePullTasksHandler := connect.NewUnaryHandler(
 		NodeServicePullTasksProcedure,
 		svc.PullTasks,
@@ -314,6 +339,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceReportStatsHandler.ServeHTTP(w, r)
 		case NodeServiceGetOriginCredentialsProcedure:
 			nodeServiceGetOriginCredentialsHandler.ServeHTTP(w, r)
+		case NodeServiceGetCertificatesProcedure:
+			nodeServiceGetCertificatesHandler.ServeHTTP(w, r)
 		case NodeServicePullTasksProcedure:
 			nodeServicePullTasksHandler.ServeHTTP(w, r)
 		case NodeServiceReportTaskResultProcedure:
@@ -353,6 +380,10 @@ func (UnimplementedNodeServiceHandler) ReportStats(context.Context, *connect.Req
 
 func (UnimplementedNodeServiceHandler) GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetOriginCredentials is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) GetCertificates(context.Context, *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetCertificates is not implemented"))
 }
 
 func (UnimplementedNodeServiceHandler) PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error) {

@@ -2,9 +2,9 @@
 //
 // Release builds set these with:
 //
-//	-ldflags "-X github.com/edgeweir/edgeweir-node/internal/version.Version=... \
-//	          -X github.com/edgeweir/edgeweir-node/internal/version.Commit=... \
-//	          -X github.com/edgeweir/edgeweir-node/internal/version.Date=..."
+//	-ldflags "-X github.com/marvinli001/edgeweir-node/internal/version.Version=... \
+//	          -X github.com/marvinli001/edgeweir-node/internal/version.Commit=... \
+//	          -X github.com/marvinli001/edgeweir-node/internal/version.Date=..."
 package version
 
 import (

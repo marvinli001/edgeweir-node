@@ -4,13 +4,14 @@
 package hostinfo
 
 import (
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"net"
 	"os"
 	"runtime"
 	"slices"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
-	"github.com/edgeweir/edgeweir-node/internal/version"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/version"
 )
 
 // Engine is the data plane engine name reported to the console.
@@ -78,12 +79,13 @@ func CanListenIPv6() bool {
 // Collect builds the NodeInfo message.
 func Collect(engineVersion string) *nodev1.NodeInfo {
 	return &nodev1.NodeInfo{
-		Hostname:      Hostname(),
-		AgentVersion:  version.Version,
-		Os:            runtime.GOOS,
-		Arch:          runtime.GOARCH,
-		Engine:        Engine,
-		EngineVersion: engineVersion,
-		IpAddresses:   IPAddresses(),
+		Hostname:          Hostname(),
+		AgentVersion:      version.Version,
+		SupportedFeatures: slices.Clone(configir.SupportedFeatures),
+		Os:                runtime.GOOS,
+		Arch:              runtime.GOARCH,
+		Engine:            Engine,
+		EngineVersion:     engineVersion,
+		IpAddresses:       IPAddresses(),
 	}
 }

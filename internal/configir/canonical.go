@@ -30,7 +30,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	nodev1 "github.com/edgeweir/edgeweir-node/internal/gen/edgeweir/node/v1"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 // ErrHashMismatch is returned when a computed content hash differs from the
@@ -58,6 +58,11 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	// Go compares strings byte by byte, which is the canonical order.
 	slices.Sort(c.OriginAllowedCidrs)
 	c.OriginAllowedCidrs = slices.Compact(c.OriginAllowedCidrs)
+	slices.Sort(c.RequiredFeatures)
+	c.RequiredFeatures = slices.Compact(c.RequiredFeatures)
+	slices.SortStableFunc(c.HttpChallenges, func(a, b *nodev1.HttpChallenge) int {
+		return cmp.Compare(a.GetDomain()+"/"+a.GetToken(), b.GetDomain()+"/"+b.GetToken())
+	})
 	for _, s := range c.Sites {
 		CanonicalizeSite(s)
 	}
@@ -65,6 +70,10 @@ func Canonicalize(c *nodev1.NodeConfig) {
 
 // CanonicalizeSite sorts the repeated fields inside a site.
 func CanonicalizeSite(s *nodev1.Site) {
+	if s != nil && s.Tls != nil {
+		slices.Sort(s.Tls.GzipTypes)
+		s.Tls.GzipTypes = slices.Compact(s.Tls.GzipTypes)
+	}
 	if s == nil {
 		return
 	}
