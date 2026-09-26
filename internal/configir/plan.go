@@ -33,13 +33,14 @@ const (
 	DictHealth   = "edgeweir_health"
 	DictLimits   = "edgeweir_limits"
 	DictTopStats = "edgeweir_topstats"
+	DictLogs     = "edgeweir_logs"
 )
 
 // SharedDicts lists every lua_shared_dict of the data plane in the order
 // nginx.conf declares them. nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictLimits, DictTopStats}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictLimits, DictTopStats, DictLogs}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.
@@ -116,6 +117,7 @@ type CacheZone struct {
 
 // Site is a routable site.
 type Site struct {
+	LogSampleRate   uint32      `json:"log_sample_rate"`
 	ID              string      `json:"id"`
 	Name            string      `json:"name,omitempty"`
 	Domains         []Domain    `json:"domains"`
@@ -172,7 +174,7 @@ type HTTPChallenge struct {
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1"}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "access-logs-v1"}
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
@@ -453,8 +455,12 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			warn("site without id skipped")
 			continue
 		}
+		if s.GetLogSampleRate() > 10000 {
+			return nil, fmt.Errorf("%w: invalid log sample rate", ErrRejected)
+		}
 		pool := s.GetOriginPool()
 		site := Site{
+			LogSampleRate:   s.GetLogSampleRate(),
 			ID:              id,
 			Name:            s.GetName(),
 			CacheGeneration: s.GetCacheGeneration(),

@@ -12,12 +12,14 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 )
 
 // Server is a fake control API.
 type Server struct {
+	logs   []map[string]any
 	Socket string
 
 	mu             sync.Mutex
@@ -170,6 +172,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(w, 200, map[string]any{"origins": s.health})
+	case r.URL.Path == "/v1/logs/drain" && r.Method == http.MethodPost:
+		out := s.logs
+		s.logs = nil
+		reply(w, 200, map[string]any{"logs": out})
 	case r.URL.Path == "/v1/stats/drain" && r.Method == http.MethodPost:
 		out := s.pending
 		s.pending = nil
@@ -285,4 +291,10 @@ func (s *Server) AddStats(m ...dataplane.MinuteStats) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending = append(s.pending, m...)
+}
+
+func (s *Server) AddLog(site string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logs = append(s.logs, map[string]any{"site_id": site, "time": float64(time.Now().UnixMilli()) / 1000, "client_ip": "192.0.2.1", "method": "GET", "path": "/hello", "status": 200, "sample_rate": 10000})
 }

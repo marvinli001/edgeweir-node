@@ -22,6 +22,7 @@ function _M.log()
   if not site or site == "" then
     return
   end
+  require("edgeweir.accesslogs").log()
   local dict = ngx.shared.edgeweir_stats
   local p = (floor(ngx.time() / 60) * 60) .. "|" .. site .. "|"
   dict:incr(p .. "req", 1, 0, TTL)

@@ -50,6 +50,8 @@ const (
 	// NodeServiceReportStatsV2Procedure is the fully-qualified name of the NodeService's ReportStatsV2
 	// RPC.
 	NodeServiceReportStatsV2Procedure = "/edgeweir.node.v1.NodeService/ReportStatsV2"
+	// NodeServiceReportLogsProcedure is the fully-qualified name of the NodeService's ReportLogs RPC.
+	NodeServiceReportLogsProcedure = "/edgeweir.node.v1.NodeService/ReportLogs"
 	// NodeServiceGetOriginCredentialsProcedure is the fully-qualified name of the NodeService's
 	// GetOriginCredentials RPC.
 	NodeServiceGetOriginCredentialsProcedure = "/edgeweir.node.v1.NodeService/GetOriginCredentials"
@@ -82,6 +84,8 @@ type NodeServiceClient interface {
 	// Sequenced statistics endpoint. A pre-M5 console returns Unimplemented
 	// instead of processing retryable batches without deduplication.
 	ReportStatsV2(context.Context, *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error)
+	// Sequenced sampled logs; an empty sequence-zero request reads the cursor.
+	ReportLogs(context.Context, *connect.Request[v1.ReportLogsRequest]) (*connect.Response[v1.ReportLogsResponse], error)
 	// GetOriginCredentials returns origin credentials (e.g. S3 access keys)
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
@@ -148,6 +152,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportStatsV2")),
 			connect.WithClientOptions(opts...),
 		),
+		reportLogs: connect.NewClient[v1.ReportLogsRequest, v1.ReportLogsResponse](
+			httpClient,
+			baseURL+NodeServiceReportLogsProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("ReportLogs")),
+			connect.WithClientOptions(opts...),
+		),
 		getOriginCredentials: connect.NewClient[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse](
 			httpClient,
 			baseURL+NodeServiceGetOriginCredentialsProcedure,
@@ -184,6 +194,7 @@ type nodeServiceClient struct {
 	reportStatus         *connect.Client[v1.ReportStatusRequest, v1.ReportStatusResponse]
 	reportStats          *connect.Client[v1.ReportStatsRequest, v1.ReportStatsResponse]
 	reportStatsV2        *connect.Client[v1.ReportStatsV2Request, v1.ReportStatsV2Response]
+	reportLogs           *connect.Client[v1.ReportLogsRequest, v1.ReportLogsResponse]
 	getOriginCredentials *connect.Client[v1.GetOriginCredentialsRequest, v1.GetOriginCredentialsResponse]
 	getCertificates      *connect.Client[v1.GetCertificatesRequest, v1.GetCertificatesResponse]
 	pullTasks            *connect.Client[v1.PullTasksRequest, v1.PullTasksResponse]
@@ -225,6 +236,11 @@ func (c *nodeServiceClient) ReportStatsV2(ctx context.Context, req *connect.Requ
 	return c.reportStatsV2.CallUnary(ctx, req)
 }
 
+// ReportLogs calls edgeweir.node.v1.NodeService.ReportLogs.
+func (c *nodeServiceClient) ReportLogs(ctx context.Context, req *connect.Request[v1.ReportLogsRequest]) (*connect.Response[v1.ReportLogsResponse], error) {
+	return c.reportLogs.CallUnary(ctx, req)
+}
+
 // GetOriginCredentials calls edgeweir.node.v1.NodeService.GetOriginCredentials.
 func (c *nodeServiceClient) GetOriginCredentials(ctx context.Context, req *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error) {
 	return c.getOriginCredentials.CallUnary(ctx, req)
@@ -264,6 +280,8 @@ type NodeServiceHandler interface {
 	// Sequenced statistics endpoint. A pre-M5 console returns Unimplemented
 	// instead of processing retryable batches without deduplication.
 	ReportStatsV2(context.Context, *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error)
+	// Sequenced sampled logs; an empty sequence-zero request reads the cursor.
+	ReportLogs(context.Context, *connect.Request[v1.ReportLogsRequest]) (*connect.Response[v1.ReportLogsResponse], error)
 	// GetOriginCredentials returns origin credentials (e.g. S3 access keys)
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
@@ -326,6 +344,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportStatsV2")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceReportLogsHandler := connect.NewUnaryHandler(
+		NodeServiceReportLogsProcedure,
+		svc.ReportLogs,
+		connect.WithSchema(nodeServiceMethods.ByName("ReportLogs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	nodeServiceGetOriginCredentialsHandler := connect.NewUnaryHandler(
 		NodeServiceGetOriginCredentialsProcedure,
 		svc.GetOriginCredentials,
@@ -366,6 +390,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceReportStatsHandler.ServeHTTP(w, r)
 		case NodeServiceReportStatsV2Procedure:
 			nodeServiceReportStatsV2Handler.ServeHTTP(w, r)
+		case NodeServiceReportLogsProcedure:
+			nodeServiceReportLogsHandler.ServeHTTP(w, r)
 		case NodeServiceGetOriginCredentialsProcedure:
 			nodeServiceGetOriginCredentialsHandler.ServeHTTP(w, r)
 		case NodeServiceGetCertificatesProcedure:
@@ -409,6 +435,10 @@ func (UnimplementedNodeServiceHandler) ReportStats(context.Context, *connect.Req
 
 func (UnimplementedNodeServiceHandler) ReportStatsV2(context.Context, *connect.Request[v1.ReportStatsV2Request]) (*connect.Response[v1.ReportStatsV2Response], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportStatsV2 is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) ReportLogs(context.Context, *connect.Request[v1.ReportLogsRequest]) (*connect.Response[v1.ReportLogsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportLogs is not implemented"))
 }
 
 func (UnimplementedNodeServiceHandler) GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error) {

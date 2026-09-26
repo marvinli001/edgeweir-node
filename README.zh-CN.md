@@ -180,3 +180,5 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 ## 许可证
 
 [AGPL-3.0](LICENSE)。路线图见 [ROADMAP.md](ROADMAP.md)。
+
+M6 采样访问日志已接入（proto/v0.6.0）：默认关闭，不记录查询参数、请求头或正文，使用有界私有队列和持久批次确认。详见[日志与存储指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md)。节点签名自升级仍在实施。

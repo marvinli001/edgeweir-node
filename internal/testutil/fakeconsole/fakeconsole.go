@@ -46,6 +46,10 @@ type GetConfigCall struct {
 
 // Console is the fake NodeService.
 type Console struct {
+	logsSequence    uint64
+	logsAckFailures int
+	logsSequences   []uint64
+	logs            []*nodev1.AccessLog
 	nodev1connect.UnimplementedNodeServiceHandler
 
 	CA   *pkitest.CA
@@ -549,4 +553,47 @@ func (c *Console) StatsSequences() []uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.statsSequences)
+}
+
+// ReportLogs implements NodeService.
+func (c *Console) ReportLogs(_ context.Context, req *connect.Request[nodev1.ReportLogsRequest]) (*connect.Response[nodev1.ReportLogsResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if req.Msg.BatchSequence == 0 && len(req.Msg.Logs) == 0 {
+		return connect.NewResponse(&nodev1.ReportLogsResponse{BatchSequence: c.logsSequence}), nil
+	}
+	accepted := uint32(0)
+	c.logsSequences = append(c.logsSequences, req.Msg.BatchSequence)
+	if req.Msg.BatchSequence > c.logsSequence {
+		for _, s := range req.Msg.Logs {
+			c.logs = append(c.logs, proto.CloneOf(s))
+		}
+		accepted = uint32(len(req.Msg.Logs))
+		c.logsSequence = req.Msg.BatchSequence
+	}
+	if c.logsAckFailures > 0 {
+		c.logsAckFailures--
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test acknowledgement lost after commit"))
+	}
+	return connect.NewResponse(&nodev1.ReportLogsResponse{Accepted: accepted, BatchSequence: req.Msg.BatchSequence}), nil
+}
+
+func (c *Console) FailLogsAcknowledgements(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logsAckFailures = n
+}
+func (c *Console) LogsSequences() []uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.logsSequences)
+}
+func (c *Console) Logs() []*nodev1.AccessLog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := []*nodev1.AccessLog{}
+	for _, l := range c.logs {
+		out = append(out, proto.CloneOf(l))
+	}
+	return out
 }

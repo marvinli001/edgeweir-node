@@ -824,9 +824,11 @@ type Site struct {
 	// Reject WebSocket upgrades. WebSocket is proxied to the origin by default.
 	WebsocketDisabled bool        `protobuf:"varint,12,opt,name=websocket_disabled,json=websocketDisabled,proto3" json:"websocket_disabled,omitempty"`
 	Tls               *TlsOptions `protobuf:"bytes,13,opt,name=tls,proto3" json:"tls,omitempty"`
-	Rules             []*EdgeRule `protobuf:"bytes,14,rep,name=rules,proto3" json:"rules,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Basis points, 0 disables sampled access logs, 10000 records every request.
+	LogSampleRate uint32      `protobuf:"varint,15,opt,name=log_sample_rate,json=logSampleRate,proto3" json:"log_sample_rate,omitempty"`
+	Rules         []*EdgeRule `protobuf:"bytes,14,rep,name=rules,proto3" json:"rules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Site) Reset() {
@@ -948,6 +950,13 @@ func (x *Site) GetTls() *TlsOptions {
 		return x.Tls
 	}
 	return nil
+}
+
+func (x *Site) GetLogSampleRate() uint32 {
+	if x != nil {
+		return x.LogSampleRate
+	}
+	return 0
 }
 
 func (x *Site) GetRules() []*EdgeRule {
@@ -2443,7 +2452,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\vmax_size_mb\x18\x02 \x01(\x04R\tmaxSizeMb\x12 \n" +
 	"\fkeys_zone_mb\x18\x03 \x01(\rR\n" +
 	"keysZoneMb\x12)\n" +
-	"\x10inactive_seconds\x18\x04 \x01(\rR\x0finactiveSeconds\"\xd7\x04\n" +
+	"\x10inactive_seconds\x18\x04 \x01(\rR\x0finactiveSeconds\"\xff\x04\n" +
 	"\x04Site\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -2462,7 +2471,8 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\vrange_slice\x18\v \x01(\bR\n" +
 	"rangeSlice\x12-\n" +
 	"\x12websocket_disabled\x18\f \x01(\bR\x11websocketDisabled\x12.\n" +
-	"\x03tls\x18\r \x01(\v2\x1c.edgeweir.node.v1.TlsOptionsR\x03tls\x120\n" +
+	"\x03tls\x18\r \x01(\v2\x1c.edgeweir.node.v1.TlsOptionsR\x03tls\x12&\n" +
+	"\x0flog_sample_rate\x18\x0f \x01(\rR\rlogSampleRate\x120\n" +
 	"\x05rules\x18\x0e \x03(\v2\x1a.edgeweir.node.v1.EdgeRuleR\x05rules\"\xc1\x01\n" +
 	"\x0eRuleExpression\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x14\n" +

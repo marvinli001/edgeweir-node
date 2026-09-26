@@ -183,6 +183,7 @@ func sharedDicts(p Params) ([]sharedDict, error) {
 		configir.DictHealth:   4,
 		configir.DictLimits:   16,
 		configir.DictTopStats: 8,
+		configir.DictLogs:     8,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {

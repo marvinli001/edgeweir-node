@@ -180,3 +180,5 @@ No vendor phone-home or license checks. The control channel talks to your consol
 ## License
 
 [AGPL-3.0](LICENSE). Roadmap: [ROADMAP.md](ROADMAP.md).
+
+M6 sampled access logs are available (proto/v0.6.0). Collection is off by default, excludes query strings, headers and bodies, and uses bounded private queues with sequenced acknowledgements. See the [log and storage guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md). Signed node self-upgrade is still being implemented.

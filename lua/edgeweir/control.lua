@@ -91,6 +91,11 @@ function _M.handle()
     return reply(200, res)
   end
 
+  if uri == "/v1/logs/drain" then
+    if method ~= "POST" then return reply(405, { error = "method not allowed" }) end
+    return reply(200, { logs = require("edgeweir.accesslogs").drain() })
+  end
+
   if uri == "/v1/stats/drain" then
     if method ~= "POST" then
       return reply(405, { error = "method not allowed" })

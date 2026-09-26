@@ -270,6 +270,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("poll", a.pollLoop)
 	spawn("report", a.reportLoop)
 	spawn("stats", a.statsLoop)
+	spawn("logs", a.logsLoop)
 	spawn("tasks", a.taskLoop)
 	a.triggerSync()
 

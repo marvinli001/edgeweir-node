@@ -89,7 +89,8 @@ func (a *Agent) saveStatsSpool(state *statsSpool) error {
 
 // statsLoop persists the sequence and immutable payload before making a call.
 // A lost acknowledgement, failed local ACK write, or agent restart resends the
-// same sequence. Completed counters remain in Lua while disk writes are failing.
+// same sequence. New counters stay in Lua while a drained batch awaits a disk write. A crash
+// before that write may lose the in-memory batch.
 func (a *Agent) statsLoop(ctx context.Context) {
 	var state *statsSpool
 	dirty := false
