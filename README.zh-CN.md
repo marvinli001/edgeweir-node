@@ -33,7 +33,7 @@ M6 使用稳定的 `supervise` 监督进程，本机固定发布源及信任锚�
 
 1. **注册**：`edgeweir-node enroll` 在本机生成 ECDSA P-256 私钥（私钥从不离开节点），按安装命令里的 SHA-256 固定（pin）控制台的内部 CA，然后用一次性 token 和 CSR 换取节点证书。
 2. **mTLS 通道**：之后所有 RPC 都用节点证书认证。`WatchConfig` 服务端流推送 revision 通知，另外约每 30 秒轮询一次 `GetConfig` 兜底（间隔带 ±20% 的随机抖动，避免节点同时轮询）。
-3. **应用配置**：快照和增量 diff 都先校验 `content_hash`，再做合法性检查。只有结构性变更（监听端口、缓存 zone、resolver）才重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；站点、源站、缓存规则通过本地 unix socket 热更新，不 reload。应用成功的配置作为 last-known-good（LKG）配置落盘。
+3. **应用配置**：快照和增量 diff 都先校验 `content_hash`，再做合法性检查。结构性变更（监听端口、缓存 zone、resolver 和已发布站点 ID 集合）会重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；既有站点的普通源站、缓存和策略规则通过本地 unix socket 热更新，不 reload。应用成功的配置作为 last-known-good（LKG）配置落盘。
 4. **服务流量**：Lua 数据面按 `Host` 路由，用 `proxy_cache` 缓存（响应头 `X-Cache: MISS/HIT/BYPASS`），在源站池之间负载均衡并做被动健康检查；未知域名返回 `404` 和 `X-Edgeweir-Error: unknown-host`。源站不能指向特殊地址段（回环、链路本地/云元数据、私网等），除非平台管理员放行；发往源站的每个请求都带 `CDN-Loop`，回环请求以 `508` 结束。
 5. **任务与回报**：清缓存和预热任务、状态心跳（带已应用的 revision 和源站健康状态）、按站点按分钟的流量统计、证书自动续期。
 
@@ -144,6 +144,8 @@ edgeweir-node version
 | `/usr/share/edgeweir-node/lua` | Lua 模块 |
 | `:80` | 收到配置之前的 HTTP 监听端口；之后以配置中的监听端口为准 |
 
+每个已发布站点独占固定 256 KiB 限速计数分区，每集群最多发布 512 个站点。其他站点不能占用该分区，新增站点也不会调整既有分区大小。见[限速存储说明](docs/rate-limit-storage.md)。
+
 ## 构建与测试
 
 需要 Go 1.27.1 和 Docker；做发布相关工作还需要 buf、goreleaser 和 syft。
@@ -183,7 +185,7 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 
 ## 安全
 
-没有 phone-home，没有授权校验，没有遥测。节点只和你注册时指定的控制台通信。漏洞请报告到 security@edgeweir.dev，详见 [SECURITY.md](SECURITY.md)。
+没有 phone-home，没有授权校验，没有遥测。节点只和你注册时指定的控制台通信。漏洞请通过 [GitHub 私密安全公告](https://github.com/marvinli001/edgeweir-node/security/advisories/new)报告，详见 [SECURITY.md](SECURITY.md)。
 
 ## 许可证
 

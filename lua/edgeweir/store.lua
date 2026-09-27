@@ -27,6 +27,7 @@ local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local ipaddr = require("edgeweir.ipaddr")
 local policy = require("edgeweir.policy")
+local ratelimit = require("edgeweir.ratelimit")
 
 local _M = {}
 
@@ -119,6 +120,7 @@ end
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
 function _M.prepare(s, cfg)
+  s._rate_limit_dict = ngx.shared[ratelimit.dict_name(s.id)]
   s._config = cfg or policy.prepare_config({})
   s._rule_groups = policy.prepare_rules(s.rules, s._config.lists)
   local function geo(r)

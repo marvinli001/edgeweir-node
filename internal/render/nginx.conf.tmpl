@@ -36,9 +36,9 @@ http {
     scgi_temp_path {{ .Prefix }}/tmp/scgi;
 
     lua_package_path "{{ .LuaDir }}/?.lua;;";
-{{- /* configir.SharedDicts: every shared dict is declared there */}}
+{{- /* Static dictionaries and one reserved counter partition per site. */}}
 {{- range .SharedDicts }}
-    lua_shared_dict {{ .Name }} {{ .SizeMB }}m;
+    lua_shared_dict {{ .Name }} {{ if .SizeKB }}{{ .SizeKB }}k{{ else }}{{ .SizeMB }}m{{ end }};
 {{- end }}
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).

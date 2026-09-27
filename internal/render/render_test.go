@@ -82,8 +82,9 @@ func TestRenderFullGolden(t *testing.T) {
 	golden(t, "full.conf.golden", got)
 }
 
-func TestRenderIgnoresSitesAndRevision(t *testing.T) {
+func TestRenderIgnoresHotSiteFieldsAndRevision(t *testing.T) {
 	a := configir.Bootstrap(80)
+	a.Sites = []configir.Site{{ID: "s1"}}
 	b := configir.Bootstrap(80)
 	b.Revision = 42
 	b.ContentHash = "abc"
@@ -91,7 +92,12 @@ func TestRenderIgnoresSitesAndRevision(t *testing.T) {
 	ra, _ := Render(params(), a)
 	rb, _ := Render(params(), b)
 	if !bytes.Equal(ra, rb) {
-		t.Fatal("site or revision changes altered nginx.conf (would trigger needless reloads)")
+		t.Fatal("hot site fields or revision altered nginx.conf")
+	}
+	b.Sites = append(b.Sites, configir.Site{ID: "s2"})
+	rb, _ = Render(params(), b)
+	if bytes.Equal(ra, rb) {
+		t.Fatal("new site did not reserve an independent counter partition")
 	}
 	c := configir.Bootstrap(8080)
 	rc, _ := Render(params(), c)

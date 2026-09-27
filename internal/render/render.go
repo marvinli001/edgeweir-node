@@ -1,9 +1,8 @@
 // Package render produces the OpenResty nginx.conf from a validated plan.
 //
-// The rendered file only depends on structural settings (listeners, cache
-// zones, resolver, paths), never on sites, so comparing the rendered bytes
-// is exactly the "structural change" test that decides between a reload and
-// a hot update through the control socket.
+// The rendered file depends on structural settings and the set of site IDs,
+// which determines reserved rate-limit partitions. Ordinary site rules and
+// lists remain hot updates through the control socket.
 package render
 
 import (
@@ -15,6 +14,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -170,20 +170,20 @@ type data struct {
 type sharedDict struct {
 	Name   string
 	SizeMB int
+	SizeKB int
 }
 
-// sharedDicts sizes every dict of configir.SharedDicts, the single list
-// that also keeps cache zones from reusing these names.
-func sharedDicts(p Params) ([]sharedDict, error) {
+// sharedDicts sizes static dictionaries and the reserved site partitions.
+func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 	sizes := map[string]int{
-		configir.DictSites:    p.SitesDictMB,
-		configir.DictMeta:     1,
-		configir.DictStats:    p.StatsDictMB,
-		configir.DictPurge:    p.PurgeDictMB,
-		configir.DictHealth:   4,
-		configir.DictLimits:   16,
-		configir.DictTopStats: 8,
-		configir.DictLogs:     8,
+		configir.DictSites:      p.SitesDictMB,
+		configir.DictMeta:       1,
+		configir.DictStats:      p.StatsDictMB,
+		configir.DictPurge:      p.PurgeDictMB,
+		configir.DictHealth:     4,
+		configir.DictPolicyLogs: 1,
+		configir.DictTopStats:   8,
+		configir.DictLogs:       8,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {
@@ -192,6 +192,31 @@ func sharedDicts(p Params) ([]sharedDict, error) {
 			return nil, fmt.Errorf("no size for shared dict %s", name)
 		}
 		out = append(out, sharedDict{Name: name, SizeMB: mb})
+	}
+	if len(sites) > configir.MaxPublishedSites {
+		return nil, fmt.Errorf("configuration exceeds %d published sites", configir.MaxPublishedSites)
+	}
+	if len(sites) == 0 {
+		return out, nil
+	}
+	names := make([]string, 0, len(sites))
+	seen := make(map[string]bool, len(sites))
+	for _, site := range sites {
+		name, err := configir.RateLimitDictName(site.ID)
+		if err != nil {
+			return nil, err
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate rate-limit site ID %q", site.ID)
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	// Fixed names and sizes let nginx reuse existing counters when another
+	// site is added or removed. The admission limit bounds total allocation.
+	for _, name := range names {
+		out = append(out, sharedDict{Name: name, SizeKB: configir.RateLimitSiteKB})
 	}
 	return out, nil
 }
@@ -287,11 +312,11 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		}
 	}
 	for _, z := range plan.CacheZones {
-		if !safeWord.MatchString(z.Name) {
+		if !safeWord.MatchString(z.Name) || strings.HasPrefix(z.Name, configir.RateLimitDictPrefix) {
 			return nil, fmt.Errorf("invalid cache zone name %q", z.Name)
 		}
 	}
-	dicts, err := sharedDicts(p)
+	dicts, err := sharedDicts(p, plan.Sites)
 	if err != nil {
 		return nil, err
 	}

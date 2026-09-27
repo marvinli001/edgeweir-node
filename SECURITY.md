@@ -1,14 +1,14 @@
 # 安全策略
 
-English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordinated disclosure.
+English summary: report vulnerabilities through [GitHub private advisories](https://github.com/marvinli001/edgeweir-node/security/advisories/new); 90-day coordinated disclosure.
 
-本文适用于边缘节点 `edgeweir-node`。控制面 [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) 遵循同一套信任基线，它的漏洞也请发到同一个邮箱。
+本文适用于边缘节点 `edgeweir-node`。控制面 [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) 遵循同一套信任基线，控制面问题请使用[控制面私密安全公告](https://github.com/marvinli001/edgeweir/security/advisories/new)。
 
 ## 报告漏洞
 
-请发邮件到 **security@edgeweir.dev**。请不要开公开 issue、PR，也不要在讨论区贴细节。
+请使用 [GitHub 私密安全公告](https://github.com/marvinli001/edgeweir-node/security/advisories/new)。请不要开公开 issue、PR，也不要在讨论区贴细节。
 
-邮件里请尽量包含：
+报告中请尽量包含：
 
 - 受影响的版本：`edgeweir-node version` 的输出（控制面问题请附控制台版本）
 - 复现步骤、相关配置或 PoC
@@ -26,10 +26,10 @@ English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordin
 
 | 版本 | 是否提供安全修复 |
 |---|---|
-| 最新的 minor 版本 | 是 |
-| 更早的版本 | 否，请升级 |
+| `master` 最新代码 | 是 |
+| 其他版本 | 否，请升级 |
 
-1.0 之前只维护 `master` 分支和最新一次 release。
+1.0 之前只维护 `master` 分支的最新代码，修复不回移到旧版本。正式发布时会更新支持周期。
 
 ## 信任与安全基线
 
@@ -58,7 +58,7 @@ English summary: report vulnerabilities to security@edgeweir.dev; 90-day coordin
 状态目录 `/var/lib/edgeweir-node` 权限 `0700`，属于服务用户。其中：
 
 - `node.key`（0600）：节点私钥。
-- `credentials.json`（0600）：当前配置引用的 S3 源站凭据，access key 和 secret key 是**明文**。它让节点在控制面不可达时重启后仍能为 S3 源站签名；凭据只经 mTLS 的 `GetOriginCredentials` 获取，不进入配置和 LKG，不再被引用时从文件中删除。能读取该文件的人可以访问对应的存储桶，请只授予只读的最小权限。
+- `credentials.json`（0600）：当前与前一份同集群 LKG 配置引用的 S3 源站凭据，access key 和 secret key 是**明文**。它让节点在控制面不可达时重启后仍能为 S3 源站签名；凭据只经 mTLS 的 `GetOriginCredentials` 获取，不进入配置和 LKG，两份配置均不再引用时从文件中删除。能读取该文件的人可以访问对应的存储桶，请只授予只读的最小权限。
 - `purge.json`（0600）：清缓存标记和任务时间，不含敏感数据。文件存在但无法读取或解析时，节点在下一次应用配置时给每个站点加一个全站标记（宁可多刷）；文件缺失则视为没有标记，已清除的内容会重新可见，所以不要删除它。
 - `config/`（目录 0700，`current.binpb`、`previous.binpb` 为 0600）：last-known-good 配置及其备份，不含凭据。
 

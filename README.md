@@ -33,7 +33,7 @@ Opaque configuration receipts are persisted before apply and returned over mTLS.
 
 1. **Enroll**: `edgeweir-node enroll` generates an ECDSA P-256 key locally (it never leaves the node), pins the console's internal CA by the SHA-256 in the install command, and exchanges a single-use token and a CSR for a node certificate.
 2. **mTLS channel**: every later RPC uses the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is also polled about every 30 s (with ±20 % jitter, so that nodes do not poll in lockstep) as a fallback.
-3. **Apply**: snapshots and diffs are verified against the `content_hash` and validated. Only structural changes (listeners, cache zones, resolver) re-render `nginx.conf` and reload OpenResty after `openresty -t`; sites, origins and cache rules are hot-updated through a local unix socket. A configuration that applied is persisted as the last-known-good (LKG) configuration.
+3. **Apply**: snapshots and diffs are verified against the `content_hash` and validated. Structural changes (listeners, cache zones, resolver and the set of published site IDs) re-render `nginx.conf` and reload OpenResty after `openresty -t`; ordinary existing-site origins, cache rules and policy rules are hot-updated through a local unix socket. A configuration that applied is persisted as the last-known-good (LKG) configuration.
 4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (responses carry `X-Cache: MISS/HIT/BYPASS`), balances over origin pools with passive health checks, and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`. Origins may not point at special-purpose addresses (loopback, link-local/cloud metadata, private networks, ...) unless the platform administrator allows them, and every upstream request carries `CDN-Loop`, so loops end with `508`.
 5. **Tasks and reports**: purge and prefetch tasks, status heartbeats with the applied revision and origin health, per-site per-minute traffic stats, and automatic certificate renewal.
 
@@ -143,6 +143,8 @@ Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for exa
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | local edge listener and the internal origin layers |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
 | `:80` | HTTP listener before any configuration; afterwards the listeners in the config |
+
+Each published site reserves a fixed 256 KiB counter partition; a cluster supports up to 512 published sites. Other sites cannot consume that partition, and adding a site does not resize existing partitions. See [rate-limit storage](docs/rate-limit-storage.md).
 
 ## Build and test
 

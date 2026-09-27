@@ -137,7 +137,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 4. **清缓存标记与站点表**：装入清缓存标记（§3.4；`purge.json` 无法读取时先给每个站点加全站标记），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
 5. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
 
-`nginx.conf` 只包含结构性设置，站点数据从不写进去，所以"渲染结果是否变化"就是"是否需要 reload"的判定：站点、源站、缓存规则、缓存代际号、允许清单的变化只走热更新。
+`nginx.conf` 包含结构性设置和为每个站点预留的限速分区名称，站点业务数据仍通过私有 socket 下发。新增或移除站点 ID 会重载；既有站点的普通源站、规则、缓存代际号与允许清单变更仍走热更新。固定分区大小不随其他站点增删改变。
 
 ### 2.4 状态回报、续期、统计
 
@@ -324,7 +324,8 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 | 监听端口、HTTP/2、PROXY protocol | 重新渲染 → `openresty -t` → reload（HUP）→ 确认新配置 id |
 | cache zone（增删、大小） | 同上 |
 | resolver（`/etc/resolv.conf`，agent 启动时读取）、trusted CA、shared dict 大小 | 同上（agent 启动参数） |
-| 站点、域名、源站、缓存规则、TTL、缓存代际号、允许清单 | 热更新：`PUT /v1/sites`，不 reload |
+| 新增或移除已发布站点 ID | 更新逐站点限速分区后重载 |
+| 既有站点的普通域名、源站、缓存规则、TTL、缓存代际号、允许清单 | 热更新：`PUT /v1/sites`，不 reload（涉及 HTTPS 结构策略时除外） |
 | 清缓存 | 热更新：`POST` / `PUT /v1/purge` |
 
 `resolver` 取自 `/etc/resolv.conf` 的 nameserver（Docker 中为 `127.0.0.11`；IPv6 加方括号；带 zone 的链路本地地址跳过；没有时回退到 `127.0.0.1`），Lua 按 min(TTL, 30s) 缓存结果（失败 5 秒）；主机没有全局 IPv6 地址时不查询 AAAA。

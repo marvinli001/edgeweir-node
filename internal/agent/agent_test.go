@@ -278,8 +278,8 @@ func TestAgentEndToEnd(t *testing.T) {
 	}
 	_, reloadsAfter1, _ := eng.counts()
 
-	// Revision 2 changes sites only: delivered as a diff, hot-updated,
-	// no nginx reload.
+	// A newly published site reserves its own dictionary, so revision 2
+	// arrives as a diff but requires one structural reload.
 	rev2 := console.Publish(baseConfig(demoSite("site-a", "a.test"), demoSite("site-b", "b.test")))
 	eventually(t, "revision 2 applied", statusWith(console, rev2, nodev1.ApplyState_APPLY_STATE_APPLIED))
 	if tb := dp.Table(); tb.Revision != rev2 || len(tb.Sites) != 2 {
@@ -290,11 +290,31 @@ func TestAgentEndToEnd(t *testing.T) {
 	}) {
 		t.Fatalf("revision 2 was not fetched as a diff against revision 1: %+v", console.GetConfigCalls())
 	}
-	if _, reloads, _ := eng.counts(); reloads != reloadsAfter1 {
-		t.Fatalf("site-only change reloaded nginx (%d -> %d)", reloadsAfter1, reloads)
+	if _, reloads, _ := eng.counts(); reloads != reloadsAfter1+1 {
+		t.Fatalf("new site must add one structural reload (%d -> %d)", reloadsAfter1, reloads)
+	}
+	_, reloadsAfter2, _ := eng.counts()
+
+	// Updating existing content and enabling the first rate rule use the
+	// already reserved partition, so this revision remains a hot update.
+	cfgHot := baseConfig(demoSite("site-a", "a.test"), demoSite("site-b", "b.test"))
+	cfgHot.Sites[0].Name = "Updated site A"
+	cfgHot.Sites[0].CacheRules[0].EdgeTtlSeconds = 120
+	cfgHot.Sites[0].Rules = []*nodev1.EdgeRule{{
+		Id: "requests-a", Phase: "ratelimit",
+		Expression: &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"},
+		Action:     &nodev1.RuleAction{Kind: "rate_limit", Key: "ip.src", Limit: 10, WindowSeconds: 60, StatusCode: 429},
+	}}
+	revHot := console.Publish(cfgHot)
+	eventually(t, "existing site hot update applied", statusWith(console, revHot, nodev1.ApplyState_APPLY_STATE_APPLIED))
+	if table := dp.Table(); table.Sites[0].Name != "Updated site A" || table.Sites[0].CacheRules[0].TTL != 120 || len(table.Sites[0].Rules) != 1 {
+		t.Fatalf("hot site changes missing: %+v", table)
+	}
+	if _, reloads, _ := eng.counts(); reloads != reloadsAfter2 {
+		t.Fatalf("existing-site content or first rate rule reloaded nginx (%d -> %d)", reloadsAfter2, reloads)
 	}
 
-	// Revision 3 adds a listener (structural: reload) and its diff carries
+	// The next revision adds a listener (structural: reload) and its diff carries
 	// a wrong hash: the agent must fall back to a full snapshot.
 	console.CorruptNextDiff()
 	cfg3 := baseConfig(demoSite("site-a", "a.test"), demoSite("site-b", "b.test"))
@@ -303,17 +323,17 @@ func TestAgentEndToEnd(t *testing.T) {
 	eventually(t, "revision 3 applied", statusWith(console, rev3, nodev1.ApplyState_APPLY_STATE_APPLIED))
 	calls = console.GetConfigCalls()
 	if !hasCall(calls, func(c fakeconsole.GetConfigCall) bool {
-		return !c.Snapshot && c.Request.GetBaseRevision() == rev2 && c.Revision == rev3
+		return !c.Snapshot && c.Request.GetBaseRevision() == revHot && c.Revision == rev3
 	}) || !hasCall(calls, func(c fakeconsole.GetConfigCall) bool {
 		return c.Snapshot && c.Request.GetBaseRevision() == 0 && c.Revision == rev3
 	}) {
 		t.Fatalf("expected corrupted diff followed by snapshot fallback: %+v", calls)
 	}
-	if _, reloads, conf := eng.counts(); reloads != reloadsAfter1+1 || !strings.Contains(conf, "listen 8080 default_server;") {
-		t.Fatalf("structural change: reloads %d -> %d, conf has 8080: %v", reloadsAfter1, reloads, strings.Contains(conf, "8080"))
+	if _, reloads, conf := eng.counts(); reloads != reloadsAfter2+1 || !strings.Contains(conf, "listen 8080 default_server;") {
+		t.Fatalf("structural change: reloads %d -> %d, conf has 8080: %v", reloadsAfter2, reloads, strings.Contains(conf, "8080"))
 	}
 
-	// Revision 4 uses a rule expression: rejected, LKG keeps serving.
+	// A subsequent legacy rule expression is rejected; LKG keeps serving.
 	cfg4 := baseConfig(demoSite("site-a", "a.test"))
 	cfg4.Sites[0].CacheRules[0].Match.Expression = `http.host eq "a.test"`
 	console.Publish(cfg4)

@@ -17,6 +17,7 @@ local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local purge = require("edgeweir.purge")
 local policy = require("edgeweir.policy")
+local ipaddr = require("edgeweir.ipaddr")
 
 local _M = {}
 
@@ -209,6 +210,31 @@ function _M.access()
   var.edgeweir_cache_key = cachekey.build(site, key_request(site, var, path, headers), epoch)
 end
 
+local function port_number(value)
+  value = tostring(value or "")
+  if not value:match("^%d+$") then return nil end
+  local port = tonumber(value)
+  if port and port >= 1 and port <= 65535 then return port end
+end
+
+-- Host describes the public authority, including when a proxy forwards to a
+-- different local port. An authority without a port uses the HTTPS default.
+function _M.http3_port(authority, listener_port)
+  if type(authority) ~= "string" or authority == "" then
+    return port_number(listener_port) or 443
+  end
+  if authority:sub(1, 1) == "[" then
+    local host, suffix = authority:match("^%[([^%]]+)%](.*)$")
+    local address = host and ipaddr.parse(host)
+    if not address or #address ~= 16 then return nil end
+    if suffix == "" then return 443 end
+    return port_number(suffix:match("^:(%d+)$"))
+  end
+  if authority:match("^[A-Za-z0-9][A-Za-z0-9.-]*$") then return 443 end
+  local host, port = authority:match("^([A-Za-z0-9][A-Za-z0-9.-]*):(%d+)$")
+  if host then return port_number(port) end
+end
+
 function _M.header_filter()
   local h = ngx.header
   local site = ngx.ctx.edgeweir_site
@@ -219,7 +245,8 @@ function _M.header_filter()
     h["Strict-Transport-Security"] = value
   end
   if ngx.var.scheme == "https" and site and site.tls and site.tls.http3 then
-    h["Alt-Svc"] = 'h3=":443"; ma=86400'
+    local port = _M.http3_port(ngx.var.http_host, ngx.var.server_port)
+    h["Alt-Svc"] = port and ('h3=":' .. tostring(port) .. '"; ma=86400') or nil
   end
   local stashed = h["X-Edgeweir-CC"]
   if stashed then

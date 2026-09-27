@@ -23,28 +23,31 @@ const (
 )
 
 // The data plane's shared memory zones (lua_shared_dict). The Lua modules
-// use them by name (ngx.shared.<name>), and internal/render declares
-// exactly SharedDicts in nginx.conf, so this is the one list of them.
+// use them by name (ngx.shared.<name>). internal/render also declares
+// one rate-limit partition per site under RateLimitDictPrefix.
 const (
-	DictSites    = "edgeweir_sites"
-	DictMeta     = "edgeweir_meta"
-	DictStats    = "edgeweir_stats"
-	DictPurge    = "edgeweir_purge"
-	DictHealth   = "edgeweir_health"
-	DictLimits   = "edgeweir_limits"
-	DictTopStats = "edgeweir_topstats"
-	DictLogs     = "edgeweir_logs"
+	DictSites      = "edgeweir_sites"
+	DictMeta       = "edgeweir_meta"
+	DictStats      = "edgeweir_stats"
+	DictPurge      = "edgeweir_purge"
+	DictHealth     = "edgeweir_health"
+	DictLimits     = "edgeweir_limits" // Reserved legacy global counter dictionary.
+	DictPolicyLogs = "edgeweir_policy_logs"
+	DictTopStats   = "edgeweir_topstats"
+	DictLogs       = "edgeweir_logs"
 )
 
-// SharedDicts lists every lua_shared_dict of the data plane in the order
-// nginx.conf declares them. nginx keeps all shared memory zones in one
+// SharedDicts lists the static lua_shared_dicts in declaration order.
+// nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictLimits, DictTopStats, DictLogs}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.
-func reservedZoneName(name string) bool { return slices.Contains(SharedDicts, name) }
+func reservedZoneName(name string) bool {
+	return slices.Contains(SharedDicts, name) || name == DictLimits || strings.HasPrefix(name, RateLimitDictPrefix)
+}
 
 var zoneNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
@@ -334,6 +337,9 @@ func defaultZone() CacheZone {
 func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if c == nil {
 		return nil, fmt.Errorf("%w: empty configuration", ErrRejected)
+	}
+	if len(c.GetSites()) > MaxPublishedSites {
+		return nil, fmt.Errorf("%w: configuration exceeds %d published sites", ErrRejected, MaxPublishedSites)
 	}
 	if err := validateEnums(c.ProtoReflect()); err != nil {
 		return nil, err

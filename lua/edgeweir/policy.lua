@@ -1,4 +1,5 @@
 local expressions = require("edgeweir.expressions")
+local ratelimit = require("edgeweir.ratelimit")
 local _M = {}
 _M.phases = { "request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin" }
 
@@ -52,7 +53,7 @@ local function run_group(group, values, site, ctx, phase, namespace)
       if a.kind == "log" then
         -- IDs only: expressions, URL, headers and client addresses are never logged.
         local key = "log:" .. site.id .. ":" .. rule.id
-        if ngx.shared.edgeweir_limits:safe_add(key, true, 60) then
+        if ngx.shared.edgeweir_policy_logs:safe_add(key, true, 60) then
           ngx.log(ngx.NOTICE, "edgeweir: WAF match site=", site.id, " rule=", rule.id)
         end
       elseif a.kind == "redirect" then return { status = a.status_code, location = a.value }
@@ -71,14 +72,8 @@ local function run_group(group, values, site, ctx, phase, namespace)
         if a.force_https ~= nil then ctx.force_https = a.force_https end
         if a.gzip == false then ctx.gzip = false end
       elseif a.kind == "rate_limit" then
-        local window = a.window_seconds
-        local key = "rate:" .. site.id .. ":" .. namespace .. ":" .. rule.id .. ":" .. tostring(math.floor(ngx.now() / window)) .. ":" .. ngx.md5(tostring(values[a.key] or ""))
-        local dict = ngx.shared.edgeweir_limits
-        local ok, err = dict:safe_add(key, 0, window + 1)
-        if not ok and err ~= "exists" then return { status = 503 } end
-        local count = dict:incr(key, 1)
-        if not count then return { status = 503 } end
-        if count > a.limit then return { status = a.status_code or 429, retry_after = window } end
+        local result = ratelimit.check(site._rate_limit_dict, namespace, rule.id, a, values[a.key])
+        if result then return result end
       end
     end
   end

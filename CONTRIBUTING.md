@@ -9,7 +9,7 @@
 ## 开始之前
 
 - 新功能、新依赖、proto 变更等较大的改动，请先开 issue 讨论。
-- 安全问题不要开公开 issue，请按 [SECURITY.md](SECURITY.md) 发邮件到 security@edgeweir.dev。
+- 安全问题不要开公开 issue，请按 [SECURITY.md](SECURITY.md) 使用 GitHub 私密安全公告。
 
 ## 开发环境
 
@@ -103,7 +103,7 @@ make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=<t
 - 节点私钥从不离开节点。
 - 第三方依赖保持最少，目前只有 connect-go 和 protobuf-go。引入新依赖前先开 issue 讨论。
 - `edgeweir/proto` 是两个仓库之间唯一的契约，不要绕过它私下约定格式。
-- 安全问题发到 security@edgeweir.dev，不开公开 issue，见 [SECURITY.md](SECURITY.md)。
+- 安全问题通过 GitHub 私密安全公告报告，不开公开 issue，见 [SECURITY.md](SECURITY.md)。
 
 ## Pull Request
 
