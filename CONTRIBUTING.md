@@ -4,7 +4,7 @@
 
 ## 许可证
 
-本项目使用 AGPL-3.0。提交贡献即表示你同意你的贡献以 AGPL-3.0 授权。
+本项目使用 [AGPL-3.0-only](LICENSE)，允许合规商用。提交贡献即表示你同意你的贡献以 AGPL-3.0-only 授权，并确认有权这样做；不自动授予项目方闭源再许可权。开源核心与独立商业运营产品的范围见 [LICENSING.md](LICENSING.md) 和 [ADR-0019](docs/adr/0019-open-core-and-commercial-products.md)。
 
 ## 开始之前
 

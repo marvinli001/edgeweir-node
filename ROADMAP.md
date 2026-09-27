@@ -1,6 +1,8 @@
 # Edgeweir 节点路线图
 
-本文是 Edgeweir 平台路线图的节点侧（`edgeweir-node`）视图。功能全集来自 BOOTSTRAP §4，这里按主题重新整理，并标出每一项主要在哪一侧实现，以及节点侧的大致做法。平台整体路线图见控制面仓库 [edgeweir/edgeweir 的 ROADMAP.md](https://github.com/edgeweir/edgeweir/blob/master/ROADMAP.md)。
+本文件跟踪 AGPL-3.0-only 开源核心。2026-09-26 的 [ADR-0019](docs/adr/0019-open-core-and-commercial-products.md) 已将对外客户门户、套餐计费、财务与分销划入独立商业运营产品；原 BOOTSTRAP 中这些条目的产品归属不再适用，组织隔离和节点数据面继续开源。
+
+本文是 Edgeweir 开源核心路线图的节点侧（`edgeweir-node`）视图。历史需求来自 BOOTSTRAP §4，这里按 ADR-0019 的商业边界和主题重新整理，并标出每一项主要在哪一侧实现，以及节点侧的大致做法。平台开源核心路线图见控制面仓库 [edgeweir/edgeweir 的 ROADMAP.md](https://github.com/marvinli001/edgeweir/blob/master/ROADMAP.md)。
 
 标记说明：
 
@@ -192,15 +194,11 @@
 - [ ] [节点+控制面] 配置金丝雀发布 + 自动回滚
   - 节点侧：回报每个 revision 的应用结果和错误率；本地已保留上一份配置，可快速退回
 
-### 租户
+### 组织与用量（开源核心）
 
-- [ ] [控制面] 租户门户
-- [ ] [控制面] 套餐和配额
-- [ ] [控制面] 流量包、余额
-- [ ] [控制面] 95 计费（依赖节点上报的分钟级流量）
-- [ ] [控制面] 支付接口
-- [ ] [控制面] 实名认证
-- [ ] [控制面] 工单
+组织、成员、权限和隔离继续由开源控制面提供；节点的用量采集、统计上报、资源保护和站点启停保持开源。对外客户门户、套餐、商业配额、流量包、余额、95 计费、支付、实名认证、财务、分销与工单移入独立商业运营产品，不再是开源 v1 交付项。
+
+商业产品可以消费用量数据，但节点不识别客户账单或官方商业许可证，不因官方授权过期停机。详见 [ADR-0019](docs/adr/0019-open-core-and-commercial-products.md)。
 
 ## v2
 
@@ -212,5 +210,6 @@
 - [ ] [节点+控制面] 边缘计算：表达式 DSL 或 Wasm 沙箱，租户脚本需管理员审批
 - [ ] **[节点]** Pingora 引擎，等它的 HTTP/3 成熟之后
   - 节点侧：NodeConfig IR 与 OpenResty 解耦，新引擎实现 `agent.Engine`（配置检查、reload、进程监督）和 `agent.DataPlane`（站点表、清缓存标记、统计、健康状态）两个接口，再替换 `internal/render` 的配置渲染即可接入
-- [ ] [控制面] 高防 IP 售卖模块
 - [ ] [节点+控制面] Tunnels 内网穿透
+
+高防 IP 的售卖、订单与结算属于独立商业运营产品；节点防护和调度能力仍开源。

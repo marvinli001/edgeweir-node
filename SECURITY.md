@@ -33,7 +33,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 
 ## 信任与安全基线
 
-以下原则同时适用于 `edgeweir` 和 `edgeweir-node`。违反其中任何一条，都按安全问题处理。
+以下原则同时适用于 `edgeweir` 和 `edgeweir-node` 两个开源核心仓库。违反其中任何一条，都按安全问题处理。独立商业产品的范围见 [ADR-0019](docs/adr/0019-open-core-and-commercial-products.md)；官方许可证到期或授权服务故障不得停用核心、清除配置或中断已有 CDN 流量，节点不参与官方商业授权。
 
 - 没有任何形式的 phone-home，代码里没有授权或许可证校验。
 - 遥测默认关闭，必须由运维者显式开启。节点目前完全没有遥测：状态和统计只发给运维者自己部署的控制台。

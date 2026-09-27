@@ -4,6 +4,8 @@
 
 ## 1. 组件
 
+本仓库始终是 AGPL-3.0-only 开源节点，不承载官方商业许可证校验或客户账本。客户门户、套餐计费、财务与分销由独立商业运营产品负责；节点只执行运营者控制面的正常配置并上报用量。官方授权故障或到期不影响已有 CDN 流量，完整边界见 [ADR-0019](docs/adr/0019-open-core-and-commercial-products.md)。
+
 ```text
                         控制台 (edgeweir, :8443, 应用自终结 TLS)
                                ▲  Connect 协议 (二进制 protobuf, HTTP/2)

@@ -189,6 +189,6 @@ No vendor phone-home or license checks. The control channel talks to your consol
 
 ## License
 
-[AGPL-3.0](LICENSE). Roadmap: [ROADMAP.md](ROADMAP.md).
+[AGPL-3.0-only](LICENSE), with commercial use permitted subject to the license. Nodes and the console's organizations, members and isolation remain open source; customer commerce portals, billing, finance and reselling are planned as a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md) and [ROADMAP.md](ROADMAP.md).
 
 M6 sampled access logs are available (proto/v0.7.0). Collection is off by default, excludes query strings, headers and bodies, and uses bounded private queues with sequenced acknowledgements. See the [log and storage guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md). Signed agent/Lua upgrades, canary promotion and automatic rollback are implemented. See the [upgrade guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md).
