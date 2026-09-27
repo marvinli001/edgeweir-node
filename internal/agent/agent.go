@@ -209,6 +209,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("load GeoIP: %w", err)
 	}
 	defer databases.Close()
+	if databases.IPinfoErr != nil {
+		a.log.Error("bundled IPinfo Lite database rejected; continuing without it", "err", databases.IPinfoErr)
+	}
 	a.geoFeatures = databases.Features()
 	if len(a.geoFeatures) > 0 {
 		attrs := []any{"features", a.geoFeatures}

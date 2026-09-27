@@ -40,7 +40,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 私钥、DNS API 密钥、源站凭据等敏感数据，由控制面用主密钥做信封加密后才入库；控制面从不保存 SSH 凭据。
 - 所有管理操作都写审计日志（控制面）。
 - 发布物全部签名，并附校验说明，见下文"验证发布物"。
-- CI 构建产物与源码一一对应。构建可复现：使用 `-trimpath`，模块文件时间戳固定为提交时间，兼容 `SOURCE_DATE_EPOCH`。唯一例外是容器镜像内置的 IPinfo Lite 数据库：它在构建时从 IPinfo 下载并按 IPinfo 公布的 sha256 校验，内容随构建日期变化，所含副本由镜像内 `NOTICE` 的 sha256 标识。
+- CI 构建产物与源码一一对应。构建可复现：使用 `-trimpath`，模块文件时间戳固定为提交时间，兼容 `SOURCE_DATE_EPOCH`。可复现目标覆盖二进制、安装包和压缩包；容器镜像不逐字节可复现，其中之一是它内置构建当天的 IPinfo Lite 数据库：构建时从 IPinfo 下载，按 IPinfo 公布的 sha256 校验并由 agent 自身的读取代码检查，所含副本由镜像内 `NOTICE` 的 sha256 标识。
 - 下载数据用的 IPinfo token 只以 BuildKit secret 传给构建，不进入镜像层、构建参数、来源证明或日志；节点运行时不联系 IPinfo。
 
 ## 节点侧安全设计

@@ -481,7 +481,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket},
 		Logger:       log,
 	})
-	ipinfoPath, err := geoip.ResolveIPinfo(*geoIPinfo)
+	ipinfoPath, ipinfoOptional, err := geoip.ResolveIPinfo(*geoIPinfo)
 	if err != nil {
 		log.Error("cannot resolve --geoip-ipinfo", "err", err)
 		return 1
@@ -494,7 +494,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		DefaultPort:         uint32(*defaultPort),
 		PurgeMarkersPerSite: *purgePerSite,
 		PrefetchBudget:      *prefetchTime,
-		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, City: *geoCity, ASN: *geoASN},
+		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, IPinfoOptional: ipinfoOptional, City: *geoCity, ASN: *geoASN},
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

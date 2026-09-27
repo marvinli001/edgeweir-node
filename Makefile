@@ -73,7 +73,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 .PHONY: docker
 docker: ## Build the node container image (bundles IPinfo Lite when IPINFO_TOKEN is set)
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) \
-		--secret id=ipinfo_token,env=IPINFO_TOKEN $(if $(IPINFO_TOKEN),--no-cache-filter ipinfo) -t $(IMAGE) .
+		--secret id=ipinfo_token,env=IPINFO_TOKEN $(if $(IPINFO_TOKEN),--build-arg IPINFO_DATE=$$(date -u +%F)) -t $(IMAGE) .
 
 .PHONY: e2e
 e2e: ## Run the container smoke test (fake console + node + origin)

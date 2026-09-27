@@ -26,7 +26,7 @@ func TestLocalMMDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if got := db.Features(); !slices.Equal(got, []string{"geoip-country-v1", "geoip-city-v1", "geoip-asn-v1"}) {
+	if got := db.Features(); !slices.Equal(got, []string{"geoip-country-v1", "geoip-city-v1", "geoip-subdivision-v1", "geoip-asn-v1"}) {
 		t.Fatal(got)
 	}
 	for _, ip := range []string{"203.0.113.7", "::ffff:203.0.113.7", "2001:db8::7"} {
@@ -94,7 +94,8 @@ func TestIPinfoLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer only.Close()
-	if got := only.Features(); !slices.Equal(got, []string{"geoip-country-v1", "geoip-asn-v1"}) {
+	// geoip-city-v1 is what consoles gate country rules on; no subdivisions.
+	if got := only.Features(); !slices.Equal(got, []string{"geoip-country-v1", "geoip-city-v1", "geoip-asn-v1"}) {
 		t.Fatal(got)
 	}
 	if only.IPinfoBuilt().IsZero() {
@@ -181,16 +182,50 @@ func TestResolveIPinfo(t *testing.T) {
 	if err := os.WriteFile(bundled, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, test := range []struct{ setting, bundled, want string }{
-		{"auto", bundled, bundled},
-		{"auto", missing, ""},
-		{"off", bundled, ""},
-		{"", bundled, ""},
-		{"/srv/geo/ipinfo_lite.mmdb", bundled, "/srv/geo/ipinfo_lite.mmdb"},
+	for _, test := range []struct {
+		setting, bundled, want string
+		optional               bool
+	}{
+		{"auto", bundled, bundled, true},
+		{"auto", missing, "", false},
+		{"off", bundled, "", false},
+		{"", bundled, "", false},
+		{"/srv/geo/ipinfo_lite.mmdb", bundled, "/srv/geo/ipinfo_lite.mmdb", false},
 	} {
-		got, err := resolveIPinfo(test.setting, test.bundled)
-		if err != nil || got != test.want {
-			t.Errorf("resolveIPinfo(%q, %q) = %q, %v; want %q", test.setting, test.bundled, got, err, test.want)
+		got, optional, err := resolveIPinfo(test.setting, test.bundled)
+		if err != nil || got != test.want || optional != test.optional {
+			t.Errorf("resolveIPinfo(%q, %q) = %q, %v, %v; want %q, %v", test.setting, test.bundled, got, optional, err, test.want, test.optional)
+		}
+	}
+}
+
+func TestOptionalIPinfo(t *testing.T) {
+	dir := t.TempDir()
+	city, _, err := geofixture.Write(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bundled database is optional: a broken file leaves the node on its
+	// operator databases instead of stopping it. An explicit path must load.
+	broken := filepath.Join(dir, "ipinfo_lite.mmdb")
+	if err := os.WriteFile(broken, []byte("not an mmdb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(Paths{IPinfo: broken, IPinfoOptional: true, City: city})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if db.IPinfo != nil || db.IPinfoErr == nil {
+		t.Fatalf("IPinfo = %v, IPinfoErr = %v", db.IPinfo, db.IPinfoErr)
+	}
+	if got := db.Features(); !slices.Equal(got, []string{"geoip-country-v1", "geoip-city-v1", "geoip-subdivision-v1"}) {
+		t.Fatal(got)
+	}
+	for _, wrongType := range []string{broken, city} {
+		if other, err := Open(Paths{IPinfo: wrongType}); err == nil {
+			other.Close()
+			t.Fatalf("accepted %s as an explicit IPinfo database", wrongType)
 		}
 	}
 }

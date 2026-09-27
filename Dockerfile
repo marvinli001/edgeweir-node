@@ -64,18 +64,28 @@ RUN set -eu; \
     echo "$digest  /cosign" | sha256sum -c -; chmod 0755 /cosign
 
 # IPinfo Lite (country + ASN, CC BY-SA 4.0), downloaded at build time when the
-# build is given the ipinfo_token secret:
-#   IPINFO_TOKEN=... docker build --secret id=ipinfo_token,env=IPINFO_TOKEN .
-# Without the secret the image ships no GeoIP data (--geoip-ipinfo auto finds
-# nothing). The token is a BuildKit secret, so it never reaches a layer, the
-# build arguments or the provenance attestation. BuildKit caches this step
-# regardless of the secret: add --no-cache-filter ipinfo to refresh the data.
-# IPINFO_REQUIRED=1 (release builds) fails the build when the secret is missing.
+# build is given the ipinfo_token secret (`IPINFO_TOKEN=... make docker`):
+#   docker build --secret id=ipinfo_token,env=IPINFO_TOKEN \
+#     --build-arg IPINFO_DATE=$(date -u +%F) .
+# Without the secret, or if the download fails, the image ships no GeoIP data
+# (--geoip-ipinfo auto finds nothing). The token is a BuildKit secret, so it
+# never reaches a layer, the build arguments or the provenance attestation.
+# BuildKit caches this step regardless of the secret; IPINFO_DATE only keys the
+# cache, so the data is fetched at most once a day (IPinfo limits downloads).
+# IPINFO_REQUIRED=1 (release builds) makes a missing secret or failed download
+# fatal. The agent's own reader then vets the file, so a format change fails
+# the build rather than the nodes.
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS ipinfo
 ARG IPINFO_REQUIRED=
+ARG IPINFO_DATE=
 COPY scripts/fetch-ipinfo.sh /usr/local/bin/fetch-ipinfo
 RUN --mount=type=secret,id=ipinfo_token,env=IPINFO_TOKEN \
     fetch-ipinfo ${IPINFO_REQUIRED:+--require} /out/geoip
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY internal/geoip ./internal/geoip
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    if [ -f /out/geoip/ipinfo_lite.mmdb ]; then go run ./internal/geoip/check /out/geoip/ipinfo_lite.mmdb; fi
 
 # ---- runtime: official OpenResty image, unprivileged user ----------------
 FROM ${OPENRESTY_IMAGE}
@@ -85,7 +95,7 @@ LABEL org.opencontainers.image.title="edgeweir-node" \
       org.opencontainers.image.description="Edgeweir edge node: Go agent + OpenResty" \
       org.opencontainers.image.source="https://github.com/marvinli001/edgeweir-node" \
       org.opencontainers.image.url="https://edgeweir.dev" \
-      org.opencontainers.image.licenses="AGPL-3.0-only AND CC-BY-SA-4.0" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
 

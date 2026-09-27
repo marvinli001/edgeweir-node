@@ -1,5 +1,5 @@
-// Package geoip serves local MMDBs: the IPinfo Lite database bundled into
-// release images and packages at build time, plus operator-provided City / ASN
+// Package geoip serves local MMDBs: the IPinfo Lite database bundled into the
+// release container image at build time, plus operator-provided City / ASN
 // databases. It never downloads data or sends visitor addresses outside the node.
 package geoip
 
@@ -21,14 +21,17 @@ import (
 	maxminddb "github.com/oschwald/maxminddb-golang/v2"
 )
 
-// BundledIPinfoPath is where release images and packages install the IPinfo
-// Lite database that was downloaded when they were built.
+// BundledIPinfoPath is where the release container image installs the IPinfo
+// Lite database downloaded when it was built. Packages do not ship one; they
+// need an explicit --geoip-ipinfo path.
 const BundledIPinfoPath = "/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb"
 
 type Databases struct {
 	mu                sync.RWMutex
 	closed            bool
 	IPinfo, City, ASN *maxminddb.Reader
+	// IPinfoErr is why an optional IPinfo database was skipped.
+	IPinfoErr error
 }
 type Result struct {
 	Country     string `json:"country"`
@@ -38,33 +41,37 @@ type Result struct {
 
 // Paths selects the databases to load; an empty path leaves that source off.
 type Paths struct {
-	// IPinfo is an IPinfo Lite MMDB (country and ASN).
-	IPinfo string
+	// IPinfo is an IPinfo Lite MMDB (country and ASN). When IPinfoOptional is
+	// set (the bundled database), a file that fails to load is skipped and
+	// recorded in Databases.IPinfoErr instead of failing Open.
+	IPinfo         string
+	IPinfoOptional bool
 	// City is a City MMDB (country and subdivision), ASN an ASN MMDB.
 	City, ASN string
 }
 
-// ResolveIPinfo turns the --geoip-ipinfo setting into a path for Paths.IPinfo:
-// "auto" picks the bundled database when the build included one, "off" (or
-// empty) disables IPinfo, anything else is an explicit path that must load.
-func ResolveIPinfo(setting string) (string, error) {
+// ResolveIPinfo turns the --geoip-ipinfo setting into Paths.IPinfo and
+// Paths.IPinfoOptional: "auto" picks the bundled database when the build
+// included one (optional), "off" (or empty) disables IPinfo, anything else is
+// an explicit path that must load.
+func ResolveIPinfo(setting string) (path string, optional bool, err error) {
 	return resolveIPinfo(setting, BundledIPinfoPath)
 }
 
-func resolveIPinfo(setting, bundled string) (string, error) {
+func resolveIPinfo(setting, bundled string) (string, bool, error) {
 	switch setting {
 	case "", "off":
-		return "", nil
+		return "", false, nil
 	case "auto":
 		if _, err := os.Stat(bundled); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
-				return "", nil
+				return "", false, nil
 			}
-			return "", err
+			return "", false, err
 		}
-		return bundled, nil
+		return bundled, true, nil
 	}
-	return setting, nil
+	return setting, false, nil
 }
 
 func Open(p Paths) (*Databases, error) {
@@ -91,7 +98,10 @@ func Open(p Paths) (*Databases, error) {
 	if d.IPinfo, err = open(p.IPinfo, "IPinfo Lite", func(t string) bool {
 		return strings.Contains(t, "ipinfo") && strings.Contains(t, "lite")
 	}); err != nil {
-		return nil, err
+		if !p.IPinfoOptional {
+			return nil, err
+		}
+		d.IPinfoErr = err
 	}
 	if d.City, err = open(p.City, "City", func(t string) bool { return strings.Contains(t, "city") }); err != nil {
 		d.Close()
@@ -114,15 +124,18 @@ func (d *Databases) Close() {
 	}
 }
 
-// Features reports what the loaded databases can answer: country (IPinfo or
-// City), subdivision (City only) and ASN (IPinfo or ASN).
+// Features reports what the loaded databases can answer. Consoles gate
+// country (and subdivision) rules on geoip-city-v1, so it keeps its name and
+// now means country data from IPinfo or a City MMDB; geoip-country-v1 tells
+// them that subdivisions are reported separately as geoip-subdivision-v1
+// (City only). geoip-asn-v1 comes from IPinfo or an ASN MMDB.
 func (d *Databases) Features() []string {
 	var out []string
 	if d.IPinfo != nil || d.City != nil {
-		out = append(out, "geoip-country-v1")
+		out = append(out, "geoip-country-v1", "geoip-city-v1")
 	}
 	if d.City != nil {
-		out = append(out, "geoip-city-v1")
+		out = append(out, "geoip-subdivision-v1")
 	}
 	if d.IPinfo != nil || d.ASN != nil {
 		out = append(out, "geoip-asn-v1")

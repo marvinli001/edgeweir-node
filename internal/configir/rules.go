@@ -15,8 +15,10 @@ import (
 var rulePhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin", "response-transform"}
 var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number"}
 
-// geoFeatures is the node capability each GeoIP field needs (see geoip.Features).
-var geoFeatures = map[string]string{"ip.geoip.country": "geoip-country-v1", "ip.geoip.subdivision": "geoip-city-v1", "ip.geoip.asnum": "geoip-asn-v1"}
+// geoFeatures is the local capability each GeoIP field needs (see
+// geoip.Features). The console sends geoip-city-v1 for subdivision rules too;
+// this check keeps a node without a City MMDB from accepting them.
+var geoFeatures = map[string]string{"ip.geoip.country": "geoip-country-v1", "ip.geoip.subdivision": "geoip-subdivision-v1", "ip.geoip.asnum": "geoip-asn-v1"}
 var protectedHeaders = []string{"host", "authorization", "proxy-authorization", "cookie", "set-cookie", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "cdn-loop"}
 
 func ruleHeader(s string) bool {

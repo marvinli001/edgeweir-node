@@ -4,10 +4,12 @@
 #
 #   IPINFO_TOKEN=... scripts/fetch-ipinfo.sh [--require] DIR
 #
-# The token is only sent to ipinfo.io as a Bearer header; it is never written
-# to DIR. Without IPINFO_TOKEN the script leaves DIR empty (the node then runs
-# without bundled GeoIP data) unless --require is given. Uses BusyBox-compatible
-# wget, grep and sha256sum only.
+# The token goes to ipinfo.io in the documented ?token= parameter, not a
+# header: wget would repeat a header to the CDN host IPinfo redirects to.
+# wget -q prints neither URLs nor headers, and nothing is written to DIR but
+# the database and its NOTICE. Without IPINFO_TOKEN, or when the download
+# fails, DIR stays empty (the node then runs without bundled GeoIP data);
+# --require turns both into errors. BusyBox-compatible wget, grep, sha256sum.
 set -eu
 
 require=0
@@ -18,14 +20,16 @@ fi
 dir=${1:?usage: fetch-ipinfo.sh [--require] DIR}
 mkdir -p "$dir"
 
-if [ -z "${IPINFO_TOKEN:-}" ]; then
+skip() {
 	if [ "$require" = 1 ]; then
-		echo "fetch-ipinfo: IPINFO_TOKEN is required for this build" >&2
+		echo "fetch-ipinfo: $1" >&2
 		exit 1
 	fi
-	echo "fetch-ipinfo: IPINFO_TOKEN not set; building without the IPinfo Lite database" >&2
+	echo "fetch-ipinfo: $1; building without the IPinfo Lite database" >&2
 	exit 0
-fi
+}
+
+[ -n "${IPINFO_TOKEN:-}" ] || skip "IPINFO_TOKEN not set"
 
 url=https://ipinfo.io/data/ipinfo_lite.mmdb
 tmp=$(mktemp -d)
@@ -34,17 +38,14 @@ trap 'rm -rf "$tmp"' EXIT
 # IPinfo refreshes the file daily; a checksum taken across an update will not
 # match, so try a second time before giving up.
 for attempt in 1 2; do
-	wget -q -T 60 --header "Authorization: Bearer ${IPINFO_TOKEN}" -O "$tmp/ipinfo_lite.mmdb" "$url"
-	wget -q -T 60 --header "Authorization: Bearer ${IPINFO_TOKEN}" -O "$tmp/checksums.json" "$url/checksums"
+	wget -q -T 60 -O "$tmp/ipinfo_lite.mmdb" "$url?token=${IPINFO_TOKEN}" || skip "download failed"
+	wget -q -T 60 -O "$tmp/checksums.json" "$url/checksums?token=${IPINFO_TOKEN}" || skip "checksum download failed"
 	want=$(grep -o '"sha256": *"[0-9a-f]\{64\}"' "$tmp/checksums.json" | grep -o '[0-9a-f]\{64\}') || want=
 	got=$(sha256sum "$tmp/ipinfo_lite.mmdb" | cut -d' ' -f1)
 	if [ -n "$want" ] && [ "$got" = "$want" ]; then
 		break
 	fi
-	if [ "$attempt" = 2 ]; then
-		echo "fetch-ipinfo: sha256 mismatch (got $got, IPinfo lists ${want:-nothing})" >&2
-		exit 1
-	fi
+	[ "$attempt" = 1 ] || skip "sha256 mismatch (got $got, IPinfo lists ${want:-nothing})"
 done
 
 mv "$tmp/ipinfo_lite.mmdb" "$dir/ipinfo_lite.mmdb"

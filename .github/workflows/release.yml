@@ -8,8 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  # Both jobs publish; check the IPinfo token first so a missing secret stops
+  # the release before anything is published (release images bundle IPinfo Lite).
+  preflight:
+    name: release secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: require the IPinfo token
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "::error::Set the IPINFO_TOKEN repository secret: release images bundle the IPinfo Lite database"
+            exit 1
+          fi
+
   goreleaser:
     name: binaries, packages, SBOMs, signatures, provenance
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: write     # create the GitHub release
@@ -45,6 +61,7 @@ jobs:
 
   image:
     name: container image (ghcr.io/marvinli001/edgeweir-node)
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,14 +80,6 @@ jobs:
             echo "date=$(git log -1 --format=%cI)"
             echo "epoch=$(git log -1 --format=%ct)"
           } >> "$GITHUB_OUTPUT"
-      - name: require the IPinfo token
-        env:
-          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
-        run: |
-          if [ -z "$IPINFO_TOKEN" ]; then
-            echo "::error::Set the IPINFO_TOKEN repository secret: release images bundle the IPinfo Lite database"
-            exit 1
-          fi
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -85,6 +94,10 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+          # Overrides the repository licence the action derives ("AGPL-3.0"):
+          # release images also carry the IPinfo Lite data.
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only AND CC-BY-SA-4.0
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
         env:

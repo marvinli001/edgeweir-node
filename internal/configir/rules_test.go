@@ -45,8 +45,9 @@ func TestPolicyValidation(t *testing.T) {
 		feature, other    string
 	}{
 		{"ip.geoip.country", "string", "NZ", "geoip-country-v1", "geoip-asn-v1"},
-		{"ip.geoip.subdivision", "string", "AUK", "geoip-city-v1", "geoip-country-v1"},
-		{"ip.geoip.asnum", "number", "64512", "geoip-asn-v1", "geoip-city-v1"},
+		// geoip-city-v1 alone (IPinfo Lite, no City MMDB) does not cover subdivisions.
+		{"ip.geoip.subdivision", "string", "AUK", "geoip-subdivision-v1", "geoip-city-v1"},
+		{"ip.geoip.asnum", "number", "64512", "geoip-asn-v1", "geoip-country-v1"},
 	} {
 		geo := proto.CloneOf(valid)
 		geo.PlatformRules[0].Expression = &nodev1.RuleExpression{Op: "eq", Field: test.field, ValueType: test.typ, Value: test.value}
