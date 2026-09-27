@@ -112,7 +112,7 @@
 - [x] [节点+控制面] IP、CIDR 黑白名单
   - 节点侧：IP 名单经 unix socket 热更新，不 reload
 - [x] [节点+控制面] 国家、省份、ASN 黑白名单
-  - 节点侧：Go 读取运维提供的本地 MMDB，经 0600 Unix socket 提供结果；默认 DB-IP Lite CC BY 4.0
+  - 节点侧：Go 读取本地 MMDB，经 0600 Unix socket 提供结果；发布镜像内置构建时下载的 IPinfo Lite（国家、ASN，CC BY-SA 4.0），省份需运维另行提供 City MMDB
 - [x] **[节点]** 限速
   - 节点侧：有界固定窗口计数放在 `lua_shared_dict`，内存不足失败关闭
 - [x] [节点+控制面] 重定向、改写、请求头和响应头规则

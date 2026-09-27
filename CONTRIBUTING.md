@@ -33,7 +33,7 @@
 | `make test` | `go test ./...`，单元测试和进程内集成测试 |
 | `make test-race` | 带 race detector 跑测试 |
 | `make lua-test` | 在 OpenResty 镜像里用 `resty` 跑 Lua 单元测试 |
-| `make docker` | 构建节点容器镜像 |
+| `make docker` | 构建节点容器镜像；设置 `IPINFO_TOKEN` 时以 BuildKit secret 下载并内置 IPinfo Lite（每次重新下载），不设置则不含 GeoIP 数据 |
 | `make e2e` | 容器冒烟测试（假控制面 + 节点 + 源站） |
 | `make proto` | 从 proto git tag 重新生成 Go 代码 |
 | `make proto-check` | 重新生成，若与已提交的代码不一致则失败 |

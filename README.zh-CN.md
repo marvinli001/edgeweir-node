@@ -19,7 +19,7 @@
 
 M3 已加入 SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS 和 Gzip。证书轮换热更新；结构性策略变更验证后重载，激活失败会恢复旧配置。当前引擎不提供 Brotli 和 Zstd。证书材料保存在 0600 的 `certificates.json` 中，主机管理员仍可读取。详见 [HTTPS 指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md)。
 
-M4 已加入 IP/GeoIP 名单、分阶段规则、WAF、限速及请求/响应变换，均走热更新。GeoIP 读取本地 MMDB，不向第三方发送客户 IP。详见 [规则指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md)。
+M4 已加入 IP/GeoIP 名单、分阶段规则、WAF、限速及请求/响应变换，均走热更新。GeoIP 读取本地 MMDB，不向第三方发送客户 IP：发布镜像内置构建时下载的 IPinfo Lite 数据库（国家和 ASN），运维者另行提供的 City / ASN MMDB 可补充一级行政区。详见 [规则指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md)。
 
 M5 已加入统计批次持久化、回执丢失和重启后的序号恢复，以及有界的 Top URL/IP 估算。新节点不回退到会重复计数的旧统计 RPC；控制面与节点应一同升级。
 
@@ -75,6 +75,8 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
 
 容器启动后立即拉起 OpenResty（所有域名都返回 `404 unknown-host`），等待注册完成后开始跟随控制台。容器以 uid 10001 运行，节点身份和 LKG 配置保存在 `/var/lib/edgeweir-node` 卷里。
 
+发布镜像包含 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`，即构建镜像时下载的 [IPinfo Lite](https://ipinfo.io/lite) 数据库（IP address data is powered by [IPinfo](https://ipinfo.io)，CC BY-SA 4.0；同目录的 `NOTICE` 记录下载时间和 sha256）。它在本地回答 `ip.geoip.country` 和 `ip.geoip.asnum`，运行时不联网下载；需要更新数据时拉取新镜像，或挂载自己的副本并设置 `EDGEWEIR_GEOIP_IPINFO`。自行构建带数据的镜像时，用 BuildKit secret 传入 IPinfo token：`IPINFO_TOKEN=... make docker`。没有 token 时镜像不含数据，在提供 MMDB 之前 GeoIP 规则不可用。安装包和压缩包不内置该数据库，请把 `EDGEWEIR_GEOIP_IPINFO` 指向自行下载的文件。
+
 ## 命令行
 
 ```text
@@ -123,6 +125,7 @@ edgeweir-node version
 | `--listen-ipv6` | `auto` | 同时监听 IPv6：`auto`（本机能绑定 IPv6 时）、`on` 或 `off` |
 | `--default-port` | `80` | 收到配置之前提供服务的 HTTP 端口 |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--geoip-ipinfo` | `auto` | IPinfo Lite MMDB（国家和 ASN）：`auto` 在镜像内置时使用 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`，`off` 关闭，其他值为文件路径 |
 | `--geoip-city` | empty | 运维者提供的 MMDB 路径；为空时不启用对应能力 |
 | `--geoip-asn` | empty | 运维者提供的 MMDB 路径；为空时不启用对应能力 |
 | `--cosign-bin` | `cosign` | supervise 模式的本机签名验证器 |
@@ -142,6 +145,7 @@ edgeweir-node version
 | `/run/edgeweir-node/control.sock` | Lua 数据面的本地控制 API（只有 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听和内部回源层 |
 | `/usr/share/edgeweir-node/lua` | Lua 模块 |
+| `/usr/share/edgeweir-node/geoip` | 内置的 IPinfo Lite 数据库及其 `NOTICE`（容器镜像） |
 | `:80` | 收到配置之前的 HTTP 监听端口；之后以配置中的监听端口为准 |
 
 每个已发布站点独占固定 256 KiB 限速计数分区，每集群最多发布 512 个站点。其他站点不能占用该分区，新增站点也不会调整既有分区大小。见[限速存储说明](docs/rate-limit-storage.md)。
@@ -155,7 +159,7 @@ make build         # 静态二进制输出到 bin/
 make vet test      # go vet ./... && go test ./...
 make test-race     # 带 race detector 跑测试
 make lua-test      # 在 OpenResty 镜像里用 resty 跑 Lua 单元测试
-make docker        # docker build -t edgeweir-node:dev .
+make docker        # docker build -t edgeweir-node:dev .（设置 IPINFO_TOKEN 时内置 IPinfo Lite）
 make e2e           # 容器冒烟测试：假控制台 + 节点 + whoami 源站
 make proto-check   # 从 proto git tag 重新生成，与已提交代码不一致则失败
 make snapshot      # goreleaser release --snapshot --clean（不签名）
@@ -171,7 +175,7 @@ proto 重新生成流程和提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 验证发布物
 
-发布物由 GitHub Actions 从打 tag 的源码构建，构建可复现（`-trimpath`，时间戳取自提交时间）。`checksums.txt` 覆盖所有压缩包、安装包和 SBOM，并用 cosign keyless 签名；每个发布物还带有 SLSA 构建来源证明。
+发布物由 GitHub Actions 从打 tag 的源码构建，构建可复现（`-trimpath`，时间戳取自提交时间）。容器镜像另外内置构建当天的 IPinfo Lite 数据库，日后重建镜像得到的数据会不同；`/usr/share/edgeweir-node/geoip/NOTICE` 中的 sha256 标识所含副本。`checksums.txt` 覆盖所有压缩包、安装包和 SBOM，并用 cosign keyless 签名；每个发布物还带有 SLSA 构建来源证明。
 
 ```sh
 cosign verify-blob \
@@ -189,6 +193,6 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 
 ## 许可证
 
-[AGPL-3.0-only](LICENSE)，允许遵守协议的商业使用。节点以及控制面的组织、成员和隔离继续开源；对外客户门户、套餐计费、财务和分销计划由独立商业产品提供，节点运行不依赖官方商业许可证。详见 [LICENSING.md](LICENSING.md) 与 [ROADMAP.md](ROADMAP.md)。
+[AGPL-3.0-only](LICENSE)，允许遵守协议的商业使用。节点以及控制面的组织、成员和隔离继续开源；对外客户门户、套餐计费、财务和分销计划由独立商业产品提供，节点运行不依赖官方商业许可证。详见 [LICENSING.md](LICENSING.md) 与 [ROADMAP.md](ROADMAP.md)。内置 GeoIP 数据为 [IPinfo Lite](https://ipinfo.io/lite)，许可证 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)：IP address data is powered by [IPinfo](https://ipinfo.io)。
 
 M6 采样访问日志已接入（proto/v0.7.0）：默认关闭，不记录查询参数、请求头或正文，使用有界私有队列和持久批次确认。详见[日志与存储指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md)。已实现活动 agent / Lua 签名升级、节点组试运行、显式推进及自动回滚。见[升级指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md)。

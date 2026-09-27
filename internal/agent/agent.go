@@ -67,9 +67,9 @@ type Config struct {
 	// Render holds the node-local nginx.conf settings.
 	Render render.Params
 	// DefaultPort is served before any configuration exists.
-	DefaultPort   uint32
-	GeoIPCityPath string
-	GeoIPASNPath  string
+	DefaultPort uint32
+	// GeoIP selects the local MMDBs; an empty path disables that source.
+	GeoIP geoip.Paths
 
 	EnrollPollInterval time.Duration // default 2s
 	PollInterval       time.Duration // GetConfig fallback poll, default 30s
@@ -204,13 +204,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.prepareDirs(); err != nil {
 		return err
 	}
-	databases, err := geoip.Open(a.cfg.GeoIPCityPath, a.cfg.GeoIPASNPath)
+	databases, err := geoip.Open(a.cfg.GeoIP)
 	if err != nil {
 		return fmt.Errorf("load GeoIP: %w", err)
 	}
 	defer databases.Close()
 	a.geoFeatures = databases.Features()
 	if len(a.geoFeatures) > 0 {
+		attrs := []any{"features", a.geoFeatures}
+		if built := databases.IPinfoBuilt(); !built.IsZero() {
+			attrs = append(attrs, "ipinfo", a.cfg.GeoIP.IPinfo, "ipinfo_built", built.Format(time.DateOnly))
+		}
+		a.log.Info("GeoIP databases loaded", attrs...)
 		l, err := databases.Serve(ctx, a.cfg.Render.WithDefaults().GeoIPSocket)
 		if err != nil {
 			return err

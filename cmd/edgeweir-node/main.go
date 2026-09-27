@@ -30,6 +30,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
+	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 	"github.com/marvinli001/edgeweir-node/internal/upgrade"
@@ -338,6 +339,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		upgradeSource = fs.String("upgrade-source", upgrade.DefaultSource, "locally trusted release base URL (supervise mode)")
 		upgradeKey    = fs.String("upgrade-public-key", "", "operator-provided local release public key; default GitHub OIDC identity")
 		upgradeHTTP   = fs.Bool("upgrade-allow-http", false, "allow an explicitly configured plaintext test/air-gap mirror")
+		geoIPinfo     = fs.String("geoip-ipinfo", "auto", "IPinfo Lite MMDB path; auto uses the database bundled at build time if present, off disables it")
 		geoCity       = fs.String("geoip-city", "", "operator-provided City MMDB path")
 		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
@@ -479,6 +481,11 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket},
 		Logger:       log,
 	})
+	ipinfoPath, err := geoip.ResolveIPinfo(*geoIPinfo)
+	if err != nil {
+		log.Error("cannot resolve --geoip-ipinfo", "err", err)
+		return 1
+	}
 	a := agent.New(agent.Config{
 		StateDir:            state,
 		SupervisorSocket:    os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"),
@@ -487,7 +494,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		DefaultPort:         uint32(*defaultPort),
 		PurgeMarkersPerSite: *purgePerSite,
 		PrefetchBudget:      *prefetchTime,
-		GeoIPCityPath:       *geoCity, GeoIPASNPath: *geoASN,
+		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, City: *geoCity, ASN: *geoASN},
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -14,6 +14,9 @@ import (
 
 var rulePhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin", "response-transform"}
 var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number"}
+
+// geoFeatures is the node capability each GeoIP field needs (see geoip.Features).
+var geoFeatures = map[string]string{"ip.geoip.country": "geoip-country-v1", "ip.geoip.subdivision": "geoip-city-v1", "ip.geoip.asnum": "geoip-asn-v1"}
 var protectedHeaders = []string{"host", "authorization", "proxy-authorization", "cookie", "set-cookie", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "cdn-loop"}
 
 func ruleHeader(s string) bool {
@@ -73,11 +76,7 @@ func validateExpression(e *nodev1.RuleExpression, phase string, lists map[string
 	if typ == "" || typ != e.ValueType || (strings.HasPrefix(e.Field, "http.response.") && phase != "response-transform") {
 		return bad()
 	}
-	if strings.HasPrefix(e.Field, "ip.geoip.") {
-		feature := "geoip-city-v1"
-		if e.Field == "ip.geoip.asnum" {
-			feature = "geoip-asn-v1"
-		}
+	if feature, ok := geoFeatures[e.Field]; ok {
 		if !slices.Contains(features, feature) {
 			return fmt.Errorf("%w: GeoIP database unavailable", ErrRejected)
 		}

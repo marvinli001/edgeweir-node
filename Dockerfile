@@ -41,7 +41,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
         -X github.com/marvinli001/edgeweir-node/internal/version.Date=${DATE}" \
       -o /out/edgeweir-node ./cmd/edgeweir-node
 
-# Synthetic MMDBs for compose.e2e.yml; never copied into the release image.
+# Synthetic MMDBs (City, ASN, IPinfo Lite schema) for compose.e2e.yml; never
+# copied into the release image.
 FROM build AS geoip-build
 COPY test/geoip ./test/geoip
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
@@ -62,6 +63,20 @@ RUN set -eu; \
     wget -q -O /cosign "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-${TARGETARCH}"; \
     echo "$digest  /cosign" | sha256sum -c -; chmod 0755 /cosign
 
+# IPinfo Lite (country + ASN, CC BY-SA 4.0), downloaded at build time when the
+# build is given the ipinfo_token secret:
+#   IPINFO_TOKEN=... docker build --secret id=ipinfo_token,env=IPINFO_TOKEN .
+# Without the secret the image ships no GeoIP data (--geoip-ipinfo auto finds
+# nothing). The token is a BuildKit secret, so it never reaches a layer, the
+# build arguments or the provenance attestation. BuildKit caches this step
+# regardless of the secret: add --no-cache-filter ipinfo to refresh the data.
+# IPINFO_REQUIRED=1 (release builds) fails the build when the secret is missing.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS ipinfo
+ARG IPINFO_REQUIRED=
+COPY scripts/fetch-ipinfo.sh /usr/local/bin/fetch-ipinfo
+RUN --mount=type=secret,id=ipinfo_token,env=IPINFO_TOKEN \
+    fetch-ipinfo ${IPINFO_REQUIRED:+--require} /out/geoip
+
 # ---- runtime: official OpenResty image, unprivileged user ----------------
 FROM ${OPENRESTY_IMAGE}
 ARG VERSION=dev
@@ -70,7 +85,7 @@ LABEL org.opencontainers.image.title="edgeweir-node" \
       org.opencontainers.image.description="Edgeweir edge node: Go agent + OpenResty" \
       org.opencontainers.image.source="https://github.com/marvinli001/edgeweir-node" \
       org.opencontainers.image.url="https://edgeweir.dev" \
-      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.licenses="AGPL-3.0-only AND CC-BY-SA-4.0" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
 
@@ -86,6 +101,8 @@ RUN groupadd --system --gid 10001 edgeweir \
 COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
 COPY --from=verifier /cosign /usr/local/bin/cosign
 COPY lua/ /usr/share/edgeweir-node/lua/
+# ipinfo_lite.mmdb + NOTICE, or nothing when built without the token.
+COPY --from=ipinfo /out/geoip/ /usr/share/edgeweir-node/geoip/
 
 ENV EDGEWEIR_STATE_DIR=/var/lib/edgeweir-node \
     EDGEWEIR_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \

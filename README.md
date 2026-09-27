@@ -19,7 +19,7 @@ The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir
 
 M3 adds SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS and Gzip. Certificate rotation is hot; structural policy changes reload only after validation and recover on activation failure. Brotli and Zstd are unavailable in the stock engine. Node certificate materials live in `certificates.json` with mode 0600; host administrators can read them. See the [HTTPS guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md).
 
-M4 adds IP/GeoIP lists, phased rules, WAF, rate limits and request/response transforms through hot updates. GeoIP reads local MMDBs without sending client IPs to a third party. See the [rule guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md).
+M4 adds IP/GeoIP lists, phased rules, WAF, rate limits and request/response transforms through hot updates. GeoIP reads local MMDBs without sending client IPs to a third party: release images bundle the IPinfo Lite database (country and ASN), downloaded when the image is built, and operator-provided City / ASN MMDBs add subdivisions. See the [rule guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md).
 
 M5 persists sequenced statistics before upload, recovers from lost acknowledgements and restarts, and reports bounded approximate Top URL/IP counters. The V2 statistics RPC prevents unsafe fallback to an older console. Update the console and nodes together.
 
@@ -75,6 +75,8 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
 
 The container starts OpenResty immediately (every host answers `404 unknown-host`), waits for the enrollment, and then follows the console. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume.
 
+Release images contain `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`, the [IPinfo Lite](https://ipinfo.io/lite) database fetched when the image was built (IP address data is powered by [IPinfo](https://ipinfo.io), CC BY-SA 4.0; the `NOTICE` next to it records the download time and sha256). It answers `ip.geoip.country` and `ip.geoip.asnum` without any runtime download; pull a newer image for fresher data, or mount your own copy and set `EDGEWEIR_GEOIP_IPINFO`. To build an image with the data, pass an IPinfo token as a BuildKit secret: `IPINFO_TOKEN=... make docker`. Without the token the image has no bundled data and GeoIP rules stay unavailable until you provide MMDBs. Packages and archives do not bundle the database; point `EDGEWEIR_GEOIP_IPINFO` at your own download.
+
 ## Command line
 
 ```text
@@ -123,6 +125,7 @@ Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for exa
 | `--listen-ipv6` | `auto` | also listen on IPv6: `auto` (when the host can bind IPv6), `on` or `off` |
 | `--default-port` | `80` | HTTP port served before any configuration exists |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--geoip-ipinfo` | `auto` | IPinfo Lite MMDB (country and ASN): `auto` uses `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` when the image bundles it, `off` disables it, otherwise a path |
 | `--geoip-city` | empty | Operator-provided MMDB; empty disables the capability |
 | `--geoip-asn` | empty | Operator-provided MMDB; empty disables the capability |
 | `--cosign-bin` | `cosign` | Local signature verifier in supervise mode |
@@ -142,6 +145,7 @@ Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for exa
 | `/run/edgeweir-node/control.sock` | local control API of the Lua data plane (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | local edge listener and the internal origin layers |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
+| `/usr/share/edgeweir-node/geoip` | bundled IPinfo Lite database and its `NOTICE` (container image) |
 | `:80` | HTTP listener before any configuration; afterwards the listeners in the config |
 
 Each published site reserves a fixed 256 KiB counter partition; a cluster supports up to 512 published sites. Other sites cannot consume that partition, and adding a site does not resize existing partitions. See [rate-limit storage](docs/rate-limit-storage.md).
@@ -155,7 +159,7 @@ make build         # static binary in bin/
 make vet test      # go vet ./... && go test ./...
 make test-race     # tests with the race detector
 make lua-test      # Lua unit tests with resty in the OpenResty image
-make docker        # docker build -t edgeweir-node:dev .
+make docker        # docker build -t edgeweir-node:dev . (IPINFO_TOKEN=... bundles IPinfo Lite)
 make e2e           # container smoke test: fake console + node + whoami origins
 make proto-check   # regenerate from the proto git tag and fail on drift
 make snapshot      # goreleaser release --snapshot --clean (unsigned)
@@ -171,7 +175,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the proto regeneration flow and conve
 
 ## Verify release artifacts
 
-Releases are built in GitHub Actions from the tagged source (reproducible: `-trimpath`, timestamps from the commit). `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact also has a SLSA build provenance attestation.
+Releases are built in GitHub Actions from the tagged source (reproducible: `-trimpath`, timestamps from the commit). The container image additionally bundles the IPinfo Lite database as of its build day, so a later rebuild of the image carries different data; the sha256 in `/usr/share/edgeweir-node/geoip/NOTICE` identifies the copy. `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact also has a SLSA build provenance attestation.
 
 ```sh
 cosign verify-blob \
@@ -189,6 +193,6 @@ No vendor phone-home or license checks. The control channel talks to your consol
 
 ## License
 
-[AGPL-3.0-only](LICENSE), with commercial use permitted subject to the license. Nodes and the console's organizations, members and isolation remain open source; customer commerce portals, billing, finance and reselling are planned as a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md) and [ROADMAP.md](ROADMAP.md).
+[AGPL-3.0-only](LICENSE), with commercial use permitted subject to the license. Nodes and the console's organizations, members and isolation remain open source; customer commerce portals, billing, finance and reselling are planned as a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md) and [ROADMAP.md](ROADMAP.md). The bundled GeoIP data is [IPinfo Lite](https://ipinfo.io/lite) under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): IP address data is powered by [IPinfo](https://ipinfo.io).
 
 M6 sampled access logs are available (proto/v0.7.0). Collection is off by default, excludes query strings, headers and bodies, and uses bounded private queues with sequenced acknowledgements. See the [log and storage guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md). Signed agent/Lua upgrades, canary promotion and automatic rollback are implemented. See the [upgrade guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md).
