@@ -401,7 +401,7 @@ func (c *Console) GetConfig(_ context.Context, req *connect.Request[nodev1.GetCo
 	if target == nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such revision"))
 	}
-	resp := &nodev1.GetConfigResponse{GeneratedAt: timestamppb.Now()}
+	resp := &nodev1.GetConfigResponse{GeneratedAt: timestamppb.Now(), RevisionReceipt: fmt.Sprintf("test-receipt/%d", target.GetRevision())}
 	call := GetConfigCall{Request: proto.CloneOf(req.Msg), Revision: target.GetRevision()}
 	if base := c.revision(req.Msg.GetBaseRevision()); base != nil && base.GetRevision() <= target.GetRevision() {
 		d := configir.Diff(base, target)

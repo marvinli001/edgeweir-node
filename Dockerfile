@@ -48,6 +48,18 @@ FROM scratch AS geoip-fixture
 COPY --from=geoip-build /out/geoip-fixture /geoip-fixture
 ENTRYPOINT ["/geoip-fixture", "/data"]
 
+# A pinned, checksum-verified verifier travels with both image architectures.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS verifier
+ARG TARGETARCH
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) digest=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;; \
+      arm64) digest=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;; \
+      *) exit 1 ;; \
+    esac; \
+    wget -q -O /cosign "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-${TARGETARCH}"; \
+    echo "$digest  /cosign" | sha256sum -c -; chmod 0755 /cosign
+
 # ---- runtime: official OpenResty image, unprivileged user ----------------
 FROM ${OPENRESTY_IMAGE}
 ARG VERSION=dev
@@ -70,6 +82,7 @@ RUN groupadd --system --gid 10001 edgeweir \
  && install -d -o edgeweir -g edgeweir -m 0750 /run/edgeweir-node /var/cache/edgeweir-node
 
 COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
+COPY --from=verifier /cosign /usr/local/bin/cosign
 COPY lua/ /usr/share/edgeweir-node/lua/
 
 ENV EDGEWEIR_STATE_DIR=/var/lib/edgeweir-node \
@@ -87,4 +100,4 @@ EXPOSE 80
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
   CMD ["/usr/local/bin/edgeweir-node", "healthcheck"]
-ENTRYPOINT ["/usr/local/bin/edgeweir-node", "run", "--manage-nginx"]
+ENTRYPOINT ["/usr/local/bin/edgeweir-node", "supervise", "--manage-nginx"]

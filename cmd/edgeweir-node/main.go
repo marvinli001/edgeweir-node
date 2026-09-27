@@ -32,6 +32,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
 	"github.com/marvinli001/edgeweir-node/internal/render"
+	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 	"github.com/marvinli001/edgeweir-node/internal/version"
 )
 
@@ -57,6 +58,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdEnroll(args[1:], stderr)
 	case "run":
 		return cmdRun(args[1:], stderr)
+	case "supervise":
+		return cmdRunMode(args[1:], stderr, true)
 	case "healthcheck":
 		return cmdHealthcheck(args[1:], stderr)
 	case "version", "--version", "-v":
@@ -79,6 +82,7 @@ Usage:
   EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [flags]
   edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX [flags]
   edgeweir-node run [--manage-nginx] [flags]
+  edgeweir-node supervise --manage-nginx [flags]
   edgeweir-node healthcheck [--control-socket PATH]
   edgeweir-node version
 
@@ -309,7 +313,8 @@ func systemCABundle() string {
 	return ""
 }
 
-func cmdRun(args []string, stderr io.Writer) int {
+func cmdRun(args []string, stderr io.Writer) int { return cmdRunMode(args, stderr, false) }
+func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	fs := newFlagSet("run", stderr)
 	listenIPv6, resolverIPv6 := tristate("auto"), tristate("auto")
 	var (
@@ -329,6 +334,10 @@ func cmdRun(args []string, stderr io.Writer) int {
 		resolvers     = fs.String("resolver", "", "comma-separated nginx resolver addresses (overrides --resolv-conf)")
 		defaultPort   = fs.Uint("default-port", 80, "HTTP port served before any configuration exists")
 		workers       = fs.String("worker-processes", "auto", "nginx worker_processes")
+		cosignBin     = fs.String("cosign-bin", "cosign", "local signature verifier (supervise mode)")
+		upgradeSource = fs.String("upgrade-source", upgrade.DefaultSource, "locally trusted release base URL (supervise mode)")
+		upgradeKey    = fs.String("upgrade-public-key", "", "operator-provided local release public key; default GitHub OIDC identity")
+		upgradeHTTP   = fs.Bool("upgrade-allow-http", false, "allow an explicitly configured plaintext test/air-gap mirror")
 		geoCity       = fs.String("geoip-city", "", "operator-provided City MMDB path")
 		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
@@ -372,6 +381,29 @@ func cmdRun(args []string, stderr io.Writer) int {
 		return a
 	}
 	state := abs(*stateDir)
+	if supervised {
+		if !*manage {
+			fmt.Fprintln(stderr, "supervise requires --manage-nginx")
+			return 2
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		key := *upgradeKey
+		if key != "" {
+			key = abs(key)
+		}
+		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr})
+		if err != nil {
+			log.Error("supervisor stopped", "err", err)
+			return 1
+		}
+		return 0
+	}
 	prefix := *nginxPrefix
 	if prefix == "" {
 		prefix = filepath.Join(state, "nginx")
@@ -449,6 +481,7 @@ func cmdRun(args []string, stderr io.Writer) int {
 	})
 	a := agent.New(agent.Config{
 		StateDir:            state,
+		SupervisorSocket:    os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"),
 		ConfPath:            conf,
 		Render:              params,
 		DefaultPort:         uint32(*defaultPort),

@@ -10,10 +10,10 @@ English | [简体中文](README.zh-CN.md)
 
 | Repository | What it is |
 | --- | --- |
-| [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
-| **edgeweir/edgeweir-node** (this repo) | The node: Go agent `edgeweir-node` + OpenResty (Lua). |
+| [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
+| **marvinli001/edgeweir-node** (this repo) | The node: Go agent `edgeweir-node` + OpenResty (Lua). |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.6.0`) and never copies `.proto` files.
+The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.7.0`) and never copies `.proto` files.
 
 ## Status
 
@@ -24,6 +24,10 @@ M4 adds IP/GeoIP lists, phased rules, WAF, rate limits and request/response tran
 M5 persists sequenced statistics before upload, recovers from lost acknowledgements and restarts, and reports bounded approximate Top URL/IP counters. The V2 statistics RPC prevents unsafe fallback to an older console. Update the console and nodes together.
 
 There is no official binary release yet. Installation instructions below describe the release workflow; build from source for current evaluation. This is an experimental MVP.
+
+M6 runs a stable `supervise` parent with locally pinned release trust. It rejects bad signatures and unsafe archives, switches the agent and Lua together, and commits only after healthy configuration receipts. A failed candidate or interrupted trial restores the previous program and LKG. System-package/image updates take precedence over an older self-updated bundle; the guardian, cosign and OpenResty are maintained through that full-install path.
+
+Opaque configuration receipts are persisted before apply and returned over mTLS. After a database restore, only console-authenticated higher revisions can advance the control plane's counter. A node cannot invent an enormous revision to block future publication.
 
 ## How it works
 
@@ -121,6 +125,10 @@ Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for exa
 | `--worker-processes` | `auto` | nginx `worker_processes` |
 | `--geoip-city` | empty | Operator-provided MMDB; empty disables the capability |
 | `--geoip-asn` | empty | Operator-provided MMDB; empty disables the capability |
+| `--cosign-bin` | `cosign` | Local signature verifier in supervise mode |
+| `--upgrade-source` | official GitHub release download base | Operator-trusted release mirror; tasks cannot change it |
+| `--upgrade-public-key` | empty | Local release public key; otherwise pin official GitHub OIDC identity |
+| `--upgrade-allow-http` | `false` | Explicitly permit a plaintext local test or air-gap mirror |
 | `--purge-dict-mb` | `32` | size of the purge marker store (`lua_shared_dict edgeweir_purge`) in MiB |
 | `--purge-markers-per-site` | `1000` | URL and prefix purge markers per site before they collapse into one site-level marker |
 | `--prefetch-budget` | `4m` | time the prefetches of one pulled batch may take |
@@ -181,4 +189,4 @@ No vendor phone-home or license checks. The control channel talks to your consol
 
 [AGPL-3.0](LICENSE). Roadmap: [ROADMAP.md](ROADMAP.md).
 
-M6 sampled access logs are available (proto/v0.6.0). Collection is off by default, excludes query strings, headers and bodies, and uses bounded private queues with sequenced acknowledgements. See the [log and storage guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md). Signed node self-upgrade is still being implemented.
+M6 sampled access logs are available (proto/v0.7.0). Collection is off by default, excludes query strings, headers and bodies, and uses bounded private queues with sequenced acknowledgements. See the [log and storage guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md). Signed agent/Lua upgrades, canary promotion and automatic rollback are implemented. See the [upgrade guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md).

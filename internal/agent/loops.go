@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 	"math/rand/v2"
 	"sort"
 	"strconv"
@@ -153,8 +154,10 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 		req.AppliedAt = timestamppb.New(a.appliedAt)
 	}
 	a.mu.Unlock()
+	req.RevisionReceipt = a.receiptFor(req.AppliedRevision, req.AppliedContentHash)
 	req.Info = hostinfo.Collect(a.engineVersion)
 	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.geoFeatures...)
+
 	if id := a.channel.Identity(); id != nil {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
 	}
@@ -165,6 +168,13 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
 	defer cancel()
 	req := a.statusRequest()
+	if a.cfg.SupervisorSocket != "" {
+		sctx, scancel := context.WithTimeout(ctx, time.Second)
+		if upgrade.NewClient(a.cfg.SupervisorSocket).Available(sctx) {
+			req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "self-upgrade-v1")
+		}
+		scancel()
+	}
 	req.OriginHealth = a.originHealth(cctx)
 	resp, err := a.channel.Client().ReportStatus(cctx, connect.NewRequest(req))
 	if err != nil {
@@ -174,6 +184,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		return interval
 	}
 	a.markConnected()
+	a.supervisorHealthy(ctx, req.GetState() == nodev1.ApplyState_APPLY_STATE_APPLIED && req.GetDataPlaneHealthy() && resp.Msg.GetLatestRevision() == req.GetAppliedRevision())
 	a.log.Debug("status reported", "applied_revision", req.GetAppliedRevision(), "state", req.GetState().String())
 	if s := resp.Msg.GetReportIntervalSeconds(); s > 0 {
 		interval = min(max(time.Duration(s)*time.Second, time.Second), 5*time.Minute)

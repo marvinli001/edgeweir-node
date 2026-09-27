@@ -67,6 +67,7 @@ func (a *Agent) taskLoop(ctx context.Context) {
 
 func (a *Agent) runTasks(ctx context.Context) {
 	a.flushResults(ctx)
+	a.flushUpgradeResult(ctx)
 	for range maxPullRounds {
 		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
 		resp, err := a.channel.Client().PullTasks(cctx, connect.NewRequest(&nodev1.PullTasksRequest{MaxTasks: maxTasksPerPull}))
@@ -86,6 +87,9 @@ func (a *Agent) runTasks(ctx context.Context) {
 		slices.SortStableFunc(tasks, func(x, y *nodev1.NodeTask) int { return cmp.Compare(taskRank(x), taskRank(y)) })
 		for _, task := range tasks {
 			result := a.executeTask(ctx, task, deadline)
+			if result == nil {
+				continue
+			}
 			a.log.Info("task finished", "task_id", task.GetId(), "state", result.GetState().String(),
 				"succeeded", result.GetSucceeded(), "failed", result.GetFailed(), "message", result.GetMessage())
 			a.reportResult(ctx, result)
@@ -184,6 +188,8 @@ func taskRank(t *nodev1.NodeTask) int {
 // executeTask runs one task; prefetches stop at deadline.
 func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask, deadline time.Time) *nodev1.ReportTaskResultRequest {
 	switch kind := task.GetKind().(type) {
+	case *nodev1.NodeTask_Upgrade:
+		return a.executeUpgrade(ctx, task, kind.Upgrade)
 	case *nodev1.NodeTask_Purge:
 		return a.executePurge(ctx, task, kind.Purge)
 	case *nodev1.NodeTask_Prefetch:

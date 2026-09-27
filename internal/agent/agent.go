@@ -60,7 +60,8 @@ type DataPlane interface {
 // Config configures the agent.
 type Config struct {
 	// StateDir holds the identity and the LKG configuration.
-	StateDir string
+	StateDir         string
+	SupervisorSocket string
 	// ConfPath is where nginx.conf is written (inside the nginx prefix).
 	ConfPath string
 	// Render holds the node-local nginx.conf settings.

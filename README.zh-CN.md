@@ -10,10 +10,10 @@
 
 | 仓库 | 内容 |
 | --- | --- |
-| [edgeweir/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，一个应用、一个镜像。把站点和规则编译成与引擎无关的 `NodeConfig` IR，运行内部 CA 和节点通道（默认 `:8443`）。 |
-| **edgeweir/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
+| [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，一个应用、一个镜像。把站点和规则编译成与引擎无关的 `NodeConfig` IR，运行内部 CA 和节点通道（默认 `:8443`）。 |
+| **marvinli001/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.6.0`）生成 Go 代码，从不复制 `.proto` 文件。
+两个仓库之间唯一的契约是 `edgeweir/proto` 里的 protobuf（`edgeweir.node.v1.NodeService` 和 `NodeConfig`）。本仓库用 buf 从该目录的 git tag（当前为 `proto/v0.7.0`）生成 Go 代码，从不复制 `.proto` 文件。
 
 ## 当前状态
 
@@ -24,6 +24,10 @@ M4 已加入 IP/GeoIP 名单、分阶段规则、WAF、限速及请求/响应变
 M5 已加入统计批次持久化、回执丢失和重启后的序号恢复，以及有界的 Top URL/IP 估算。新节点不回退到会重复计数的旧统计 RPC；控制面与节点应一同升级。
 
 目前没有正式二进制发布，下方安装说明描述的是发布流程。当前评估请从源码构建；MVP 尚不适合生产使用。
+
+M6 使用稳定的 `supervise` 监督进程，本机固定发布源及信任锚。错误签名和危险归档会被拒绝，agent 与 Lua 同步切换，经配置和健康回执确认后才提交；失败或试运行中重启会恢复前一程序和 LKG。新的系统包 / 镜像优先于状态卷里的旧自升级程序；监督进程、cosign 和 OpenResty 通过完整安装流程维护。
+
+配置应用前持久保存控制台认证回执，经 mTLS 回传。恢复数据库时，只有通过验证的领先版本能推进发布序号，节点不能伪造极大数字阻断后续发布。
 
 ## 工作方式
 
@@ -121,6 +125,10 @@ edgeweir-node version
 | `--worker-processes` | `auto` | nginx `worker_processes` |
 | `--geoip-city` | empty | 运维者提供的 MMDB 路径；为空时不启用对应能力 |
 | `--geoip-asn` | empty | 运维者提供的 MMDB 路径；为空时不启用对应能力 |
+| `--cosign-bin` | `cosign` | supervise 模式的本机签名验证器 |
+| `--upgrade-source` | 官方 GitHub release 下载目录 | 运维设定的发布镜像，任务不能修改 |
+| `--upgrade-public-key` | 空 | 本机发布公钥；默认固定官方 GitHub OIDC 身份 |
+| `--upgrade-allow-http` | `false` | 明确允许本地测试或隔离镜像使用明文 HTTP |
 | `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`）的大小，单位 MiB |
 | `--purge-markers-per-site` | `1000` | 每个站点的 URL 与前缀标记上限，超过后合并为一个全站标记 |
 | `--prefetch-budget` | `4m` | 一次拉取的预热任务可用的时间 |
@@ -181,4 +189,4 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 
 [AGPL-3.0](LICENSE)。路线图见 [ROADMAP.md](ROADMAP.md)。
 
-M6 采样访问日志已接入（proto/v0.6.0）：默认关闭，不记录查询参数、请求头或正文，使用有界私有队列和持久批次确认。详见[日志与存储指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md)。节点签名自升级仍在实施。
+M6 采样访问日志已接入（proto/v0.7.0）：默认关闭，不记录查询参数、请求头或正文，使用有界私有队列和持久批次确认。详见[日志与存储指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md)。已实现活动 agent / Lua 签名升级、节点组试运行、显式推进及自动回滚。见[升级指南](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md)。

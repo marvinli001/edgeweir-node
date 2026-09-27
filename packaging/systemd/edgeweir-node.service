@@ -37,7 +37,7 @@ Group=edgeweir
 Environment=EDGEWEIR_NGINX_BIN=/usr/bin/openresty
 Environment=EDGEWEIR_LUA_DIR=/usr/share/edgeweir-node/lua
 EnvironmentFile=-/etc/default/edgeweir-node
-ExecStart=/usr/bin/edgeweir-node run --manage-nginx
+ExecStart=/usr/bin/edgeweir-node supervise --manage-nginx
 Restart=always
 RestartSec=2s
 # SIGTERM goes to the agent, which stops OpenResty gracefully; anything

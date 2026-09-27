@@ -8,7 +8,7 @@ SHELL := /bin/bash
 # and is consumed from an immutable git tag. Locally we read the sibling
 # checkout; CI overrides PROTO_INPUT with the GitHub URL:
 #   make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
-PROTO_TAG   ?= proto/v0.6.0
+PROTO_TAG   ?= proto/v0.7.0
 PROTO_INPUT ?= ../edgeweir/.git\#tag=$(PROTO_TAG),subdir=proto
 
 # --- Build metadata ----------------------------------------------------------

@@ -118,9 +118,9 @@
 
 ### DNS
 
-- [ ] [控制面] 接入第三方 DNS：DNSPod、阿里云、华为、Cloudflare
-- [ ] [控制面] 自动下发 CNAME
-- [ ] [控制面] 健康检查不通过自动摘除解析，并提供记录修复任务
+- [x] [控制面] 接入第三方 DNS：DNSPod、阿里云、华为、Cloudflare
+- [x] [控制面] 自动下发 CNAME
+- [x] [控制面] 健康检查不通过自动摘除解析，并提供记录修复任务
 - [x] **[节点]** 本机自检，异常如实上报
   - 节点侧：agent 每 5 秒（以及 OpenResty 每次（重）启动时）探测数据面控制 API，结果作为 `data_plane_healthy` 随 `ReportStatus` 上报；配置应用结果（`state`、`message`，含 `nginx -t` 输出、reload 未生效）同样上报；托管模式下 OpenResty 意外退出时按退避自动重启
 - [ ] [控制面] 节点健康检查失败自动下线（依据心跳和上面的自检结果）
@@ -131,17 +131,17 @@
   - 节点侧：Phase 0 已上报请求数、字节数、命中和状态码，带宽由字节数推算
 - [ ] [节点+控制面] 分钟级 Top URL 和 Top IP
   - 节点侧：在 Lua 中做 Top-K 预聚合，随 `ReportStats` 上报，不上传原始日志
-- [ ] [控制面] 告警：邮件、Webhook、钉钉、企业微信、Telegram
+- [x] [控制面] 告警：邮件、Webhook、钉钉、企业微信、Telegram
 - [x] [控制面] 审计日志（MVP M1）
-- [ ] [控制面] 开放 API
-- [ ] [节点+控制面] 访问日志采样上报（MVP M6）
+- [x] [控制面] 开放 API
+- [x] [节点+控制面] 访问日志采样上报（MVP M6）
   - 节点侧：按站点采样率在 log 阶段采集（时间、客户端 IP、方法、Host、路径、状态码、字节、耗时、缓存状态），批量上报
 
 ### 节点基础能力（BOOTSTRAP §2 的节点职责，§4 未单列）
 
-- [ ] **[节点]** OpenResty 自定义构建：`http_v3`、brotli、zstd、geoip2、lua-resty-lmdb；ModSecurity + CRS 作为可选动态模块。上面的 HTTP/3、Brotli/Zstd、地区名单都依赖它
+- [ ] **[节点]** OpenResty 自定义构建：`http_v3`、brotli、zstd、geoip2、lua-resty-lmdb；ModSecurity + CRS 作为可选动态模块。Brotli/Zstd 与可选扩展仍需另行构建；HTTP/3 已使用官方模块，GeoIP 使用本地 Go MMDB 服务
 - [ ] **[节点]** 有了自定义构建后，评估用 lua-resty-lmdb 替代 `lua_shared_dict` 存放配置
-- [ ] [节点+控制面] agent 自升级：先校验 sha256 和 cosign 签名，通过后再原子替换二进制并重启；失败时保留旧版本
+- [x] [节点+控制面] agent 自升级：先校验 sha256 和 cosign 签名，通过后再原子替换二进制并重启；失败时保留旧版本
 
 ## v1
 

@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点当前（MVP M4）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.6.0`）里的 `edgeweir.node.v1`。
+本文描述节点当前（MVP M4）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.7.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -358,18 +358,18 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 
 ## 5. 部署形态
 
-- **容器**：`openresty/openresty:1.31.1.1-bookworm` 为基础，agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node run --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。
+- **容器**：`openresty/openresty:1.31.1.1-bookworm` 为基础，agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node supervise --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。
 - **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty 作为 agent 的子进程运行，与发行版自带的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
 
 ## 6. 已知限制
 
 - HTTPS 监听与证书下发已在 M3 实现，具体见下方 M3 记录。
-- `CacheRuleMatch.expression` 非空的配置会被拒绝（规则引擎属于后续里程碑）。
+- 旧占位字段 `CacheRuleMatch.expression` 仍拒绝非空值；M4 通用表达式通过 `EdgeRule` 结构化 AST 下发，公共缓存 API 不暴露旧占位字段。
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
-- 访问日志关闭，只有聚合统计；访问日志采样属于 MVP M6。
+- 访问日志默认关闭，M6 支持站点采样、有界私有队列和持久批次去重。
 - 预热只预热桌面变体；前缀与全站预热在 v1。
-- 没有最低 agent 版本门槛：旧节点遇到新的枚举值会退回默认值（控制面延后项 D1，M3）。
+- 使用 required_features 协商能力；未知枚举或能力拒绝整份配置，保留 LKG。
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。
 
 ## MVP M3（2026-09-27）
@@ -388,3 +388,9 @@ shared dict 在 HUP reload 时保留，在 nginx 重启后清空。agent 每 5s�
 ## M5 statistics (2026-09-27)
 
 `traffic-spool.json` (0600) keeps immutable batches and monotonic sequence numbers before `ReportStatsV2`. A cursor query recovers after local state loss. The queue is bounded to 10000 buckets / 32 MiB. Lua Space-Saving summaries use a separate shared dictionary and omit query strings and headers; they are approximate. See the console DNS/alert guide for retention and delivery semantics.
+
+## MVP M6 运维闭环
+
+固定监督进程持独占状态锁，经本机 0600 socket 接收类型化任务。发布来源、cosign 和公钥由节点运维配置；控制面不能选择公钥或任意命令。验证已签名清单和归档哈希、文件布局、ELF 架构与版本后，程序和 Lua 在私有版本目录内切换。原子状态记录准备 / 试运行 / 当前版本，健康窗口失败或中途重启恢复前一版本及配置快照。结果保留到控制面确认；基础安装指纹变化时采用新镜像 / 软件包，避免旧自升级程序掩盖系统更新。
+
+`config/receipts.json` 保存绑定节点、集群、revision、内容哈希的控制台认证回执，权限 0600；与 LKG 一同备份/回滚。控制面恢复后只接受有凭证的领先版本参与跳号，未认证整数不会耗尽发布序号。采样日志默认关闭，无查询参数、头或正文，经持久批次上报；磁盘队列有明确上限和丢弃日志。

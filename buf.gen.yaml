@@ -1,6 +1,6 @@
 # Go code generation for the node channel contract.
 #
-# The protobuf sources live in the console repository (edgeweir/edgeweir,
+# The protobuf sources live in the console repository (marvinli001/edgeweir,
 # directory proto/) and are consumed from a git tag, never copied here.
 # Run `make proto` (local sibling checkout) or, as CI does, with the tag in
 # the Makefile's PROTO_TAG:

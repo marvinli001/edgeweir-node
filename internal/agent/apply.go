@@ -377,6 +377,9 @@ func (a *Agent) getConfig(ctx context.Context, base uint64) (*nodev1.GetConfigRe
 	if err != nil {
 		return nil, err
 	}
+	if err := a.rememberReceipt(resp.Msg); err != nil {
+		return nil, err
+	}
 	a.markConnected()
 	return resp.Msg, nil
 }
