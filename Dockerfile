@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.26.0@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
 # edgeweir-node container image: the Go agent supervising OpenResty.
 #
@@ -16,8 +16,10 @@
 # (404 X-Edgeweir-Error: unknown-host on :80), waits until the node is
 # enrolled and then follows the console.
 
-ARG GO_IMAGE=golang:1.27.1-alpine
-ARG OPENRESTY_IMAGE=openresty/openresty:1.31.1.1-bookworm
+# Base images are pinned by tag and multi-arch index digest; the digest is
+# what gets pulled (ADR-0017). Refresh tag and digest together (CONTRIBUTING.md).
+ARG GO_IMAGE=golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414
+ARG OPENRESTY_IMAGE=openresty/openresty:1.31.1.1-bookworm@sha256:8005b87dcb25df5e202e71dcc4b8a2c20a4845a75302b2bb6ee816b5392883e4
 
 # ---- build: static agent, cross-compiled on the build platform ----------
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build

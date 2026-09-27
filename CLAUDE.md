@@ -18,6 +18,7 @@ make test-race lua-test e2e           # race、Lua（resty）、容器冒烟测�
 COMPOSE_PROJECT_NAME=<名字> E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER_PORT=38090 make e2e
                                       # 与其他 compose 项目并行：项目名只隔开容器、网络和卷，宿主机端口（默认 28080/28081/28090）也要换
 make proto / make proto-check         # 从 tag 重新生成 / 检查漂移
+make pin-check                        # 第三方镜像按 digest、Actions 按 commit SHA 固定（ADR-0017，CI 运行）
 make adr-check                        # docs/adr 是否与 ../edgeweir 的 ADR 一致（需要同级检出，所以 CI 不跑）
 go test ./internal/render -update     # 更新 nginx.conf golden 文件（review diff）
 make docker && make snapshot          # 镜像、goreleaser 本地快照

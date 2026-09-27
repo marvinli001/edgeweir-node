@@ -19,7 +19,7 @@ PKG     := github.com/marvinli001/edgeweir-node/internal/version
 LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
 IMAGE          ?= edgeweir-node:dev
-OPENRESTY_FAT  ?= openresty/openresty:1.31.1.1-bookworm-fat
+OPENRESTY_FAT  ?= openresty/openresty:1.31.1.1-bookworm-fat@sha256:59eaa54c12021e799adbea1bc3acdf4097f9cac105f889e417d017deb263a755
 
 .PHONY: help
 help: ## Show this help
@@ -57,6 +57,10 @@ proto-check: proto ## Regenerate and fail if the committed code differs
 .PHONY: adr-check
 adr-check: ## Fail if docs/adr differs from the console's ADRs (needs ../edgeweir)
 	scripts/sync-adr.sh --check
+
+.PHONY: pin-check
+pin-check: ## Fail if an image or GitHub Action is referenced by a movable tag (ADR-0017)
+	scripts/check-pins.sh
 
 .PHONY: lua-test
 lua-test: ## Run Lua unit tests with resty inside the OpenResty image
