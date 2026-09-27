@@ -9,7 +9,7 @@
 #      508;
 #   5. origin HTTPS verification uses the origin's name (SNI): trusted CA +
 #      matching name 200, wrong name 502;
-#   6. a site-only revision is hot-updated (no reload) and reported;
+#   6. a new site reserves its partition; later existing-site changes stay hot;
 #   7. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
 set -euo pipefail
@@ -181,9 +181,17 @@ pass "prefix purge covers percent-encoded variants"
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
-[ "$(status_code demo2.test)" = 200 ] || fail "demo2.test not served after hot update"
+[ "$(status_code demo2.test)" = 200 ] || fail "demo2.test not served after adding its partition"
 reloads_after=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
-[ "$reloads_before" = "$reloads_after" ] || fail "site-only change reloaded nginx ($reloads_before -> $reloads_after)"
+[ "$reloads_after" -eq "$((reloads_before + 1))" ] || fail "new site must add one structural reload ($reloads_before -> $reloads_after)"
+pass "revision $rev added a dedicated site partition"
+
+reloads_before=$reloads_after
+rev=$(curl -fsS -X POST "$HELPER/update")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(status_code alias.demo2.test)" = 200 ] || fail "existing-site alias not served after hot update"
+reloads_after=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
+[ "$reloads_before" = "$reloads_after" ] || fail "existing-site change reloaded nginx ($reloads_before -> $reloads_after)"
 pass "revision $rev hot-updated without nginx reload"
 
 compose restart node >/dev/null

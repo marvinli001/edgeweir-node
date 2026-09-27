@@ -30,6 +30,7 @@
 //	GET /origin-health  one line per origin with failures from the last
 //	              ReportStatus: "<site> <origin> <code> <error>"
 //	POST /publish publish a new revision adding site demo2.test
+//	POST /update  update the existing demo2 site with an alias, without adding a site ID
 package main
 
 import (
@@ -245,6 +246,13 @@ func main() {
 	})
 	mux.HandleFunc("POST /publish", func(w http.ResponseWriter, _ *http.Request) {
 		rev := c.Publish(config(append(baseSites(*origin), site("site-demo2", "demo2.test", *origin, 80))...))
+		fmt.Fprint(w, rev)
+	})
+	mux.HandleFunc("POST /update", func(w http.ResponseWriter, _ *http.Request) {
+		updated := site("site-demo2", "demo2.test", *origin, 80)
+		updated.Domains = append(updated.Domains, &nodev1.Domain{Name: "alias.demo2.test"})
+		updated.CacheGeneration++
+		rev := c.Publish(config(append(baseSites(*origin), updated)...))
 		fmt.Fprint(w, rev)
 	})
 	go func() {
