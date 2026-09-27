@@ -98,7 +98,7 @@ type Plan struct {
 	PlatformRules  []*nodev1.EdgeRule
 }
 
-// Listener is a plain-HTTP port served by the edge layer.
+// Listener is an HTTP or HTTPS port served by the edge layer.
 type Listener struct {
 	Port          uint32
 	TLS           bool

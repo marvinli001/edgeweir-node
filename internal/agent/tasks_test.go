@@ -165,39 +165,50 @@ func TestAgentReportsUnsupportedTasks(t *testing.T) {
 	}
 }
 
-// TestAgentPrefetchAvoidsProxyProtocolListeners (N-L): a listener that
-// expects the PROXY protocol would reject the agent's requests; prefetches
+// TestAgentPrefetchAvoidsIncompatibleListeners: a listener that
+// expects TLS or the PROXY protocol would reject the agent's requests; prefetches
 // use a plain listener, or the local edge socket when there is none.
-func TestAgentPrefetchAvoidsProxyProtocolListeners(t *testing.T) {
-	plainPort, plainHits := slowEdge(t, 0)
-	cfg := edgeConfig(1) // port 1: nothing listens (and PROXY protocol)
-	cfg.Listeners[0].ProxyProtocol = true
-	cfg.Listeners = append(cfg.Listeners, &nodev1.Listener{Port: plainPort, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP})
-	e := startEnrolledConfig(t, "pp1", nil, cfg)
-	e.console.AddTask(prefetchTask("p-plain", "http://site-a.test/a"), false)
-	if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || plainHits.Load() != 1 {
-		t.Fatalf("prefetch via the plain listener: %v (hits %d)", res, plainHits.Load())
-	}
+func TestAgentPrefetchAvoidsIncompatibleListeners(t *testing.T) {
+	for _, mode := range []string{"proxy", "tls"} {
+		t.Run(mode, func(t *testing.T) {
+			configure := func(c *nodev1.NodeConfig) {
+				if mode == "proxy" {
+					c.Listeners[0].ProxyProtocol = true
+				} else {
+					c.Listeners[0].Protocol = nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS
+				}
+			}
+			plainPort, plainHits := slowEdge(t, 0)
+			cfg := edgeConfig(1) // port 1: an incompatible listener; no plain HTTP server
+			configure(cfg)
+			cfg.Listeners = append(cfg.Listeners, &nodev1.Listener{Port: plainPort, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP})
+			e := startEnrolledConfig(t, "pp1", nil, cfg)
+			e.console.AddTask(prefetchTask("p-plain", "http://site-a.test/a"), false)
+			if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || plainHits.Load() != 1 {
+				t.Fatalf("prefetch via the plain listener: %v (hits %d)", res, plainHits.Load())
+			}
 
-	// Only a PROXY protocol listener: the local edge socket.
-	only := edgeConfig(1)
-	only.Listeners[0].ProxyProtocol = true
-	e = startEnrolledConfig(t, "pp2", nil, only)
-	sock := filepath.Join(filepath.Dir(e.dp.Socket), "edge.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var socketHits atomic.Int32
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		socketHits.Add(1)
-		_, _ = w.Write([]byte("ok"))
-	}))
-	srv.Listener = ln
-	srv.Start()
-	t.Cleanup(srv.Close)
-	e.console.AddTask(prefetchTask("p-socket", "http://site-a.test/b"), false)
-	if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || socketHits.Load() != 1 {
-		t.Fatalf("prefetch via the edge socket: %v (hits %d)", res, socketHits.Load())
+			// No compatible TCP listener: use the local edge socket.
+			only := edgeConfig(1)
+			configure(only)
+			e = startEnrolledConfig(t, "pp2", nil, only)
+			sock := filepath.Join(filepath.Dir(e.dp.Socket), "edge.sock")
+			ln, err := net.Listen("unix", sock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var socketHits atomic.Int32
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				socketHits.Add(1)
+				_, _ = w.Write([]byte("ok"))
+			}))
+			srv.Listener = ln
+			srv.Start()
+			t.Cleanup(srv.Close)
+			e.console.AddTask(prefetchTask("p-socket", "http://site-a.test/b"), false)
+			if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || socketHits.Load() != 1 {
+				t.Fatalf("prefetch via the edge socket: %v (hits %d)", res, socketHits.Load())
+			}
+		})
 	}
 }

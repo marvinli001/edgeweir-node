@@ -170,7 +170,7 @@ changelog:
 
 release:
   github:
-    owner: edgeweir
+    owner: marvinli001
     name: edgeweir-node
   draft: true
   footer: |

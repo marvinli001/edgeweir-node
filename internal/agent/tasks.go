@@ -282,7 +282,7 @@ func (a *Agent) prefetchTarget() (network, addr string) {
 	if a.plan != nil && len(a.plan.Listeners) > 0 {
 		port = 0
 		for _, l := range a.plan.Listeners {
-			if !l.ProxyProtocol {
+			if !l.ProxyProtocol && !l.TLS {
 				port = l.Port
 				break
 			}
