@@ -56,7 +56,7 @@ archives:
       - src: README.md
         info:
           mtime: "{{ .CommitDate }}"
-      - src: README.zh-CN.md
+      - src: README.en.md
         info:
           mtime: "{{ .CommitDate }}"
       - src: SECURITY.md

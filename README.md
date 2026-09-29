@@ -1,177 +1,187 @@
 # Edgeweir Node
 
-English | [简体中文](README.zh-CN.md)
+简体中文 | [English](README.en.md)
 
-`edgeweir-node` is the edge node of [Edgeweir](https://github.com/marvinli001/edgeweir), an open-source, self-hosted CDN / WAF / edge traffic platform. A node is a small Go agent that supervises an OpenResty data plane. It enrolls with an Edgeweir console, receives its configuration over mutually authenticated TLS, and serves and caches traffic for the sites of its cluster.
+[![CI](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
-> **Why "weir"?** Edgeweir is named after a weir. Around 256 BC, Li Bing built the Dujiangyan irrigation system on the Min River. One of its parts, the Feisha ("flying sand") Weir, sits at the edge of the inner channel: in normal times it lets water flow on through the Bottle-Neck Channel to irrigate the Chengdu Plain; in floods, the river bend flings sand and excess water over the weir back into the outer channel. Edgeweir aims to do the same at the network edge: let good traffic through, shed attacks, and steer the flow.
+[Edgeweir](https://github.com/marvinli001/edgeweir) 的边缘节点。Go agent 负责注册、配置同步、任务执行与签名升级；OpenResty（Lua）数据面负责路由、缓存、回源与策略执行。
 
-## Relationship to the console
+> [!IMPORTANT]
+> 预发布阶段。尚无正式二进制发布，下文安装流程适用于正式发布之后；评估请[从源码构建](#构建与测试)。
 
-| Repository | What it is |
+## 与控制台的关系
+
+| 仓库 | 组成 |
 | --- | --- |
-| [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | The console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR, runs the internal CA and the node channel on `:8443`. |
-| **marvinli001/edgeweir-node** (this repo) | The node: Go agent `edgeweir-node` + OpenResty (Lua). |
+| [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，单应用、单镜像。将站点与规则编译为与引擎无关的 `NodeConfig` IR，运行内部 CA 与节点通道（默认 `:8443`）。 |
+| **marvinli001/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService` and `NodeConfig`). This repository generates its Go code from a git tag of that directory (currently `proto/v0.7.0`) and never copies `.proto` files.
+两个仓库间唯一的契约为 `edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`）。本仓库以 buf 从该目录的 git tag（当前 `proto/v0.7.0`）生成 Go 代码，不复制 `.proto` 文件。
 
-## Status
+## 功能
 
-M3 adds SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS and Gzip. Certificate rotation is hot; structural policy changes reload only after validation and recover on activation failure. Brotli and Zstd are unavailable in the stock engine. Node certificate materials live in `certificates.json` with mode 0600; host administrators can read them. See the [HTTPS guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md).
+| 领域 | 能力 |
+| --- | --- |
+| HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、Gzip；证书热轮换 |
+| 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均为热更新；GeoIP 读取本地 MMDB，不向第三方发送客户端 IP |
+| 缓存与回源 | 按 `Host` 路由、`proxy_cache` 缓存、源站池负载均衡与被动健康检查、清缓存与预热 |
+| 统计与日志 | 按站点、按分钟的流量统计（上传前持久化，回执丢失或重启后按序号恢复）、有界 Top URL / IP 估算、采样访问日志（默认关闭，不记录查询参数、请求头与正文） |
+| 配置可靠性 | 校验后应用，结构性变更激活失败时恢复原配置；last-known-good（LKG）配置持久化；控制台不可达时按 LKG 持续服务 |
+| 签名升级 | `supervise` 监督进程、本机固定发布源与信任锚、agent 与 Lua 同步切换、节点组试运行与显式推进、失败自动回滚 |
 
-M4 adds IP/GeoIP lists, phased rules, WAF, rate limits and request/response transforms through hot updates. GeoIP reads local MMDBs without sending client IPs to a third party. See the [rule guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md).
+## 工作机制
 
-M5 persists sequenced statistics before upload, recovers from lost acknowledgements and restarts, and reports bounded approximate Top URL/IP counters. The V2 statistics RPC prevents unsafe fallback to an older console. Update the console and nodes together.
+1. **注册**：`edgeweir-node enroll` 在本机生成 ECDSA P-256 私钥（不离开节点），按安装命令中的 SHA-256 固定控制台内部 CA，以一次性 token 与 CSR 换取节点证书。
+2. **mTLS 通道**：后续 RPC 均以节点证书认证。`WatchConfig` 服务端流推送 revision 通知；`GetConfig` 约每 30 秒轮询兜底，间隔带 ±20% 随机抖动。
+3. **应用配置**：快照与增量 diff 先校验 `content_hash` 与合法性。结构性变更（监听端口、缓存 zone、resolver、已发布站点 ID 集合）重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；既有站点的源站、缓存与策略规则经本地 unix socket 热更新，不 reload。应用成功的配置持久化为 LKG。
+4. **服务流量**：Lua 数据面按 `Host` 路由，以 `proxy_cache` 缓存（响应头 `X-Cache: MISS/HIT/BYPASS`），在源站池间负载均衡并做被动健康检查；未知域名返回 `404` 与 `X-Edgeweir-Error: unknown-host`。源站不得指向特殊地址段（回环、链路本地 / 云元数据、私网等），平台管理员放行的除外；回源请求携带 `CDN-Loop`，环路以 `508` 终止。
+5. **任务与上报**：清缓存与预热任务、状态心跳（已应用 revision、源站健康状态）、按站点按分钟流量统计、证书自动续期。
+6. **配置回执**：回执在应用前持久化，经 mTLS 回传。控制台恢复数据库后，仅经控制台认证的更高 revision 可推进发布序号。
 
-There is no official binary release yet. Installation instructions below describe the release workflow; build from source for current evaluation. This is an experimental MVP.
+架构细节见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-M6 runs a stable `supervise` parent with locally pinned release trust. It rejects bad signatures and unsafe archives, switches the agent and Lua together, and commits only after healthy configuration receipts. A failed candidate or interrupted trial restores the previous program and LKG. System-package/image updates take precedence over an older self-updated bundle; the guardian, cosign and OpenResty are maintained through that full-install path.
+## 安装
 
-Opaque configuration receipts are persisted before apply and returned over mTLS. After a database restore, only console-authenticated higher revisions can advance the control plane's counter. A node cannot invent an enormous revision to block future publication.
+### 一键安装（推荐）
 
-## How it works
+控制台为每个节点生成安装命令，`install.sh` 由控制台提供，依次执行：
 
-1. **Enroll**: `edgeweir-node enroll` generates an ECDSA P-256 key locally (it never leaves the node), pins the console's internal CA by the SHA-256 in the install command, and exchanges a single-use token and a CSR for a node certificate.
-2. **mTLS channel**: every later RPC uses the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is also polled about every 30 s (with ±20 % jitter, so that nodes do not poll in lockstep) as a fallback.
-3. **Apply**: snapshots and diffs are verified against the `content_hash` and validated. Structural changes (listeners, cache zones, resolver and the set of published site IDs) re-render `nginx.conf` and reload OpenResty after `openresty -t`; ordinary existing-site origins, cache rules and policy rules are hot-updated through a local unix socket. A configuration that applied is persisted as the last-known-good (LKG) configuration.
-4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (responses carry `X-Cache: MISS/HIT/BYPASS`), balances over origin pools with passive health checks, and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`. Origins may not point at special-purpose addresses (loopback, link-local/cloud metadata, private networks, ...) unless the platform administrator allows them, and every upstream request carries `CDN-Loop`, so loops end with `508`.
-5. **Tasks and reports**: purge and prefetch tasks, status heartbeats with the applied revision and origin health, per-site per-minute traffic stats, and automatic certificate renewal.
+1. 下载发布物（可经控制台镜像转发），执行任何内容前校验 SHA-256 与 cosign 签名。`--allow-unsigned` 仅供开发使用：跳过签名校验，SHA-256 照常校验。
+2. 安装 OpenResty 与 `edgeweir-node` 包。
+3. 以固定的 CA 指纹完成注册。一次性 token 经 `EDGEWEIR_TOKEN` 环境变量传递，不出现在命令行。
+4. 启动服务。
 
-If the console is unreachable the node keeps serving its LKG configuration. See [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese) for the details.
+控制台不保存 SSH 凭据。
 
-## Install
+### 手动安装（deb / rpm）
 
-### One-line install (recommended)
-
-The console shows an install command for each node. `install.sh` is served by your own console. Before executing anything it downloads the release artifacts (optionally mirrored by the console, useful where GitHub is slow) and verifies their SHA-256 **and** cosign signature (the only exception is `--allow-unsigned`, meant for development, which skips the signature check but still verifies the SHA-256); it then installs OpenResty and the `edgeweir-node` package, enrolls the node with the pinned CA fingerprint (the one-time token is handed over in the `EDGEWEIR_TOKEN` environment variable, never on a command line) and starts the service. The console never stores SSH credentials.
-
-### Manual install (deb / rpm)
-
-1. Install OpenResty from the [official repositories](https://openresty.org/en/linux-packages.html) and disable its own service (the agent runs OpenResty as a child process): `sudo systemctl disable --now openresty`.
-2. Download `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`) or `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`) and `checksums.txt*` from the release page and [verify them](#verify-release-artifacts).
-3. Install, enroll and start:
+1. 从 [OpenResty 官方仓库](https://openresty.org/cn/linux-packages.html)安装 OpenResty，并停用其自带服务（agent 以子进程方式运行 OpenResty）：`sudo systemctl disable --now openresty`。
+2. 从 Release 页面下载 `edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）或 `edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）及 `checksums.txt*`，并[验证发布物](#验证发布物)。
+3. 安装、注册、启动：
 
    ```sh
-   sudo apt install ./edgeweir-node_<version>_amd64.deb   # or: sudo dnf install ./edgeweir-node-<version>-1.x86_64.rpm
-   # the token file keeps the one-time token out of the process list
+   sudo apt install ./edgeweir-node_<版本>_amd64.deb   # 或：sudo dnf install ./edgeweir-node-<版本>-1.x86_64.rpm
+   # token 文件使一次性 token 不出现在进程列表
    sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
    sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
    sudo rm /root/edgeweir-token
    sudo systemctl enable --now edgeweir-node
    ```
 
-The package installs `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/edgeweir-node/lua`, the systemd unit and `/etc/default/edgeweir-node`, creates the unprivileged `edgeweir` user and the state and cache directories owned by it.
+安装包内容：`/usr/bin/edgeweir-node`、`/usr/share/edgeweir-node/lua` 下的 Lua 模块、systemd unit、`/etc/default/edgeweir-node`；创建非特权用户 `edgeweir` 及其所属的状态目录与缓存目录。
 
 ### Docker
 
 ```sh
 docker run -d --name edgeweir-node -p 80:80 \
   -v edgeweir-node:/var/lib/edgeweir-node \
-  ghcr.io/marvinli001/edgeweir-node:<version>
-read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # paste the one-time token
+  ghcr.io/marvinli001/edgeweir-node:<版本>
+read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # 粘贴一次性 token
 docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
-The container starts OpenResty immediately (every host answers `404 unknown-host`), waits for the enrollment, and then follows the console. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume.
+容器启动即运行 OpenResty（所有域名返回 `404 unknown-host`），注册完成后开始同步控制台配置。容器以 uid 10001 运行，节点身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷中。
 
-## Command line
+## 命令行
 
 ```text
 EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force]
-edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...   # --token TOKEN also works but shows in ps
+edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...   # --token TOKEN 亦可，但会出现在 ps 中
 edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
                   [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80]
                   [--trusted-ca FILE] [--purge-dict-mb 32] [--purge-markers-per-site 1000]
                   [--prefetch-budget 4m] [--edge-socket PATH] ...
+edgeweir-node supervise --manage-nginx ...   # 参数同 run；systemd unit 与容器镜像的入口
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node version
 ```
 
-Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (for example `--state-dir` → `EDGEWEIR_STATE_DIR`, `--token` → `EDGEWEIR_TOKEN`, `--token-file` → `EDGEWEIR_TOKEN_FILE`); command-line flags win. `run` waits (polling every 2 s) until the node is enrolled, so `enroll` can be run while `run` is already running.
+- 所有参数均可通过环境变量 `EDGEWEIR_<参数名>` 设置（如 `--state-dir` → `EDGEWEIR_STATE_DIR`、`--token` → `EDGEWEIR_TOKEN`、`--token-file` → `EDGEWEIR_TOKEN_FILE`），命令行参数优先。
+- `run` 在注册完成前每 2 秒检查一次状态目录，可先启动 `run` 再执行 `enroll`。
+- `supervise` 在 `run` 之上负责签名升级、试运行与回滚。
 
-| `enroll` flag | Default | Purpose |
+| `enroll` 参数 | 默认值 | 作用 |
 | --- | --- | --- |
-| `--server` | required | console node-channel URL, e.g. `https://console.example.com:8443` |
-| `--ca-sha256` | required | SHA-256 of the console's internal CA certificate (DER, hex) from the install command |
-| `--token-file` | none | read the one-time token from this file (surrounding whitespace is ignored) |
-| `--token` | none | the one-time token itself; visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
-| `--server-name` | host of `--server` | TLS server name to verify |
-| `--state-dir` | `/var/lib/edgeweir-node` | state directory for the node identity |
-| `--force` | off | replace an existing identity (re-enroll) |
-| `--timeout` | `30s` | enrollment RPC timeout |
-| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
-| `--log-format` | `text` | `text` or `json` |
+| `--server` | 必填 | 控制台节点通道地址，如 `https://console.example.com:8443` |
+| `--ca-sha256` | 必填 | 安装命令中的控制台内部 CA 证书（DER）SHA-256，十六进制 |
+| `--token-file` | 无 | 从文件读取一次性 token（忽略首尾空白） |
+| `--token` | 无 | 一次性 token；会出现在进程列表中，优先使用 `EDGEWEIR_TOKEN` 或 `--token-file` |
+| `--server-name` | `--server` 的主机名 | 校验的 TLS 服务器名 |
+| `--state-dir` | `/var/lib/edgeweir-node` | 保存节点身份的状态目录 |
+| `--force` | 关 | 替换已有身份（重新注册） |
+| `--timeout` | `30s` | 注册 RPC 超时 |
+| `--log-level` | `info` | 日志级别：`debug`、`info`、`warn`、`error` |
+| `--log-format` | `text` | 日志格式：`text`、`json` |
 
-| `run` flag | Default | Purpose |
+| `run` 参数 | 默认值 | 作用 |
 | --- | --- | --- |
-| `--manage-nginx` | off | run OpenResty as a supervised child process (the container and the systemd unit set it) |
-| `--state-dir` | `/var/lib/edgeweir-node` | state directory (identity, last-known-good configuration) |
-| `--nginx-bin` | `openresty` | OpenResty binary |
-| `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix directory |
-| `--nginx-user` | none | user for the nginx workers when the agent runs as root (better: run the agent as an unprivileged user) |
-| `--lua-dir` | `/usr/share/edgeweir-node/lua` | directory containing `edgeweir/*.lua` |
-| `--cache-dir` | `/var/cache/edgeweir-node` | parent directory of the proxy cache zones |
-| `--control-socket` | `/run/edgeweir-node/control.sock` | unix socket of the data plane control API |
-| `--origin-socket` | `/run/edgeweir-node/origin.sock` | unix socket of the internal origin layer |
-| `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | unix socket of the origin layer without TLS verification |
-| `--edge-socket` | `edge.sock` next to the control socket | local edge listener for prefetches when every listener uses the PROXY protocol |
-| `--trusted-ca` | system bundle | CA bundle for verifying HTTPS origins |
-| `--resolv-conf` | `/etc/resolv.conf` | resolv.conf to take the nginx resolvers from |
-| `--resolver` | none | comma-separated resolver addresses (overrides `--resolv-conf`) |
-| `--resolver-ipv6` | `auto` | resolve AAAA records for origins: `auto` (when the host has a global IPv6 address), `on` or `off` |
-| `--listen-ipv6` | `auto` | also listen on IPv6: `auto` (when the host can bind IPv6), `on` or `off` |
-| `--default-port` | `80` | HTTP port served before any configuration exists |
+| `--manage-nginx` | 关 | 以受监管子进程运行 OpenResty（容器与 systemd unit 均开启） |
+| `--state-dir` | `/var/lib/edgeweir-node` | 状态目录（身份、LKG 配置） |
+| `--nginx-bin` | `openresty` | OpenResty 可执行文件 |
+| `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix 目录 |
+| `--nginx-user` | 无 | agent 以 root 运行时 nginx worker 的用户（建议以非特权用户运行 agent） |
+| `--lua-dir` | `/usr/share/edgeweir-node/lua` | `edgeweir/*.lua` 所在目录 |
+| `--cache-dir` | `/var/cache/edgeweir-node` | 缓存 zone 的上级目录 |
+| `--control-socket` | `/run/edgeweir-node/control.sock` | 数据面控制 API 的 unix socket |
+| `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层的 unix socket |
+| `--origin-socket-noverify` | 回源 socket 同目录的 `origin-noverify.sock` | 不校验 TLS 的回源层 unix socket |
+| `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 所有监听均启用 PROXY protocol 时，预热使用的本地边缘监听 |
+| `--trusted-ca` | 系统 CA bundle | 校验 HTTPS 源站证书的 CA |
+| `--resolv-conf` | `/etc/resolv.conf` | nginx resolver 的来源文件 |
+| `--resolver` | 无 | 逗号分隔的 resolver 地址（优先于 `--resolv-conf`） |
+| `--resolver-ipv6` | `auto` | 为源站解析 AAAA 记录：`auto`（本机有全局 IPv6 地址时）、`on`、`off` |
+| `--listen-ipv6` | `auto` | 同时监听 IPv6：`auto`（本机可绑定 IPv6 时）、`on`、`off` |
+| `--default-port` | `80` | 收到配置前的 HTTP 服务端口 |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
-| `--geoip-city` | empty | Operator-provided MMDB; empty disables the capability |
-| `--geoip-asn` | empty | Operator-provided MMDB; empty disables the capability |
-| `--cosign-bin` | `cosign` | Local signature verifier in supervise mode |
-| `--upgrade-source` | official GitHub release download base | Operator-trusted release mirror; tasks cannot change it |
-| `--upgrade-public-key` | empty | Local release public key; otherwise pin official GitHub OIDC identity |
-| `--upgrade-allow-http` | `false` | Explicitly permit a plaintext local test or air-gap mirror |
-| `--purge-dict-mb` | `32` | size of the purge marker store (`lua_shared_dict edgeweir_purge`) in MiB |
-| `--purge-markers-per-site` | `1000` | URL and prefix purge markers per site before they collapse into one site-level marker |
-| `--prefetch-budget` | `4m` | time the prefetches of one pulled batch may take |
-| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
-| `--log-format` | `text` | `text` or `json` |
+| `--geoip-city` | 空 | 运维提供的 City MMDB 路径；为空时不启用 |
+| `--geoip-asn` | 空 | 运维提供的 ASN MMDB 路径；为空时不启用 |
+| `--cosign-bin` | `cosign` | supervise 模式的本机签名验证程序 |
+| `--upgrade-source` | 官方 GitHub Release 下载地址 | 运维指定的发布镜像，升级任务不可修改 |
+| `--upgrade-public-key` | 空 | 本机发布公钥；为空时固定官方 GitHub OIDC 身份 |
+| `--upgrade-allow-http` | `false` | 允许本地测试或隔离网络镜像使用明文 HTTP |
+| `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`）大小，单位 MiB |
+| `--purge-markers-per-site` | `1000` | 每站点 URL 与前缀标记上限，超出后合并为全站标记 |
+| `--prefetch-budget` | `4m` | 单批预热任务的时间上限 |
+| `--log-level` | `info` | 日志级别：`debug`、`info`、`warn`、`error` |
+| `--log-format` | `text` | 日志格式：`text`、`json` |
 
-| Path / port | Purpose |
+| 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | state (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
-| `/var/cache/edgeweir-node` | proxy cache zones |
-| `/run/edgeweir-node/control.sock` | local control API of the Lua data plane (unix socket only) |
-| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | local edge listener and the internal origin layers |
-| `/usr/share/edgeweir-node/lua` | Lua modules |
-| `:80` | HTTP listener before any configuration; afterwards the listeners in the config |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`nginx/`（prefix 与渲染后的 `nginx.conf`） |
+| `/var/cache/edgeweir-node` | 缓存 zone |
+| `/run/edgeweir-node/control.sock` | Lua 数据面本地控制 API（仅 unix socket） |
+| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |
+| `/usr/share/edgeweir-node/lua` | Lua 模块 |
+| `:80` | 收到配置前的 HTTP 监听端口；此后以配置中的监听为准 |
 
-Each published site reserves a fixed 256 KiB counter partition; a cluster supports up to 512 published sites. Other sites cannot consume that partition, and adding a site does not resize existing partitions. See [rate-limit storage](docs/rate-limit-storage.md).
+## 构建与测试
 
-## Build and test
-
-Requirements: Go 1.27.1, Docker, and for release work buf, goreleaser and syft.
+环境要求：Go 1.27.1、Docker；发布相关工作另需 buf、goreleaser、syft。
 
 ```sh
-make build         # static binary in bin/
+make build         # 静态二进制，输出至 bin/
 make vet test      # go vet ./... && go test ./...
-make test-race     # tests with the race detector
-make lua-test      # Lua unit tests with resty in the OpenResty image
+make test-race     # 启用 race detector 运行测试
+make lua-test      # 在 OpenResty 镜像中以 resty 运行 Lua 单元测试
 make docker        # docker build -t edgeweir-node:dev .
-make e2e           # container smoke test: fake console + node + whoami origins
-make proto-check   # regenerate from the proto git tag and fail on drift
-make snapshot      # goreleaser release --snapshot --clean (unsigned)
+make e2e           # 容器冒烟测试：模拟控制台 + 节点 + whoami 源站
+make proto-check   # 从 proto git tag 重新生成，与已提交代码不一致时失败
+make snapshot      # goreleaser release --snapshot --clean（不签名）
 ```
 
-`make e2e` publishes host ports on 127.0.0.1, by default 28080 (node), 28081 (PROXY protocol listener) and 28090 (fake console helper). `COMPOSE_PROJECT_NAME` alone only separates the containers, networks and volumes; to run next to another stack (or a second run), also choose free ports with `E2E_NODE_PORT`, `E2E_PP_PORT` and `E2E_HELPER_PORT`:
+`make e2e` 在 127.0.0.1 上发布宿主机端口，默认 28080（节点）、28081（PROXY protocol 监听）、28090（模拟控制台辅助接口）。`COMPOSE_PROJECT_NAME` 仅隔离容器、网络与卷；与其他 compose 项目并行运行时，须同时以 `E2E_NODE_PORT`、`E2E_PP_PORT`、`E2E_HELPER_PORT` 指定空闲端口：
 
 ```sh
 COMPOSE_PROJECT_NAME=node-e2e-2 E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER_PORT=38090 make e2e
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the proto regeneration flow and conventions.
+proto 重新生成流程与提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## Verify release artifacts
+## 验证发布物
 
-Releases are built in GitHub Actions from the tagged source (reproducible: `-trimpath`, timestamps from the commit). `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact also has a SLSA build provenance attestation.
+发布物由 GitHub Actions 从 tag 源码构建，构建可复现（`-trimpath`，时间戳取自提交时间）。`checksums.txt` 覆盖全部压缩包、安装包与 SBOM，以 cosign keyless 签名；每个发布物附带 SLSA 构建来源证明。
 
 ```sh
 cosign verify-blob \
@@ -180,15 +190,38 @@ cosign verify-blob \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 sha256sum --ignore-missing -c checksums.txt
-gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli001/edgeweir-node
+gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli001/edgeweir-node
 ```
 
-## Security
+## 已知限制
 
-No vendor phone-home or license checks. The control channel talks to your console; the data plane reaches your configured origins, and enabled OCSP checks reach certificate responders. Use [GitHub private vulnerability reporting](https://github.com/marvinli001/edgeweir-node/security/advisories/new); see [SECURITY.md](SECURITY.md).
+- 当前 OpenResty 引擎不含 Brotli 与 Zstd。
+- 证书材料保存在 `certificates.json`（0600），主机管理员可读取。
+- 统计 RPC V2 不回退到旧版控制台，控制台与节点须同步升级。
+- 每个已发布站点独占固定 256 KiB 限速计数分区，每集群最多 512 个已发布站点；新增站点不调整既有分区。见[限速存储](docs/rate-limit-storage.md)。
+- 自升级仅覆盖 agent 与 Lua。监督进程、cosign 与 OpenResty 通过系统包或镜像升级；系统包 / 镜像版本优先于状态卷中较旧的自升级程序。
 
-## License
+## 安全
 
-[AGPL-3.0-only](LICENSE), with commercial use permitted subject to the license. Nodes and the console's organizations, members and isolation remain open source; customer commerce portals, billing, finance and reselling are planned as a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md) and [ROADMAP.md](ROADMAP.md).
+- 无厂商回连，无许可证校验，无遥测。
+- 控制通道仅连接注册时指定的控制台；数据面连接已配置的源站，启用 OCSP 检查时连接证书的 OCSP 响应方。
+- 漏洞通过 [GitHub 私密漏洞报告](https://github.com/marvinli001/edgeweir-node/security/advisories/new)提交，详见 [SECURITY.md](SECURITY.md)。
 
-M6 sampled access logs are available (proto/v0.7.0). Collection is off by default, excludes query strings, headers and bodies, and uses bounded private queues with sequenced acknowledgements. See the [log and storage guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md). Signed agent/Lua upgrades, canary promotion and automatic rollback are implemented. See the [upgrade guide](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md).
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 节点架构 |
+| [docs/adr/](docs/adr/README.md) | 架构决策记录（控制台仓库镜像） |
+| [SECURITY.md](SECURITY.md) | 安全模型与漏洞报告 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发规范与 proto 生成流程 |
+| [HTTPS 与证书](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md) | 证书、协议与 TLS 策略 |
+| [规则](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/rules.md) | 规则、IP 名单与 GeoIP |
+| [访问日志](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/access-logs.md) | 访问日志采集与存储 |
+| [节点升级](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/node-upgrades.md) | 签名升级、试运行与回滚 |
+
+## 许可证
+
+[AGPL-3.0-only](LICENSE)，允许在遵守许可证的前提下商用。
+
+节点及控制台的组织、成员与隔离属于开源核心；客户门户、套餐计费、财务与分销由独立商业产品提供。节点运行不依赖官方商业许可证。详见 [LICENSING.md](LICENSING.md) 与 [ROADMAP.md](ROADMAP.md)。
