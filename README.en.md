@@ -7,9 +7,6 @@
 
 The edge node of [Edgeweir](https://github.com/marvinli001/edgeweir). A Go agent handles enrollment, configuration sync, tasks and signed upgrades; an OpenResty (Lua) data plane handles routing, caching, origin requests and policy enforcement.
 
-> [!IMPORTANT]
-> Pre-release. No official binary release has been published; the installation flows below apply once one is. For evaluation, [build from source](#build-and-test).
-
 ## Relationship to the console
 
 | Repository | Contents |
@@ -214,7 +211,6 @@ Documents other than the READMEs are in Chinese.
 | Document | Contents |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Node architecture |
-| [docs/adr/](docs/adr/README.md) | Architecture decision records (mirror of the console repository) |
 | [SECURITY.md](SECURITY.md) | Security model and vulnerability reporting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development conventions and proto generation |
 | [HTTPS and certificates](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md) | Certificates, protocols and TLS policy |
@@ -226,4 +222,4 @@ Documents other than the READMEs are in Chinese.
 
 [AGPL-3.0-only](LICENSE); commercial use is permitted subject to the license.
 
-Nodes and the console's organizations, members and isolation are part of the open-source core; customer portals, plans and billing, finance and reselling belong to a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md) and [ROADMAP.md](ROADMAP.md).
+Nodes and the console's organizations, members and isolation are part of the open-source core; customer portals, plans and billing, finance and reselling belong to a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md).

@@ -7,9 +7,6 @@
 
 [Edgeweir](https://github.com/marvinli001/edgeweir) 的边缘节点。Go agent 负责注册、配置同步、任务执行与签名升级；OpenResty（Lua）数据面负责路由、缓存、回源与策略执行。
 
-> [!IMPORTANT]
-> 预发布阶段。尚无正式二进制发布，下文安装流程适用于正式发布之后；评估请[从源码构建](#构建与测试)。
-
 ## 与控制台的关系
 
 | 仓库 | 组成 |
@@ -212,7 +209,6 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 | 文档 | 内容 |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 节点架构 |
-| [docs/adr/](docs/adr/README.md) | 架构决策记录（控制台仓库镜像） |
 | [SECURITY.md](SECURITY.md) | 安全模型与漏洞报告 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发规范与 proto 生成流程 |
 | [HTTPS 与证书](https://github.com/marvinli001/edgeweir/blob/master/docs/guide/https.md) | 证书、协议与 TLS 策略 |
@@ -224,4 +220,4 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 
 [AGPL-3.0-only](LICENSE)，允许在遵守许可证的前提下商用。
 
-节点及控制台的组织、成员与隔离属于开源核心；客户门户、套餐计费、财务与分销由独立商业产品提供。节点运行不依赖官方商业许可证。详见 [LICENSING.md](LICENSING.md) 与 [ROADMAP.md](ROADMAP.md)。
+节点及控制台的组织、成员与隔离属于开源核心；客户门户、套餐计费、财务与分销由独立商业产品提供。节点运行不依赖官方商业许可证。详见 [LICENSING.md](LICENSING.md)。

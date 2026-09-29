@@ -13,3 +13,14 @@
 .vscode/
 *.swp
 .DS_Store
+
+# AI coding assistants: instructions stay local
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.claude/
+
+# Development records (ADRs, roadmaps, specs) live in ../edgeweir/dev-docs, not here
+/ROADMAP*.md
+/docs/adr/
+/dev-docs/

@@ -1,7 +1,7 @@
 package main
 
 // Documentation-consistency checks for the wrap-up audit item N-M11
-// (docs/audits/2026-09-25-wrapup.md in the console repository): the docs
+// (dev-docs/audits/2026-09-25-wrapup.md in the console checkout): the docs
 // have to follow the code, so the lists they check are read from the code.
 
 import (
@@ -182,7 +182,12 @@ func TestDocsNameTheMakefileProtoTag(t *testing.T) {
 	}
 	want := m[1]
 	tag := regexp.MustCompile(`proto/v\d+\.\d+\.\d+`)
-	for _, file := range append(readmes(t), "ARCHITECTURE.md", "CLAUDE.md") {
+	files := append(readmes(t), "ARCHITECTURE.md")
+	// CLAUDE.md is git-ignored: checked in checkouts that have it.
+	if _, err := os.Stat(filepath.Join(repoRoot, "CLAUDE.md")); err == nil {
+		files = append(files, "CLAUDE.md")
+	}
+	for _, file := range files {
 		found := tag.FindAllString(readDoc(t, file), -1)
 		if len(found) == 0 {
 			t.Errorf("%s: names no proto tag", file)

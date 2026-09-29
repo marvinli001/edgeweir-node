@@ -4,7 +4,7 @@
 
 ## 许可证
 
-本项目使用 [AGPL-3.0-only](LICENSE)，允许合规商用。提交贡献即表示你同意你的贡献以 AGPL-3.0-only 授权，并确认有权这样做；不自动授予项目方闭源再许可权。开源核心与独立商业运营产品的范围见 [LICENSING.md](LICENSING.md) 和 [ADR-0019](docs/adr/0019-open-core-and-commercial-products.md)。
+本项目使用 [AGPL-3.0-only](LICENSE)，允许合规商用。提交贡献即表示你同意你的贡献以 AGPL-3.0-only 授权，并确认有权这样做；不自动授予项目方闭源再许可权。开源核心与独立商业运营产品的范围见 [LICENSING.md](LICENSING.md)。
 
 ## 开始之前
 
@@ -38,7 +38,6 @@
 | `make proto` | 从 proto git tag 重新生成 Go 代码 |
 | `make proto-check` | 重新生成，若与已提交的代码不一致则失败 |
 | `make pin-check` | 第三方镜像没按 digest、GitHub Actions 没按 commit SHA 固定时失败（`scripts/check-pins.sh`，CI 运行） |
-| `make adr-check` | `docs/adr` 与同级目录 `../edgeweir` 的 ADR 不一致时失败（`scripts/sync-adr.sh --check`；CI 没有同级检出，不运行它） |
 | `make release-check` | 校验 goreleaser 配置 |
 | `make snapshot` | 本地构建发布物，不发布，不签名 |
 
@@ -48,7 +47,6 @@
 - 改了渲染、数据面或镜像：跑 `make e2e`
 - 改了 goreleaser 配置：跑 `make release-check`
 - 改了 Dockerfile、compose、Makefile 的镜像或工作流：跑 `make pin-check`（见下方「更新固定的镜像与 Actions」）
-- 同步了 ADR（`docs/adr` 是控制面仓库 ADR 的镜像，先在那里修改，再运行 `scripts/sync-adr.sh`）：跑 `make adr-check`
 
 ## 提交规范
 
@@ -74,7 +72,7 @@ feat(proto): bump contract to proto/v0.1.1
 
 ## 更新固定的镜像与 Actions
 
-第三方镜像按 `tag@sha256:<digest>`、GitHub Actions 按 `owner/action@<40 位 SHA> # vX.Y.Z` 引用（ADR-0017），`make pin-check` 拒绝未固定的写法；本仓库自己构建的 `edgeweir-node:*` 镜像除外。升级时 tag 与 digest（或 SHA 与版本注释）一起改：
+第三方镜像按 `tag@sha256:<digest>`、GitHub Actions 按 `owner/action@<40 位 SHA> # vX.Y.Z` 引用，`make pin-check` 拒绝未固定的写法；本仓库自己构建的 `edgeweir-node:*` 镜像除外。升级时 tag 与 digest（或 SHA 与版本注释）一起改：
 
 - 镜像：`docker buildx imagetools inspect <镜像>:<tag>` 输出的 `Digest` 就是多架构 index 的 digest（不要用单一平台的 digest）。
 - Actions：`git ls-remote --tags https://github.com/<owner>/<action>` 找到版本 tag 对应的提交；带 `^{}` 的行是附注 tag 指向的提交，要用这一行的 SHA。
