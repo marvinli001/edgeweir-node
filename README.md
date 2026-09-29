@@ -21,7 +21,7 @@
 | 领域 | 能力 |
 | --- | --- |
 | HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、Gzip；证书热轮换 |
-| 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均为热更新；GeoIP 读取本地 MMDB，不向第三方发送客户端 IP |
+| 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均为热更新；GeoIP 读取本地 MMDB，不向第三方发送客户端 IP；发布镜像内置 IPinfo Lite（国家、ASN） |
 | 缓存与回源 | 按 `Host` 路由、`proxy_cache` 缓存、源站池负载均衡与被动健康检查、清缓存与预热 |
 | 统计与日志 | 按站点、按分钟的流量统计（上传前持久化，回执丢失或重启后按序号恢复）、有界 Top URL / IP 估算、采样访问日志（默认关闭，不记录查询参数、请求头与正文） |
 | 配置可靠性 | 校验后应用，结构性变更激活失败时恢复原配置；last-known-good（LKG）配置持久化；控制台不可达时按 LKG 持续服务 |
@@ -81,6 +81,8 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
 
 容器启动即运行 OpenResty（所有域名返回 `404 unknown-host`），注册完成后开始同步控制台配置。容器以 uid 10001 运行，节点身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷中。
 
+发布镜像包含构建时下载的 [IPinfo Lite](https://ipinfo.io/lite) 数据库 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`（CC BY-SA 4.0，IP address data is powered by [IPinfo](https://ipinfo.io)；同目录 `NOTICE` 记录下载时间与 sha256），在本地回答 `ip.geoip.country` 与 `ip.geoip.asnum`，运行时不下载。更新数据：拉取新镜像，或挂载另行下载的副本并设置 `EDGEWEIR_GEOIP_IPINFO`。安装包与压缩包不内置该数据库，将 `EDGEWEIR_GEOIP_IPINFO` 指向自行下载的文件。一级行政区需另行提供 City MMDB（`EDGEWEIR_GEOIP_CITY`）。
+
 ## 命令行
 
 ```text
@@ -132,6 +134,7 @@ edgeweir-node version
 | `--listen-ipv6` | `auto` | 同时监听 IPv6：`auto`（本机可绑定 IPv6 时）、`on`、`off` |
 | `--default-port` | `80` | 收到配置前的 HTTP 服务端口 |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--geoip-ipinfo` | `auto` | IPinfo Lite MMDB（国家、ASN）：`auto` 在镜像内置时使用 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`，`off` 关闭，其他值为文件路径 |
 | `--geoip-city` | 空 | 运维提供的 City MMDB 路径；为空时不启用 |
 | `--geoip-asn` | 空 | 运维提供的 ASN MMDB 路径；为空时不启用 |
 | `--cosign-bin` | `cosign` | supervise 模式的本机签名验证程序 |
@@ -151,6 +154,7 @@ edgeweir-node version
 | `/run/edgeweir-node/control.sock` | Lua 数据面本地控制 API（仅 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |
 | `/usr/share/edgeweir-node/lua` | Lua 模块 |
+| `/usr/share/edgeweir-node/geoip` | 内置的 IPinfo Lite 数据库及其 `NOTICE`（容器镜像） |
 | `:80` | 收到配置前的 HTTP 监听端口；此后以配置中的监听为准 |
 
 ## 构建与测试
@@ -162,7 +166,7 @@ make build         # 静态二进制，输出至 bin/
 make vet test      # go vet ./... && go test ./...
 make test-race     # 启用 race detector 运行测试
 make lua-test      # 在 OpenResty 镜像中以 resty 运行 Lua 单元测试
-make docker        # docker build -t edgeweir-node:dev .
+make docker        # docker build -t edgeweir-node:dev .；设置 IPINFO_TOKEN 时以 BuildKit secret 下载并内置 IPinfo Lite，未设置时镜像不含 GeoIP 数据
 make e2e           # 容器冒烟测试：模拟控制台 + 节点 + whoami 源站
 make proto-check   # 从 proto git tag 重新生成，与已提交代码不一致时失败
 make snapshot      # goreleaser release --snapshot --clean（不签名）
@@ -178,7 +182,7 @@ proto 重新生成流程与提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 验证发布物
 
-发布物由 GitHub Actions 从 tag 源码构建，构建可复现（`-trimpath`，时间戳取自提交时间）。`checksums.txt` 覆盖全部压缩包、安装包与 SBOM，以 cosign keyless 签名；每个发布物附带 SLSA 构建来源证明。
+发布物由 GitHub Actions 从 tag 源码构建，构建可复现（`-trimpath`，时间戳取自提交时间）；容器镜像另含构建当天的 IPinfo Lite 数据，重建后数据不同，所含副本以 `/usr/share/edgeweir-node/geoip/NOTICE` 中的 sha256 标识。`checksums.txt` 覆盖全部压缩包、安装包与 SBOM，以 cosign keyless 签名；每个发布物附带 SLSA 构建来源证明。
 
 ```sh
 cosign verify-blob \
@@ -221,3 +225,5 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 [AGPL-3.0-only](LICENSE)，允许在遵守许可证的前提下商用。
 
 节点及控制台的组织、成员与隔离属于开源核心；客户门户、套餐计费、财务与分销由独立商业产品提供。节点运行不依赖官方商业许可证。详见 [LICENSING.md](LICENSING.md)。
+
+内置 GeoIP 数据为 [IPinfo Lite](https://ipinfo.io/lite)，许可证 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)：IP address data is powered by [IPinfo](https://ipinfo.io)。

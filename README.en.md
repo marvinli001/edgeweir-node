@@ -21,7 +21,7 @@ The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir
 | Area | Capabilities |
 | --- | --- |
 | HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, Gzip; hot certificate rotation |
-| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; GeoIP reads local MMDBs and sends no client IPs to third parties |
+| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; GeoIP reads local MMDBs and sends no client IPs to third parties; release images bundle IPinfo Lite (country, ASN) |
 | Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing with passive health checks, purge and prefetch |
 | Statistics and logs | Per-site per-minute traffic statistics (persisted before upload, recovered by sequence after lost acknowledgements or restarts), bounded approximate Top URL / IP, sampled access logs (off by default; no query strings, headers or bodies) |
 | Configuration reliability | Validated before apply; structural changes recover on activation failure; persisted last-known-good (LKG) configuration; keeps serving LKG while the console is unreachable |
@@ -81,6 +81,8 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
 
 The container starts OpenResty immediately (every host answers `404 unknown-host`) and follows the console once enrolled. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume.
 
+Release images contain `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`, the [IPinfo Lite](https://ipinfo.io/lite) database downloaded at build time (CC BY-SA 4.0, IP address data is powered by [IPinfo](https://ipinfo.io); the `NOTICE` next to it records the download time and sha256). It answers `ip.geoip.country` and `ip.geoip.asnum` locally, with no runtime download. For newer data, pull a newer image, or mount a separately downloaded copy and set `EDGEWEIR_GEOIP_IPINFO`. Packages and archives do not bundle the database; point `EDGEWEIR_GEOIP_IPINFO` at a downloaded file. Subdivisions need a City MMDB (`EDGEWEIR_GEOIP_CITY`).
+
 ## Command line
 
 ```text
@@ -132,6 +134,7 @@ edgeweir-node version
 | `--listen-ipv6` | `auto` | Also listen on IPv6: `auto` (when the host can bind IPv6), `on` or `off` |
 | `--default-port` | `80` | HTTP port served before any configuration exists |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
+| `--geoip-ipinfo` | `auto` | IPinfo Lite MMDB (country, ASN): `auto` uses `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` when the image bundles it, `off` disables it, any other value is a path |
 | `--geoip-city` | empty | Operator-provided City MMDB; empty disables it |
 | `--geoip-asn` | empty | Operator-provided ASN MMDB; empty disables it |
 | `--cosign-bin` | `cosign` | Local signature verifier in supervise mode |
@@ -151,6 +154,7 @@ edgeweir-node version
 | `/run/edgeweir-node/control.sock` | Local control API of the Lua data plane (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
+| `/usr/share/edgeweir-node/geoip` | Bundled IPinfo Lite database and its `NOTICE` (container image) |
 | `:80` | HTTP listener before any configuration; afterwards the listeners in the configuration |
 
 ## Build and test
@@ -162,7 +166,7 @@ make build         # static binary in bin/
 make vet test      # go vet ./... && go test ./...
 make test-race     # tests with the race detector
 make lua-test      # Lua unit tests with resty in the OpenResty image
-make docker        # docker build -t edgeweir-node:dev .
+make docker        # docker build -t edgeweir-node:dev .; with IPINFO_TOKEN set, downloads and bundles IPinfo Lite via a BuildKit secret, otherwise the image has no GeoIP data
 make e2e           # container smoke test: fake console + node + whoami origins
 make proto-check   # regenerate from the proto git tag and fail on drift
 make snapshot      # goreleaser release --snapshot --clean (unsigned)
@@ -178,7 +182,7 @@ Proto regeneration flow and conventions: [CONTRIBUTING.md](CONTRIBUTING.md) (Chi
 
 ## Verify release artifacts
 
-Releases are built in GitHub Actions from the tagged source and are reproducible (`-trimpath`, timestamps from the commit). `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact also carries a SLSA build provenance attestation.
+Releases are built in GitHub Actions from the tagged source and are reproducible (`-trimpath`, timestamps from the commit); the container image also carries the IPinfo Lite data of its build day, so a rebuild carries different data, and the sha256 in `/usr/share/edgeweir-node/geoip/NOTICE` identifies the copy. `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact also carries a SLSA build provenance attestation.
 
 ```sh
 cosign verify-blob \
@@ -223,3 +227,5 @@ Documents other than the READMEs are in Chinese.
 [AGPL-3.0-only](LICENSE); commercial use is permitted subject to the license.
 
 Nodes and the console's organizations, members and isolation are part of the open-source core; customer portals, plans and billing, finance and reselling belong to a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md).
+
+The bundled GeoIP data is [IPinfo Lite](https://ipinfo.io/lite) under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): IP address data is powered by [IPinfo](https://ipinfo.io).

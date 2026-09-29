@@ -8,8 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  # Both jobs publish; check the IPinfo token first so a missing secret stops
+  # the release before anything is published (release images bundle IPinfo Lite).
+  preflight:
+    name: release secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: require the IPinfo token
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "::error::Set the IPINFO_TOKEN repository secret: release images bundle the IPinfo Lite database"
+            exit 1
+          fi
+
   goreleaser:
     name: binaries, packages, SBOMs, signatures, provenance
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: write     # create the GitHub release
@@ -45,6 +61,7 @@ jobs:
 
   image:
     name: container image (ghcr.io/marvinli001/edgeweir-node)
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,6 +94,10 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+          # Overrides the repository licence the action derives ("AGPL-3.0"):
+          # release images also carry the IPinfo Lite data.
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only AND CC-BY-SA-4.0
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
         env:
@@ -93,6 +114,10 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
             DATE=${{ steps.meta.outputs.date }}
+            IPINFO_REQUIRED=1
+          # A secret mount, not a build arg: mode=max provenance records build args.
+          secrets: |
+            ipinfo_token=${{ secrets.IPINFO_TOKEN }}
       - uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
         with:
           cosign-release: v3.1.3

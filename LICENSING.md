@@ -2,6 +2,8 @@
 
 适用日期：2026-09-26。`edgeweir-node` 与控制面 `edgeweir` 保持 **AGPL-3.0-only**，以 [LICENSE](LICENSE) 为准；第三方组件遵循各自许可证。本文不修改许可证，也不增加使用限制或插件链接例外。共同产品边界见控制台仓库的 [LICENSING.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.md)。
 
+发布镜像内置的 GeoIP 数据 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` 是 [IPinfo Lite](https://ipinfo.io/lite)，按 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) 原样再分发，不属于 AGPL 代码。署名：IP address data is powered by [IPinfo](https://ipinfo.io)。
+
 - 允许个人和企业在遵守 AGPL 的前提下使用、修改、分发及经营收费服务，没有“仅限个人”或“禁止商用”的附加条款。AGPL 不禁止收费或竞争；源码与网络交互义务以 LICENSE 为准。
 - 节点、数据面，以及控制面的组织、成员、权限、隔离和现有控制台 / 后台继续开源，不以官方许可证限制节点、组织、成员或站点数量。资源保护与权限限制仍正常执行。
 - 对外客户门户、套餐计费、财务和分销属于未来独立商业运营产品；官方账户、订阅、许可证与插件分发属于独立商业服务。
@@ -14,3 +16,5 @@
 `edgeweir-node` and the `edgeweir` console remain **AGPL-3.0-only**, with commercial use permitted subject to the license. Organizations, membership, access control, isolation and the existing console/admin remain open source. A customer commerce portal, billing, finance and reselling belong to a planned separate commercial product.
 
 The node has no official license gates or vendor phone-home. An expired vendor license or licensing outage must not stop existing CDN traffic. Node identity, mTLS and artifact signatures serve security, not commercial licensing. Separate commercial products do not amend LICENSE, withdraw existing rights, grant a plugin linking exception or automatically authorize proprietary reuse of contributions. See the console's [LICENSING.en.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.en.md) for the shared boundary.
+
+Release images bundle the [IPinfo Lite](https://ipinfo.io/lite) database unmodified under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/); it is data, not AGPL code. IP address data is powered by [IPinfo](https://ipinfo.io).

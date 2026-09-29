@@ -16,4 +16,7 @@ func main() {
 	if _, _, err := geofixture.Write(os.Args[1]); err != nil {
 		log.Fatal(err)
 	}
+	if _, err := geofixture.WriteIPinfo(os.Args[1]); err != nil {
+		log.Fatal(err)
+	}
 }
