@@ -62,6 +62,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 			--shdict "edgeweir_bans 4m" /t/run.lua && \
 		resty -I /lua /t/sigv4.lua && resty -I /lua /t/expressions.lua && resty -I /lua /t/http3.lua && resty -I /lua /t/ja4.lua && \
 		resty -I /lua --shdict "edgeweir_challenge 4m" /t/challenge.lua && \
+		resty -I /lua --shdict "edgeweir_cc 8m" --shdict "edgeweir_bans 4m" /t/cc.lua && \
 		resty -I /lua --shdict "edgeweir_rate_61 256k" --shdict "edgeweir_rate_62 256k" /t/ratelimit.lua && \
 		resty -I /lua --shdict "edgeweir_bans 4m" /t/bans.lua && resty -I /lua --shdict "edgeweir_bans 64k" /t/bans_memory.lua'
 
