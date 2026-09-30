@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,6 +41,17 @@ type Server struct {
 	purgeCapacity int
 	// events records successful writes in order: "sites", "purge:PUT", "purge:POST".
 	events []string
+
+	// Bans (lua/edgeweir/bans.lua): console bans by key, their sequence,
+	// the capacity (0: unlimited) and the own bans waiting to be drained.
+	bans        map[string]dataplane.Ban
+	banSeq      uint64
+	banCapacity int
+	unapplied   map[string]bool
+	autoEvicted uint64
+	autoBans    []dataplane.AutoBan
+	banCalls    []string
+	failBans    int
 }
 
 var (
@@ -166,6 +179,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.events = append(s.events, "purge:"+r.Method)
 		s.status.Purge = dataplane.PurgeStatus{ID: t.ID, Entries: len(s.markers), Markers: len(s.markers)}
 		reply(w, 200, s.status.Purge)
+	case r.URL.Path == "/v1/bans" && r.Method == http.MethodGet:
+		reply(w, 200, s.banStatusLocked())
+	case r.URL.Path == "/v1/bans" && (r.Method == http.MethodPut || r.Method == http.MethodPost):
+		s.serveBansLocked(w, r)
+	case r.URL.Path == "/v1/bans/auto/drain" && r.Method == http.MethodPost:
+		out := s.autoBans
+		if len(out) > 1000 {
+			out = out[:1000]
+		}
+		s.autoBans = slices.Clone(s.autoBans[len(out):])
+		if len(out) == 0 {
+			reply(w, 200, map[string]any{"bans": map[string]any{}})
+			return
+		}
+		reply(w, 200, map[string]any{"bans": out})
 	case r.URL.Path == "/v1/origins/health" && r.Method == http.MethodGet:
 		if len(s.health) == 0 {
 			reply(w, 200, map[string]any{"origins": map[string]any{}})
@@ -190,6 +218,137 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func banKey(b dataplane.Ban) string { return b.Scope + "|" + b.SiteID + "|" + b.CIDR }
+
+func (s *Server) banStatusLocked() map[string]any {
+	ids := make([]string, 0, len(s.unapplied))
+	for id := range s.unapplied {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	n := len(ids)
+	if len(ids) > 100 {
+		ids = ids[:100]
+	}
+	st := map[string]any{
+		"sequence": strconv.FormatUint(s.banSeq, 10), "entries": len(s.bans), "capacity": s.banCapacity,
+		"unapplied": n, "unapplied_ids": ids, "auto_evicted": s.autoEvicted, "pending_reports": len(s.autoBans),
+	}
+	if len(ids) == 0 {
+		st["unapplied_ids"] = map[string]any{} // like lua-cjson without array_mt
+	}
+	return st
+}
+
+// storeBanLocked writes one ban, or records it as unapplied (manual) or
+// evicted (automatic) when the capacity is reached.
+func (s *Server) storeBanLocked(b dataplane.Ban) {
+	k := banKey(b)
+	if _, ok := s.bans[k]; !ok && s.banCapacity > 0 && len(s.bans) >= s.banCapacity {
+		if b.Kind == "m" {
+			s.unapplied[b.ID] = true
+		} else {
+			s.autoEvicted++
+		}
+		return
+	}
+	delete(s.unapplied, b.ID)
+	s.bans[k] = b
+}
+
+func (s *Server) serveBansLocked(w http.ResponseWriter, r *http.Request) {
+	if s.failBans > 0 {
+		s.failBans--
+		reply(w, 500, map[string]string{"error": "injected failure"})
+		return
+	}
+	if s.bans == nil {
+		s.bans, s.unapplied = map[string]dataplane.Ban{}, map[string]bool{}
+	}
+	if r.Method == http.MethodPut {
+		var t dataplane.BanTable
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		s.bans, s.unapplied = map[string]dataplane.Ban{}, map[string]bool{}
+		for _, b := range t.Bans {
+			s.storeBanLocked(b)
+		}
+		s.banSeq = t.Sequence
+	} else {
+		var d dataplane.BanDelta
+		if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		if d.Base != s.banSeq {
+			reply(w, 409, map[string]string{"error": "sequence mismatch: the data plane holds " + strconv.FormatUint(s.banSeq, 10)})
+			return
+		}
+		for _, b := range d.Remove {
+			delete(s.unapplied, b.ID)
+			if cur, ok := s.bans[banKey(b)]; ok && cur.ID == b.ID {
+				delete(s.bans, banKey(b))
+			}
+		}
+		for _, b := range d.Upsert {
+			s.storeBanLocked(b)
+		}
+		s.banSeq = d.Sequence
+	}
+	s.banCalls = append(s.banCalls, r.Method)
+	s.events = append(s.events, "bans:"+r.Method)
+	reply(w, 200, s.banStatusLocked())
+}
+
+// Bans returns the console bans held, sorted by scope, site and CIDR.
+func (s *Server) Bans() []dataplane.Ban {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]dataplane.Ban, 0, len(s.bans))
+	for _, b := range s.bans {
+		out = append(out, b)
+	}
+	slices.SortFunc(out, func(a, b dataplane.Ban) int { return strings.Compare(banKey(a), banKey(b)) })
+	return out
+}
+
+// BanSequence returns the sequence of the console bans held.
+func (s *Server) BanSequence() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.banSeq
+}
+
+// BanCalls returns the methods of the ban writes received (PUT / POST).
+func (s *Server) BanCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.banCalls)
+}
+
+// SetBanCapacity limits the bans held (0: unlimited).
+func (s *Server) SetBanCapacity(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.banCapacity = n
+}
+
+// FailNextBans makes the next n ban writes fail.
+func (s *Server) FailNextBans(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failBans = n
+}
+
+// AddAutoBans queues own bans for the next drains.
+func (s *Server) AddAutoBans(b ...dataplane.AutoBan) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoBans = append(s.autoBans, b...)
+}
+
 // Table returns the currently installed site table.
 func (s *Server) Table() *dataplane.SiteTable {
 	s.mu.Lock()
@@ -211,6 +370,7 @@ func (s *Server) Restart() {
 	s.status = dataplane.Status{ConfID: s.status.ConfID}
 	s.table = nil
 	s.markers = nil
+	s.bans, s.unapplied, s.banSeq, s.autoBans, s.autoEvicted = nil, nil, 0, nil, 0
 }
 
 func markerKey(m dataplane.PurgeMarker) string {

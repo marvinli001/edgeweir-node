@@ -130,3 +130,52 @@ func TestCDNID(t *testing.T) {
 		t.Fatal("a table with another cdn_id counts as in sync")
 	}
 }
+
+func TestClientBans(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	ctx := context.Background()
+
+	st, err := c.BanStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sequence != 0 || st.Entries != 0 || st.UnappliedIDs != nil {
+		t.Fatalf("fresh ban status = %+v", st)
+	}
+	srv.SetBanCapacity(2)
+	st, err = c.PutBans(ctx, &dataplane.BanTable{Sequence: 18446744073709551615, Bans: []dataplane.Ban{
+		{ID: "m1", CIDR: "198.51.100.0/24", Scope: "platform", Kind: "m", ExpiresAt: 1790000000.5},
+		{ID: "m2", CIDR: "203.0.113.7/32", Scope: "site", SiteID: "site-a", Kind: "m", ExpiresAt: 1790000000},
+		{ID: "m3", CIDR: "203.0.113.8/32", Scope: "site", SiteID: "site-a", Kind: "m", ExpiresAt: 1790000000},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sequence != 18446744073709551615 || st.Entries != 2 || st.Unapplied != 1 || strings.Join(st.UnappliedIDs, ",") != "m3" {
+		t.Fatalf("status after PUT = %+v", st)
+	}
+	_, err = c.AddBans(ctx, &dataplane.BanDelta{Base: 7, Sequence: 8})
+	var apiErr *dataplane.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+		t.Fatalf("delta on the wrong base: %v", err)
+	}
+	st, err = c.AddBans(ctx, &dataplane.BanDelta{Base: 18446744073709551615, Sequence: 18446744073709551615,
+		Remove: []dataplane.Ban{{ID: "m1", CIDR: "198.51.100.0/24", Scope: "platform"}}})
+	if err != nil || st.Entries != 1 {
+		t.Fatalf("delta: %+v, %v", st, err)
+	}
+
+	srv.AddAutoBans(dataplane.AutoBan{SiteID: "site-a", IP: "192.0.2.1", PrefixLen: 32, CreatedAt: 1, ExpiresAt: 61, Reason: "cc_ip_rate", Metric: "ip_qps", Observed: 150, Threshold: 100, WindowSeconds: 10})
+	auto, err := c.DrainAutoBans(ctx)
+	if err != nil || len(auto) != 1 || auto[0].IP != "192.0.2.1" || auto[0].WindowSeconds != 10 {
+		t.Fatalf("drain = %+v, %v", auto, err)
+	}
+	if auto, err = c.DrainAutoBans(ctx); err != nil || auto != nil {
+		t.Fatalf("empty drain = %+v, %v", auto, err)
+	}
+	var decoded dataplane.BanStatus
+	if err := json.Unmarshal([]byte(`{"sequence":"3","entries":1,"unapplied_ids":{}}`), &decoded); err != nil || decoded.Sequence != 3 || decoded.UnappliedIDs != nil {
+		t.Fatalf("lua-cjson status: %+v, %v", decoded, err)
+	}
+}
