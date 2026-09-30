@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -115,14 +114,214 @@ func validateExpression(e *nodev1.RuleExpression, phase string, lists map[string
 			return nil
 		}
 	case "matches":
-		if typ != "string" || len(e.Value) > 256 || strings.Contains(e.Value, "(?") || regexp.MustCompile(`\\[1-9]|\)[+*?{]|[+*}]\s*[+*{]`).MatchString(e.Value) {
-			return bad()
-		}
-		if _, err := regexp.Compile(e.Value); err == nil {
+		if typ == "string" && validPattern(e.Value) {
 			return nil
 		}
 	}
 	return bad()
+}
+
+// Regular expressions (`matches`) are the subset that the console's JavaScript
+// (packages/rule-engine validatePattern, which this is a line-for-line port of),
+// this validator and PCRE2 without UTF in lua/edgeweir/expressions.lua read
+// alike, matched against the UTF-8 bytes of the value. Everything outside it is
+// rejected, including constructs the engines read differently: `(?...)`, back-
+// references, `\s`, `\v`, `\z`, `\p{...}`, possessive or repeated quantifiers,
+// repeated groups, `{,n}`, `[[:alpha:]]`, `[]...]` and non-ASCII text. Keep the
+// three in step with test/lua/expression-vectors.json.
+const patternPunctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+
+// patternItem is one escape or class member; n == 0 means invalid. kind is 'c'
+// (one character, code), 's' (\d \D \w \W), 'a' (\b \B) or '-' (a bare dash).
+type patternItem struct {
+	n    int
+	kind byte
+	code byte
+}
+
+func patternEscape(p string, i int, inClass bool) patternItem {
+	if i+1 >= len(p) {
+		return patternItem{}
+	}
+	switch e := p[i+1]; e {
+	case 'd', 'D', 'w', 'W':
+		return patternItem{2, 's', 0}
+	case 'b', 'B':
+		if !inClass {
+			return patternItem{2, 'a', 0}
+		}
+	case 't':
+		return patternItem{2, 'c', '\t'}
+	case 'n':
+		return patternItem{2, 'c', '\n'}
+	case 'f':
+		return patternItem{2, 'c', '\f'}
+	case 'r':
+		return patternItem{2, 'c', '\r'}
+	case 'x':
+		if i+3 < len(p) && p[i+2] >= '0' && p[i+2] <= '7' && strings.IndexByte("0123456789abcdefABCDEF", p[i+3]) >= 0 {
+			v, _ := strconv.ParseUint(p[i+2:i+4], 16, 8)
+			return patternItem{4, 'c', byte(v)}
+		}
+	default:
+		if strings.IndexByte(patternPunctuation, e) >= 0 {
+			return patternItem{2, 'c', e}
+		}
+	}
+	return patternItem{}
+}
+
+func patternClassAtom(p string, j, body int) patternItem {
+	switch c := p[j]; {
+	case c == '\\':
+		return patternEscape(p, j, true)
+	case c == '-' && (j == body || (j+1 < len(p) && p[j+1] == ']')):
+		return patternItem{1, '-', '-'}
+	case c == '-' || c == '[' || c < ' ' || c > '~':
+		return patternItem{}
+	default:
+		return patternItem{1, 'c', c}
+	}
+}
+
+// patternClass checks the class that starts at p[i] ('[') and returns the index
+// after its ']', or -1.
+func patternClass(p string, i int) int {
+	body := i + 1
+	if body < len(p) && p[body] == '^' {
+		body++
+	}
+	j := body
+	for j >= len(p) || p[j] != ']' {
+		if j >= len(p) {
+			return -1
+		}
+		low := patternClassAtom(p, j, body)
+		if low.n == 0 {
+			return -1
+		}
+		end := j + low.n
+		if end+1 < len(p) && p[end] == '-' && p[end+1] != ']' {
+			if low.kind != 'c' {
+				return -1
+			}
+			high := patternClassAtom(p, end+1, body)
+			if high.n == 0 || high.kind != 'c' || high.code < low.code {
+				return -1
+			}
+			end += 1 + high.n
+		}
+		j = end
+	}
+	// PCRE2 reads [:x:], [.x.] and [=x=] as POSIX syntax and refuses them outside a class.
+	text := p[body:j]
+	if text == "" || (len(text) > 1 && strings.IndexByte(":.=", text[0]) >= 0 && text[len(text)-1] == text[0]) {
+		return -1
+	}
+	return j + 1
+}
+
+// patternBraces returns the length of the {n}, {n,} or {n,m} quantifier at p[i]
+// (n <= m <= 1000, no leading zeros), or 0.
+func patternBraces(p string, i int) int {
+	count := func(j int) (int, int) {
+		k := j
+		for k < len(p) && k-j < 4 && p[k] >= '0' && p[k] <= '9' {
+			k++
+		}
+		if k == j || (p[j] == '0' && k > j+1) {
+			return 0, -1
+		}
+		n, _ := strconv.Atoi(p[j:k])
+		return n, k
+	}
+	low, j := count(i + 1)
+	if j < 0 {
+		return 0
+	}
+	high := low
+	if j < len(p) && p[j] == ',' {
+		j++
+		if j < len(p) && p[j] != '}' {
+			if high, j = count(j); j < 0 {
+				return 0
+			}
+		}
+	}
+	if j >= len(p) || p[j] != '}' || low > 1000 || high > 1000 || high < low {
+		return 0
+	}
+	return j + 1 - i
+}
+
+// validPattern reports whether p is in the subset: printable ASCII, at most 256
+// bytes; literals; `.` (any byte except "\n"); `^` and `$` (start and end of the
+// value); `\b` `\B`; `\d` `\D` `\w` `\W` (ASCII); `\t` `\n` `\r` `\f`;
+// `\x00`-`\x7f`; a backslash before ASCII punctuation; classes of those
+// characters, `\d` `\D` `\w` `\W` and ranges, with a bare `-` only first or
+// last; `* + ? {n} {n,} {n,m}`, optionally lazy, after a character, class or
+// escape; `|` and capturing groups, never repeated.
+func validPattern(p string) bool {
+	if len(p) > 256 {
+		return false
+	}
+	depth := 0
+	// What a quantifier here would repeat: 'n' nothing, 'a' an atom, 'q' a
+	// quantifier (only a lazy '?' may follow), 'f' an anchor, group or lazy
+	// quantifier (never repeated).
+	previous := byte('n')
+	for i := 0; i < len(p); {
+		c, n, next := p[i], 1, byte('a')
+		switch {
+		case c == '\\':
+			item := patternEscape(p, i, false)
+			if item.n == 0 {
+				return false
+			}
+			n = item.n
+			if item.kind == 'a' {
+				next = 'f'
+			}
+		case c == '[':
+			end := patternClass(p, i)
+			if end < 0 {
+				return false
+			}
+			n = end - i
+		case c == '(':
+			if i+1 < len(p) && p[i+1] == '?' {
+				return false
+			}
+			depth++
+			next = 'n'
+		case c == ')':
+			if depth--; depth < 0 {
+				return false
+			}
+			next = 'f'
+		case c == '|':
+			next = 'n'
+		case c == '^' || c == '$':
+			next = 'f'
+		case c == '?' && previous == 'q':
+			next = 'f'
+		case c == '*' || c == '+' || c == '?' || c == '{':
+			if previous != 'a' {
+				return false
+			}
+			if c == '{' {
+				if n = patternBraces(p, i); n == 0 {
+					return false
+				}
+			}
+			next = 'q'
+		case c == ']' || c == '}' || c < ' ' || c > '~':
+			return false
+		}
+		previous = next
+		i += n
+	}
+	return depth == 0
 }
 
 func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features []string, maxRules int) error {

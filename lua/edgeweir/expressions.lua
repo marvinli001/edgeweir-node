@@ -39,6 +39,30 @@ function _M.ip_set(entries)
   end
 end
 
+-- PCRE2 source for a `matches` pattern. configir (validPattern) admits only the
+-- subset that JavaScript, RE2 and PCRE2 without UTF read alike, where `$` is the
+-- end of the value and `.` any byte but "\n": `$` becomes `\z` (PCRE2's `$` also
+-- matches before a final "\n") and (*LF) keeps `.` independent of the newline
+-- default PCRE2 was built with. Match work is bounded even for costly patterns.
+function _M.pcre_pattern(pattern)
+  local out, i, class = {}, 1, false
+  while i <= #pattern do
+    local c = pattern:sub(i, i)
+    if c == "\\" then
+      c = pattern:sub(i, i + 1); i = i + 1
+    elseif class then
+      class = c ~= "]"
+    elseif c == "[" then
+      class = true
+    elseif c == "$" then
+      c = "\\z"
+    end
+    out[#out + 1] = c
+    i = i + 1
+  end
+  return "(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(*LF)" .. table.concat(out)
+end
+
 function _M.compile(e, lists)
   local op, typ = e.op, e.value_type or e.valueType
   if op == "literal" then local yes = e.value == "true"; return function() return yes end end
@@ -81,8 +105,7 @@ function _M.compile(e, lists)
   if op == "ne" then return function(req) return not equal(get(req)) end end
   if op == "contains" then return function(req) return string.find(get(req), e.value, 1, true) ~= nil end end
   if op == "matches" then
-    -- PCRE work is bounded even if a future parser admits an expensive pattern.
-    local pattern = "(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)" .. e.value
+    local pattern = _M.pcre_pattern(e.value)
     local _, _, err = ngx.re.find("", pattern, "j")
     assert(not err, "invalid regular expression")
     return function(req)

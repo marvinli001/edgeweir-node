@@ -1,9 +1,14 @@
 package configir
 
 import (
-	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
-	"google.golang.org/protobuf/proto"
+	"encoding/json"
+	"os"
+	"regexp"
 	"testing"
+
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestPolicyValidation(t *testing.T) {
@@ -57,5 +62,69 @@ func TestPolicyValidation(t *testing.T) {
 		if _, err := Build(geo, Options{ExtraFeatures: []string{test.other}}); err == nil {
 			t.Fatalf("%s accepted with only %s", test.field, test.other)
 		}
+	}
+}
+
+// TestSharedExpressionVectors reads the console's shared vectors (a copy of
+// packages/rule-engine/test/vectors.json that Lua also runs): configir accepts
+// every accepted IR and refuses every rejected pattern, and for `matches` RE2
+// over the value's bytes (one rune per byte, like PCRE2 without UTF) gives the
+// expected result, a third engine next to JavaScript and PCRE2.
+func TestSharedExpressionVectors(t *testing.T) {
+	data, err := os.ReadFile("../../test/lua/expression-vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors []struct {
+		Source   string              `json:"source"`
+		Phase    string              `json:"phase"`
+		Rejected bool                `json:"rejected"`
+		Reason   string              `json:"reason"`
+		Request  map[string]any      `json:"request"`
+		Lists    map[string][]string `json:"lists"`
+		Expected bool                `json:"expected"`
+		IR       json.RawMessage     `json:"ir"`
+	}
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	features := []string{"geoip-country-v1", "geoip-subdivision-v1", "geoip-asn-v1"}
+	accepted, rejected := 0, 0
+	for i, v := range vectors {
+		e := &nodev1.RuleExpression{}
+		if err := protojson.Unmarshal(v.IR, e); err != nil {
+			t.Fatalf("vector %d: %v", i, err)
+		}
+		lists := map[string]bool{}
+		for id := range v.Lists {
+			lists[id] = true
+		}
+		budget := 256
+		err := validateExpression(e, v.Phase, lists, features, 0, &budget)
+		if v.Rejected {
+			rejected++
+			if err == nil {
+				t.Errorf("vector %d accepted %s (%s)", i, v.Source, v.Reason)
+			}
+			continue
+		}
+		accepted++
+		if err != nil {
+			t.Errorf("vector %d refused %s: %v", i, v.Source, err)
+			continue
+		}
+		if e.Op == "matches" {
+			subject, _ := v.Request[e.Field].(string)
+			runes := make([]rune, len(subject))
+			for j := range len(subject) {
+				runes[j] = rune(subject[j])
+			}
+			if got := regexp.MustCompile(e.Value).MatchString(string(runes)); got != v.Expected {
+				t.Errorf("vector %d: RE2 gives %v for %s on %q", i, got, v.Source, subject)
+			}
+		}
+	}
+	if accepted == 0 || rejected == 0 {
+		t.Fatalf("%d accepted and %d rejected vectors", accepted, rejected)
 	}
 }

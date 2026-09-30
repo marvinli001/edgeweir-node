@@ -417,7 +417,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 - `internal/geoip` 读取本地 MMDB，经 0600 Unix socket 服务同机 worker：发布镜像构建时下载并内置的 IPinfo Lite（国家、ASN，`--geoip-ipinfo auto`），以及运维提供的 City/ASN MMDB。国家和 ASN 优先取 IPinfo，查不到时回落到 City/ASN；一级行政区只来自 City，且仅当其国家与结果一致。数据库通过完整性与类型检查才上报能力；GeoIP 请求不离开节点，运行时不下载数据。
 - 缓存和刷新使用改写前路径；配置与列表更新不 reload。`rules-v1`、`geoip-city-v1`（国家；沿用旧名以兼容控制台，来自 IPinfo 或 City）、`geoip-subdivision-v1`（City，一级行政区）、`geoip-asn-v1`（IPinfo 或 ASN）分开上报；`geoip-country-v1` 告知控制台一级行政区已单独上报。控制台对国家和一级行政区规则仍只下发 `geoip-city-v1` 要求，节点逐条表达式校验时一级行政区需要 `geoip-subdivision-v1`，没有 City MMDB 的节点拒绝这类配置。
 - 持久化失败在恢复旧配置后退避五分钟或等下一版本，避免每次轮询重新激活未持久化内容。
-- `test/lua/expression-vectors.json` 镜像控制面规则包的 19 个共享向量；GeoIP MMDB（City、ASN 及 IPinfo Lite 结构）为 `internal/testutil/geofixture` 自行生成的数据。
+- `test/lua/expression-vectors.json` 镜像控制面规则包的共享向量（接受向量由 Lua PCRE2 与 Go RE2 执行，拒绝向量由 Go 校验拒绝）；GeoIP MMDB（City、ASN 及 IPinfo Lite 结构）为 `internal/testutil/geofixture` 自行生成的数据。
 
 ## 统计
 
