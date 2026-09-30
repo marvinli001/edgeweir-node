@@ -22,7 +22,10 @@
 # Base images are pinned by tag and multi-arch index digest; the digest is
 # what gets pulled (ADR-0017). Refresh tag and digest together (CONTRIBUTING.md).
 ARG GO_IMAGE=golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414
-ARG OPENRESTY_IMAGE=openresty/openresty:1.31.1.1-bookworm@sha256:8005b87dcb25df5e202e71dcc4b8a2c20a4845a75302b2bb6ee816b5392883e4
+ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+# OpenResty (edgeweir-openresty) is built from source below; see
+# packaging/openresty for the pinned sources and the deb/rpm packages.
+ARG OPENRESTY_BUILDER_IMAGE=almalinux:9.7@sha256:2d57aea965da8fbda97736ec5125c1b683ce271438038ea1906b2391e89b77d2
 
 # ---- build: static agent, cross-compiled on the build platform ----------
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
@@ -90,8 +93,38 @@ COPY internal/geoip ./internal/geoip
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     if [ -f /out/geoip/ipinfo_lite.mmdb ]; then go run ./internal/geoip/check /out/geoip/ipinfo_lite.mmdb; fi
 
-# ---- runtime: official OpenResty image, unprivileged user ----------------
-FROM ${OPENRESTY_IMAGE}
+# BEGIN openresty-build
+# glibc 2.34 baseline (AlmaLinux 9): the result runs on RHEL/Rocky/Alma 9,
+# Debian 12, Ubuntu 22.04 and newer. The toolchain comes from the frozen
+# AlmaLinux 9.7 vault. Sources: packaging/openresty/sources.lock.
+FROM ${OPENRESTY_BUILDER_IMAGE} AS openresty-toolchain
+COPY packaging/openresty/vault.repo /etc/yum.repos.d/edgeweir-vault.repo
+RUN rm -f /etc/yum.repos.d/almalinux-*.repo \
+ && dnf -y -q --setopt=install_weak_deps=False install \
+      gcc gcc-c++ make cmake perl-core patch xz bzip2 gnupg2 findutils diffutils which file \
+      pkgconf-pkg-config python3 binutils \
+ && dnf clean all
+
+FROM openresty-toolchain AS openresty-sources
+COPY packaging/openresty/sources.lock packaging/openresty/fetch.sh /build/
+COPY packaging/openresty/keys/ /build/keys/
+RUN /build/fetch.sh /build/sources.lock /build/keys /build/dl
+
+FROM openresty-sources AS openresty-build
+ARG OPENRESTY_JOBS=2
+COPY packaging/openresty/patches/ /build/patches/
+COPY packaging/openresty/build/common.sh packaging/openresty/build/10-deps.sh /build/steps/
+RUN JOBS=$OPENRESTY_JOBS /build/steps/10-deps.sh
+COPY packaging/openresty/build/20-modsecurity.sh /build/steps/
+RUN JOBS=$OPENRESTY_JOBS /build/steps/20-modsecurity.sh
+COPY packaging/openresty/build/30-openresty.sh /build/steps/
+RUN JOBS=$OPENRESTY_JOBS /build/steps/30-openresty.sh
+COPY packaging/openresty/build/40-tree.sh /build/steps/
+RUN /build/steps/40-tree.sh
+# END openresty-build
+
+# ---- runtime: Debian with edgeweir-openresty, unprivileged user -----------
+FROM ${RUNTIME_IMAGE}
 ARG VERSION=dev
 ARG COMMIT=none
 LABEL org.opencontainers.image.title="edgeweir-node" \
@@ -111,7 +144,7 @@ LABEL org.opencontainers.image.title="edgeweir-node" \
 ARG NFT_CAPABILITY=false
 RUN set -eu; \
     apt-get update; \
-    apt-get install -y --no-install-recommends nftables; \
+    apt-get install -y --no-install-recommends ca-certificates nftables; \
     case "$NFT_CAPABILITY" in \
       true) apt-get install -y --no-install-recommends libcap2-bin; \
             setcap cap_net_admin+ep /usr/sbin/nft; \
@@ -130,6 +163,11 @@ RUN groupadd --system --gid 10001 edgeweir \
  && install -d -o edgeweir -g edgeweir -m 0700 /var/lib/edgeweir-node \
  && install -d -o edgeweir -g edgeweir -m 0750 /run/edgeweir-node /var/cache/edgeweir-node
 
+# The same tree as the edgeweir-openresty and edgeweir-openresty-modsecurity
+# packages: OpenResty, the ModSecurity module and the OWASP CRS.
+COPY --from=openresty-build /out/tree/usr/lib/edgeweir-openresty/ /usr/lib/edgeweir-openresty/
+COPY --from=openresty-build /out/tree/usr/share/edgeweir-openresty/ /usr/share/edgeweir-openresty/
+COPY --from=openresty-build /out/tree/usr/share/doc/edgeweir-openresty/ /usr/share/doc/edgeweir-openresty/
 COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
 COPY --from=verifier /cosign /usr/local/bin/cosign
 COPY lua/ /usr/share/edgeweir-node/lua/
@@ -137,7 +175,7 @@ COPY lua/ /usr/share/edgeweir-node/lua/
 COPY --from=ipinfo /out/geoip/ /usr/share/edgeweir-node/geoip/
 
 ENV EDGEWEIR_STATE_DIR=/var/lib/edgeweir-node \
-    EDGEWEIR_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \
+    EDGEWEIR_NGINX_BIN=/usr/lib/edgeweir-openresty/nginx/sbin/nginx \
     EDGEWEIR_LUA_DIR=/usr/share/edgeweir-node/lua \
     EDGEWEIR_CACHE_DIR=/var/cache/edgeweir-node \
     EDGEWEIR_CONTROL_SOCKET=/run/edgeweir-node/control.sock \
@@ -146,8 +184,8 @@ ENV EDGEWEIR_STATE_DIR=/var/lib/edgeweir-node \
 USER edgeweir
 VOLUME ["/var/lib/edgeweir-node"]
 EXPOSE 80
-# The agent handles SIGTERM and stops OpenResty gracefully (the base image
-# uses SIGQUIT, which would make the Go runtime dump goroutines).
+# The agent handles SIGTERM and stops OpenResty gracefully (SIGQUIT, nginx's
+# graceful stop, would make the Go runtime dump goroutines).
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
   CMD ["/usr/local/bin/edgeweir-node", "healthcheck"]
