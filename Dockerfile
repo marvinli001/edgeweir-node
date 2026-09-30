@@ -8,6 +8,9 @@
 #   docker exec -e EDGEWEIR_TOKEN <container> edgeweir-node enroll \
 #       --server https://console:8443 --ca-sha256 <sha256>
 #
+# Kernel bans (nftables) need an image built with
+# --build-arg NFT_CAPABILITY=true and `docker run --cap-add NET_ADMIN`.
+#
 # `-e EDGEWEIR_TOKEN` without a value passes the variable from the current
 # environment, so the token never appears on a command line (--token would
 # show it in ps).
@@ -98,6 +101,25 @@ LABEL org.opencontainers.image.title="edgeweir-node" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
+
+# nftables for kernel bans (platform bans dropped in the input hook). The
+# agent runs as uid 10001, so nft only works when the image is built with
+# --build-arg NFT_CAPABILITY=true (nft gets the file capability
+# cap_net_admin+ep) and the container is started with --cap-add NET_ADMIN.
+# Without both the agent enforces bans at the edge layer only; the default
+# image adds no capability.
+ARG NFT_CAPABILITY=false
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends nftables; \
+    case "$NFT_CAPABILITY" in \
+      true) apt-get install -y --no-install-recommends libcap2-bin; \
+            setcap cap_net_admin+ep /usr/sbin/nft; \
+            apt-get purge -y --auto-remove libcap2-bin ;; \
+      false) ;; \
+      *) echo "NFT_CAPABILITY must be true or false" >&2; exit 1 ;; \
+    esac; \
+    rm -rf /var/lib/apt/lists/*
 
 # Agent, nginx master and workers all run as uid 10001. Docker lets
 # unprivileged processes bind :80 inside the container network namespace

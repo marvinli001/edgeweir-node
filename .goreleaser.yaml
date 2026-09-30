@@ -96,6 +96,10 @@ nfpms:
     mtime: "{{ .CommitDate }}"
     dependencies:
       - openresty
+    # Kernel bans (--kernel-bans auto) use nft when it is installed and the
+    # unit is given CAP_NET_ADMIN; without it bans stay at the edge layer.
+    recommends:
+      - nftables
     contents:
       - src: lua/edgeweir/
         dst: /usr/share/edgeweir-node/lua/edgeweir/
