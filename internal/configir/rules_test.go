@@ -80,6 +80,9 @@ func TestSharedExpressionVectors(t *testing.T) {
 		Phase    string              `json:"phase"`
 		Rejected bool                `json:"rejected"`
 		Reason   string              `json:"reason"`
+		Action   json.RawMessage     `json:"action"`
+		// ActionRejected: nodes refuse the action in this phase.
+		ActionRejected bool `json:"actionRejected"`
 		Request  map[string]any      `json:"request"`
 		Lists    map[string][]string `json:"lists"`
 		Expected bool                `json:"expected"`
@@ -89,7 +92,7 @@ func TestSharedExpressionVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	features := []string{"geoip-country-v1", "geoip-subdivision-v1", "geoip-asn-v1"}
-	accepted, rejected := 0, 0
+	accepted, rejected, actions := 0, 0, 0
 	for i, v := range vectors {
 		e := &nodev1.RuleExpression{}
 		if err := protojson.Unmarshal(v.IR, e); err != nil {
@@ -113,6 +116,21 @@ func TestSharedExpressionVectors(t *testing.T) {
 			t.Errorf("vector %d refused %s: %v", i, v.Source, err)
 			continue
 		}
+		if len(v.Action) > 0 {
+			actions++
+			a := &nodev1.RuleAction{}
+			if err := protojson.Unmarshal(v.Action, a); err != nil {
+				t.Fatalf("vector %d action: %v", i, err)
+			}
+			rule := &nodev1.EdgeRule{Id: "vector", Phase: v.Phase, Expression: e, Action: a}
+			err := validateRuleSet([]*nodev1.EdgeRule{rule}, lists, features, 64)
+			if v.ActionRejected && err == nil {
+				t.Errorf("vector %d accepted action %s in %s", i, v.Action, v.Phase)
+			}
+			if !v.ActionRejected && err != nil {
+				t.Errorf("vector %d refused action %s in %s: %v", i, v.Action, v.Phase, err)
+			}
+		}
 		if e.Op == "matches" {
 			subject, _ := v.Request[e.Field].(string)
 			runes := make([]rune, len(subject))
@@ -124,7 +142,7 @@ func TestSharedExpressionVectors(t *testing.T) {
 			}
 		}
 	}
-	if accepted == 0 || rejected == 0 {
-		t.Fatalf("%d accepted and %d rejected vectors", accepted, rejected)
+	if accepted == 0 || rejected == 0 || actions == 0 {
+		t.Fatalf("%d accepted and %d rejected vectors, %d actions", accepted, rejected, actions)
 	}
 }
