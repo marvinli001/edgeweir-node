@@ -7,6 +7,7 @@
 package fakeconsole
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -79,6 +80,15 @@ type Console struct {
 	taskResults      []*nodev1.ReportTaskResultRequest
 	taskWatchers     map[chan struct{}]struct{}
 
+	// Dynamic bans: the latest state of every ban id with its sequence.
+	bans           map[string]*banRow
+	banSeq         uint64
+	banPageLimit   int
+	banWatchers    map[chan struct{}]struct{}
+	getBans        []*nodev1.GetBansRequest
+	reportedBans   []*nodev1.AutoBan
+	reportBansFail int
+
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -113,6 +123,8 @@ func New(opts Options) (*Console, error) {
 		tokens:       map[string]bool{},
 		watchers:     map[chan struct{}]struct{}{},
 		taskWatchers: map[chan struct{}]struct{}{},
+		banWatchers:  map[chan struct{}]struct{}{},
+		bans:         map[string]*banRow{},
 		credentials:  map[string]*nodev1.OriginCredential{},
 		mtlsCalls:    map[string]int{},
 		done:         make(chan struct{}),
@@ -357,17 +369,26 @@ func (c *Console) RenewCertificate(_ context.Context, req *connect.Request[nodev
 func (c *Console) WatchConfig(ctx context.Context, _ *connect.Request[nodev1.WatchConfigRequest], stream *connect.ServerStream[nodev1.WatchConfigResponse]) error {
 	notify := make(chan struct{}, 1)
 	tasks := make(chan struct{}, 1)
+	bans := make(chan struct{}, 1)
 	c.mu.Lock()
 	c.watchers[notify] = struct{}{}
 	c.taskWatchers[tasks] = struct{}{}
+	c.banWatchers[bans] = struct{}{}
 	c.watchStreams++
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		delete(c.watchers, notify)
 		delete(c.taskWatchers, tasks)
+		delete(c.banWatchers, bans)
 		c.mu.Unlock()
 	}()
+	sendBans := func() error {
+		c.mu.Lock()
+		seq := c.banSeq
+		c.mu.Unlock()
+		return stream.Send(&nodev1.WatchConfigResponse{Event: nodev1.WatchEvent_WATCH_EVENT_BANS, BanSequence: seq})
+	}
 
 	sendRevision := func() error {
 		c.mu.Lock()
@@ -380,6 +401,9 @@ func (c *Console) WatchConfig(ctx context.Context, _ *connect.Request[nodev1.Wat
 		})
 	}
 	if err := sendRevision(); err != nil {
+		return err
+	}
+	if err := sendBans(); err != nil {
 		return err
 	}
 	t := time.NewTicker(c.opts.KeepaliveInterval)
@@ -396,6 +420,10 @@ func (c *Console) WatchConfig(ctx context.Context, _ *connect.Request[nodev1.Wat
 			}
 		case <-tasks:
 			if err := stream.Send(&nodev1.WatchConfigResponse{Event: nodev1.WatchEvent_WATCH_EVENT_TASKS}); err != nil {
+				return err
+			}
+		case <-bans:
+			if err := sendBans(); err != nil {
 				return err
 			}
 		case <-t.C:
@@ -621,4 +649,145 @@ func (c *Console) Logs() []*nodev1.AccessLog {
 		out = append(out, proto.CloneOf(l))
 	}
 	return out
+}
+
+type banRow struct {
+	ban     *nodev1.Ban
+	seq     uint64
+	removed bool
+}
+
+// AddBan stores (or replaces, by id) an active ban under a new sequence
+// and announces it on open watch streams. It returns the sequence.
+func (c *Console) AddBan(b *nodev1.Ban) uint64 {
+	c.mu.Lock()
+	c.banSeq++
+	c.bans[b.GetId()] = &banRow{ban: proto.CloneOf(b), seq: c.banSeq}
+	seq := c.banSeq
+	c.mu.Unlock()
+	c.notifyBans()
+	return seq
+}
+
+// RemoveBan lifts a ban under a new sequence and announces it.
+func (c *Console) RemoveBan(id string) uint64 {
+	c.mu.Lock()
+	c.banSeq++
+	if row, ok := c.bans[id]; ok {
+		row.removed, row.seq = true, c.banSeq
+	}
+	seq := c.banSeq
+	c.mu.Unlock()
+	c.notifyBans()
+	return seq
+}
+
+// SetBanSequence moves the ban sequence (a console restored from an older
+// backup sets it below what nodes have applied).
+func (c *Console) SetBanSequence(seq uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.banSeq = seq
+}
+
+// SetBanPageLimit caps the bans of one GetBans page (0: 5000).
+func (c *Console) SetBanPageLimit(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.banPageLimit = n
+}
+
+// FailReportBans makes the next n ReportBans calls fail.
+func (c *Console) FailReportBans(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reportBansFail = n
+}
+
+// GetBansCalls returns every GetBans request.
+func (c *Console) GetBansCalls() []*nodev1.GetBansRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.getBans)
+}
+
+// ReportedBans returns every automatic ban the node reported.
+func (c *Console) ReportedBans() []*nodev1.AutoBan {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.reportedBans)
+}
+
+func (c *Console) notifyBans() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for ch := range c.banWatchers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// GetBans implements NodeService like the console: a snapshot (reset)
+// when after_sequence is 0 or ahead of the console, otherwise the changes
+// after it, in sequence order and paged.
+func (c *Console) GetBans(_ context.Context, req *connect.Request[nodev1.GetBansRequest]) (*connect.Response[nodev1.GetBansResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.getBans = append(c.getBans, proto.CloneOf(req.Msg))
+	after := req.Msg.GetAfterSequence()
+	resp := &nodev1.GetBansResponse{}
+	if after == 0 || after > c.banSeq {
+		resp.Reset_, after = true, 0
+	}
+	limit := 5000
+	if c.banPageLimit > 0 {
+		limit = c.banPageLimit
+	}
+	if l := int(req.Msg.GetLimit()); l > 0 && l < limit {
+		limit = l
+	}
+	rows := make([]*banRow, 0, len(c.bans))
+	for _, row := range c.bans {
+		if row.seq <= after {
+			continue
+		}
+		// A snapshot only carries active bans; expired ones are never sent.
+		if row.removed && resp.Reset_ || !row.removed && !row.ban.GetExpiresAt().AsTime().After(time.Now()) {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	slices.SortFunc(rows, func(a, b *banRow) int { return cmp.Compare(a.seq, b.seq) })
+	resp.Sequence = c.banSeq
+	if len(rows) > limit {
+		rows, resp.More = rows[:limit], true
+		resp.Sequence = rows[limit-1].seq
+	}
+	for _, row := range rows {
+		if row.removed {
+			resp.RemovedIds = append(resp.RemovedIds, row.ban.GetId())
+		} else {
+			resp.Bans = append(resp.Bans, proto.CloneOf(row.ban))
+		}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// ReportBans implements NodeService.
+func (c *Console) ReportBans(_ context.Context, req *connect.Request[nodev1.ReportBansRequest]) (*connect.Response[nodev1.ReportBansResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reportBansFail > 0 {
+		c.reportBansFail--
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("injected ReportBans failure"))
+	}
+	if len(req.Msg.GetBans()) > 1000 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("more than 1000 bans"))
+	}
+	for _, b := range req.Msg.GetBans() {
+		c.reportedBans = append(c.reportedBans, proto.CloneOf(b))
+	}
+	return connect.NewResponse(&nodev1.ReportBansResponse{Accepted: uint32(len(req.Msg.GetBans()))}), nil
 }
