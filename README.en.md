@@ -157,6 +157,8 @@ edgeweir-node version
 | `--prefetch-budget` | `4m` | Time limit for one pulled batch of prefetches |
 | `--ban-capacity` | `100000` | Dynamic bans the data plane holds (console bans and the node's own); the oldest automatic bans make room first, manual bans that do not fit are reported |
 | `--ban-dict-mb` | `32` | Size of the ban store (`lua_shared_dict edgeweir_bans`) in MiB |
+| `--cc-dict-mb` | `32` | Size of the CC mitigation store (`lua_shared_dict edgeweir_cc`: counters, levels, events) in MiB |
+| `--challenge-dict-mb` | `8` | Size of the challenge store (`lua_shared_dict edgeweir_challenge`: keys, captcha pool, used challenge nonces) in MiB |
 | `--kernel-bans` | `auto` | Also write platform bans into nftables: `auto` (when `nft` works and `CAP_NET_ADMIN` is granted) or `off` |
 | `--nft-bin` | `nft` | nftables binary for kernel bans |
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error` |

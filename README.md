@@ -157,6 +157,8 @@ edgeweir-node version
 | `--prefetch-budget` | `4m` | 单批预热任务的时间上限 |
 | `--ban-capacity` | `100000` | 数据面最多保存的动态封禁条数（控制台条目与本机自动封禁）；超出时先淘汰最早的自动封禁，手动封禁写不下时如实上报 |
 | `--ban-dict-mb` | `32` | 封禁存储（`lua_shared_dict edgeweir_bans`）大小，单位 MiB |
+| `--cc-dict-mb` | `32` | CC 防护存储（`lua_shared_dict edgeweir_cc`：计数、级别、事件）大小，单位 MiB |
+| `--challenge-dict-mb` | `8` | 挑战存储（`lua_shared_dict edgeweir_challenge`：密钥、验证码池、已用挑战 nonce）大小，单位 MiB |
 | `--kernel-bans` | `auto` | 平台范围的封禁同时写入 nftables：`auto`（`nft` 可用且有 `CAP_NET_ADMIN` 时）、`off` |
 | `--nft-bin` | `nft` | 内核封禁使用的 nftables 可执行文件 |
 | `--log-level` | `info` | 日志级别：`debug`、`info`、`warn`、`error` |

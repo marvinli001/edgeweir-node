@@ -353,6 +353,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
 		banCapacity   = fs.Int("ban-capacity", render.DefaultBanCapacity, "dynamic bans the data plane holds (console and own); the oldest automatic bans make room first")
 		banDictMB     = fs.Int("ban-dict-mb", render.DefaultBanDictMB, "size of the ban store (lua_shared_dict edgeweir_bans) in MiB")
+		ccDictMB      = fs.Int("cc-dict-mb", render.DefaultCCDictMB, "size of the CC mitigation store (lua_shared_dict edgeweir_cc: counters, levels, events) in MiB")
+		challengeMB   = fs.Int("challenge-dict-mb", render.DefaultChallengeDictMB, "size of the challenge store (lua_shared_dict edgeweir_challenge: keys, captcha pool, used challenge nonces) in MiB")
 		kernelBans    = fs.String("kernel-bans", "auto", "also drop platform bans in the kernel with nftables: auto (when nft works; needs CAP_NET_ADMIN) or off")
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		lf            logFlags
@@ -390,6 +392,14 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *banDictMB < 1 || *banDictMB > 65536 {
 		fmt.Fprintln(stderr, "run: --ban-dict-mb must be 1-65536")
+		return 2
+	}
+	if *ccDictMB < 1 || *ccDictMB > 65536 {
+		fmt.Fprintln(stderr, "run: --cc-dict-mb must be 1-65536")
+		return 2
+	}
+	if *challengeMB < 1 || *challengeMB > 65536 {
+		fmt.Fprintln(stderr, "run: --challenge-dict-mb must be 1-65536")
 		return 2
 	}
 	if *kernelBans != "auto" && *kernelBans != "off" {
@@ -477,6 +487,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		PurgeDictMB:        *purgeDictMB,
 		BanDictMB:          *banDictMB,
 		BanCapacity:        *banCapacity,
+		CCDictMB:           *ccDictMB,
+		ChallengeDictMB:    *challengeMB,
 	}
 	if *noVerifySock != "" {
 		params.OriginSocketNoVerify = abs(*noVerifySock)
