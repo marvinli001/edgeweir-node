@@ -314,6 +314,12 @@ var caBundles = []string{
 	"/etc/ssl/cert.pem",                  // Arch, macOS
 }
 
+// fileExists reports whether path is an existing regular file.
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
+}
+
 // systemCABundle returns the first existing system CA bundle, or "".
 func systemCABundle() string {
 	for _, p := range caBundles {
@@ -361,6 +367,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		challengeMB   = fs.Int("challenge-dict-mb", render.DefaultChallengeDictMB, "size of the challenge store (lua_shared_dict edgeweir_challenge: keys, captcha pool, used challenge nonces) in MiB")
 		kernelBans    = fs.String("kernel-bans", "auto", "also drop platform bans in the kernel with nftables: auto (when nft works; needs CAP_NET_ADMIN) or off")
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
+		modsecModule  = fs.String("modsecurity-module", "auto", "ModSecurity-nginx dynamic module for sites that run the OWASP CRS: auto (the edgeweir-openresty-modsecurity package next to --nginx-bin), a path, or off")
+		crsDir        = fs.String("crs-dir", render.DefaultCRSDir, "OWASP CRS directory (crs-setup.conf and rules/); unicode.mapping is read from ../modsecurity/")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -408,6 +416,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *kernelBans != "auto" && *kernelBans != "off" {
 		fmt.Fprintln(stderr, "run: --kernel-bans must be auto or off")
+		return 2
+	}
+	if *crsDir == "" {
+		fmt.Fprintln(stderr, "run: --crs-dir must not be empty")
 		return 2
 	}
 
@@ -493,6 +505,17 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		BanCapacity:        *banCapacity,
 		CCDictMB:           *ccDictMB,
 		ChallengeDictMB:    *challengeMB,
+	}
+	switch *modsecModule {
+	case "off":
+	case "auto":
+		params.ModSecurityModule = engine.DefaultModSecurityModule(*nginxBin)
+	default:
+		params.ModSecurityModule = abs(*modsecModule)
+	}
+	params.CRSDir = abs(*crsDir)
+	if m := filepath.Join(filepath.Dir(params.CRSDir), "modsecurity", "unicode.mapping"); fileExists(m) {
+		params.ModSecurityUnicodeMap = m
 	}
 	if *noVerifySock != "" {
 		params.OriginSocketNoVerify = abs(*noVerifySock)

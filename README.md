@@ -168,6 +168,8 @@ edgeweir-node version
 | `--challenge-dict-mb` | `8` | 挑战存储（`lua_shared_dict edgeweir_challenge`），MiB |
 | `--kernel-bans` | `auto` | 平台封禁写入 nftables：`auto`（`nft` 可用且有 `CAP_NET_ADMIN` 时）、`off` |
 | `--nft-bin` | `nft` | nftables 可执行文件 |
+| `--modsecurity-module` | `auto` | ModSecurity-nginx 动态模块：`auto`（`--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 目录）、文件路径、`off`；只在有站点启用 OWASP CRS 时加载 |
+| `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS 目录（`crs-setup.conf`、`rules/`），`unicode.mapping` 取自同级 `modsecurity/` |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
 

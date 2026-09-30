@@ -168,6 +168,8 @@ edgeweir-node version
 | `--challenge-dict-mb` | `8` | Challenge store (`lua_shared_dict edgeweir_challenge`), MiB |
 | `--kernel-bans` | `auto` | Write platform bans into nftables: `auto` (`nft` works and `CAP_NET_ADMIN` granted), `off` |
 | `--nft-bin` | `nft` | nftables binary |
+| `--modsecurity-module` | `auto` | ModSecurity-nginx dynamic module: `auto` (the `modules/` directory of the edgeweir-openresty that `--nginx-bin` belongs to), a file path, or `off`; loaded only while a site runs the OWASP CRS |
+| `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS directory (`crs-setup.conf`, `rules/`); `unicode.mapping` comes from the sibling `modsecurity/` |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
 
