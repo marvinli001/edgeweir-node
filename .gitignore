@@ -1,24 +1,70 @@
 # Build output
 /bin/
 /dist/
-/coverage.out
+/edgeweir-node
 *.test
+*.exe
+__debug_bin*
 
-# Local state from running the agent outside a container
+# Coverage, profiles and traces
+/coverage.out
+*.coverprofile
+*.pprof
+*.prof
+cpu.out
+mem.out
+trace.out
+luacov.*.out
+
+# Local Go workspace (e.g. one that pulls in ../edgeweir)
+go.work
+go.work.sum
+
+# Local state from running the agent or OpenResty outside a container
 /.state/
 /tmp/
+*.log
+*_temp/
+
+# Node identity, credentials and secrets never belong in the repository
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+purge.json
+.env
+.env.*
+
+# GeoIP databases (tests generate their own fixtures)
+*.mmdb
 
 # Editors / OS
 .idea/
 .vscode/
+.fleet/
+*.iml
 *.swp
+*.swo
+*~
 .DS_Store
+Thumbs.db
 
-# AI coding assistants: instructions stay local
+# AI coding assistants and personal notes: instructions stay local
 CLAUDE.md
 CLAUDE.local.md
 AGENTS.md
+GEMINI.md
 .claude/
+.cursor/
+.cursorrules
+.windsurfrules
+.github/copilot-instructions.md
+.aider*
+*.local.md
+NOTES.md
+TODO.md
+/scratch/
 
 # Development records (ADRs, roadmaps, specs) live in ../edgeweir/dev-docs, not here
 /ROADMAP*.md
