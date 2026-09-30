@@ -222,3 +222,35 @@ func TestBansCommand(t *testing.T) {
 		t.Fatalf("bans against a missing socket: code %d", code)
 	}
 }
+
+func TestSecurityCommand(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	srv.SetSecurity(dataplane.SecuritySite{SiteID: "site-a", Level: "js", EscalatedPaths: 1,
+		Paths: dataplane.List[dataplane.SecurityPath]{{Path: "/login", Level: "pow"}}, SiteQPS: 1234.5})
+	c := dataplane.NewClient(srv.Socket)
+	if _, err := c.PutChallengeKeys(context.Background(), &dataplane.ChallengeKeys{ID: "set", Current: "k2",
+		Keys: []dataplane.ChallengeKey{{ID: "k1", Secret: "c2VjcmV0MQ=="}, {ID: "k2", Secret: "c2VjcmV0Mg=="}}}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := realMain([]string{"security", "--control-socket", srv.Socket}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var got struct {
+		Challenge dataplane.ChallengeStatus `json:"challenge"`
+		CC        dataplane.SecurityStatus  `json:"cc"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Challenge.Current != "k2" || len(got.Challenge.Keys) != 2 || len(got.CC.Sites) != 1 ||
+		got.CC.Sites[0].Level != "js" || got.CC.Sites[0].Paths[0].Path != "/login" {
+		t.Fatalf("output = %s", out.String())
+	}
+	if strings.Contains(out.String(), "c2VjcmV0") {
+		t.Fatal("secrets printed")
+	}
+	if code := realMain([]string{"security", "--control-socket", "/nonexistent/control.sock", "--timeout", "100ms"}, io.Discard, io.Discard); code != 1 {
+		t.Fatal("unreachable data plane must exit 1")
+	}
+}

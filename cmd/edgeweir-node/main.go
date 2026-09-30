@@ -6,6 +6,7 @@
 //	                  [--lua-dir DIR] [--control-socket PATH] [--kernel-bans auto|off] ...
 //	edgeweir-node healthcheck [--control-socket PATH]
 //	edgeweir-node bans [--control-socket PATH] [--list]
+//	edgeweir-node security [--control-socket PATH]
 //	edgeweir-node version
 //
 // Every flag can also be set with an environment variable
@@ -68,6 +69,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdHealthcheck(args[1:], stderr)
 	case "bans":
 		return cmdBans(args[1:], stdout, stderr)
+	case "security":
+		return cmdSecurity(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version.String())
 		return 0
@@ -91,6 +94,7 @@ Usage:
   edgeweir-node supervise --manage-nginx [flags]
   edgeweir-node healthcheck [--control-socket PATH]
   edgeweir-node bans [--control-socket PATH] [--list]
+  edgeweir-node security [--control-socket PATH]
   edgeweir-node version
 
 Run "edgeweir-node <command> -h" for the flags of a command. Every flag can
@@ -608,6 +612,52 @@ func cmdBans(args []string, stdout, stderr io.Writer) int {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		fmt.Fprintln(stderr, "bans:", err)
+		return 1
+	}
+	return 0
+}
+
+// cmdSecurity prints the data plane's challenge state (key ids, captcha
+// pool) and CC state (levels, escalated paths, last rates, queued events)
+// as JSON. It never drains events: those belong to the agent.
+func cmdSecurity(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("security", stderr)
+	controlSocket := fs.String("control-socket", defaultControlSocket, "unix socket of the data plane control API")
+	timeout := fs.Duration("timeout", 3*time.Second, "timeout")
+	if ok, code := parse(fs, args); !ok {
+		return code
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	c := dataplane.NewClient(*controlSocket)
+	ch, err := c.ChallengeStatus(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "security:", err)
+		return 1
+	}
+	cc, err := c.SecurityStatus(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "security:", err)
+		return 1
+	}
+	if ch.Keys == nil {
+		ch.Keys = dataplane.List[string]{}
+	}
+	if cc.Sites == nil {
+		cc.Sites = dataplane.List[dataplane.SecuritySite]{}
+	}
+	for i := range cc.Sites {
+		if cc.Sites[i].Paths == nil {
+			cc.Sites[i].Paths = dataplane.List[dataplane.SecurityPath]{}
+		}
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(struct {
+		Challenge *dataplane.ChallengeStatus `json:"challenge"`
+		CC        *dataplane.SecurityStatus  `json:"cc"`
+	}{ch, cc}); err != nil {
+		fmt.Fprintln(stderr, "security:", err)
 		return 1
 	}
 	return 0
