@@ -5,7 +5,8 @@
 发布镜像内置的 GeoIP 数据 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` 是 [IPinfo Lite](https://ipinfo.io/lite)，按 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) 原样再分发，不属于 AGPL 代码。署名：IP address data is powered by [IPinfo](https://ipinfo.io)。
 
 - 允许个人和企业在遵守 AGPL 的前提下使用、修改、分发及经营收费服务，没有“仅限个人”或“禁止商用”的附加条款。AGPL 不禁止收费或竞争；源码与网络交互义务以 LICENSE 为准。
-- 节点、数据面，以及控制面的组织、成员、权限、隔离和现有控制台 / 后台继续开源，不以官方许可证限制节点、组织、成员或站点数量。资源保护与权限限制仍正常执行。
+- 已有的节点与数据面能力（含心跳与数据面健康上报、采样访问日志、`ReportStats` 统计、内置 IPinfo Lite、HTTP/2 与 HTTP/3），以及控制面的组织、成员、权限、隔离和现有控制台 / 后台继续开源，不以官方许可证限制节点、组织、成员或站点数量。资源保护与权限限制仍正常执行。
+- 以下数据面能力属于独立商业产品：L2 回源聚合节点与 Tiered Cache（含 Topologies、按延迟选父节点）、组内缓存共享（一致性哈希分片、缓存索引节点）、访问日志直推自定义 sink 与 Logpush、Prometheus 指标、GeoIP 热更新、103 Early Hints、Speculation-Rules、0-RTT、Tunnels、边缘计算、XDP / eBPF。
 - 对外客户门户、套餐计费、财务和分销属于未来独立商业运营产品；官方账户、订阅、许可证与插件分发属于独立商业服务。
 - 节点不回连官方授权服务，不持有官方商业许可证，不因许可证到期或授权服务故障停止已有 CDN 流量。节点身份、mTLS 与发布物签名是安全机制，不是商业授权。
 - 独立原创商业代码可以另行约定许可；私有仓库、独立进程或容器不是 AGPL 豁免。集成、复制或分发核心代码与依赖仍需满足适用许可证，本文不授予闭源插件通用豁免或商业双许可。
@@ -13,7 +14,7 @@
 
 ## English summary
 
-`edgeweir-node` and the `edgeweir` console remain **AGPL-3.0-only**, with commercial use permitted subject to the license. Organizations, membership, access control, isolation and the existing console/admin remain open source. A customer commerce portal, billing, finance and reselling belong to a planned separate commercial product.
+`edgeweir-node` and the `edgeweir` console remain **AGPL-3.0-only**, with commercial use permitted subject to the license. The existing node and data-plane capabilities (including heartbeat and data-plane health reports, sampled access logs, `ReportStats` statistics, the bundled IPinfo Lite, HTTP/2 and HTTP/3), organizations, membership, access control, isolation and the existing console/admin remain open source. A customer commerce portal, billing, finance and reselling belong to a planned separate commercial product. These data-plane capabilities belong to a separate commercial product: L2 origin aggregation nodes and Tiered Cache (with Topologies and latency-based parent selection), cache sharing within a group (consistent-hash sharding, cache index nodes), access log push to custom sinks and Logpush, Prometheus metrics, GeoIP hot reload, 103 Early Hints, Speculation-Rules, 0-RTT, Tunnels, edge compute and XDP/eBPF.
 
 The node has no official license gates or vendor phone-home. An expired vendor license or licensing outage must not stop existing CDN traffic. Node identity, mTLS and artifact signatures serve security, not commercial licensing. Separate commercial products do not amend LICENSE, withdraw existing rights, grant a plugin linking exception or automatically authorize proprietary reuse of contributions. See the console's [LICENSING.en.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.en.md) for the shared boundary.
 
