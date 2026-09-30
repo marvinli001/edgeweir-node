@@ -38,6 +38,13 @@ builds:
       - -X github.com/marvinli001/edgeweir-node/internal/version.Commit={{ .FullCommit }}
       - -X github.com/marvinli001/edgeweir-node/internal/version.Date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
+    # edgeweir-openresty packages of this target (make openresty-packages)
+    # go next to the release files in dist, so that a mirror of dist
+    # (checksums.txt lists them) serves them as well. Missing ones are
+    # left out.
+    hooks:
+      post:
+        - sh -c 'for f in out/openresty/*_{{ .Arch }}.deb out/openresty/*_{{ .Arch }}.sbom.json out/openresty/*.{{ if eq .Arch "amd64" }}x86_64{{ else }}aarch64{{ end }}.rpm; do [ -e "$f" ] && cp -p "$f" dist/; done; true'
 
 archives:
   - id: default
@@ -94,11 +101,21 @@ nfpms:
       - rpm
     bindir: /usr/bin
     mtime: "{{ .CommitDate }}"
-    dependencies:
-      - openresty
-    # Kernel bans (--kernel-bans auto) use nft when it is installed and the
-    # unit is given CAP_NET_ADMIN; without it bans stay at the edge layer.
+    # edgeweir-openresty (OpenResty with Brotli and Zstandard) is built by
+    # `make openresty-packages` and released next to these packages. The
+    # ModSecurity module and the OWASP CRS are optional: without them sites
+    # cannot run the CRS on the node. Kernel bans (--kernel-bans auto) use
+    # nft when it is installed and the unit is given CAP_NET_ADMIN; without
+    # it bans stay at the edge layer.
+    overrides:
+      deb:
+        dependencies:
+          - edgeweir-openresty (>= 1.31.1.1-1)
+      rpm:
+        dependencies:
+          - edgeweir-openresty >= 1.31.1.1-1
     recommends:
+      - edgeweir-openresty-modsecurity
       - nftables
     contents:
       - src: lua/edgeweir/
@@ -131,6 +148,13 @@ nfpms:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+  # edgeweir-openresty and edgeweir-openresty-modsecurity (deb, rpm) and
+  # their SBOMs from `make openresty-packages ARCH=amd64|arm64`: signed and
+  # verified through checksums.txt like everything else.
+  extra_files:
+    - glob: ./out/openresty/*.deb
+    - glob: ./out/openresty/*.rpm
+    - glob: ./out/openresty/*.sbom.json
 
 sboms:
   - id: archive-sbom
@@ -177,6 +201,10 @@ release:
     owner: marvinli001
     name: edgeweir-node
   draft: true
+  extra_files:
+    - glob: ./out/openresty/*.deb
+    - glob: ./out/openresty/*.rpm
+    - glob: ./out/openresty/*.sbom.json
   footer: |
     ## Verify
 

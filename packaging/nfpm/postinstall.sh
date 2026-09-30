@@ -13,6 +13,7 @@ cat <<'MSG'
 edgeweir-node is installed. Next steps (the console's install.sh does this for you):
   export EDGEWEIR_TOKEN='<token>'   # or --token-file PATH; --token would show it in ps
   sudo --preserve-env=EDGEWEIR_TOKEN edgeweir-node enroll --server https://<console>:8443 --ca-sha256 <sha256>
-  sudo systemctl disable --now openresty.service 2>/dev/null || true
   sudo systemctl enable --now edgeweir-node.service
+The node runs /usr/lib/edgeweir-openresty itself; an openresty.service of
+OpenResty's own packages, if any, must stay disabled.
 MSG

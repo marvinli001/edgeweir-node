@@ -1,9 +1,9 @@
 # systemd unit for the Edgeweir edge node.
 #
-# Mode: the agent runs OpenResty as its own child process (--manage-nginx),
-# so there is exactly one unit to manage. The distribution's
-# openresty.service must stay disabled (it would bind the same ports);
-# Conflicts= stops it when this unit starts.
+# Mode: the agent runs OpenResty (edgeweir-openresty) as its own child
+# process (--manage-nginx), so there is exactly one unit to manage. An
+# openresty.service of OpenResty's own packages must stay disabled (it would
+# bind the same ports); Conflicts= stops it when this unit starts.
 #
 # Security trade-offs:
 #   - Runs as the unprivileged system user "edgeweir"; the only capability
@@ -42,7 +42,10 @@ Conflicts=openresty.service
 Type=simple
 User=edgeweir
 Group=edgeweir
-Environment=EDGEWEIR_NGINX_BIN=/usr/bin/openresty
+# edgeweir-openresty (OpenResty with Brotli and Zstandard); the ModSecurity
+# module and the OWASP CRS of edgeweir-openresty-modsecurity are found next
+# to it (--modsecurity-module auto, --crs-dir).
+Environment=EDGEWEIR_NGINX_BIN=/usr/lib/edgeweir-openresty/nginx/sbin/nginx
 Environment=EDGEWEIR_LUA_DIR=/usr/share/edgeweir-node/lua
 EnvironmentFile=-/etc/default/edgeweir-node
 ExecStart=/usr/bin/edgeweir-node supervise --manage-nginx
