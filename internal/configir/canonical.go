@@ -12,6 +12,9 @@
 //   - inside a site: domains by name, origins by id, cache_rules by
 //     (priority, id);
 //   - challenge_keys by id (proto v0.10.0);
+//   - inside a site: tls.gzip_types ascending without duplicates, and
+//     likewise tls.brotli_types, tls.zstd_types and waf.excluded_rule_ids
+//     (proto v0.11.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
