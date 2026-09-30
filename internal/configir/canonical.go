@@ -11,6 +11,7 @@
 //     order) with duplicates removed (proto v0.2.1);
 //   - inside a site: domains by name, origins by id, cache_rules by
 //     (priority, id);
+//   - challenge_keys by id (proto v0.10.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -64,6 +65,7 @@ func Canonicalize(c *nodev1.NodeConfig) {
 		return cmp.Compare(a.GetDomain()+"/"+a.GetToken(), b.GetDomain()+"/"+b.GetToken())
 	})
 	slices.SortStableFunc(c.IpLists, func(a, b *nodev1.IpList) int { return cmp.Compare(a.GetId(), b.GetId()) })
+	slices.SortStableFunc(c.ChallengeKeys, func(a, b *nodev1.ChallengeKeyRef) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	for _, l := range c.IpLists {
 		slices.Sort(l.Entries)
 		l.Entries = slices.Compact(l.Entries)

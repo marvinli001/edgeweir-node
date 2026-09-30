@@ -12,7 +12,7 @@ import (
 )
 
 var rulePhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin", "response-transform"}
-var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number"}
+var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number", "tls.ja4": "string"}
 
 // geoFeatures is the local capability each GeoIP field needs (see
 // geoip.Features). The console sends geoip-city-v1 for subdivision rules too;
@@ -342,7 +342,7 @@ func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features [
 			return err
 		}
 		a := r.Action
-		if a == nil || !ruleText(a.Value) {
+		if a == nil || !ruleText(a.Value) || (a.Challenge != "" && a.Kind != "challenge") {
 			return fmt.Errorf("%w: invalid rule action", ErrRejected)
 		}
 		valid := false
@@ -351,6 +351,8 @@ func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features [
 			valid = r.Phase == "waf-custom" && (a.StatusCode == 403 || a.StatusCode == 451)
 		case "log", "allow":
 			valid = r.Phase == "waf-custom"
+		case "challenge":
+			valid = r.Phase == "waf-custom" && slices.Contains(ChallengeTypes, a.Challenge)
 		case "redirect":
 			u, err := url.Parse(a.Value)
 			location := strings.HasPrefix(a.Value, "/") && !strings.HasPrefix(a.Value, "//") && !strings.Contains(a.Value, "\\")
@@ -367,7 +369,7 @@ func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features [
 		case "config":
 			valid = !a.GetGzip() && (r.Phase == "config" || r.Phase == "cache") && (a.CacheBypass != nil || a.ForceHttps != nil || a.Gzip != nil)
 		case "rate_limit":
-			valid = (a.StatusCode == 403 || a.StatusCode == 429) && r.Phase == "ratelimit" && a.Limit >= 1 && a.Limit <= 100000 && a.WindowSeconds >= 1 && a.WindowSeconds <= 3600 && (a.Key == "ip.src" || a.Key == "http.host" || (strings.HasPrefix(a.Key, "http.request.headers.") && tokenRE.MatchString(strings.TrimPrefix(a.Key, "http.request.headers."))))
+			valid = (a.StatusCode == 403 || a.StatusCode == 429) && r.Phase == "ratelimit" && a.Limit >= 1 && a.Limit <= 100000 && a.WindowSeconds >= 1 && a.WindowSeconds <= 3600 && (a.Key == "ip.src" || a.Key == "http.host" || a.Key == "tls.ja4" || (strings.HasPrefix(a.Key, "http.request.headers.") && tokenRE.MatchString(strings.TrimPrefix(a.Key, "http.request.headers."))))
 		}
 		if !valid {
 			return fmt.Errorf("%w: unsupported rule action %q in phase %q", ErrRejected, a.Kind, r.Phase)

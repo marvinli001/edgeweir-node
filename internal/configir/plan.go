@@ -100,6 +100,11 @@ type Plan struct {
 	HTTPChallenges []HTTPChallenge
 	IPLists        []*nodev1.IpList
 	PlatformRules  []*nodev1.EdgeRule
+	// PlatformProtection is the platform-wide Under Attack (nil: off).
+	PlatformProtection *PlatformProtection
+	// ChallengeKeys name the cluster's challenge pass keys; the secrets
+	// come from GetChallengeKeys.
+	ChallengeKeys []ChallengeKeyRef
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -146,6 +151,8 @@ type Site struct {
 	TLS           *TLSOptions        `json:"tls,omitempty"`
 	Certificate   *Certificate       `json:"certificate,omitempty"`
 	Rules         []*nodev1.EdgeRule `json:"rules,omitempty"`
+	// Protection holds Under Attack, challenge and CC settings.
+	Protection *Protection `json:"protection,omitempty"`
 }
 
 type TLSOptions struct {
@@ -178,7 +185,7 @@ type HTTPChallenge struct {
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1"}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1"}
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
@@ -383,6 +390,21 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	}
 	p.IPLists = c.GetIpLists()
 	p.PlatformRules = c.GetPlatformRules()
+	var err error
+	if p.PlatformProtection, err = buildPlatformProtection(c.GetPlatformProtection()); err != nil {
+		return nil, err
+	}
+	if p.ChallengeKeys, err = buildChallengeKeys(c.GetChallengeKeys()); err != nil {
+		return nil, err
+	}
+	// Every site's protection is checked, disabled sites included: an
+	// unknown challenge type rejects the whole configuration.
+	protections := map[string]*Protection{}
+	for _, s := range c.GetSites() {
+		if protections[s.GetId()], err = buildProtection(s.GetProtection()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", s.GetId(), err)
+		}
+	}
 	for _, ch := range c.GetHttpChallenges() {
 		if !idRE.MatchString(ch.GetToken()) || len(ch.GetKeyAuthorization()) > 512 || ch.GetExpiresAt() == nil {
 			return nil, fmt.Errorf("%w: invalid HTTP challenge", ErrRejected)
@@ -481,6 +503,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			CertificateID:   s.GetCertificateId(),
 			Rules:           s.GetRules(),
 		}
+		site.Protection = protections[id]
 		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
 			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)
 		}
