@@ -19,8 +19,13 @@
 #   8. CC: an address over its rate is banned and reported, the site level
 #      rises under load (edgeweir-node security shows it), stays through a
 #      threshold change and starts from normal after the policy was off;
-#   9. a new site reserves its partition; later existing-site changes stay hot;
-#  10. restarting the container serves the last-known-good config.
+#   9. compression: one coding per response by q-value (zstd > br > gzip)
+#      from one cached identity object, curl --compressed decodes each;
+#  10. OWASP CRS: detect logs without blocking, block answers 403 for the
+#      CRS test payloads (cache hits included), excluded rules stay quiet,
+#      sites without CRS are unaffected, matched rules reach the logs;
+#  11. a new site reserves its partition; later existing-site changes stay hot;
+#  12. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -347,6 +352,80 @@ level_is normal || fail "CC turned off and on again kept its level: $(compose ex
 [ "$(pp_status cc.test 192.0.2.79)" = 200 ] || fail "site-cc challenged after CC was turned off and on again"
 pass "CC: a threshold change keeps the level, off and on again starts from normal"
 
+# The node's OpenResty has Brotli, Zstandard and ModSecurity with the CRS.
+features=$(curl -fsS "$HELPER/features")
+for f in brotli-v1 zstd-v1 modsecurity-v1; do
+  grep -qx "$f" <<<"$features" || fail "feature $f not reported: $features"
+done
+pass "brotli-v1, zstd-v1 and modsecurity-v1 reported"
+
+# Compression, seen by a client inside the compose network (curl with
+# Brotli and Zstandard). The origin gets no Accept-Encoding; the cached
+# identity object serves every coding.
+client() { compose run --rm --no-deps -T client "$@" 2>/dev/null; }
+encoding() { # accept-encoding path -> "<x-cache> <content-encoding or -> <vary>"
+  client -s -o /dev/null -D - -H 'Host: compress.test' ${1:+-H "Accept-Encoding: $1"} "http://node$2" |
+    tr -d '\r' | awk -F': ' '
+      tolower($1)=="x-cache" { c=$2 } tolower($1)=="content-encoding" { e=$2 } tolower($1)=="vary" { v=v $2 }
+      END { print c, (e==""?"-":e), (v==""?"-":v) }'
+}
+[ "$(encoding 'gzip, deflate, br, zstd' /packed)" = "MISS zstd Accept-Encoding" ] || fail "zstd client (MISS): $(encoding 'gzip, deflate, br, zstd' /packed2)"
+[ "$(encoding 'gzip, deflate, br' /packed)" = "HIT br Accept-Encoding" ] || fail "br client on the cached object: $(encoding 'gzip, deflate, br' /packed)"
+[ "$(encoding 'gzip' /packed)" = "HIT gzip Accept-Encoding" ] || fail "gzip client on the cached object: $(encoding gzip /packed)"
+[ "$(encoding '' /packed)" = "HIT - Accept-Encoding" ] || fail "identity client on the cached object: $(encoding '' /packed)"
+[ "$(encoding 'zstd;q=0, br;q=0.5, gzip' /packed)" = "HIT gzip Accept-Encoding" ] || fail "q-values ignored: $(encoding 'zstd;q=0, br;q=0.5, gzip' /packed)"
+[ "$(encoding 'br;q=1, zstd;q=1' /packed)" = "HIT zstd Accept-Encoding" ] || fail "equal q-values must prefer zstd"
+plain=$(client -s -H 'Host: compress.test' http://node/packed)
+grep -q "Hostname:" <<<"$plain" || fail "compress.test not served by the origin: $plain"
+if grep -qi "^Accept-Encoding:" <<<"$plain"; then fail "the origin received Accept-Encoding for a site the edge compresses"; fi
+for enc in zstd br gzip; do
+  decoded=$(client -s --compressed -H 'Host: compress.test' -H "Accept-Encoding: $enc" http://node/packed)
+  [ "$decoded" = "$plain" ] || fail "$enc response does not decode to the cached object"
+done
+hdr=$(client -s -o /dev/null -D - --compressed -H 'Host: compress.test' http://node/packed | tr -d '\r' | grep -i '^content-encoding:')
+[ "$hdr" = "content-encoding: zstd" ] || [ "$hdr" = "Content-Encoding: zstd" ] || fail "curl --compressed got '$hdr', want zstd"
+pass "compression: zstd, br, gzip and identity from one cached object, by q-value, curl --compressed decodes"
+
+# OWASP CRS: the detect site logs, the block site answers 403, both on
+# cache hits too; demo.test has no CRS.
+crs() { # host [curl args...] -> "<status> <x-cache> <x-edgeweir-error>"
+  local host=$1; shift
+  curl -s -o /dev/null -D - -H "Host: $host" "$@" | tr -d '\r' | awk -F': ' '
+    NR==1 { split($0, a, " "); s=a[2] } tolower($1)=="x-cache" { c=$2 } tolower($1)=="x-edgeweir-error" { e=$2 }
+    END { print s, (c==""?"-":c), (e==""?"-":e) }'
+}
+XSS_REFERER='Referer: <script>alert(1)</script>'
+[ "$(crs crs-detect.test "$NODE/crs-page")" = "200 MISS -" ] || fail "crs-detect first request: $(crs crs-detect.test "$NODE/crs-page")"
+[ "$(crs crs-detect.test -H "$XSS_REFERER" "$NODE/crs-page")" = "200 HIT -" ] || fail "detect mode blocked a cache hit"
+[ "$(crs crs-block.test "$NODE/crs-page")" = "200 MISS -" ] || fail "crs-block clean request"
+[ "$(crs crs-block.test "$NODE/crs-page")" = "200 HIT -" ] || fail "crs-block clean cache hit"
+[ "$(crs crs-block.test -H "$XSS_REFERER" "$NODE/crs-page")" = "403 - waf-blocked" ] || fail "XSS on a cached object: $(crs crs-block.test -H "$XSS_REFERER" "$NODE/crs-page")"
+[ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "XSS in the query not blocked"
+[ "$(crs crs-block.test -X POST --data-urlencode 'comment=<script>alert(1)</script>' "$NODE/comments")" = "403 - waf-blocked" ] || fail "XSS in the body not blocked"
+[ "$(crs crs-block.test "$NODE/item?id=1%27%20OR%20%271%27%3D%271")" = "200 MISS -" ] || fail "excluded rule 942100 still blocks: $(crs crs-block.test "$NODE/item?id=1%27%20OR%20%271%27%3D%271")"
+[ "$(crs crs-detect.test "$NODE/item?id=1%27%20OR%20%271%27%3D%271")" = "200 MISS -" ] || fail "detect mode blocked SQLi"
+[ "$(crs demo.test "$NODE/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")" = "200 MISS -" ] || fail "a site without CRS answered the payload with $(crs demo.test "$NODE/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")"
+echoed=$(curl -fsS -H 'Host: crs-detect.test' "$NODE/crs-echo")
+if grep -qi "x-edgeweir" <<<"$echoed"; then fail "X-Edgeweir-Waf reached the origin"; fi
+logs_have() { curl -fsS "$HELPER/logs" | grep -Eq "$1"; }
+WAIT_SECS=30 wait_for "blocked request in the access logs" logs_have '^site-crs-block 403 /search true [0-9,]*949110'
+WAIT_SECS=30 wait_for "detected SQLi in the access logs" logs_have '^site-crs-detect 200 /item false [0-9,]*942100'
+logs_have '^site-crs-block 200 /item false -$' || fail "excluded rule 942100 logged for crs-block: $(curl -fsS "$HELPER/logs" | grep /item)"
+logs_have '^site-crs-detect 200 /crs-page false -$' || fail "a clean request matched CRS rules: $(curl -fsS "$HELPER/logs" | grep crs-page)"
+pass "CRS: detect logs without blocking, block answers 403 (cache hits too), exclusions, no effect on other sites"
+
+# Without CRS sites nginx.conf does not load ModSecurity at all.
+conf_loads_modsecurity() { compose exec -T node grep -q '^load_module ' /var/lib/edgeweir-node/nginx/conf/nginx.conf; }
+rev=$(curl -fsS -X POST "$HELPER/crs?enabled=false")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+if conf_loads_modsecurity; then fail "nginx.conf loads ModSecurity without CRS sites"; fi
+[ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(2)%3C%2Fscript%3E")" = "200 MISS -" ] || fail "CRS still active after it was turned off"
+rev=$(curl -fsS -X POST "$HELPER/crs?enabled=true")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+conf_loads_modsecurity || fail "nginx.conf does not load ModSecurity for CRS sites"
+[ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(3)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "CRS not active again"
+pass "CRS off: ModSecurity not loaded; on again: blocking"
+
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
@@ -373,6 +452,10 @@ if [ "${E2E_STATS:-0}" = "1" ]; then
   # Buckets are uploaded once their minute is complete (agent drains every 60s).
   WAIT_SECS=180 wait_for "stats uploaded" sh -c "[ \"\$(curl -fsS $HELPER/stats | cut -d' ' -f1)\" != 0 ]"
   pass "per-minute stats uploaded ($(curl -fsS "$HELPER/stats"))"
+  # The restart emptied the data plane's counters: match CRS rules again.
+  [ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(4)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "CRS not active after the restart"
+  WAIT_SECS=180 wait_for "CRS rule counts uploaded" sh -c "curl -fsS $HELPER/waf-rules | grep -q '^site-crs-block 949110 '"
+  pass "CRS rules counted per minute ($(curl -fsS "$HELPER/waf-rules" | tr '\n' ';'))"
 fi
 
 echo "e2e smoke test passed"

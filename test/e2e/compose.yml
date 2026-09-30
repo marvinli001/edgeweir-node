@@ -1,4 +1,5 @@
-# Container smoke test: fake console + edgeweir-node + whoami origins.
+# Container smoke test: fake console + edgeweir-node + whoami origins (and a
+# curl client with Brotli and Zstandard).
 # Run with `make e2e` (test/e2e/run.sh). The real end-to-end test with the
 # console lives in the edgeweir repository (compose.e2e.yml).
 #
@@ -32,6 +33,13 @@ services:
   hidden:
     image: traefik/whoami:v1.11.0@sha256:200689790a0a0ea48ca45992e0450bc26ccab5307375b41c84dfc4f2475937ab
     networks: [isolated]
+
+  # curl with Brotli and Zstandard for the compression checks
+  # (`compose run --rm client ...`); not started by `compose up`.
+  client:
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    profiles: [tools]
+    networks: [default]
 
   node:
     build:

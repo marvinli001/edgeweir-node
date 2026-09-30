@@ -16,6 +16,10 @@
 //	                   passes of 5 minutes
 //	cc.test         CC: 2 requests per second per address, 20 per second
 //	                   for the site, 2 seconds to escalate, up to cookie302
+//	compress.test   gzip, Brotli and Zstandard for text/plain (from 1 byte)
+//	crs-detect.test OWASP CRS, detect only (every request logged)
+//	crs-block.test  OWASP CRS, blocking, rule 942100 excluded (every
+//	                   request logged)
 //
 // Every revision carries three challenge keys (e2e-key-1..3, current
 // e2e-key-2) that GetChallengeKeys hands out.
@@ -48,6 +52,12 @@
 //	              reported CC event
 //	GET /security-state   "<site> <level> <escalated paths>" per site above
 //	              normal in the last ReportStatus
+//	POST /crs?enabled=false  publish the base sites without the OWASP CRS
+//	              (enabled=true: with it again); answers the revision
+//	GET /features supported features of the last ReportStatus, one per line
+//	GET /logs     "<site> <status> <path> <waf_blocked> <rule ids>" per
+//	              uploaded access log ("-" when no rule matched)
+//	GET /waf-rules "<site> <rule id> <requests>" per uploaded minute
 package main
 
 import (
@@ -165,7 +175,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1"},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1"},
 		Listeners: []*nodev1.Listener{
 			{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
 			// Behind a load balancer that speaks the PROXY protocol.
@@ -193,7 +203,32 @@ func baseSites(origin string) []*nodev1.Site {
 		underAttackSite("site-pow", "pow.test", origin, "pow"),
 		underAttackSite("site-captcha", "captcha.test", origin, "captcha"),
 		ccSite(origin),
+		compressSite(origin),
+		crsSite("site-crs-detect", "crs-detect.test", origin, "detect"),
+		crsSite("site-crs-block", "crs-block.test", origin, "block", 942100),
 	}
+}
+
+// compressSite compresses text/plain with gzip, Brotli and Zstandard.
+func compressSite(origin string) *nodev1.Site {
+	s := site("site-compress", "compress.test", origin, 80)
+	types := []string{"text/plain"}
+	s.Tls = &nodev1.TlsOptions{
+		MinimumVersion: "1.2", CipherProfile: "modern",
+		Gzip: true, GzipMinLength: 1, GzipTypes: types,
+		Brotli: true, BrotliLevel: 5, BrotliMinLength: 1, BrotliTypes: types,
+		Zstd: true, ZstdLevel: 3, ZstdMinLength: 1, ZstdTypes: types,
+	}
+	return s
+}
+
+// crsSite runs the OWASP CRS (paranoia level 1, threshold 5) and logs every
+// request.
+func crsSite(id, domain, origin, mode string, excluded ...uint32) *nodev1.Site {
+	s := site(id, domain, origin, 80)
+	s.Waf = &nodev1.SiteWaf{Mode: mode, ParanoiaLevel: 1, AnomalyThreshold: 5, RequestBodyLimit: 131072, ExcludedRuleIds: excluded}
+	s.LogSampleRate = 10000
+	return s
 }
 
 // underAttackSite challenges every request without a pass.
@@ -367,6 +402,38 @@ func main() {
 		for _, e := range events {
 			fmt.Fprintf(w, "%s %s %s %s %s\n", strings.ToLower(strings.TrimPrefix(e.GetKind().String(), "SECURITY_EVENT_KIND_")),
 				e.GetSiteId(), e.GetLevel(), cmpOr(e.GetAddress(), "-"), e.GetMetric())
+		}
+	})
+	mux.HandleFunc("POST /crs", func(w http.ResponseWriter, r *http.Request) {
+		sites := baseSites(*origin)
+		cfg := config(sites...)
+		if r.URL.Query().Get("enabled") == "false" {
+			for _, s := range sites {
+				s.Waf = nil
+			}
+			cfg.RequiredFeatures = slices.DeleteFunc(cfg.RequiredFeatures, func(f string) bool { return f == "modsecurity-v1" })
+		}
+		fmt.Fprint(w, c.Publish(cfg))
+	})
+	mux.HandleFunc("GET /features", func(w http.ResponseWriter, _ *http.Request) {
+		for _, f := range c.LastStatus().GetInfo().GetSupportedFeatures() {
+			fmt.Fprintln(w, f)
+		}
+	})
+	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, _ *http.Request) {
+		for _, l := range c.Logs() {
+			ids := make([]string, 0, len(l.GetWafRuleIds()))
+			for _, id := range l.GetWafRuleIds() {
+				ids = append(ids, strconv.FormatUint(uint64(id), 10))
+			}
+			fmt.Fprintf(w, "%s %d %s %t %s\n", l.GetSiteId(), l.GetStatus(), l.GetPath(), l.GetWafBlocked(), cmpOr(strings.Join(ids, ","), "-"))
+		}
+	})
+	mux.HandleFunc("GET /waf-rules", func(w http.ResponseWriter, _ *http.Request) {
+		for _, m := range c.Stats() {
+			for _, r := range m.GetWafRules() {
+				fmt.Fprintf(w, "%s %s %d\n", m.GetSiteId(), r.GetValue(), r.GetCount())
+			}
 		}
 	})
 	mux.HandleFunc("GET /security-state", func(w http.ResponseWriter, _ *http.Request) {
