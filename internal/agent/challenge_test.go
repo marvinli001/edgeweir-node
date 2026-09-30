@@ -252,12 +252,15 @@ func TestSecurityEvents(t *testing.T) {
 		t.Fatalf("ban event = %v", last)
 	}
 
+	// Sites at normal count only while some of their paths are escalated.
 	e.dp.SetSecurity(
 		dataplane.SecuritySite{SiteID: "site-a", Level: "pow", EscalatedPaths: 2},
 		dataplane.SecuritySite{SiteID: "site-b", Level: "normal", EscalatedPaths: 1},
+		dataplane.SecuritySite{SiteID: "site-c", Level: "normal"},
 	)
 	eventually(t, "security state reported", func() bool {
 		s := e.console.LastStatus().GetSecurity()
-		return len(s) == 1 && s[0].GetSiteId() == "site-a" && s[0].GetLevel() == "pow" && s[0].GetEscalatedPaths() == 2
+		return len(s) == 2 && s[0].GetSiteId() == "site-a" && s[0].GetLevel() == "pow" && s[0].GetEscalatedPaths() == 2 &&
+			s[1].GetSiteId() == "site-b" && s[1].GetLevel() == "normal" && s[1].GetEscalatedPaths() == 1
 	})
 }

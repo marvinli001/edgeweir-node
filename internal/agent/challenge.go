@@ -478,7 +478,8 @@ func (a *Agent) securityReport(ctx context.Context) []*nodev1.SiteSecurity {
 	}
 	var out []*nodev1.SiteSecurity
 	for _, s := range st.Sites {
-		if s.Level == "" || s.Level == "normal" || len(out) == 2000 {
+		// A site at normal is left out unless some of its paths are escalated.
+		if s.Level == "" || (s.Level == "normal" && s.EscalatedPaths <= 0) || len(out) == 2000 {
 			continue
 		}
 		out = append(out, &nodev1.SiteSecurity{SiteId: s.SiteID, Level: s.Level, EscalatedPaths: uint32(max(s.EscalatedPaths, 0))})
