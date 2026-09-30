@@ -105,6 +105,7 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
 edgeweir-node supervise --manage-nginx ...   # same flags as run; entry point of the systemd unit and the image
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # ban status of the data plane (JSON); --list adds up to 1000 bans
+edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool and CC levels of the sites (JSON)
 edgeweir-node version
 ```
 
@@ -166,7 +167,7 @@ edgeweir-node version
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and their sequence, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
+| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and their sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
 | `/var/cache/edgeweir-node` | Proxy cache zones |
 | `/run/edgeweir-node/control.sock` | Local control API of the Lua data plane (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |

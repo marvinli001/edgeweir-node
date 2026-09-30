@@ -105,6 +105,7 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
 edgeweir-node supervise --manage-nginx ...   # 参数同 run；systemd unit 与容器镜像的入口
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # 数据面的封禁状态（JSON），--list 另列出最多 1000 条
+edgeweir-node security [--control-socket PATH]        # 挑战密钥与验证码池、各站点的 CC 级别（JSON）
 edgeweir-node version
 ```
 
@@ -166,7 +167,7 @@ edgeweir-node version
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`nginx/`（prefix 与渲染后的 `nginx.conf`） |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`nginx/`（prefix 与渲染后的 `nginx.conf`） |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | Lua 数据面本地控制 API（仅 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |

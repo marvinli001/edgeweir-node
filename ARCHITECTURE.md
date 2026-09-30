@@ -14,18 +14,21 @@
 │ edgeweir-node (Go, 静态二进制)                                               │
 │  enroll ─ pki ─ identity    controlplane (Connect 客户端, 证书热替换)        │
 │  agent: watch / poll / sync / report / renew / stats / logs / tasks /        │
-│         dataplane / ocsp / bans / autobans / kernel；                        │
+│         dataplane / ocsp / bans / autobans / kernel / captchas / security；  │
 │         任务类型: purge / prefetch / upgrade                                 │
 │  configir (规范排序, content_hash, diff, 校验 → Plan)   configstore (LKG)    │
 │  render (nginx.conf 模板)   engine (openresty -t / reload / 子进程托管)      │
 │  dataplane (unix socket JSON 客户端)   geoip (MMDB, unix socket)             │
 │  upgrade (supervise 监督进程: 验签 / 试运行 / 回滚)                          │
 │  bans (封禁状态、bans.json)   nft (table inet edgeweir，`nft -f -`)          │
+│  captcha (验证码图片，标准库)                                                │
 └───────────────┬──────────────────────────────────┬───────────────────────────┘
      nginx.conf │ -t / HUP / 子进程                │ /v1/health /v1/status /v1/sites
                 │                                  │ /v1/purge /v1/origins/health
                 │                                  │ /v1/stats/drain /v1/logs/drain
-                ▼                                  ▼ /v1/bans /v1/bans/auto/drain
+                │                                  │ /v1/bans /v1/bans/auto/drain
+                │                                  │ /v1/challenge /v1/challenge/keys
+                ▼                                  ▼ /v1/challenge/captchas /v1/security(/drain)
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ OpenResty                                                                    │
 │  控制 server   unix:/run/edgeweir-node/control.sock  → edgeweir.control      │
@@ -33,14 +36,14 @@
 │                设置了 Site.tls 的站点在每个 listener 上另有 server 块        │
 │  回源层 server  unix:origin.sock / origin-noverify.sock → origin (balancer)  │
 │  lua_shared_dict: edgeweir_sites / meta / stats / purge / health /           │
-│    policy_logs / topstats / logs / bans；                                    │
+│    policy_logs / topstats / logs / bans / challenge / cc；                   │
 │    每个已发布站点一个 edgeweir_rate_<hex(id)>                                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 | 包 | 职责 |
 | --- | --- |
-| `cmd/edgeweir-node` | CLI：`enroll`、`run`、`supervise`、`healthcheck`、`version`；参数可由 `EDGEWEIR_*` 环境变量提供 |
+| `cmd/edgeweir-node` | CLI：`enroll`、`run`、`supervise`、`healthcheck`、`bans`、`security`、`version`；参数可由 `EDGEWEIR_*` 环境变量提供 |
 | `internal/pki` | ECDSA P-256 密钥、CSR、PEM、CA pin 校验、mTLS 配置、续期判断 |
 | `internal/identity` | 状态目录里的身份文件，原子写入，续期时的密钥对原子替换与崩溃恢复 |
 | `internal/enroll` | 注册流程 |
@@ -49,8 +52,9 @@
 | `internal/configstore` | LKG 持久化（current + previous），加载时校验哈希 |
 | `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id、每个已发布站点的限速分区、设置了 `Site.tls` 的站点的 `server` 块），解析 resolv.conf |
 | `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督 |
-| `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态 / 统计 / 采样访问日志的 JSON 结构 |
-| `internal/agent` | 运行时主循环、源站凭据、网站证书与 OCSP、清缓存标记集合、统计与访问日志上报、类型化任务（清缓存、预热、升级）；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
+| `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态 / 统计 / 采样访问日志 / 封禁 / 挑战密钥与验证码池 / CC 状态与事件的 JSON 结构 |
+| `internal/agent` | 运行时主循环、源站凭据、网站证书与 OCSP、清缓存标记集合、统计与访问日志上报、类型化任务（清缓存、预热、升级）、挑战密钥与验证码池、CC 事件上报；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
+| `internal/captcha` | 验证码图片：内置 5×7 点阵字体，随机位置、缩放、旋转、倾斜、波浪基线、干扰线与噪点，160×60 调色板 PNG；答案取自 crypto/rand |
 | `internal/geoip` | 读取本地 MMDB（内置 IPinfo Lite、运维提供的 City / ASN），经 0600 unix socket（默认 `control.sock.geo`）为 Lua 提供查询；`internal/geoip/check` 在镜像构建时校验下载的 IPinfo Lite |
 | `internal/upgrade` | `supervise` 监督进程：经 `upgrade.sock` 接收升级任务，按本机信任策略下载并用 cosign 验签发布包，试运行新版本，失败时回滚（§2.6） |
 | `internal/hostinfo` | 上报给控制台的 `NodeInfo`（主机名、非回环非链路本地地址、版本），以及渲染用的本机探测：是否有全局 IPv6（resolver 是否查 AAAA）、能否监听 IPv6、打开文件数硬上限（`worker_rlimit_nofile`） |
@@ -62,7 +66,7 @@
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
-Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`control`（控制 API）、`init`。
+Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`cc`（分级 CC）、`control`（控制 API）、`init`。
 
 第三方 Go 依赖（`go.mod` 的直接依赖；版本以 `go.mod` 为准）：
 
@@ -81,7 +85,7 @@ Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb
 ```text
 run 启动
   │
-  ├─ 准备目录，读取 credentials.json、certificates.json、purge.json
+  ├─ 准备目录，读取 credentials.json、certificates.json、purge.json、challenge-keys.json
   ├─ 有 LKG 且仍合法 → 按 LKG 渲染并启动 OpenResty、推送标记和站点表
   │            否则 → bootstrap 配置（:80，所有 Host 返回 404 unknown-host）
   ├─ 读取 bans.json，试建 nftables 表，把封禁装入数据面和内核（§2.7）
@@ -106,6 +110,8 @@ run 启动
         bans   : 流通知 BANS、约每 30s 的轮询和启动时 GetBans，持久化后推给数据面与内核
         autobans: 每 5s 取出本机自动封禁，ReportBans 上报
         kernel : 封禁或配置变化、被覆盖的封禁需要写入、每 5 分钟刷新受保护地址时同步 nftables（注册前已运行）
+        captchas: 配置使用挑战时每 10 分钟生成 256 张验证码装入数据面（注册前已运行）
+        security: 每 5s 取出 CC 事件，ReportSecurityEvents 上报
 ```
 
 ### 2.1 注册（`enroll`）
@@ -157,26 +163,28 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 缓存键里非法的查询参数、请求头（含 `cookie`、`host`、`x-edgeweir-*`）、Cookie 名 | 忽略该项并告警 |
 | 缓存规则 action 未指定、缺 id，或条件列表过滤后变空 | 跳过该规则（绝不放宽成"匹配全部"） |
 | `enabled=false` 的站点 | 不对外服务（等同未知域名） |
+| 挑战类型、CC 最高级别不是 `cookie302` / `js` / `pow` / `captcha`；通行凭证有效期、PoW 难度、CC 窗口、封禁时长等数值越界（任一站点，含停用站点）；挑战密钥 id 非法、重复、角色未知、同一角色多把或没有 `current` | 整个配置拒绝（数值为 0 取默认值，§3.14） |
+| `challenge` 动作不在 `waf-custom` 阶段或类型未知；非 `challenge` 动作带 `challenge` 字段 | 整个配置拒绝 |
 
 跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`、reload 未生效）的同一 revision 在 5 分钟内不重复尝试。
 
 **应用**（`agent.apply` → `agent.applyPlan`），在哈希校验和 `configir.Build` 通过之后按以下顺序执行：
 
-1. **S3 凭据**：Plan 引用了本地没有（或版本过旧）的凭据时，先经 mTLS 调用 `GetOriginCredentials` 补齐，写入 `credentials.json`，不再引用的凭据从文件中删除；再把密钥填进 Plan 的 S3 源站。这一步在渲染和 `nginx -t` 之前：RPC 失败算暂时性错误，本次应用失败，下一次同步重试（不计入 5 分钟的拒绝窗口），仍在服务的配置不受影响。
+1. **S3 凭据与挑战密钥**：Plan 的 `challenge_keys` 引用了本地没有的密钥时，经 mTLS 调用 `GetChallengeKeys` 获取（密钥 16–256 字节），写入 `challenge-keys.json`（0600）；控制台没有给出的密钥保持缺失，数据面检查每 30 秒再要一次。当前与上一份同集群配置都不再引用的密钥从文件中删除。S3 凭据：Plan 引用了本地没有（或版本过旧）的凭据时，先经 mTLS 调用 `GetOriginCredentials` 补齐，写入 `credentials.json`，不再引用的凭据从文件中删除；再把密钥填进 Plan 的 S3 源站。这一步在渲染和 `nginx -t` 之前：RPC 失败算暂时性错误，本次应用失败，下一次同步重试（不计入 5 分钟的拒绝窗口），仍在服务的配置不受影响。
 2. **网站证书**：Plan 引用了本地没有的证书（按证书 id 与 SHA-256 指纹）时，经 mTLS 调用 `GetCertificates` 获取，校验私钥与证书匹配、指纹一致后写入 `certificates.json`（0600）。开启 OCSP stapling 的证书，OCSP 响应在 1 小时内到期时先刷新（最多 30 秒，失败只告警）。证书必须覆盖站点的每个域名，随后附到站点表。获取或校验失败的处理同第 1 步。
 3. **渲染** `nginx.conf`，并为每个 cache zone 创建缓存目录；有 HTTPS 监听时先生成 nginx 前缀下的自签名占位证书 `conf/bootstrap.crt`（nginx 加载 TLS 监听需要；握手时 Lua 换成站点证书，未知 SNI 直接拒绝）。渲染结果与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload；内容相同则不 reload。
 4. **确认 reload 生效**：每个渲染出的 `nginx.conf` 带一个配置 id（不含 id 时渲染结果的 SHA-256 前 16 位），`init_by_lua` 记下它，`GET /v1/status` 返回 `conf_id`。SIGHUP 只是请求 reload：新文件无法应用（例如端口被占用）时 nginx 记录错误并保留旧 worker。agent 在 reload 后最多等 15 秒，直到 worker 报告新的 id；否则该 revision 记为失败，把旧的 `nginx.conf` 写回（之后重启 nginx 时用的仍是正在运行的配置），LKG 继续服务。
-5. **清缓存标记与站点表**：装入清缓存标记（§3.4；`purge.json` 无法读取时先给每个站点加全站标记），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
+5. **清缓存标记、挑战密钥与站点表**：装入清缓存标记（§3.4；`purge.json` 无法读取时先给每个站点加全站标记），配置使用挑战时装入密钥（`PUT /v1/challenge/keys`，失败只告警，数据面检查重试），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
 6. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
 
 是否 reload 只取决于渲染出的 `nginx.conf` 是否变化。除监听、cache zone 和 agent 启动参数外，文件里还有两类随站点变化的内容：每个已发布站点（`enabled` 且有有效源站和域名的站点）一个固定大小的限速分区；设置了 `Site.tls`（HTTPS 与压缩策略）的站点自己的 `server` 块，含域名、HTTP/2、HTTP/3、gzip 与密码套件设置。所以新增、删除、启用、停用站点都会 reload，改动带 `Site.tls` 的站点的这些设置也会；站点的其余数据只进站点表，经控制 socket 热更新（完整对照见 §3.9）。
 
 ### 2.4 状态回报、续期、统计
 
-- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）、`bans`（`BanStatus`，§2.7）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 的站点及其升级路径数，最多 2000 个，§3.15）。能力列表总是带 `challenge-v1` 与 `ja4-v1`。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
 - 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
 - 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），另按分钟汇总 Top URL / Top IP。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
-- 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时和缓存状态，放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
+- 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时、缓存状态，站点开启 JA4 日志时还有 JA4（§3.16），放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
 
 ### 2.5 WatchConfig
 
@@ -218,6 +226,15 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - **状态回报**：`ReportStatus.bans`（`BanStatus`）带数据面已应用的序号、条目数、容量、未生效的手动封禁（最多 100 个 id 与总数）、内核条目数，以及因容量丢弃的自动封禁数（数据面淘汰的与 agent 没有发送的，自 agent 启动起）。
 - **能力**：`bans-v1` 总是上报；`kernel-ban-v1` 只在 nftables 表可用时上报（§3.13）。数据面的保存与查找见 §3.12。
 
+### 2.8 挑战密钥与验证码池
+
+- **密钥**：每个集群三把（`next`、`current`、`previous`），IR 只带 id 与角色，明文经 `GetChallengeKeys` 获取（§2.3 第 1 步）。数据面拿到的是配置引用且本机持有的全部密钥，`current` 签名、三把都验证（`PUT /v1/challenge/keys`，body `{id, current, keys: [{id, secret}]}`，secret 为 base64；`id` 是密钥集合的哈希，`GET /v1/challenge` 报告它，不一致时重推）。控制台每天轮换一次，节点只需获取新的 `next`。启动时先从 `challenge-keys.json` 装入，控制面不可达时已签发的凭证仍然有效。配置不再使用挑战时数据面的密钥被清空。
+- **验证码池**：配置带 `challenge_keys`（即集群使用挑战）时，agent 每 10 分钟用 `internal/captcha` 生成 256 张不重复答案的图片（160×60 PNG，字母表 `ABCDEFGHJKMNPQRSTUVWXYZ23456789`，5 个字符），经 `PUT /v1/challenge/captchas` 整池替换；数据面没有池（nginx 重启）或池 id 不符时立即重新生成。答案只存在于本机数据面的字典里。
+
+### 2.9 CC 事件
+
+agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了继续取），事件 id 由数据面生成（`<启动随机数>-<序号>`），转换后经 `ReportSecurityEvents` 上报（每批最多 500 条，id 幂等）；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。控制台不支持时只记一次日志。`edgeweir-node security` 打印数据面的挑战与 CC 状态（不取出事件）。
+
 ## 3. 数据面
 
 ### 3.1 双层缓存
@@ -231,6 +248,9 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
               · CDN-Loop 已含本节点 cdn-id → 508 loop-detected；否则追加 cdn-id
               · 按 Host 查站点：精确匹配 → 上一级域名的泛域名；查不到 → 404 unknown-host
               · 动态封禁：先平台范围、后站点范围；命中且不在平台 allow 名单 → 403 ip-banned
+              · 开启 CC 的站点计数（§3.15）；保留前缀 /.edgeweir/ 在这里应答，永不回源（§3.14）
+              · 规则阶段（`challenge` 动作在 waf-custom 中挑战）；CC 单 IP 超限 → 自动封禁并 403 ip-banned
+              · Under Attack 与 CC 级别：没有足够级别凭证的请求被挑战；allow 规则或平台 allow 名单命中的请求例外
               · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403
               · 非 GET/HEAD：透传（Range 原样转发）
               · 按规则链判断是否可能缓存（带 Authorization 的请求见 §3.3）
@@ -261,7 +281,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache` 和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`ip-banned`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`ip-banned`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -342,6 +362,11 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `PUT /v1/bans` | 全量替换控制台条目 `{sequence, bans: [{id, cidr, scope, site_id, kind, expires_at}]}`，本机自动封禁保留；内容非法 400，另一次写入进行中 409 |
 | `POST /v1/bans` | 增量 `{base, sequence, upsert, remove}`：数据面持有的序号不等于 `base` 时 409；`remove` 只删除 id 相同的控制台条目 |
 | `POST /v1/bans/auto/drain` | 返回并删除最多 1000 条待上报的本机自动封禁 |
+| `GET /v1/challenge` | `{keys_id, current, keys: [id], captchas, captchas_id, nonce_overflow}`；nginx 重启后为空 |
+| `PUT /v1/challenge/keys` | 替换挑战密钥 `{id, current, keys: [{id, secret}]}`（secret 为 base64，16–256 字节；`current` 必须在 `keys` 里或为空）；非法 400，内存不足 507 |
+| `PUT /v1/challenge/captchas` | 替换验证码池 `{id, images: [{answer, png}]}`（最多 1024 张，png 为 base64，≤ 64 KiB）；非法 400，内存不足 507 |
+| `GET /v1/security` | `{sites: [{site_id, level, escalated_paths, paths: [{path, level}], site_qps, error_percent}], pending_events, dropped_events}`：开启 CC 的站点、最近一次求值的速率 |
+| `POST /v1/security/drain` | 返回并删除最多 1000 条 CC 事件 `{events: [{id, site_id, time, kind, level, previous_level, path, address, metric, observed, threshold, top_ips, top_paths}]}` |
 
 站点表 JSON（Go 结构见 `dataplane.SiteTable` 和 `configir.Site`，由 agent 从 IR 转换，Lua 不接触 protobuf）：
 
@@ -367,7 +392,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 }
 ```
 
-`revision` 和 `cache_generation` 用字符串传递，因为 Lua 的数字是 double。S3 源站带 `s3`（region、bucket、credential_id，以及 agent 从 `GetOriginCredentials` 取得后填入的密钥）；被地址策略拒绝的源站带 `"forbidden": true`。表级还有 `http_challenges`（HTTP-01 应答）、`ip_lists`、`platform_rules`；站点还有 `log_sample_rate`、`rules`、`certificate_id`、`tls`（强制 HTTPS、HSTS、最低 TLS 版本、OCSP stapling 等策略）和 `certificate`（agent 填入的证书链、私钥、指纹与 OCSP 响应）。握手时 `edgeweir.tls` 按 SNI 从站点表取证书，换证书不需要 reload。
+`revision` 和 `cache_generation` 用字符串传递，因为 Lua 的数字是 double。S3 源站带 `s3`（region、bucket、credential_id，以及 agent 从 `GetOriginCredentials` 取得后填入的密钥）；被地址策略拒绝的源站带 `"forbidden": true`。表级还有 `http_challenges`（HTTP-01 应答）、`ip_lists`、`platform_rules`、`platform_protection`（`{under_attack, challenge}`）；站点还有 `log_sample_rate`、`rules`、`protection`（§3.14、§3.15）、`certificate_id`、`tls`（强制 HTTPS、HSTS、最低 TLS 版本、OCSP stapling 等策略）和 `certificate`（agent 填入的证书链、私钥、指纹与 OCSP 响应）。握手时 `edgeweir.tls` 按 SNI 从站点表取证书，换证书不需要 reload。
 
 `PUT /v1/sites` 在 `edgeweir_sites` 里以版本前缀写入新表（`v<N>:site:<id>`、`v<N>:host:<name>`、`v<N>:wild:<name>`、`v<N>:cfg`（允许清单、cdn-id、HTTP-01 应答、IP 名单与平台规则），使用 `safe_set`，内存不足时整体回滚并返回 507），写完后翻转 `edgeweir_meta` 中的 `version`，请求永远不会看到写了一半的表。上一版本保留到下一次替换，供翻转瞬间仍在处理的请求使用。每个 worker 有三个 lua-resty-lrucache：解码后的站点（含轮询和哈希环状态）与表设置、Host 命中（精确域名；泛域名按上一级域名只缓存一条，随机子域名不增加条目）、Host 未命中（独立的小缓存，1024 条），键里带版本号，翻转即失效；伪造 Host 的洪泛只会冲刷未命中缓存。
 
@@ -387,6 +412,8 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | 站点表里的其他内容：源站与源站池设置、缓存规则与 TTL、缓存键、缓存代际号、所用 cache zone、Range 分片与 WebSocket 开关、边缘规则、日志采样率、证书与私钥（同一站点换证书）、OCSP stapling 开关与 OCSP 响应、强制 HTTPS、HSTS、最低 TLS 版本；表级的源站允许清单、cdn-id、HTTP-01 应答、IP 名单、平台规则 | 热更新：`PUT /v1/sites`，不 reload |
 | 清缓存 | 热更新：`POST` / `PUT /v1/purge` |
 | 动态封禁 | 热更新：`POST` / `PUT /v1/bans`，平台范围另写 nftables；`--ban-dict-mb` 与 `--ban-capacity` 属于 agent 启动参数 |
+| Under Attack、挑战规则、CC 策略、JA4 日志开关、平台 Under Attack | 热更新：站点表（`protection`、`platform_protection`、`rules`） |
+| 挑战密钥、验证码池 | 热更新：`PUT /v1/challenge/keys`、`PUT /v1/challenge/captchas`；`--cc-dict-mb` 与 `--challenge-dict-mb` 属于 agent 启动参数 |
 
 `resolver` 取自 `/etc/resolv.conf`（`--resolv-conf`）的 nameserver（Docker 中为 `127.0.0.11`；IPv6 加方括号；带 zone 的链路本地地址跳过；没有时回退到 `127.0.0.1`），`--resolver` 可直接指定；Lua 按 min(TTL, 30s) 缓存结果（失败 5 秒）；主机没有全局 IPv6 地址时不查询 AAAA。
 
@@ -458,6 +485,40 @@ table inet edgeweir {
 - **去重叠**：区间集合不接受重叠元素。被更大前缀覆盖、且到期不晚于它的条目不写入；被覆盖但更晚到期的条目在覆盖条目到期后重新同步写入。`allow` 集合同样去掉被覆盖的前缀。
 - **权限**：需要 `CAP_NET_ADMIN`。默认 systemd unit 和默认镜像都不授予（§5）。
 
+### 3.14 挑战与通行凭证
+
+`edgeweir.challenge` 实现四个级别：`cookie302`（1）、`js`（2）、`pow`（3）、`captcha`（4），级别 L 的凭证满足不高于 L 的要求。站点 `protection` 的默认值：Under Attack 类型 `js`，凭证有效期 1800 秒（300–86400），PoW 16 位（8–24），高难度 PoW 20 位（8–26，不低于普通难度）；IR 中为 0 的值取默认值。
+
+- **需要的级别**：平台 Under Attack、站点 Under Attack、站点 CC 级别、该路径的 CC 级别取最大值，在规则阶段之后判断；`waf-custom` 的 `challenge` 规则在命中处判断（凭证级别足够就继续后续规则，否则挑战）。`allow` 规则（平台或站点）或平台 allow 名单命中的请求不受 Under Attack 与 CC 挑战，也不被 CC 自动封禁。CC 到 `captcha` 级且策略设置了高难度 PoW 时改用高难度 PoW。
+- **应答**：
+  - 没有密钥（节点从未拿到过）：503，`X-Edgeweir-Error: challenge-unavailable`。
+  - 非 GET/HEAD：403，`X-Edgeweir-Challenge: required`，不给挑战页。
+  - `cookie302`：302 回到原 URL（`Location` 为请求的 scheme、Host 与路径），`Set-Cookie` 1 级凭证，`X-Edgeweir-Challenge: cookie302`。
+  - `js` / `pow` / `captcha`：403 挑战页，`X-Edgeweir-Challenge: <类型>`（高难度 PoW 为 `pow`）、`Cache-Control: no-store, private`、`Content-Security-Policy: default-src 'none'; script-src 'nonce-<n>'; style-src 'nonce-<n>'; img-src data:; connect-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`（每个响应一个 nonce）、`X-Content-Type-Options: nosniff`；HEAD 只有头。页面自包含（内联样式与脚本、`data:` 图片），按 `Accept-Language` 选中文或英文（q 值最高者，其次英文），`prefers-reduced-motion` 时进度条不动画。
+- **页面**：`js` 用 WebCrypto 计算 `sha256(挑战参数)` 的十六进制，明文 HTTP（非安全上下文，没有 WebCrypto）时用页面内置的 SHA-256；`pow` 用 `/.edgeweir/challenge/worker.js` 的 Web Worker 找 `n`，使 `sha256(挑战参数 ":" n)` 的前导零位数达到难度（Worker 用同步的 SHA-256 并复用参数前缀的中间状态；Worker 不可用时在页面上分片计算）；`captcha` 是图片与输入框，无脚本也能提交，另有「改用计算验证」按钮（带 `alt=pow` 提交到 verify，换成 4 级的高难度 PoW）。三者都自动或手动 POST 到 verify。
+- **挑战参数**：`<kid>.<b64url(站点|类型|级别|网段|UA 哈希|签发|到期|nonce|难度|答案)>.<b64url(HMAC-SHA256(密钥, "c1.<kid>.<载荷>"))>`，有效 5 分钟；验证码答案字段为 `HMAC(密钥, "a|<nonce>|<答案大写>")` 的前 32 个十六进制字符，任一持有密钥的节点都能验证。
+- **verify**（`POST /.edgeweir/challenge/verify`，字段 `t`、`a`、`r`，请求体 ≤ 4 KiB）：签名、站点、网段、UA 哈希、到期都符合后在 `edgeweir_challenge` 以 `safe_add` 记录 nonce 直到到期（同一挑战只兑换一次；字典满时先清理过期项，仍写不下则放行并计入 `nonce_overflow`：参数绑定网段与 UA，重放得到的与凭证本身相同）。答案正确：303 到 `r`（只接受以单个 `/` 开头、不含反斜杠与空白、不在保留前缀下的本站路径，否则 `/`），`Set-Cookie` 凭证（级别取参数级别与已有凭证的较大者）；答案错误：新的挑战页（403）并提示；参数无效、过期或已兑换：303 到 `r`，由原页面重新挑战。
+- **通行凭证**：`__ew_pass=v1.<kid>.<b64url(站点|级别|网段|UA 哈希|签发|到期)>.<b64url(HMAC-SHA256(密钥, "v1.<kid>.<载荷>"))>; Path=/; Max-Age=<有效期>; HttpOnly; SameSite=Lax`，HTTPS 加 `Secure`。网段为 `4:a.b.c`（IPv4 /24，IPv4 映射地址按 IPv4）或 `6:<前 64 位十六进制>`，UA 哈希为 `sha256(User-Agent)` 的前 16 个十六进制字符。验证：kid 属于已装入的密钥、签名、站点、未到期、网段、UA 哈希。每个 worker 按 cookie 值缓存验证过的凭证（最多 1 分钟），网段与 UA 哈希也按地址和 UA 缓存，持有凭证的请求不计算 HMAC。
+- **保留前缀**：`/.edgeweir/challenge/verify`（其他方法 405）、`/.edgeweir/challenge/worker.js`（GET/HEAD，缓存 1 小时），前缀下其他路径 404 `not-found`；所有站点都保留，在规则之前应答，永不回源。
+
+### 3.15 分级 CC（节点本地决策）
+
+每个节点独立计数和决策，攻击分散到多个节点时单节点可能达不到阈值：阈值按节点设置。策略字段（0 表示关闭该条件）：最高级别（默认 `captcha`）、窗口 W（默认 10 秒，5–60）、站点 QPS、单 URL QPS、单 IP QPS 与封禁时长（默认 600 秒，60–86400）、源站错误率（百分比）与最小请求数、升级时间 N（默认 10 秒）、冷却 M（默认 60 秒）。
+
+- **计数**（`lua_shared_dict edgeweir_cc`，`--cc-dict-mb`，默认 32 MiB）：两个相邻窗口加权的滑动窗口，`上一窗口 × (1 − 已过比例) + 当前窗口`。每个请求对站点一次 `incr`（站点 QPS 开启时），对客户端地址一次 `incr`（单 IP QPS 开启时；当前窗口计数超过限额一半时才读上一窗口），再读一次站点级别；源站请求与错误（5xx，含全部尝试失败）在 log 阶段计数，缓存命中不计。路径与地址在每个 worker 的有界 Space-Saving（每站点 64 个候选）里计数，每秒把路径计数加到共享字典、提交候选路径和最重的 10 个地址。没有 CC 的站点不做任何额外工作。
+- **求值**：每秒由第一个拿到 `#eval|<秒>` 的 worker（不含正在退出的）对每个开启 CC 的站点求值。站点级取站点 QPS 与源站错误率（达到最小请求数才计算）中超出比例最大的条件；条件持续 N 秒升一级（不超过最高级别），全部低于阈值 80% 持续 M 秒降一级，80%–100% 之间两个计时都重置。路径级按单 URL QPS 同样计算，只跟踪 64 条路径（已升级的优先，其次速率最高的），按精确路径（nginx 规范化后的 `$uri`，不含查询串）匹配。请求需要的 CC 级别是站点级与该路径级的较大者。
+- **单 IP**：地址的滑动窗口计数超过 `ip_qps × W` 时，经 `bans.add_auto` 写入站点范围的本机自动封禁（原因 `cc_ip_rate`，指标 `ip_qps`），同一地址在封禁期内只封一次，本次请求返回 403 `ip-banned`。allow 规则或平台 allow 名单命中的请求不触发。
+- **事件**：站点级变化（`site_level`，升级时指标为触发条件，降级为 `cooldown`）、路径级变化（`path_level`）、自动封禁（`ip_banned`）排入队列（最多 10000 条，满了丢弃最旧的并计数），带当时的 Top IP 与 Top 路径（各 ≤ 10，近似值），agent 上报（§2.9）。nginx 重启后计数、级别与未上报事件丢失；reload 保留。
+
+### 3.16 JA4
+
+`edgeweir.ja4` 在 `ssl_client_hello_by_lua` 计算 JA4（FoxIO JA4，BSD-3-Clause；不实现 JA4+ 的其他方法），只为读取 `tls.ja4`（规则表达式或限速键）或开启 JA4 日志的站点计算，写入 `ngx.ctx.edgeweir_ja4`，同一连接的请求（HTTP/1.1 与 HTTP/2）继承。
+
+- `a`：`t`（HTTP/3 请求改为 `q`）、版本（`supported_versions` 中最大的非 GREASE 值；没有该扩展时取请求阶段协商出的版本 `$ssl_protocol`，而不是 JA4 规定的 ClientHello legacy 版本，API 不提供后者）、SNI `d`/`i`、密码套件数与扩展数（两位，最多 99）、ALPN 第一个值的首尾字符（非字母数字时取其十六进制的首尾字符，没有为 `00`）。
+- `b`、`c`：排序后的密码套件；排序后的扩展（去掉 `0000`、`0010`）接 `_` 与原顺序的签名算法；各取 SHA-256 前 12 个十六进制字符，列表为空时为 `000000000000`。GREASE 值一律忽略。
+- 表达式字段 `tls.ja4`：明文 HTTP 为空字符串；可用于 `waf-custom`、`ratelimit`（也可作为限速键）、`challenge` 规则。站点开启 JA4 日志时采样访问日志带 `ja4`（`AccessLog.ja4`）。
+- **近似**：ClientHello 来自 lua-resty-core（`ngx.ssl.clienthello`），它只列出 OpenSSL 认识的扩展；OpenSSL 不认识的扩展（例如 ALPS `4469`、ECH `fe0d`）不计入扩展数和哈希，这类客户端（例如 Chromium）的指纹与其他 JA4 工具的结果不同。规则应使用节点采样日志里看到的指纹。HTTP/3 的请求是否继承握手阶段的 `ngx.ctx` 取决于 nginx 的 QUIC 实现；拿不到时 `tls.ja4` 为空。测试向量 `test/lua/ja4-vectors.json`：JA4 规范文档的算例与按规范构造的用例。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -470,6 +531,7 @@ table inet edgeweir {
 | `/var/lib/edgeweir-node/purge.json` | 清缓存标记与任务时间（0600） |
 | `/var/lib/edgeweir-node/certificates.json` | 当前与上一份 LKG 引用的网站证书链、私钥与 OCSP 响应（0600） |
 | `/var/lib/edgeweir-node/bans.json` | 已应用的控制台动态封禁、序号与集群 id（0600） |
+| `/var/lib/edgeweir-node/challenge-keys.json` | 当前与上一份同集群配置引用的挑战凭证密钥（0600） |
 | `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json` | 控制台尚未确认的统计批次与采样访问日志批次（0600） |
 | `/var/lib/edgeweir-node/upgrade.sock`、`upgrades/` | `supervise` 监督进程的本机 socket（0600）；升级状态 `upgrades/state.json` 与各版本目录 `upgrades/releases/<任务 id>/`（0700） |
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`）、`logs/nginx.pid`、`tmp/` |
@@ -504,6 +566,8 @@ table inet edgeweir {
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。
 - 内核封禁在 input 链丢弃被封地址的全部入站包，节点也无法与该地址建立出站连接（例如该地址恰好是源站）；受保护地址不受影响。
 - 本机自动封禁只在数据面字典里，nginx 重启后丢失（已上报并由控制台共享的条目会再次下发）。
+- CC 计数与级别按节点独立决策，nginx 重启后从正常级别重新开始。
+- JA4 看不到 OpenSSL 不认识的 ClientHello 扩展，没有 `supported_versions` 时版本取协商结果（§3.16）。
 - 内核按 TCP 连接的源地址丢包。节点在要求 PROXY protocol 的负载均衡器之后时，内核只看到负载均衡器的地址：平台封禁对客户端只在边缘层生效，负载均衡器的地址需要放进平台 `allow` 名单，否则封禁它会丢弃经它转发的全部流量。
 
 ## HTTPS 与证书
