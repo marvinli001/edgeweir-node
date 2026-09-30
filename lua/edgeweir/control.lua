@@ -13,12 +13,19 @@
 --   PUT  /v1/bans             replace the console bans {sequence, bans}
 --   POST /v1/bans             apply a delta {base, sequence, upsert, remove}
 --   POST /v1/bans/auto/drain  return and delete up to 1000 queued own bans
+--   GET  /v1/challenge        challenge keys and captcha pool status
+--   PUT  /v1/challenge/keys   replace the challenge keys {id, current, keys}
+--   PUT  /v1/challenge/captchas  replace the captcha pool {id, images}
+--   GET  /v1/security         CC levels of the sites with CC
+--   POST /v1/security/drain   return and delete up to 1000 CC events
 local cjson = require("cjson.safe")
 local store = require("edgeweir.store")
 local stats = require("edgeweir.stats")
 local purge = require("edgeweir.purge")
 local health = require("edgeweir.health")
 local bans = require("edgeweir.bans")
+local challenge = require("edgeweir.challenge")
+local cc = require("edgeweir.cc")
 
 local _M = {}
 
@@ -176,6 +183,51 @@ function _M.handle()
       return reply(405, { error = "method not allowed" })
     end
     return reply(200, { bans = bans.drain(1000) })
+  end
+
+  if uri == "/v1/challenge" then
+    if method ~= "GET" then return reply(405, { error = "method not allowed" }) end
+    return reply(200, challenge.status())
+  end
+
+  if uri == "/v1/challenge/keys" or uri == "/v1/challenge/captchas" then
+    if method ~= "PUT" then return reply(405, { error = "method not allowed" }) end
+    local body, err = read_body()
+    if not body then
+      return reply(400, { error = "read body: " .. tostring(err) })
+    end
+    local doc, derr = cjson.decode(body)
+    if type(doc) ~= "table" then
+      return reply(400, { error = "invalid JSON: " .. tostring(derr) })
+    end
+    local res, perr, code
+    if uri == "/v1/challenge/keys" then
+      res, perr, code = challenge.replace_keys(doc)
+    else
+      res, perr, code = challenge.replace_captchas(doc)
+    end
+    if not res then
+      ngx.log(ngx.ERR, "edgeweir: challenge update rejected: ", perr)
+      return reply(code or 500, { error = perr })
+    end
+    if uri == "/v1/challenge/keys" then
+      ngx.log(ngx.NOTICE, "edgeweir: challenge keys installed: ", #res.keys, " keys, current ", res.current)
+    end
+    return reply(200, res)
+  end
+
+  if uri == "/v1/security" then
+    if method ~= "GET" then return reply(405, { error = "method not allowed" }) end
+    return reply(200, cc.status())
+  end
+
+  if uri == "/v1/security/drain" then
+    if method ~= "POST" then return reply(405, { error = "method not allowed" }) end
+    ngx.status = 200
+    ngx.header["Content-Type"] = "application/json"
+    ngx.header["Cache-Control"] = "no-store"
+    ngx.print('{"events":', cc.drain(1000), "}")
+    return ngx.exit(ngx.HTTP_OK)
   end
 
   if uri == "/v1/origins/health" then

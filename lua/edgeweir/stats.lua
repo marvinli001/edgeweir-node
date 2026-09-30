@@ -23,6 +23,8 @@ function _M.log()
     return
   end
   require("edgeweir.accesslogs").log()
+  local ctx_site = ngx.ctx.edgeweir_site
+  if ctx_site and ctx_site._cc then require("edgeweir.cc").log(ctx_site) end
   local dict = ngx.shared.edgeweir_stats
   local p = (floor(ngx.time() / 60) * 60) .. "|" .. site .. "|"
   dict:incr(p .. "req", 1, 0, TTL)

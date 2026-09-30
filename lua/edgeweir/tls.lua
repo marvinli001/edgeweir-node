@@ -1,6 +1,7 @@
 local ssl = require("ngx.ssl")
 local hello = require("ngx.ssl.clienthello")
 local store = require("edgeweir.store")
+local ja4 = require("edgeweir.ja4")
 local cache = require("resty.lrucache").new(1000)
 local _M = {}
 
@@ -8,6 +9,11 @@ function _M.client_hello()
   local name = hello.get_client_hello_server_name()
   local site = name and store.lookup_host(string.lower(name))
   if not site or not site.certificate then return ngx.exit(ngx.ERROR) end
+  -- JA4 only for sites that read it; never fails the handshake.
+  if site._ja4 then
+    local ok, err = pcall(ja4.client_hello)
+    if not ok then ngx.log(ngx.WARN, "edgeweir: JA4 unavailable: ", err) end
+  end
   if site.tls and site.tls.minimum_version == "1.3" then
     local ok = hello.set_protocols({ "TLSv1.3" })
     if not ok then return ngx.exit(ngx.ERROR) end

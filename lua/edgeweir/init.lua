@@ -37,6 +37,9 @@ function _M.init(opts)
   if ok then
     pcall(errlog.set_filter_level, ngx.ERR)
   end
+  require("edgeweir.ja4")
+  require("edgeweir.cc")
+  require("edgeweir.challenge")
   require("edgeweir.router")
   require("edgeweir.origin")
   require("edgeweir.stats")
@@ -47,6 +50,7 @@ function _M.init_worker()
   -- Weighted origin selection uses math.random: seed per worker so that
   -- workers do not all pick the same sequence.
   require("edgeweir.topstats").init_worker()
+  require("edgeweir.cc").init_worker()
   math.randomseed(ngx.now() * 1000 + ngx.worker.pid())
 end
 

@@ -924,6 +924,48 @@ test("Space-Saving Top-K is bounded and completed summaries drain once", functio
   eq(#stats.drain(now),0)
 end)
 
+test("store.prepare marks sites with challenges, CC and JA4", function()
+  local ja4_rule = {
+    id = "j", phase = "ratelimit",
+    expression = { op = "literal", value_type = "boolean", value = "true" },
+    action = { kind = "rate_limit", status_code = 429, limit = 10, window_seconds = 10, key = "tls.ja4" },
+  }
+  local st, err = store.replace({
+    revision = "40",
+    platform_protection = { under_attack = false, challenge = "js" },
+    sites = {
+      site("site-cc", { { name = "cc.test" } }, { protection = { pass_ttl = 1800, pow = 16, pow_high = 20,
+        cc = { max_level = "pow", window = 10, site_qps = 100, url_qps = 0, ip_qps = 0, ip_ban = 600, escalate = 10, cooldown = 60 } } }),
+      site("site-ua", { { name = "ua.test" } }, { protection = { under_attack = true, under_attack_challenge = "js", log_ja4 = true } }),
+      site("site-ja4", { { name = "ja4.test" } }, { rules = { ja4_rule } }),
+      site("site-plain", { { name = "plain.test" } }),
+    },
+  })
+  assert(st, err)
+  local cc_site = store.lookup_host("cc.test")
+  eq(cc_site._cc.site_qps, 100)
+  eq(cc_site._cc.max, 3)
+  eq(cc_site._guard, true)
+  eq(cc_site._ja4, false)
+  local ua = store.lookup_host("ua.test")
+  eq(ua._cc, nil)
+  eq(ua._guard, true)
+  eq(ua._ja4, true, "JA4 logging")
+  eq(store.lookup_host("ja4.test")._ja4, true, "rate limit by tls.ja4")
+  local plain = store.lookup_host("plain.test")
+  eq(plain._guard, false)
+  eq(plain._ja4, false)
+  local cfg = store.config()
+  eq(#cfg.cc_sites, 1)
+  eq(cfg.cc_sites[1], "site-cc")
+  -- Platform Under Attack guards every site.
+  st, err = store.replace({ revision = "41", platform_protection = { under_attack = true, challenge = "cookie302" },
+    sites = { site("site-plain", { { name = "plain.test" } }) } })
+  assert(st, err)
+  eq(store.lookup_host("plain.test")._guard, true)
+  eq(store.config().platform_protection.challenge, "cookie302")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

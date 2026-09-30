@@ -36,6 +36,8 @@ function _M.request(site, headers)
   for name, value in pairs(headers) do
     values["http.request.headers." .. name:lower()] = type(value) == "table" and table.concat(value, ", ") or value
   end
+  -- JA4 comes from the TLS handshake (edgeweir.ja4); "" on plain HTTP.
+  if site._ja4 then values["tls.ja4"] = require("edgeweir.ja4").value() end
   -- GeoIP is read once in the access phase; response filters cannot yield.
   if site._geo then
     local geo = assert(require("edgeweir.geoip").lookup(var.remote_addr), "GeoIP unavailable")
@@ -49,7 +51,18 @@ local function run_group(group, values, site, ctx, phase, namespace)
     if rule.match(values) then
       local a = rule.action
       if a.kind == "block" then return { status = a.status_code } end
-      if a.kind == "allow" then break end -- this WAF scope only; never skips platform rules or rate limits
+      if a.kind == "allow" then -- this WAF scope only; never skips platform rules or rate limits
+        ctx.allowed = true -- but exempts the request from Under Attack and CC challenges
+        break
+      end
+      if a.kind == "challenge" then
+        -- A sufficient pass continues with the next rules; otherwise the
+        -- request is challenged here.
+        local challenge = require("edgeweir.challenge")
+        local level = challenge.LEVELS[a.challenge]
+        if not level then return { status = 503 } end
+        if challenge.pass_level(site) < level then return { challenge = a.challenge, level = level } end
+      end
       if a.kind == "log" then
         -- IDs only: expressions, URL, headers and client addresses are never logged.
         local key = "log:" .. site.id .. ":" .. rule.id
@@ -86,6 +99,7 @@ function _M.access(site, headers)
   ngx.ctx.edgeweir_policy = ctx
   local allowed = false
   for _, match in ipairs(cfg.allows or {}) do if match(values["ip.src"]) then allowed = true; break end end
+  ctx.platform_allowed = allowed
   if not allowed then
     for _, match in ipairs(cfg.blocks or {}) do if match(values["ip.src"]) then return { status = 403 } end end
   end

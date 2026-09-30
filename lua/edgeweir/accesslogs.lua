@@ -23,6 +23,7 @@ function M.log()
     status = ngx.status, bytes_sent = tonumber(var.bytes_sent) or 0,
     duration_ms = math.min(86400000, math.floor((tonumber(var.request_time) or 0) * 1000)),
     cache_status = clean(var.upstream_cache_status, 32), sample_rate = rate,
+    ja4 = site.protection and site.protection.log_ja4 and clean(require("edgeweir.ja4").value(), 64) or nil,
   })
   if not raw or not dict:rpush("pending", raw) then dict:incr("dropped", 1, 0) end
 end

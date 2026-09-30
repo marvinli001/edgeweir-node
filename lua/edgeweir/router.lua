@@ -7,7 +7,11 @@
 -- and prepares the variables used by proxy_cache in nginx.conf: the cache
 -- key (edgeweir.cachekey, including the purge epoch from edgeweir.purge),
 -- whether to look up / store, the Range mode (slice, pass or strip) and the
--- origin layer (with or without TLS verification). The chosen rules travel
+-- origin layer (with or without TLS verification). Challenges come after
+-- the rules (edgeweir.challenge, edgeweir.cc): the reserved prefix
+-- /.edgeweir/ is answered at the edge, requests without a sufficient pass
+-- are challenged for Under Attack and CC levels unless an allow rule or a
+-- platform allow list exempts them. The chosen rules travel
 -- to the origin layer in X-Edgeweir-Rules, which decides the TTL once the
 -- response status and size are known.
 --
@@ -20,6 +24,8 @@ local purge = require("edgeweir.purge")
 local policy = require("edgeweir.policy")
 local ipaddr = require("edgeweir.ipaddr")
 local bans = require("edgeweir.bans")
+local cc = require("edgeweir.cc")
+local challenge = require("edgeweir.challenge")
 
 local _M = {}
 
@@ -94,6 +100,15 @@ function _M.platform_allowed(site, addr)
     end
   end
   return false
+end
+
+-- run_challenge answers with a challenge; failures fail closed (503).
+local function run_challenge(site, kind, level)
+  local ok, err = pcall(challenge.respond, site, kind, level)
+  if not ok then
+    ngx.log(ngx.ERR, "edgeweir: challenge failed site=", site.id, ": ", err)
+    return deny(503, "challenge-unavailable", "challenge unavailable")
+  end
 end
 
 local function rule_ids(chain)
@@ -175,15 +190,46 @@ function _M.access()
   local original_path = var.uri
   ngx.ctx.edgeweir_original_path = original_path
   var.edgeweir_site = site.id
+  -- CC counts every request of the site (edgeweir.cc).
+  local cc_n, cc_w, cc_now
+  if site._cc then
+    cc_n, cc_w, cc_now = cc.count(site, var.remote_addr, original_path)
+  end
+  -- The reserved prefix is answered here and never reaches the origin.
+  if sub(original_path, 1, 11) == "/.edgeweir/" then
+    if cc_n and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, var.remote_addr, cc_n, cc_w, cc_now) then
+      return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
+    end
+    local rok, err = pcall(challenge.reserved, site)
+    if not rok then
+      ngx.log(ngx.ERR, "edgeweir: challenge endpoint failed site=", site.id, ": ", err)
+      return deny(503, "challenge-unavailable", "challenge unavailable")
+    end
+    return
+  end
   local ok, result = pcall(policy.access, site, headers)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)
     return deny(503, "policy-unavailable", "policy unavailable")
   end
+  -- allow rules and platform allow lists exempt from CC bans and from
+  -- Under Attack and CC challenges.
+  local pctx = ngx.ctx.edgeweir_policy
+  local exempt = pctx and (pctx.allowed or pctx.platform_allowed)
+  if cc_n and not exempt and cc.check_ip(site, var.remote_addr, cc_n, cc_w, cc_now) then
+    return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
+  end
   if result then
+    if result.challenge then return run_challenge(site, result.challenge, result.level) end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
     return deny(result.status, "policy-denied", "request denied")
+  end
+  if site._guard and not exempt then
+    local level, kind = challenge.required(site, site._cc and cc.level(site, original_path) or 0)
+    if level > 0 and challenge.pass_level(site) < level then
+      return run_challenge(site, kind, level)
+    end
   end
   headers = ngx.req.get_headers(0)
 

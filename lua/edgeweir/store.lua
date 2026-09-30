@@ -6,7 +6,9 @@
 --   v<N>:site:<id>    JSON of the site
 --   v<N>:host:<name>  site id for an exact host name
 --   v<N>:wild:<name>  site id for a wildcard suffix ("*.<name>")
---   v<N>:cfg          JSON {origin_allowed_cidrs, cdn_id} of the table
+--   v<N>:cfg          JSON of the table settings (origin allow list,
+--                     cdn_id, HTTP-01 answers, IP lists, platform rules,
+--                     platform protection, ids of the sites with CC)
 --
 -- A replacement writes table N+1 next to table N, then flips
 -- edgeweir_meta["version"]; requests never observe a half-written table.
@@ -28,6 +30,7 @@ local cachekey = require("edgeweir.cachekey")
 local ipaddr = require("edgeweir.ipaddr")
 local policy = require("edgeweir.policy")
 local ratelimit = require("edgeweir.ratelimit")
+local cc = require("edgeweir.cc")
 
 local _M = {}
 
@@ -130,6 +133,24 @@ function _M.prepare(s, cfg)
   end
   for _, r in ipairs(s.rules or {}) do if geo(r.expression) then s._geo = true end end
   for _, r in ipairs(s._config.platform_rules or {}) do if geo(r.expression) then s._geo = true end end
+  -- JA4 is computed at the handshake only for sites that read it.
+  local function ja4(r)
+    if (r.field or "") == "tls.ja4" then return true end
+    for _, c in ipairs(r.children or {}) do if ja4(c) then return true end end
+    return false
+  end
+  local function uses_ja4(r)
+    return type(r) == "table" and ((r.expression and ja4(r.expression)) or (type(r.action) == "table" and r.action.key == "tls.ja4"))
+  end
+  if type(s.protection) ~= "table" then s.protection = nil end
+  s._ja4 = s.protection ~= nil and s.protection.log_ja4 == true
+  for _, r in ipairs(s.rules or {}) do if uses_ja4(r) then s._ja4 = true end end
+  for _, r in ipairs(s._config.platform_rules or {}) do if uses_ja4(r) then s._ja4 = true end end
+  cc.prepare(s)
+  -- _guard: Under Attack (platform or site) or CC may challenge requests.
+  local pp = s._config.platform_protection
+  s._guard = (type(pp) == "table" and pp.under_attack == true)
+    or (s.protection ~= nil and (s.protection.under_attack == true or s._cc ~= nil)) or false
   s.cache_generation = tostring(s.cache_generation or "0")
   s.tls_verify = s.tls_verify ~= false
   s.websocket = s.websocket ~= false
@@ -229,7 +250,16 @@ function _M.replace(doc)
   if type(allowed) ~= "table" then
     allowed = {}
   end
-  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "", http_challenges = doc.http_challenges or {}, ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {} }
+  local cc_sites = {}
+  for _, site in ipairs(list) do
+    if type(site) == "table" and type(site.protection) == "table" and type(site.protection.cc) == "table" and type(site.id) == "string" then
+      cc_sites[#cc_sites + 1] = site.id
+    end
+  end
+  if cjson.empty_array_mt and #cc_sites == 0 then setmetatable(cc_sites, cjson.empty_array_mt) end
+  local pp = doc.platform_protection
+  if type(pp) ~= "table" then pp = nil end
+  local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "", http_challenges = doc.http_challenges or {}, ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {}, platform_protection = pp, cc_sites = cc_sites }
   if cjson.empty_array_mt and #allowed == 0 then
     setmetatable(allowed, cjson.empty_array_mt)
   end
@@ -334,6 +364,8 @@ function _M.config(version)
       cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "",
       http_challenges = doc.http_challenges or {},
       ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {},
+      platform_protection = type(doc.platform_protection) == "table" and doc.platform_protection or nil,
+      cc_sites = type(doc.cc_sites) == "table" and doc.cc_sites or {},
     }
     policy.prepare_config(cfg)
   end
