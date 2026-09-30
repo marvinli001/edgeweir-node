@@ -143,7 +143,7 @@ edgeweir-node version
 | --- | --- | --- |
 | `--manage-nginx` | off | Run OpenResty as a supervised child process (set by the container and the systemd unit) |
 | `--state-dir` | `/var/lib/edgeweir-node` | State directory (identity, LKG configuration) |
-| `--nginx-bin` | `openresty` | OpenResty binary |
+| `--nginx-bin` | `/usr/lib/edgeweir-openresty/nginx/sbin/nginx` when installed, otherwise `openresty` from `PATH` | OpenResty binary |
 | `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix directory |
 | `--nginx-user` | none | nginx worker user when the agent runs as root |
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | Directory containing `edgeweir/*.lua` |

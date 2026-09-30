@@ -47,7 +47,19 @@ const (
 	defaultCacheDir      = "/var/cache/edgeweir-node"
 	defaultControlSocket = "/run/edgeweir-node/control.sock"
 	defaultOriginSocket  = "/run/edgeweir-node/origin.sock"
+	// edgeweirOpenResty is the nginx binary of the edgeweir-openresty
+	// package (and the container image).
+	edgeweirOpenResty = "/usr/lib/edgeweir-openresty/nginx/sbin/nginx"
 )
+
+// defaultNginxBin is edgeweir-openresty's nginx when it is installed,
+// otherwise openresty from PATH.
+func defaultNginxBin() string {
+	if fileExists(edgeweirOpenResty) {
+		return edgeweirOpenResty
+	}
+	return "openresty"
+}
 
 func main() {
 	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
@@ -233,7 +245,7 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 	// Best effort: report the OpenResty version with the enrollment.
 	engineVersion := ""
 	vctx, vcancel := context.WithTimeout(ctx, 3*time.Second)
-	if v, err := engine.New(engine.Config{Bin: envOr("EDGEWEIR_NGINX_BIN", "openresty")}).Version(vctx); err == nil {
+	if v, err := engine.New(engine.Config{Bin: envOr("EDGEWEIR_NGINX_BIN", defaultNginxBin())}).Version(vctx); err == nil {
 		engineVersion = v
 	}
 	vcancel()
@@ -337,7 +349,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	var (
 		stateDir      = fs.String("state-dir", defaultStateDir, "state directory (identity, last-known-good config)")
 		manage        = fs.Bool("manage-nginx", false, "run OpenResty as a supervised child process")
-		nginxBin      = fs.String("nginx-bin", "openresty", "OpenResty/nginx binary")
+		nginxBin      = fs.String("nginx-bin", defaultNginxBin(), "OpenResty/nginx binary (default: edgeweir-openresty's when installed, otherwise openresty from PATH)")
 		nginxPrefix   = fs.String("nginx-prefix", "", "nginx prefix directory (default: <state-dir>/nginx)")
 		nginxUser     = fs.String("nginx-user", "", "user for nginx worker processes when the agent runs as root (default: none; prefer running the agent as an unprivileged user)")
 		luaDir        = fs.String("lua-dir", defaultLuaDir, "directory containing edgeweir/*.lua")

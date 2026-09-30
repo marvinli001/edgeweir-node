@@ -143,7 +143,7 @@ edgeweir-node version
 | --- | --- | --- |
 | `--manage-nginx` | 关 | 以受监管子进程运行 OpenResty（容器与 systemd unit 开启） |
 | `--state-dir` | `/var/lib/edgeweir-node` | 状态目录（身份、LKG 配置） |
-| `--nginx-bin` | `openresty` | OpenResty 可执行文件 |
+| `--nginx-bin` | `/usr/lib/edgeweir-openresty/nginx/sbin/nginx`（已安装时），否则 `PATH` 中的 `openresty` | OpenResty 可执行文件 |
 | `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix 目录 |
 | `--nginx-user` | 无 | agent 以 root 运行时的 nginx worker 用户 |
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | `edgeweir/*.lua` 所在目录 |

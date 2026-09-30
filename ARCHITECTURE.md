@@ -653,7 +653,7 @@ table inet edgeweir {
 - 本机自动封禁只在数据面字典里，nginx 重启后丢失（已上报并由控制台共享的条目会再次下发）。
 - CC 计数与级别按节点独立决策，nginx 重启后从正常级别重新开始。
 - JA4 看不到 OpenSSL 不认识的 ClientHello 扩展，没有 `supported_versions` 时版本取协商结果（§3.16）。
-- 运行 OWASP CRS 的站点：ModSecurity-nginx 在回源前读完整个请求体（最多 `client_max_body_size` 100m，超过缓冲区时写入临时文件）再检查，上传不再流式转发；超过请求体检查上限的部分不检查（`ProcessPartial`）。响应体不检查（`SecResponseBodyAccess Off`），CRS 的响应规则只看响应头。WebSocket 升级请求只检查握手。
+- 运行 OWASP CRS 的站点：ModSecurity-nginx 在回源前读完整个请求体（最多 `client_max_body_size` 100m，超过缓冲区时写入临时文件）再检查，上传不再流式转发；超过请求体检查上限的部分不检查（`ProcessPartial`）。响应体不检查（`SecResponseBodyAccess Off`），CRS 的响应规则只看响应头；ModSecurity-nginx 仍要求响应体在内存中经过它，这些站点的响应（含缓存命中）不使用 sendfile。WebSocket 升级请求只检查握手。
 - CRS 在节点上按 paranoia level 与规则运行，误报需要按规则 id 排除；每个请求约 0.5 ms CPU（§3.18）。
 - 内核按 TCP 连接的源地址丢包。节点在要求 PROXY protocol 的负载均衡器之后时，内核只看到负载均衡器的地址：平台封禁对客户端只在边缘层生效，负载均衡器的地址需要放进平台 `allow` 名单，否则封禁它会丢弃经它转发的全部流量。
 
