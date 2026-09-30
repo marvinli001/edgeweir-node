@@ -1,0 +1,46 @@
+# nfpm configuration of edgeweir-openresty (built by ../Dockerfile, stage
+# packager, which fills in ${ARCH}, ${VERSION} and ${MTIME}). The release number
+# is the packaging revision: bump it when the package changes without a new
+# OpenResty version.
+name: edgeweir-openresty
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+section: net
+priority: optional
+maintainer: Edgeweir maintainers <maintainers@edgeweir.dev>
+vendor: Edgeweir
+homepage: https://edgeweir.dev
+license: BSD-2-Clause AND MIT AND Apache-2.0 AND BSD-3-Clause AND Zlib
+description: |-
+  OpenResty for Edgeweir nodes, built from pinned and verified sources with
+  Brotli and Zstandard compression. OpenSSL, PCRE2 and zlib are linked
+  statically. Installs into /usr/lib/edgeweir-openresty and does not
+  conflict with the distribution's or OpenResty's own packages.
+mtime: ${MTIME}
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.34)
+      - libgcc-s1
+  rpm:
+    depends:
+      - glibc >= 2.34
+      - libgcc
+contents:
+  - src: /tree/usr/lib/edgeweir-openresty/nginx
+    dst: /usr/lib/edgeweir-openresty/nginx
+    type: tree
+  - src: /tree/usr/lib/edgeweir-openresty/luajit
+    dst: /usr/lib/edgeweir-openresty/luajit
+    type: tree
+  - src: /tree/usr/lib/edgeweir-openresty/lualib
+    dst: /usr/lib/edgeweir-openresty/lualib
+    type: tree
+  - src: /tree/usr/lib/edgeweir-openresty/bin
+    dst: /usr/lib/edgeweir-openresty/bin
+    type: tree
+  - src: /tree/usr/share/doc/edgeweir-openresty
+    dst: /usr/share/doc/edgeweir-openresty
+    type: tree

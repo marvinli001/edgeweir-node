@@ -1,0 +1,180 @@
+Expose $modsecurity_intervention and $modsecurity_triggered_rules.
+
+Backport of owasp-modsecurity/ModSecurity-nginx pull request #374 ("Add
+modsecurity log vars", module part) to v1.0.4. The rule ids come from
+msc_get_rules_messages_rule_ids(), added to libmodsecurity in v3.0.17, so no
+log message is parsed and nothing about the request is written anywhere:
+the edge layer reads both variables in its log phase.
+
+  $modsecurity_intervention      "1" once ModSecurity made a disruptive
+                                 intervention (deny, redirect), else "0"
+  $modsecurity_triggered_rules   comma-separated ids of the rules that
+                                 matched and were logged, in match order
+
+diff -ru a/src/ngx_http_modsecurity_module.c b/src/ngx_http_modsecurity_module.c
+--- a/src/ngx_http_modsecurity_module.c
++++ b/src/ngx_http_modsecurity_module.c
+@@ -30,6 +30,11 @@
+ #endif
+ 
+ static ngx_int_t ngx_http_modsecurity_init(ngx_conf_t *cf);
++static ngx_int_t ngx_http_modsecurity_add_variables(ngx_conf_t *cf);
++static ngx_int_t ngx_http_modsecurity_intervention_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data);
++static ngx_int_t ngx_http_modsecurity_triggered_rules_variable(
++    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+ static void *ngx_http_modsecurity_create_main_conf(ngx_conf_t *cf);
+ static char *ngx_http_modsecurity_init_main_conf(ngx_conf_t *cf, void *conf);
+ static void *ngx_http_modsecurity_create_conf(ngx_conf_t *cf);
+@@ -38,6 +43,20 @@
+ static void ngx_http_modsecurity_cleanup_rules(void *data);
+ 
+ 
++static ngx_http_variable_t ngx_http_modsecurity_vars[] = {
++
++    { ngx_string("modsecurity_intervention"), NULL,
++      ngx_http_modsecurity_intervention_variable,
++      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
++
++    { ngx_string("modsecurity_triggered_rules"), NULL,
++      ngx_http_modsecurity_triggered_rules_variable,
++      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
++
++    ngx_http_null_variable
++};
++
++
+ /*
+  * PCRE malloc/free workaround, based on
+  * https://github.com/openresty/lua-nginx-module/blob/master/src/ngx_http_lua_pcrefix.c
+@@ -160,6 +179,8 @@
+         return 0;
+     }
+ 
++    ctx->intervention_triggered = 1;
++
+     log = intervention.log;
+     if (intervention.log == NULL) {
+         log = "(no log message was specified)";
+@@ -518,7 +539,7 @@
+ 
+ 
+ static ngx_http_module_t ngx_http_modsecurity_ctx = {
+-    NULL,                                  /* preconfiguration */
++    ngx_http_modsecurity_add_variables,    /* preconfiguration */
+     ngx_http_modsecurity_init,             /* postconfiguration */
+ 
+     ngx_http_modsecurity_create_main_conf, /* create main configuration */
+@@ -546,6 +567,112 @@
+     NULL,                                  /* exit master */
+     NGX_MODULE_V1_PADDING
+ };
++
++
++static ngx_int_t
++ngx_http_modsecurity_intervention_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    ngx_http_modsecurity_ctx_t  *ctx;
++    static u_char                zero = '0';
++    static u_char                one  = '1';
++
++    ctx = ngx_http_modsecurity_get_module_ctx(r);
++
++    v->data = (ctx != NULL && ctx->intervention_triggered) ? &one : &zero;
++    v->len = 1;
++    v->valid = 1;
++    v->no_cacheable = 1;
++    v->not_found = 0;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_modsecurity_triggered_rules_variable(ngx_http_request_t *r,
++    ngx_http_variable_value_t *v, uintptr_t data)
++{
++    ngx_http_modsecurity_ctx_t  *ctx;
++    size_t                       size;
++    size_t                       written;
++    size_t                       i;
++    size_t                       cap;
++    int64_t                     *ids;
++    u_char                      *buf, *p, *end;
++
++    ctx = ngx_http_modsecurity_get_module_ctx(r);
++    if (ctx == NULL || ctx->modsec_transaction == NULL) {
++        v->not_found = 1;
++        return NGX_OK;
++    }
++
++    size = msc_get_rules_messages_size(ctx->modsec_transaction);
++    if (size == 0) {
++        v->not_found = 1;
++        return NGX_OK;
++    }
++
++    /* Overflow check */
++    if (size > ((size_t) -1) / (NGX_INT64_LEN + 1)) {
++        return NGX_ERROR;
++    }
++
++    ids = ngx_pnalloc(r->pool, size * sizeof(int64_t));
++    if (ids == NULL) {
++        return NGX_ERROR;
++    }
++
++    written = msc_get_rules_messages_rule_ids(ctx->modsec_transaction,
++                                              ids, size);
++    if (written == 0) {
++        v->not_found = 1;
++        return NGX_OK;
++    }
++
++    /* NGX_INT64_LEN digits per id + one comma separator per id */
++    cap = written * (NGX_INT64_LEN + 1);
++    buf = ngx_pnalloc(r->pool, cap);
++    if (buf == NULL) {
++        return NGX_ERROR;
++    }
++
++    p = buf;
++    end = buf + cap;
++    for (i = 0; i < written; i++) {
++        if (i > 0) {
++            *p++ = ',';
++        }
++        p = ngx_snprintf(p, end - p, "%L", ids[i]);
++    }
++
++    v->data = buf;
++    v->len = p - buf;
++    v->valid = 1;
++    v->no_cacheable = 1;
++    v->not_found = 0;
++
++    return NGX_OK;
++}
++
++
++static ngx_int_t
++ngx_http_modsecurity_add_variables(ngx_conf_t *cf)
++{
++    ngx_http_variable_t  *var, *v;
++
++    for (v = ngx_http_modsecurity_vars; v->name.len; v++) {
++        var = ngx_http_add_variable(cf, &v->name, v->flags);
++        if (var == NULL) {
++            return NGX_ERROR;
++        }
++
++        var->get_handler = v->get_handler;
++        var->data = v->data;
++    }
++
++    return NGX_OK;
++}
+ 
+ 
+ static ngx_int_t

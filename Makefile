@@ -18,6 +18,16 @@ DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 PKG     := github.com/marvinli001/edgeweir-node/internal/version
 LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
+# --- edgeweir-openresty -------------------------------------------------------
+# OpenResty with Brotli, Zstandard, ModSecurity and the OWASP CRS, built from
+# packaging/openresty/sources.lock. ARCH is the package architecture.
+ARCH              ?= $(if $(filter arm64 aarch64,$(shell uname -m)),arm64,amd64)
+OPENRESTY_OUT     ?= out/openresty
+OPENRESTY_JOBS    ?= 2
+OPENRESTY_VERSION := $(shell awk '$$1 == "openresty" { print $$2 }' packaging/openresty/sources.lock)
+OPENRESTY_BUILD   := docker buildx build --platform linux/$(ARCH) --build-arg OPENRESTY_JOBS=$(OPENRESTY_JOBS) \
+	-f packaging/openresty/Dockerfile
+
 IMAGE          ?= edgeweir-node:dev
 OPENRESTY_FAT  ?= openresty/openresty:1.31.1.1-bookworm-fat@sha256:59eaa54c12021e799adbea1bc3acdf4097f9cac105f889e417d017deb263a755
 
@@ -72,6 +82,17 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 docker: ## Build the node container image (bundles IPinfo Lite when IPINFO_TOKEN is set)
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) \
 		--secret id=ipinfo_token,env=IPINFO_TOKEN $(if $(IPINFO_TOKEN),--build-arg IPINFO_DATE=$$(date -u +%F)) -t $(IMAGE) .
+
+.PHONY: openresty-packages
+openresty-packages: ## Build the edgeweir-openresty(-modsecurity) deb/rpm packages and their SBOM for ARCH into out/openresty
+	@case "$(ARCH)" in amd64|arm64) ;; *) echo "ARCH must be amd64 or arm64" >&2; exit 1 ;; esac
+	rm -rf $(OPENRESTY_OUT)/.$(ARCH)
+	$(OPENRESTY_BUILD) --target packages --output type=local,dest=$(OPENRESTY_OUT)/.$(ARCH)/packages .
+	$(OPENRESTY_BUILD) --target tree --output type=local,dest=$(OPENRESTY_OUT)/.$(ARCH)/tree .
+	mv $(OPENRESTY_OUT)/.$(ARCH)/packages/*.deb $(OPENRESTY_OUT)/.$(ARCH)/packages/*.rpm $(OPENRESTY_OUT)/
+	syft scan dir:$(OPENRESTY_OUT)/.$(ARCH)/tree/tree --select-catalogers +sbom-cataloger --source-name edgeweir-openresty \
+		--source-version $(OPENRESTY_VERSION)-1 -o spdx-json=$(OPENRESTY_OUT)/edgeweir-openresty_$(OPENRESTY_VERSION)-1_$(ARCH).sbom.json
+	cd $(OPENRESTY_OUT) && ls -1 *_$(ARCH).* *.$(if $(filter arm64,$(ARCH)),aarch64,x86_64).rpm
 
 .PHONY: e2e
 e2e: ## Run the container smoke test (fake console + node + origin)

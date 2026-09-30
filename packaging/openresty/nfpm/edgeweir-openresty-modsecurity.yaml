@@ -1,0 +1,48 @@
+# nfpm configuration of edgeweir-openresty-modsecurity (see
+# edgeweir-openresty.yaml): the ModSecurity dynamic module, libmodsecurity
+# (private, not on the linker path) and the OWASP CRS. Installed together
+# with the same edgeweir-openresty build.
+name: edgeweir-openresty-modsecurity
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+section: net
+priority: optional
+maintainer: Edgeweir maintainers <maintainers@edgeweir.dev>
+vendor: Edgeweir
+homepage: https://edgeweir.dev
+license: Apache-2.0 AND BSD-3-Clause AND ISC AND MIT
+description: |-
+  ModSecurity v3 dynamic module and the OWASP Core Rule Set for
+  edgeweir-openresty. Edgeweir nodes load the module only while a site
+  uses CRS managed rules; the rules come from this package, never from a
+  download at runtime.
+mtime: ${MTIME}
+overrides:
+  deb:
+    depends:
+      - edgeweir-openresty (= ${VERSION}-1)
+      - libc6 (>= 2.34)
+      - libgcc-s1
+      - libstdc++6
+  rpm:
+    depends:
+      - edgeweir-openresty = ${VERSION}-1
+      - glibc >= 2.34
+      - libgcc
+      - libstdc++
+contents:
+  - src: /tree/usr/lib/edgeweir-openresty/modules
+    dst: /usr/lib/edgeweir-openresty/modules
+    type: tree
+  - src: /tree/usr/lib/edgeweir-openresty/lib
+    dst: /usr/lib/edgeweir-openresty/lib
+    type: tree
+  - src: /tree/usr/share/edgeweir-openresty
+    dst: /usr/share/edgeweir-openresty
+    type: tree
+  - src: /tree/usr/share/doc/edgeweir-openresty/NOTICE
+    dst: /usr/share/doc/edgeweir-openresty-modsecurity/NOTICE
+    file_info:
+      mode: 0644

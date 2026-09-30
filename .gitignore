@@ -1,6 +1,7 @@
 # Build output
 /bin/
 /dist/
+/out/
 /edgeweir-node
 *.test
 *.exe

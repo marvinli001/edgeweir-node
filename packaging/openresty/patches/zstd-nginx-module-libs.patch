@@ -1,0 +1,39 @@
+Link libzstd through the filter module's own libraries.
+
+zstd-nginx-module 0.1.1 prepends libzstd to NGX_LD_OPT (the --with-ld-opt
+value) in both module configs and then uses the whole of NGX_LD_OPT as the
+filter module's libraries, so every --with-ld-opt argument reaches the
+nginx link twice. With whole archives there (see build/30-openresty.sh)
+that duplicates every object of libcrypto and PCRE2. Only the filter
+module needs libzstd; the static module serves precompressed files.
+
+diff -ru a/filter/config b/filter/config
+--- a/filter/config
++++ b/filter/config
+@@ -96,7 +96,6 @@
+     # TODO we need more tries for the different OS port.
+ fi
+ 
+-NGX_LD_OPT="$ngx_zstd_opt_L $NGX_LD_OPT"
+ 
+ HTTP_ZSTD_SRCS="$ngx_addon_dir/filter/ngx_http_zstd_filter_module.c"
+ 
+@@ -105,6 +104,6 @@
+ ngx_module_name=ngx_http_zstd_filter_module
+ ngx_module_incs="$ngx_zstd_opt_I"
+ ngx_module_srcs=$HTTP_ZSTD_SRCS
+-ngx_module_libs=$NGX_LD_OPT
++ngx_module_libs="$ngx_zstd_opt_L"
+ . auto/module
+ 
+diff -ru a/static/config b/static/config
+--- a/static/config
++++ b/static/config
+@@ -97,7 +97,6 @@
+ fi
+ 
+ CFLAGS="$ngx_zstd_opt_I $CFLAGS"
+-NGX_LD_OPT="$ngx_zstd_opt_L $NGX_LD_OPT"
+ 
+ # build the ngx_http_zstd_static_module
+ HTTP_ZSTD_SRCS="$ngx_addon_dir/static/ngx_http_zstd_static_module.c"

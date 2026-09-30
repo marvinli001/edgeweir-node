@@ -1,0 +1,15 @@
+# AlmaLinux 9.7 from vault.almalinux.org: a frozen minor release, so the
+# toolchain (gcc 11.5, binutils 2.35.2, glibc 2.34) resolves to the same
+# packages on every build. Packages are signed with the AlmaLinux 9 key of
+# the pinned base image.
+[baseos]
+name=AlmaLinux 9.7 BaseOS (vault)
+baseurl=https://vault.almalinux.org/9.7/BaseOS/$basearch/os/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-9
+
+[appstream]
+name=AlmaLinux 9.7 AppStream (vault)
+baseurl=https://vault.almalinux.org/9.7/AppStream/$basearch/os/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-9
