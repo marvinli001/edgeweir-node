@@ -5,14 +5,16 @@
 [![CI](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
-[Edgeweir](https://github.com/marvinli001/edgeweir) 边缘节点：Go agent `edgeweir-node` 与 OpenResty（Lua）数据面。
+[Edgeweir](https://github.com/marvinli001/edgeweir) 边缘节点：Go agent `edgeweir-node` 与 OpenResty（Lua）数据面。OpenResty 为自建的 edgeweir-openresty：从固定并校验过的源码构建，带 Brotli、Zstandard 与可选的 ModSecurity、OWASP CRS。
 
 ## 功能
 
 | 领域 | 能力 |
 | --- | --- |
-| HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、Gzip、证书热轮换 |
+| HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、证书热轮换 |
+| 压缩 | gzip、Brotli、Zstandard；按 `Accept-Encoding` 的 q 值为每个响应选一种（同 q 值 zstd > br > gzip），缓存只存一份未压缩对象 |
 | 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
+| OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
 | 缓存与回源 | `Host` 路由、`proxy_cache`、源站池负载均衡、被动健康检查、清缓存、预热 |
 | 统计与日志 | 按站点按分钟流量统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
@@ -29,7 +31,7 @@
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
 - 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.11.0` 生成。
-- 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名与协议设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload；其余变更热更新，不 reload。
+- 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
 | --- | --- |
@@ -37,6 +39,8 @@
 | 未知域名 | `404`，`X-Edgeweir-Error: unknown-host` |
 | 回源环路 | 回源请求携带 `CDN-Loop`，环路返回 `508` |
 | 源站地址 | 拒绝特殊地址段（回环、链路本地 / 云元数据、私网等），平台放行的除外 |
+| CRS 拦截 | `403`，`X-Edgeweir-Error: waf-blocked` |
+| 压缩 | `Content-Encoding: zstd` / `br` / `gzip`，`Vary: Accept-Encoding` |
 
 详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -44,23 +48,26 @@
 
 ### 控制台安装命令（推荐）
 
-控制台为每个节点生成安装命令。`install.sh` 校验发布物 SHA-256 与 cosign 签名后安装 OpenResty 与 `edgeweir-node`，以固定 CA 指纹注册并启动服务；一次性 token 经 `EDGEWEIR_TOKEN` 传递。`--allow-unsigned` 仅用于开发：跳过签名校验，保留 SHA-256 校验。
+控制台为每个节点生成安装命令。`install.sh` 校验发布物 SHA-256 与 cosign 签名后安装 `edgeweir-openresty`、`edgeweir-openresty-modsecurity` 与 `edgeweir-node`，以固定 CA 指纹注册并启动服务；一次性 token 经 `EDGEWEIR_TOKEN` 传递。`--allow-unsigned` 仅用于开发：跳过签名校验，保留 SHA-256 校验。
 
 ### deb / rpm
 
-前置条件：从 [OpenResty 官方仓库](https://openresty.org/cn/linux-packages.html)安装 OpenResty 并停用其服务（`sudo systemctl disable --now openresty`），OpenResty 由 agent 以子进程运行。
+系统要求：glibc 2.34 及以上（RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新版本），amd64 或 arm64。OpenResty 由 agent 以子进程运行；若装有 OpenResty 官方包，停用其服务（`sudo systemctl disable --now openresty`）。
 
-发布物：`edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）、`edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）、`checksums.txt*`。安装前[验证发布物](#验证发布物)。
+发布物：`edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）、`edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）、`edgeweir-openresty_1.31.1.1-1_<架构>.deb` / `edgeweir-openresty-1.31.1.1-1.<架构>.rpm`、同名的 `edgeweir-openresty-modsecurity` 包、`checksums.txt*`。安装前[验证发布物](#验证发布物)。
 
 ```sh
-sudo apt install ./edgeweir-node_<版本>_amd64.deb   # 或 sudo dnf install ./edgeweir-node-<版本>-1.x86_64.rpm
+sudo apt install ./edgeweir-openresty_1.31.1.1-1_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-1_amd64.deb \
+  ./edgeweir-node_<版本>_amd64.deb
+# 或 sudo dnf install ./edgeweir-openresty-1.31.1.1-1.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-1.x86_64.rpm \
+#      ./edgeweir-node-<版本>-1.x86_64.rpm
 sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
 sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
 sudo rm /root/edgeweir-token
 sudo systemctl enable --now edgeweir-node
 ```
 
-安装包内容：`/usr/bin/edgeweir-node`、`/usr/share/edgeweir-node/lua`、systemd unit、`/etc/default/edgeweir-node`；创建非特权用户 `edgeweir` 及状态目录、缓存目录。
+安装包内容：`edgeweir-node` 为 `/usr/bin/edgeweir-node`、`/usr/share/edgeweir-node/lua`、systemd unit、`/etc/default/edgeweir-node`，创建非特权用户 `edgeweir` 及状态目录、缓存目录；`edgeweir-openresty` 为 `/usr/lib/edgeweir-openresty`（OpenResty、LuaJIT、Brotli、Zstandard）；`edgeweir-openresty-modsecurity`（可选）为 ModSecurity 模块与 `/usr/share/edgeweir-openresty/crs`，没有它时站点不能在该节点启用 OWASP CRS。第三方组件的许可证见 `/usr/share/doc/edgeweir-openresty/NOTICE`。
 
 ### Docker
 
@@ -181,6 +188,8 @@ edgeweir-node version
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |
 | `/usr/share/edgeweir-node/lua` | Lua 模块 |
 | `/usr/share/edgeweir-node/geoip` | IPinfo Lite 数据库与 `NOTICE`（容器镜像） |
+| `/usr/lib/edgeweir-openresty` | OpenResty（`nginx/sbin/nginx`），ModSecurity 模块在 `modules/` |
+| `/usr/share/edgeweir-openresty/crs` | OWASP CRS |
 | `:80` | 收到配置前的 HTTP 监听；此后以配置为准 |
 
 ## 构建与测试
@@ -192,7 +201,8 @@ make build         # 静态二进制，输出至 bin/
 make vet test      # go vet ./... && go test ./...
 make test-race     # race detector
 make lua-test      # Lua 单元测试（OpenResty 镜像内 resty）
-make docker        # 镜像；设置 IPINFO_TOKEN 时经 BuildKit secret 内置 IPinfo Lite
+make docker        # 镜像（含 edgeweir-openresty 的构建）；设置 IPINFO_TOKEN 时经 BuildKit secret 内置 IPinfo Lite
+make openresty-packages ARCH=arm64   # edgeweir-openresty 的 deb / rpm 与 SBOM，输出至 out/openresty/
 make e2e           # 容器冒烟测试：模拟控制台 + 节点 + whoami 源站
 make proto-check   # 从 proto tag 重新生成并检查漂移
 make snapshot      # goreleaser 本地快照（不签名）
@@ -208,7 +218,7 @@ COMPOSE_PROJECT_NAME=node-e2e-2 E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER
 
 ## 验证发布物
 
-发布物由 GitHub Actions 从 tag 构建，可复现（`-trimpath`，时间戳取提交时间）；容器镜像内的 IPinfo Lite 以 `NOTICE` 中的 sha256 标识。`checksums.txt` 覆盖全部压缩包、安装包与 SBOM，经 cosign keyless 签名；每个发布物附 SLSA 构建来源证明。
+发布物由 GitHub Actions 从 tag 构建，可复现（`-trimpath`，时间戳取提交时间）；容器镜像内的 IPinfo Lite 以 `NOTICE` 中的 sha256 标识。edgeweir-openresty 的包从 `packaging/openresty/sources.lock` 固定的源码构建：每个源码校验 SHA-256，上游有签名的另按固定公钥校验 PGP 签名，同一输入的构建结果逐字节相同。`checksums.txt` 覆盖全部压缩包、安装包（含 edgeweir-openresty）与 SBOM，经 cosign keyless 签名；每个发布物附 SLSA 构建来源证明。
 
 ```sh
 cosign verify-blob \
@@ -222,7 +232,7 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 
 ## 已知限制
 
-- OpenResty 引擎不含 Brotli 与 Zstd。
+- 启用 OWASP CRS 的站点每个请求约多 0.5 ms CPU，请求体在回源前读完再检查，响应体不检查（见 ARCHITECTURE.md §3.18）。
 - 证书材料保存在 `certificates.json`（0600），主机管理员可读取。
 - 统计 RPC V2 不兼容旧版控制台，控制台与节点须同步升级。
 - 每个已发布站点占用固定 256 KiB 限速计数分区，每集群最多 512 个已发布站点。见[限速存储](docs/rate-limit-storage.md)。

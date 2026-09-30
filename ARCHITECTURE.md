@@ -50,8 +50,8 @@
 | `internal/controlplane` | Connect 客户端：pin 通道（注册）和 mTLS 通道（可热替换证书） |
 | `internal/configir` | 规范排序、content_hash、diff 应用、校验并生成与引擎无关的 `Plan`；源站地址策略（`address.go`） |
 | `internal/configstore` | LKG 持久化（current + previous），加载时校验哈希 |
-| `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id、每个已发布站点的限速分区、设置了 `Site.tls` 的站点的 `server` 块），解析 resolv.conf |
-| `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督 |
+| `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id、每个已发布站点的限速分区、设置了 `Site.tls` 的站点的 `server` 块、OWASP CRS 的位置）与 ModSecurity 配置，解析 resolv.conf |
+| `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督；从 `nginx -V` 读出静态模块（Brotli、Zstandard），汇总 ModSecurity 的拦截日志 |
 | `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态 / 统计 / 采样访问日志 / 封禁 / 挑战密钥与验证码池 / CC 状态与事件的 JSON 结构 |
 | `internal/agent` | 运行时主循环、源站凭据、网站证书与 OCSP、清缓存标记集合、统计与访问日志上报、类型化任务（清缓存、预热、升级）、挑战密钥与验证码池、CC 事件上报；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
 | `internal/captcha` | 验证码图片：内置 5×7 点阵字体，随机位置、缩放、旋转、倾斜、波浪基线、干扰线与噪点，160×60 调色板 PNG；答案取自 crypto/rand |
@@ -66,7 +66,9 @@
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
-Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`cc`（分级 CC）、`control`（控制 API）、`init`。
+Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`cc`（分级 CC）、`compress`（压缩编码协商）、`waf`（OWASP CRS 的位置与请求上下文）、`control`（控制 API）、`init`。
+
+数据面是 edgeweir-openresty：从固定版本源码构建的 OpenResty 1.31.1.1，带 Brotli、Zstandard 与可选的 ModSecurity 动态模块和 OWASP CRS（§5.1）。
 
 第三方 Go 依赖（`go.mod` 的直接依赖；版本以 `go.mod` 为准）：
 
@@ -141,7 +143,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - LKG 属于其他集群（重新注册到别的集群）时不作为 diff 基础。
 - 控制台返回比已应用更旧的 revision（例如从备份恢复）时忽略，继续服务 LKG；控制台恢复备份后凭节点保存的认证回执发布更高的 revision（见 §6「运维」）。
 
-**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）。
+**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序；`gzip_types`、`brotli_types`、`zstd_types` 与 `excluded_rule_ids` 排序去重），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）。
 
 **校验策略**（`configir.Build`）：
 
@@ -165,6 +167,9 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `enabled=false` 的站点 | 不对外服务（等同未知域名） |
 | 挑战类型、CC 最高级别不是 `cookie302` / `js` / `pow` / `captcha`；通行凭证有效期、PoW 难度、CC 窗口、封禁时长等数值越界（任一站点，含停用站点）；挑战密钥 id 非法、重复、角色未知、同一角色多把或没有 `current` | 整个配置拒绝（数值为 0 取默认值，§3.14） |
 | `challenge` 动作不在 `waf-custom` 阶段或类型未知；非 `challenge` 动作带 `challenge` 字段 | 整个配置拒绝 |
+| 压缩类型不是小写的 `type/subtype`；Brotli 级别超过 11、Zstandard 级别超过 19（0 取默认值 6、3） | 整个配置拒绝 |
+| `Site.waf`（任一站点，含停用站点）：模式不是 `detect` / `block`，paranoia level 不在 1–4，异常分数阈值不在 1–1000，请求体检查上限超过 128 MiB，排除的规则超过 200 条、不在 900000–999999 或未排序去重 | 整个配置拒绝 |
+| 已发布站点使用本节点 OpenResty 没有的模块（Brotli、Zstandard、OWASP CRS：`brotli-v1`、`zstd-v1`、`modsecurity-v1`） | 整个配置拒绝，消息写明站点与缺少的能力 |
 
 跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`、reload 未生效）的同一 revision 在 5 分钟内不重复尝试。
 
@@ -172,19 +177,19 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 1. **S3 凭据与挑战密钥**：Plan 的 `challenge_keys` 引用了本地没有的密钥时，经 mTLS 调用 `GetChallengeKeys` 获取（密钥 16–256 字节），写入 `challenge-keys.json`（0600）；控制台没有给出的密钥保持缺失，数据面检查每 30 秒再要一次。当前与上一份同集群配置都不再引用的密钥从文件中删除。S3 凭据：Plan 引用了本地没有（或版本过旧）的凭据时，先经 mTLS 调用 `GetOriginCredentials` 补齐，写入 `credentials.json`，不再引用的凭据从文件中删除；再把密钥填进 Plan 的 S3 源站。这一步在渲染和 `nginx -t` 之前：RPC 失败算暂时性错误，本次应用失败，下一次同步重试（不计入 5 分钟的拒绝窗口），仍在服务的配置不受影响。
 2. **网站证书**：Plan 引用了本地没有的证书（按证书 id 与 SHA-256 指纹）时，经 mTLS 调用 `GetCertificates` 获取，校验私钥与证书匹配、指纹一致后写入 `certificates.json`（0600）。开启 OCSP stapling 的证书，OCSP 响应在 1 小时内到期时先刷新（最多 30 秒，失败只告警）。证书必须覆盖站点的每个域名，随后附到站点表。获取或校验失败的处理同第 1 步。
-3. **渲染** `nginx.conf`，并为每个 cache zone 创建缓存目录；有 HTTPS 监听时先生成 nginx 前缀下的自签名占位证书 `conf/bootstrap.crt`（nginx 加载 TLS 监听需要；握手时 Lua 换成站点证书，未知 SNI 直接拒绝）。渲染结果与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload；内容相同则不 reload。
+3. **渲染** `nginx.conf`，并为每个 cache zone 创建缓存目录；有 HTTPS 监听时先生成 nginx 前缀下的自签名占位证书 `conf/bootstrap.crt`（nginx 加载 TLS 监听需要；握手时 Lua 换成站点证书，未知 SNI 直接拒绝）。有站点运行 OWASP CRS 时，ModSecurity 配置写到 `conf/modsecurity-<内容哈希前 16 位>.conf`（文件名随内容变化，正在运行的 nginx 继续用它自己的那份），`nginx.conf` 引用它。渲染结果与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload，之后删除不再引用的 `modsecurity-*.conf`；内容相同则不 reload。
 4. **确认 reload 生效**：每个渲染出的 `nginx.conf` 带一个配置 id（不含 id 时渲染结果的 SHA-256 前 16 位），`init_by_lua` 记下它，`GET /v1/status` 返回 `conf_id`。SIGHUP 只是请求 reload：新文件无法应用（例如端口被占用）时 nginx 记录错误并保留旧 worker。agent 在 reload 后最多等 15 秒，直到 worker 报告新的 id；否则该 revision 记为失败，把旧的 `nginx.conf` 写回（之后重启 nginx 时用的仍是正在运行的配置），LKG 继续服务。
 5. **清缓存标记、挑战密钥与站点表**：装入清缓存标记（§3.4；`purge.json` 无法读取时先给每个站点加全站标记），配置使用挑战时装入密钥（`PUT /v1/challenge/keys`，失败只告警，数据面检查重试），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
 6. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
 
-是否 reload 只取决于渲染出的 `nginx.conf` 是否变化。除监听、cache zone 和 agent 启动参数外，文件里还有两类随站点变化的内容：每个已发布站点（`enabled` 且有有效源站和域名的站点）一个固定大小的限速分区；设置了 `Site.tls`（HTTPS 与压缩策略）的站点自己的 `server` 块，含域名、HTTP/2、HTTP/3、gzip 与密码套件设置。所以新增、删除、启用、停用站点都会 reload，改动带 `Site.tls` 的站点的这些设置也会；站点的其余数据只进站点表，经控制 socket 热更新（完整对照见 §3.9）。
+是否 reload 只取决于渲染出的 `nginx.conf` 是否变化。除监听、cache zone 和 agent 启动参数外，文件里还有两类随站点变化的内容：每个已发布站点（`enabled` 且有有效源站和域名的站点）一个固定大小的限速分区；设置了 `Site.tls`（HTTPS 与压缩策略）的站点自己的 `server` 块，含域名、HTTP/2、HTTP/3、gzip、Brotli、Zstandard 与密码套件设置。运行 OWASP CRS 的站点另外决定 `nginx.conf` 是否加载 ModSecurity、有哪些请求体上限的 CRS 位置，以及 ModSecurity 配置里的排除规则（§3.18）。所以新增、删除、启用、停用站点都会 reload，改动带 `Site.tls` 的站点的这些设置也会；站点的其余数据只进站点表，经控制 socket 热更新（完整对照见 §3.9）。
 
 ### 2.4 状态回报、续期、统计
 
-- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 或有升级路径的站点及其升级路径数，最多 2000 个，§3.15）。能力列表总是带 `challenge-v1` 与 `ja4-v1`。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 或有升级路径的站点及其升级路径数，最多 2000 个，§3.15）。能力列表总是带 `challenge-v1` 与 `ja4-v1`；`brotli-v1`、`zstd-v1` 取自 `nginx -V` 的 configure 参数（`--add-module` 的 ngx_brotli 与 zstd-nginx-module），`modsecurity-v1` 只在 ModSecurity 模块（`--modsecurity-module`，默认在 `--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 下找）与 CRS（`--crs-dir`）都在、并且加载它们的 `nginx -t` 探测通过时上报。这三项在 agent 启动时检测一次，也是站点可以使用的能力（§2.3）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
 - 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
-- 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），另按分钟汇总 Top URL / Top IP。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
-- 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时、缓存状态，站点开启 JA4 日志时还有 JA4（§3.16），放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
+- 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码，CRS 站点还有命中的规则 id），另按分钟汇总 Top URL / Top IP。命中的 CRS 规则按次数取每站点每分钟最多的 20 条，上报为 `MinuteStats.waf_rules`（值为规则 id）。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
+- 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时、缓存状态，站点开启 JA4 日志时还有 JA4（§3.16），CRS 站点还有命中的规则 id（最多 16 个，`waf_rule_ids`）与是否被 CRS 拦截（`waf_blocked`），放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
 
 ### 2.5 WatchConfig
 
@@ -255,9 +260,13 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               · 非 GET/HEAD：透传（Range 原样转发）
               · 按规则链判断是否可能缓存（带 Authorization 的请求见 §3.3）
               · 设置 $edgeweir_cache_zone / $edgeweir_cache_key / bypass / no_cache / Range 模式
+              · 边缘压缩的站点：回源不带 Accept-Encoding（§3.17）
+              · 运行 OWASP CRS 的站点：带 X-Edgeweir-Waf 转入 @edgeweir_waf_<请求体上限>，
+                ModSecurity 在该位置检查后再走下面同样的缓存与回源（§3.18）
             proxy_cache $edgeweir_cache_zone; key = cachekey.build(...) [+ slice 范围]
             proxy_cache_lock / background_update / revalidate；stale 由源站层设置的 Cache-Control 扩展决定
             add_header X-Cache $upstream_cache_status always
+            header_filter_by_lua  edgeweir.router：还原 Cache-Control，选定压缩编码（§3.17）
             内部请求头 X-Edgeweir-Site / -Rules / -Cache-Status（proxy_set_header 设置，覆盖客户端同名头）
                 │ keepalive, unix socket（关闭证书校验的站点走 origin-noverify.sock）
                 ▼
@@ -273,6 +282,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               · 按规则链与响应状态/大小决定 X-Accel-Expires 和 stale-* 扩展
                 （原 Cache-Control 放进 X-Edgeweir-CC，边缘层还原）
               · 源站 5xx 且边缘持有可 stale 的过期副本时断开连接，让边缘层返回 stale
+              · 边缘压缩的站点：未编码响应的 Vary 去掉 Accept-Encoding（§3.17）
             log_by_lua · 被动健康检查与错误码（§3.7）
                 │
                 ▼
@@ -281,7 +291,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`ip-banned`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`ip-banned`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`，以及 CRS 拦截的 `waf-blocked`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -407,12 +417,14 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | 监听（增删、端口、HTTPS、HTTP/2、HTTP/3、PROXY protocol） | 重新渲染 → `openresty -t` → reload（HUP）→ 确认新配置 id |
 | cache zone（增删、大小、inactive） | 同上 |
 | 已发布站点集合：新增、删除、启用、停用站点，或站点因没有有效源站或域名被跳过（增删它的固定 256 KiB 限速分区 `edgeweir_rate_<站点 id 的十六进制>`；其他站点的分区名称和大小不变，计数保留） | 同上 |
-| 设置了 `Site.tls` 的站点：`Site.tls` 的有无、域名、HTTP/2、HTTP/3、gzip（开关、最小长度、类型）、密码套件档位，以及有没有证书（这些值写在站点自己的 `server` 块里；HTTPS 监听上的块只在站点有证书时生成） | 同上 |
+| 设置了 `Site.tls` 的站点：`Site.tls` 的有无、域名、HTTP/2、HTTP/3、gzip、Brotli、Zstandard（开关、级别、最小长度、类型）、密码套件档位，以及有没有证书（这些值写在站点自己的 `server` 块里；HTTPS 监听上的块只在站点有证书时生成） | 同上 |
+| OWASP CRS：第一个站点开启（加载 ModSecurity 与 CRS）、最后一个站点关闭（卸载）、出现或不再使用某个请求体上限（CRS 位置）、站点排除的规则（ModSecurity 配置） | 同上 |
 | agent 启动参数：resolver（`--resolver`，或启动时读取的 `--resolv-conf`）、回源 CA bundle（`--trusted-ca` 或系统 bundle）、`--purge-dict-mb`、IPv6 探测、worker 与 nginx 用户设置、socket 与目录 | agent 重启后生效：启动后的第一次应用总会写入、检查并 reload（托管模式下是启动 OpenResty） |
 | 站点表里的其他内容：源站与源站池设置、缓存规则与 TTL、缓存键、缓存代际号、所用 cache zone、Range 分片与 WebSocket 开关、边缘规则、日志采样率、证书与私钥（同一站点换证书）、OCSP stapling 开关与 OCSP 响应、强制 HTTPS、HSTS、最低 TLS 版本；表级的源站允许清单、cdn-id、HTTP-01 应答、IP 名单、平台规则 | 热更新：`PUT /v1/sites`，不 reload |
 | 清缓存 | 热更新：`POST` / `PUT /v1/purge` |
 | 动态封禁 | 热更新：`POST` / `PUT /v1/bans`，平台范围另写 nftables；`--ban-dict-mb` 与 `--ban-capacity` 属于 agent 启动参数 |
 | Under Attack、挑战规则、CC 策略、JA4 日志开关、平台 Under Attack | 热更新：站点表（`protection`、`platform_protection`、`rules`） |
+| OWASP CRS 的模式、paranoia level、异常分数阈值；请求体上限已有 CRS 位置、没有排除规则的站点开启或关闭 CRS | 热更新：站点表（`waf`） |
 | 挑战密钥、验证码池 | 热更新：`PUT /v1/challenge/keys`、`PUT /v1/challenge/captchas`；`--cc-dict-mb` 与 `--challenge-dict-mb` 属于 agent 启动参数 |
 
 `resolver` 取自 `/etc/resolv.conf`（`--resolv-conf`）的 nameserver（Docker 中为 `127.0.0.11`；IPv6 加方括号；带 zone 的链路本地地址跳过；没有时回退到 `127.0.0.1`），`--resolver` 可直接指定；Lua 按 min(TTL, 30s) 缓存结果（失败 5 秒）；主机没有全局 IPv6 地址时不查询 AAAA。
@@ -520,6 +532,37 @@ table inet edgeweir {
 - 表达式字段 `tls.ja4`：明文 HTTP 为空字符串；可用于 `waf-custom`、`ratelimit`（也可作为限速键）、`challenge` 规则。站点开启 JA4 日志时采样访问日志带 `ja4`（`AccessLog.ja4`）。
 - **近似**：ClientHello 来自 lua-resty-core（`ngx.ssl.clienthello`），它只列出 OpenSSL 认识的扩展；OpenSSL 不认识的扩展（例如 ALPS `4469`、ECH `fe0d`）不计入扩展数和哈希，这类客户端（例如 Chromium）的指纹与其他 JA4 工具的结果不同。规则应使用节点采样日志里看到的指纹。HTTP/3 的请求是否继承握手阶段的 `ngx.ctx` 取决于 nginx 的 QUIC 实现；拿不到时 `tls.ja4` 为空。测试向量 `test/lua/ja4-vectors.json`：JA4 规范文档的算例与按规范构造的用例。
 
+### 3.17 压缩（gzip、Brotli、Zstandard）
+
+站点的 `Site.tls` 为每种算法设置开关、级别（Brotli 1–11，默认 6；Zstandard 1–19，默认 3）、最小长度和内容类型，渲染为站点 `server` 块里的 `gzip*`、`brotli*`（ngx_brotli）与 `zstd*`（zstd-nginx-module）指令，改动时 reload（§3.9）。三种过滤器都只压缩状态为 200、403、404、没有 `Content-Encoding`、长度不低于最小值（长度未知时照样压缩）、类型在列表里（`text/html` 总在）的响应，并给这些响应加上 `Vary: Accept-Encoding`（`gzip_vary on`，任一算法开启时都设置）。
+
+- **协商**（`edgeweir.compress`，纯函数由 `make lua-test` 覆盖）：过滤器本身不看 q 值，客户端接受几种就可能都去压缩。边缘层的 header filter 在压缩过滤器之前运行：按上面的条件列出站点开启且适用于这个响应的算法，再按客户端 `Accept-Encoding` 的 q 值选出一种（RFC 9110 §12.5.3：q=0 不接受；没列出的编码取 `*` 的 q 值；`x-gzip` 等同 gzip；格式错误的项忽略；没有 `Accept-Encoding` 或只剩 identity 时不压缩），q 值相同时 zstd > br > gzip，然后把请求的 `Accept-Encoding` 改写成只含这一种（或删除），只有它的过滤器会压缩。
+- **不重复压缩**：源站已经编码的响应（带 `Content-Encoding`）原样返回。
+- **缓存**：边缘压缩的站点回源时不带 `Accept-Encoding`（`$edgeweir_upstream_ae`），源站返回未压缩的内容；回源层把这类响应 `Vary` 里的 `Accept-Encoding` 去掉，边缘缓存里每个 URL 只有一份未压缩对象，命中后按每个请求重新协商、压缩。没有边缘压缩的站点照旧把客户端的 `Accept-Encoding` 转给源站，缓存按源站的 `Vary` 区分。
+- 规则动作 `gzip=false` 删除请求的 `Accept-Encoding`，该请求不压缩。
+- nginx 的 gzip 另有两个条件：带 `Via` 请求头的请求（经过其他代理）不压缩（`gzip_proxied off`），HTTP/1.0 请求不压缩；此时协商选中 gzip 的响应以 identity 返回。
+
+### 3.18 OWASP CRS（ModSecurity）
+
+站点的 `Site.waf` 设置模式（`detect` 只记录，`block` 超过阈值时拦截）、paranoia level（1–4）、入站异常分数阈值（1–1000，CRS 默认 5）、排除的规则 id 和请求体检查上限（字节，0 不检查请求体）。规则来自 edgeweir-openresty-modsecurity 包里的 OWASP CRS 4.29.0（`/usr/share/edgeweir-openresty/crs`），运行时不下载。
+
+- **只在需要时加载**：没有站点运行 CRS 时 `nginx.conf` 不加载 ModSecurity 模块，也没有任何 ModSecurity 指令。有站点运行时，`nginx.conf` 在 main 层 `load_module`，在 http 层读入 agent 生成的 ModSecurity 配置一次（CRS 解析一次，所有位置共用），`modsecurity` 默认关闭；每个边缘 `server` 为用到的每个请求体上限加一个命名位置 `@edgeweir_waf_<上限>`，只在那里 `modsecurity on`，位置里设置该上限（`SecRequestBodyLimit`；上限为 0 时 `SecRequestBodyAccess Off`），其余代理与缓存指令和 `location /` 相同。不运行 CRS 的站点从不进入这些位置，只多执行几个检查 ModSecurity 是否开启的 nginx 阶段处理函数。
+- **请求流程**：边缘层 access 阶段照常做完封禁、规则、挑战、CC 与缓存键，然后把运行 CRS 的站点的请求 `ngx.exec` 到对应位置，请求头 `X-Edgeweir-Waf: <站点>;<模式>;<paranoia>;<阈值>` 带上站点设置（客户端带来的 `X-Edgeweir-*` 已先被删除）。ModSecurity 在该位置的 rewrite 与 preaccess 阶段检查请求行、请求头和请求体，早于缓存查找，所以缓存命中的请求同样被检查。内部跳转会清空 `ngx.ctx`：请求上下文先存进 worker 内的表，`$edgeweir_ctx_ref` 记下引用，在 CRS 位置的 access、header filter 和 log 阶段取回（被拦截的请求到不了 access 阶段）；取回后删除 `X-Edgeweir-Waf`，回源层也清空它，源站看不到。
+- **生成的 ModSecurity 配置**（`conf/modsecurity-<哈希>.conf`，由 agent 从 IR 渲染）：ModSecurity v3 推荐设置（`SecRuleEngine On`、请求体处理器 XML / JSON、`SecRequestBodyLimitAction ProcessPartial`、参数数量上限、请求体与 multipart 解析错误时拒绝、`SecResponseBodyAccess Off`、`SecAuditEngine Off`、`unicode.mapping`），CRS 的 `crs-setup.conf`，读取 `X-Edgeweir-Waf` 的规则（设置 `tx.blocking_paranoia_level`、`tx.detection_paranoia_level`、`tx.inbound_anomaly_score_threshold`；`detect` 用 `ctl:ruleEngine=DetectionOnly`；值缺失或格式不对时保持 CRS 默认：paranoia 1、阈值 5、拦截），每个有排除规则的站点一条按站点 id 匹配的 `ctl:ruleRemoveById` 规则，最后是 CRS 规则。这些规则都在 CRS 之前的 phase 1 运行。本地规则 id 用 10000–10611，CRS 用 900000–999999。
+- **拦截**：`block` 模式下入站异常分数达到阈值时 CRS 的 949110 拒绝请求：`403`，`X-Edgeweir-Error: waf-blocked`，`Cache-Control: no-store`。请求体解析失败等 ModSecurity 推荐规则的拒绝同样带 `waf-blocked`。`detect` 模式下规则照常匹配、计分并记录，但不拒绝。
+- **命中结果**：ModSecurity-nginx 加了一个补丁（上游 pull request #374 的回移），提供变量 `$modsecurity_triggered_rules`（匹配并记录的规则 id，按匹配顺序）与 `$modsecurity_intervention`（是否拦截）；规则 id 取自 libmodsecurity 3.0.17 的 `msc_get_rules_messages_rule_ids()`，不解析日志文本，也不写审计日志。边缘层 log 阶段读取它们：每个请求去重后最多 16 个 id，计入 `MinuteStats.waf_rules`（每站点每分钟按次数取最多的 20 条）和采样访问日志（`waf_rule_ids`、`waf_blocked`）。phase 5 的关联规则（980xxx）不计入。请求内容不落盘：ModSecurity 的审计日志关闭；它为每个被拦截的请求写一行 error 日志（含请求行与匹配规则），agent 不转发这些行，只每分钟汇总一次条数。
+- **变更**：模式、paranoia level、阈值在站点表里，热更新；加载与卸载模块、新的请求体上限、排除规则的变化会改变 `nginx.conf`（ModSecurity 配置的文件名含内容哈希），经 `nginx -t` 后 reload（§3.9）。刚 reload 而站点表尚未更新时，站点表里的请求体上限在新 `nginx.conf` 里可能没有对应位置：这时用现有最大的上限检查；新配置已经不再加载 ModSecurity 时不检查。
+- **开销**（本机 macOS arm64、Colima 4 vCPU 且与其他项目的约 45 个容器共用；节点容器 4 个 worker；oha 1.16.0 在同一 compose 网络内，并发 32、每轮 10 秒、缓存命中、约 400 字节的 whoami 响应，paranoia 1）：
+
+  | 场景 | 吞吐（req/s） | p50 | p99 |
+  | --- | --- | --- | --- |
+  | 不运行 CRS 的站点，节点未加载 ModSecurity | 92,000–108,000 | 0.19–0.21 ms | 2.5–3.1 ms |
+  | 不运行 CRS 的站点，其他站点运行 CRS（模块已加载） | 93,000–117,000 | 0.18–0.20 ms | 2.3–2.7 ms |
+  | 运行 CRS 的站点，`detect` | 6,100–8,000 | 1.8–4.9 ms | 10–21 ms |
+  | 运行 CRS 的站点，`block`（请求未被拦截） | 6,400–8,200 | 1.5–4.6 ms | 8.8–15 ms |
+
+  不运行 CRS 的站点在两种情况下的差异在本机的轮次间波动之内。运行 CRS 的请求吞吐约为前者的 1/13：4 个核心约 7,500 req/s，折合每个请求约 0.5 ms 的 CPU。内存（nginx 各进程 PSS 之和）：不加载时 30 MiB；加载 CRS 后启动时 71 MiB（CRS 在 master 解析一次，worker 写时复制共享），持续负载后 99 MiB。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -535,17 +578,20 @@ table inet edgeweir {
 | `/var/lib/edgeweir-node/challenge-keys.json` | 当前与上一份同集群配置引用的挑战凭证密钥（0600） |
 | `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json` | 控制台尚未确认的统计批次与采样访问日志批次（0600） |
 | `/var/lib/edgeweir-node/upgrade.sock`、`upgrades/` | `supervise` 监督进程的本机 socket（0600）；升级状态 `upgrades/state.json` 与各版本目录 `upgrades/releases/<任务 id>/`（0700） |
-| `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`）、`logs/nginx.pid`、`tmp/` |
+| `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`；有站点运行 OWASP CRS 时还有 `conf/modsecurity-<哈希>.conf`）、`logs/nginx.pid`、`tmp/` |
 | `/var/cache/edgeweir-node/<zone>/` | proxy_cache 数据 |
 | `/run/edgeweir-node/control.sock`、`control.sock.geo`、`edge.sock`、`origin.sock`、`origin-noverify.sock` | 控制 API、GeoIP 查询（agent 提供）、本地边缘监听、回源层（校验 / 不校验证书） |
 | `/usr/share/edgeweir-node/lua/edgeweir/` | Lua 模块 |
+| `/usr/lib/edgeweir-openresty/` | edgeweir-openresty：`nginx/sbin/nginx`、`luajit/`、`lualib/`、`bin/`；edgeweir-openresty-modsecurity 另装 `modules/ngx_http_modsecurity_module.so` 与 `lib/libmodsecurity.so.3` |
+| `/usr/share/edgeweir-openresty/` | OWASP CRS（`crs/`：`crs-setup.conf`、`rules/`、`plugins/`、`LICENSE`）与 `modsecurity/unicode.mapping` |
+| `/usr/share/doc/edgeweir-openresty/` | `NOTICE`（全部第三方组件与许可证全文）、`edgeweir-openresty.cdx.json`（组件清单）、`nginx-V.txt`、`build-toolchain.txt` |
 
 所有持久化写入都是：写临时文件 → fsync → rename → fsync 目录。状态目录为 0700。
 
 ## 5. 部署形态
 
-- **容器**：`openresty/openresty:1.31.1.1-bookworm` 为基础，agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node supervise --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。镜像带 Debian 的 `nftables` 包。内核封禁需要两项：镜像以 `--build-arg NFT_CAPABILITY=true` 构建（给 `/usr/sbin/nft` 加文件能力 `cap_net_admin+ep`），容器以 `--cap-add NET_ADMIN` 启动（compose 中为 `cap_add: [NET_ADMIN]`）。默认镜像不加任何能力；只加了文件能力而容器没有 `NET_ADMIN` 时 `nft` 无法执行，agent 退回边缘层封禁。nftables 规则作用于容器自己的网络命名空间。
-- **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty 作为 agent 的子进程运行，与发行版自带的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`，推荐安装 `nftables`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
+- **容器**：`debian:bookworm-slim` 为基础，带与 edgeweir-openresty、edgeweir-openresty-modsecurity 两个包相同的 OpenResty 树（§5.1，在同一个 Dockerfile 里构建，compose 只需本仓库即可构建镜像）；agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node supervise --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。镜像带 Debian 的 `ca-certificates` 与 `nftables` 包。内核封禁需要两项：镜像以 `--build-arg NFT_CAPABILITY=true` 构建（给 `/usr/sbin/nft` 加文件能力 `cap_net_admin+ep`），容器以 `--cap-add NET_ADMIN` 启动（compose 中为 `cap_add: [NET_ADMIN]`）。默认镜像不加任何能力；只加了文件能力而容器没有 `NET_ADMIN` 时 `nft` 无法执行，agent 退回边缘层封禁。nftables 规则作用于容器自己的网络命名空间。
+- **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty（`EDGEWEIR_NGINX_BIN=/usr/lib/edgeweir-openresty/nginx/sbin/nginx`）作为 agent 的子进程运行，与 OpenResty 官方包的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`，依赖 `edgeweir-openresty (>= 1.31.1.1-1)`，推荐安装 `edgeweir-openresty-modsecurity`（没有它时站点不能在该节点运行 OWASP CRS）与 `nftables`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
 - **systemd 下的内核封禁**：默认 unit 不授予 `CAP_NET_ADMIN`。需要时安装 `nftables`，加一个 drop-in `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`：
 
   ```ini
@@ -555,6 +601,44 @@ table inet edgeweir {
   ```
 
   然后执行 `systemctl daemon-reload && systemctl restart edgeweir-node`，日志出现 `kernel bans active` 即生效。环境能力同样被 OpenResty 子进程继承。
+
+### 5.1 edgeweir-openresty
+
+`packaging/openresty/` 从固定版本的源码构建 OpenResty，产出两个包，与 edgeweir-node 一起发布并列入同一个 `checksums.txt`（cosign 签名）：
+
+| 包 | 内容 | 依赖 |
+| --- | --- | --- |
+| `edgeweir-openresty` 1.31.1.1-1 | `/usr/lib/edgeweir-openresty`（nginx、LuaJIT、lualib、`bin/openresty`、`bin/resty`），`/usr/share/doc/edgeweir-openresty` | glibc ≥ 2.34、libgcc |
+| `edgeweir-openresty-modsecurity` 1.31.1.1-1 | `modules/ngx_http_modsecurity_module.so`、私有的 `lib/libmodsecurity.so.3`（不在动态链接器的搜索路径里）、`/usr/share/edgeweir-openresty`（CRS、`unicode.mapping`） | 同版本的 edgeweir-openresty、libstdc++ |
+
+文件名按 nfpm 惯例：`edgeweir-openresty_1.31.1.1-1_amd64.deb`、`edgeweir-openresty-1.31.1.1-1.x86_64.rpm`（arm64 为 `arm64` / `aarch64`），`-modsecurity` 同理；另有每个架构的 SPDX SBOM `edgeweir-openresty_1.31.1.1-1_<架构>.sbom.json`。`make openresty-packages ARCH=amd64|arm64` 构建到 `out/openresty/`，goreleaser 把它们复制进 `dist/`、计入 `checksums.txt` 并随发布上传；发布工作流在对应架构的机器上构建。两个包安装到独立目录，不与发行版或 OpenResty 官方的包冲突。
+
+- **构建环境**：固定 digest 的 `almalinux:9.7`，工具链（gcc 11.5、binutils 2.35.2）只从已冻结的 AlmaLinux 9.7 vault 安装。glibc 2.34 是最低要求：产物可在 RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新的发行版上运行；构建检查二进制需要的 glibc 版本不超过 2.34、libmodsecurity 需要的 libstdc++ 不超过 GLIBCXX_3.4.29。
+- **源码与校验**（`sources.lock`）：每个源码包先校验固定的 SHA-256；上游发布了签名的，再用 `keys/` 里固定的公钥以 `gpgv` 校验，并要求签名密钥属于固定的主密钥指纹。
+
+  | 组件 | 版本 | 签名 |
+  | --- | --- | --- |
+  | OpenResty | 1.31.1.1 | PGP（Yichun Zhang，`2545 1EB0 8846 0026 195B D62C B550 E09E A0E9 8066`） |
+  | OpenSSL | 3.5.9 | PGP（OpenSSL，`B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40`） |
+  | PCRE2 | 10.49 | PGP（Nicholas Wilson，`A955 3620 4A3B B489 7152 3128 2A98 E77E B6F2 4CA8`） |
+  | zlib | 1.3.2 | PGP（Mark Adler，`5ED4 6A67 21D3 6558 7791 E2AA 783F CD8E 58BC AFBA`） |
+  | Brotli | 1.2.0 | 无（SHA-256） |
+  | ngx_brotli | `a71f9312` | 无（SHA-256） |
+  | Zstandard | 1.5.7 | PGP（Zstandard Release Signing Key，`4EF4 AC63 455F C9F4 545D 9B7D EF8F E995 28B5 2FFD`） |
+  | zstd-nginx-module | 0.1.1 | 无（SHA-256） |
+  | ModSecurity | 3.0.17 | PGP（OWASP ModSecurity，`0B2B A192 4065 B446 9120 2A2A D286 E022 149F 0F6E`） |
+  | ModSecurity-nginx | 1.0.4 | PGP（同上） |
+  | YAJL | 2.1.0 | 无（SHA-256） |
+  | libxml2 | 2.15.4 | 无（SHA-256，与 GNOME 发布的 `.sha256sum` 一致） |
+  | OWASP CRS | 4.29.0 | PGP（OWASP Core Rule Set，`3600 6F0E 0BA1 6783 2158 8211 38EE ACA1 AB8A 6E72`） |
+
+- **补丁**（`patches/`）：YAJL 的安全修复（取自 Fedora：CVE-2017-16516、CVE-2022-24795、CVE-2023-33460 与内存泄漏）；ModSecurity-nginx 回移上游 pull request #374（`$modsecurity_triggered_rules`、`$modsecurity_intervention`）；zstd-nginx-module 只把 libzstd 作为自己的链接库（原配置把全部 `--with-ld-opt` 重复加入链接）。
+- **configure**：与 OpenResty 官方包相同（`--with-pcre-jit`、`--with-stream`、`--with-stream_ssl_module`、`--with-stream_ssl_preread_module`、`--with-http_v2_module`、`--with-http_v3_module`、不编译 mail 模块、`--with-http_stub_status_module`、`--with-http_realip_module`、`--with-http_addition_module`、`--with-http_auth_request_module`、`--with-http_secure_link_module`、`--with-http_random_index_module`、`--with-http_gzip_static_module`、`--with-http_sub_module`、`--with-http_dav_module`、`--with-http_flv_module`、`--with-http_mp4_module`、`--with-http_slice_module`、`--with-http_gunzip_module`、`--with-threads`、`--with-compat`、`--with-http_ssl_module`、`--without-http_rds_json_module`、`--without-http_rds_csv_module`、`--without-lua_rds_parser`、LuaJIT `-DLUAJIT_NUMMODE=2 -DLUAJIT_ENABLE_LUA52COMPAT`，`--with-cc-opt` 含 `-DNGX_LUA_ABORT_AT_PANIC`），`--prefix=/usr/lib/edgeweir-openresty`，另加 `--add-module` ngx_brotli（过滤与静态模块）和 zstd-nginx-module。不编译 `http_auth_basic`：它需要 `crypt(3)`，AlmaLinux 9 的 libcrypt.so.2 在 Debian 与 Ubuntu 上不存在；节点不使用 Basic 认证。编译加 `-fstack-protector-strong -fstack-clash-protection -D_FORTIFY_SOURCE=2`（x86_64 另有 `-fcf-protection`），链接 `-z relro -z now`。
+- **静态链接**：OpenSSL（`no-shared`，`enable-ktls`）、PCRE2、zlib、Brotli、Zstandard 静态链接进 nginx。OpenSSL 与 PCRE2 以整个静态库链接并导出（ngx_lua 的 `-Wl,-E`）：LuaJIT FFI 代码（lua-resty-openssl、`resty.sha256`）在进程内找 libcrypto 的函数，找不到时会去加载系统的 libcrypto；构建检查 nginx 导出了这些符号，并用 `resty` 实测 HMAC、随机数与 SHA-256。动态模块也会链接 `--with-ld-opt`，所以 ModSecurity-nginx 在第二遍 nginx configure 里（同一份打过补丁的 nginx 源码、同样的参数与 `--with-compat`）单独构建。libmodsecurity 编译为共享库，PCRE2、YAJL、libxml2 静态链入并隐藏符号（`--exclude-libs`），不带 curl、GeoIP、MaxMind、LMDB、Lua、ssdeep；运行时只依赖 libstdc++、libgcc 与 glibc，模块经 RPATH 找到 `/usr/lib/edgeweir-openresty/lib`。
+- **可复现**：`SOURCE_DATE_EPOCH` 取自 `sources.lock`，固定构建路径，`-ffile-prefix-map`，二进制去掉符号，文件时间、属主与权限统一，nfpm 使用同一时间戳。在 arm64 上不使用缓存重新构建，树（`tree.sha256`）与四个包的 SHA-256 与前一次完全相同。
+- **许可证**：构建前逐个检查源码中的许可证文件（文件存在、仍含预期的许可证文字），全部允许商业使用；`NOTICE` 列出每个组件、版本与 SPDX 标识并附许可证全文（OpenResty 及其捆绑模块 BSD-2-Clause / BSD-3-Clause / MIT，nginx BSD-2-Clause，LuaJIT MIT，OpenSSL Apache-2.0，PCRE2 BSD-3-Clause WITH PCRE2-exception，zlib Zlib，Brotli MIT，ngx_brotli BSD-2-Clause，Zstandard 按 BSD-3-Clause，zstd-nginx-module BSD-2-Clause，ModSecurity 与 ModSecurity-nginx Apache-2.0，ModSecurity 捆绑的 libinjection BSD-3-Clause 与 Mbed TLS（按 Apache-2.0），YAJL ISC，libxml2 MIT，OWASP CRS Apache-2.0）。
+- **SBOM**：构建写入 CycloneDX 组件清单（`sources.lock` 的每个源码及其 SHA-256、OpenResty 捆绑并编译的组件、ModSecurity 捆绑的库），syft 扫描安装树时并入，生成 SPDX SBOM。
+- **更新**：改 `sources.lock` 的版本、URL、SHA-256（签名密钥轮换时连同 `keys/` 与指纹），并把 `epoch` 改为新的日期；包的 release 号在 `nfpm/*.yaml`，源码不变而包变化时加一。edgeweir-node 包依赖的最低版本在 `.goreleaser.yaml`。
 
 ## 6. 已知限制
 
@@ -569,6 +653,8 @@ table inet edgeweir {
 - 本机自动封禁只在数据面字典里，nginx 重启后丢失（已上报并由控制台共享的条目会再次下发）。
 - CC 计数与级别按节点独立决策，nginx 重启后从正常级别重新开始。
 - JA4 看不到 OpenSSL 不认识的 ClientHello 扩展，没有 `supported_versions` 时版本取协商结果（§3.16）。
+- 运行 OWASP CRS 的站点：ModSecurity-nginx 在回源前读完整个请求体（最多 `client_max_body_size` 100m，超过缓冲区时写入临时文件）再检查，上传不再流式转发；超过请求体检查上限的部分不检查（`ProcessPartial`）。响应体不检查（`SecResponseBodyAccess Off`），CRS 的响应规则只看响应头。WebSocket 升级请求只检查握手。
+- CRS 在节点上按 paranoia level 与规则运行，误报需要按规则 id 排除；每个请求约 0.5 ms CPU（§3.18）。
 - 内核按 TCP 连接的源地址丢包。节点在要求 PROXY protocol 的负载均衡器之后时，内核只看到负载均衡器的地址：平台封禁对客户端只在边缘层生效，负载均衡器的地址需要放进平台 `allow` 名单，否则封禁它会丢弃经它转发的全部流量。
 
 ## HTTPS 与证书

@@ -41,6 +41,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 所有管理操作都写审计日志（控制面）。
 - 发布物全部签名，并附校验说明，见下文"验证发布物"。
 - CI 构建产物与源码一一对应。构建可复现：使用 `-trimpath`，模块文件时间戳固定为提交时间，兼容 `SOURCE_DATE_EPOCH`。可复现目标覆盖二进制、安装包和压缩包；容器镜像不逐字节可复现，其中之一是它内置构建当天的 IPinfo Lite 数据库：构建时从 IPinfo 下载，按 IPinfo 公布的 sha256 校验并由 agent 自身的读取代码检查，所含副本由镜像内 `NOTICE` 的 sha256 标识。
+- 节点的 OpenResty（edgeweir-openresty）从 `packaging/openresty/sources.lock` 固定的源码构建：每个源码包校验 SHA-256，OpenResty、OpenSSL、PCRE2、zlib、Zstandard、ModSecurity、ModSecurity-nginx 与 OWASP CRS 另以固定公钥校验上游的 PGP 签名；工具链来自冻结的 AlmaLinux 9.7 仓库，同一输入构建出的包逐字节相同。OpenSSL、PCRE2、zlib 静态链接，升级它们需要发布新的 edgeweir-openresty。
 - 下载数据用的 IPinfo token 只以 BuildKit secret 传给构建，不进入镜像层、构建参数、来源证明或日志；节点运行时不联系 IPinfo。
 
 ## 节点侧安全设计

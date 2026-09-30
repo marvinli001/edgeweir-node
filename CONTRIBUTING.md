@@ -37,6 +37,7 @@
 | `make e2e` | 容器冒烟测试（假控制面 + 节点 + 源站） |
 | `make proto` | 从 proto git tag 重新生成 Go 代码 |
 | `make proto-check` | 重新生成，若与已提交的代码不一致则失败 |
+| `make openresty-packages ARCH=amd64\|arm64` | 从 `packaging/openresty/sources.lock` 的源码构建 edgeweir-openresty 与 edgeweir-openresty-modsecurity（deb、rpm）和 SBOM，输出到 `out/openresty/`；`goreleaser` 把它们计入 `checksums.txt` |
 | `make pin-check` | 第三方镜像没按 digest、GitHub Actions 没按 commit SHA 固定时失败（`scripts/check-pins.sh`，CI 运行） |
 | `make release-check` | 校验 goreleaser 配置 |
 | `make snapshot` | 本地构建发布物，不发布，不签名 |
@@ -76,6 +77,17 @@ feat(proto): bump contract to proto/v0.1.1
 
 - 镜像：`docker buildx imagetools inspect <镜像>:<tag>` 输出的 `Digest` 就是多架构 index 的 digest（不要用单一平台的 digest）。
 - Actions：`git ls-remote --tags https://github.com/<owner>/<action>` 找到版本 tag 对应的提交；带 `^{}` 的行是附注 tag 指向的提交，要用这一行的 SHA。
+
+## 更新 edgeweir-openresty
+
+源码版本都在 `packaging/openresty/sources.lock`（格式见文件头）。升级一个组件：
+
+1. 从上游的发布页确认新版本，下载源码包与签名，改 `sources.lock` 里的版本、URL 与 SHA-256；签名密钥变化时把新公钥导出到 `keys/`（`gpg --armor --export-options export-minimal --export <指纹>`）并改指纹，指纹要能在上游的官方文档里核对。
+2. 把 `epoch` 改成当天 0 点（UTC）的时间戳；源码不变、只有打包变化时改 `nfpm/*.yaml` 的 `release`。OpenResty 版本变化时同时改 `.goreleaser.yaml` 里 edgeweir-node 包依赖的最低版本。
+3. `make openresty-packages ARCH=arm64`（或 amd64）：构建会校验签名与许可证、检查链接与导出的符号，并用 `nginx -t` 加载 ModSecurity 与 CRS。再跑 `make e2e`。
+4. 可复现检查：`docker buildx build --no-cache` 重新构建一次 `packaging/openresty/Dockerfile` 的 `packages` 目标，`tree.sha256` 与包的 SHA-256 应当不变。
+
+`Dockerfile` 与 `packaging/openresty/Dockerfile` 中 `# BEGIN openresty-build` 与 `# END openresty-build` 之间的阶段必须相同（`go test ./cmd/...` 检查）。
 
 ## Proto 契约与代码生成
 

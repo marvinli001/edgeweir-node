@@ -5,14 +5,16 @@
 [![CI](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
-Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir-node` Go agent and an OpenResty (Lua) data plane.
+Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir-node` Go agent and an OpenResty (Lua) data plane. OpenResty is edgeweir-openresty, built from pinned and verified sources with Brotli, Zstandard and optional ModSecurity with the OWASP CRS.
 
 ## Features
 
 | Area | Capabilities |
 | --- | --- |
-| HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, Gzip, hot certificate rotation |
+| HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, hot certificate rotation |
+| Compression | gzip, Brotli, Zstandard; one coding per response by the q-values of `Accept-Encoding` (zstd > br > gzip at equal q), one uncompressed object in the cache |
 | Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
+| OWASP CRS | Per-site managed rules (ModSecurity v3 + CRS 4.29.0): detect only / block, paranoia level, anomaly threshold, excluded rules, request body inspection limit; cache hits are inspected too, sites without CRS never pass through ModSecurity |
 | Challenges and CC mitigation | Four challenge levels (cookie redirect, JS, proof of work, image captcha), signed passes, node-local tiered CC mitigation, JA4 fingerprints |
 | Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing, passive health checks, purge, prefetch |
 | Statistics and logs | Per-site per-minute traffic statistics (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
@@ -29,7 +31,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
 - Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`), generated with buf from git tag `proto/v0.11.0`.
-- Structural changes (listeners, cache zones, resolver, the set of sites, domains and protocol settings of HTTPS sites) re-render `nginx.conf` and reload after `openresty -t`; all other changes are hot-updated without a reload.
+- Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules) re-render `nginx.conf` and reload after `openresty -t`; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
 | --- | --- |
@@ -37,6 +39,8 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Unknown host | `404`, `X-Edgeweir-Error: unknown-host` |
 | Forwarding loop | Upstream requests carry `CDN-Loop`; loops end with `508` |
 | Origin addresses | Special-purpose ranges (loopback, link-local / cloud metadata, private networks, ...) rejected unless allowed by the platform |
+| CRS block | `403`, `X-Edgeweir-Error: waf-blocked` |
+| Compression | `Content-Encoding: zstd` / `br` / `gzip`, `Vary: Accept-Encoding` |
 
 Details: [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese).
 
@@ -44,23 +48,26 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese).
 
 ### Console install command (recommended)
 
-The console generates an install command per node. `install.sh` verifies the SHA-256 and cosign signature of the release artifacts, installs OpenResty and `edgeweir-node`, enrolls with the pinned CA fingerprint and starts the service; the one-time token is passed in `EDGEWEIR_TOKEN`. `--allow-unsigned` is for development only: it skips the signature check and keeps the SHA-256 check.
+The console generates an install command per node. `install.sh` verifies the SHA-256 and cosign signature of the release artifacts, installs `edgeweir-openresty`, `edgeweir-openresty-modsecurity` and `edgeweir-node`, enrolls with the pinned CA fingerprint and starts the service; the one-time token is passed in `EDGEWEIR_TOKEN`. `--allow-unsigned` is for development only: it skips the signature check and keeps the SHA-256 check.
 
 ### deb / rpm
 
-Prerequisite: OpenResty from the [official repositories](https://openresty.org/en/linux-packages.html) with its own service disabled (`sudo systemctl disable --now openresty`); the agent runs OpenResty as a child process.
+Requirements: glibc 2.34 or later (RHEL / Rocky / AlmaLinux 9, Debian 12, Ubuntu 22.04 and newer), amd64 or arm64. The agent runs OpenResty as a child process; if OpenResty's own packages are installed, disable their service (`sudo systemctl disable --now openresty`).
 
-Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
+Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `edgeweir-openresty_1.31.1.1-1_<arch>.deb` / `edgeweir-openresty-1.31.1.1-1.<arch>.rpm`, the `edgeweir-openresty-modsecurity` packages named alike, `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
 
 ```sh
-sudo apt install ./edgeweir-node_<version>_amd64.deb   # or sudo dnf install ./edgeweir-node-<version>-1.x86_64.rpm
+sudo apt install ./edgeweir-openresty_1.31.1.1-1_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-1_amd64.deb \
+  ./edgeweir-node_<version>_amd64.deb
+# or sudo dnf install ./edgeweir-openresty-1.31.1.1-1.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-1.x86_64.rpm \
+#      ./edgeweir-node-<version>-1.x86_64.rpm
 sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
 sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
 sudo rm /root/edgeweir-token
 sudo systemctl enable --now edgeweir-node
 ```
 
-Package contents: `/usr/bin/edgeweir-node`, `/usr/share/edgeweir-node/lua`, the systemd unit, `/etc/default/edgeweir-node`; creates the unprivileged `edgeweir` user and its state and cache directories.
+Package contents: `edgeweir-node` installs `/usr/bin/edgeweir-node`, `/usr/share/edgeweir-node/lua`, the systemd unit and `/etc/default/edgeweir-node`, and creates the unprivileged `edgeweir` user and its state and cache directories; `edgeweir-openresty` installs `/usr/lib/edgeweir-openresty` (OpenResty, LuaJIT, Brotli, Zstandard); the optional `edgeweir-openresty-modsecurity` adds the ModSecurity module and `/usr/share/edgeweir-openresty/crs`, without which sites cannot enable the OWASP CRS on the node. Third-party licenses: `/usr/share/doc/edgeweir-openresty/NOTICE`.
 
 ### Docker
 
@@ -181,6 +188,8 @@ edgeweir-node version
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
 | `/usr/share/edgeweir-node/geoip` | IPinfo Lite database and `NOTICE` (container image) |
+| `/usr/lib/edgeweir-openresty` | OpenResty (`nginx/sbin/nginx`), the ModSecurity module in `modules/` |
+| `/usr/share/edgeweir-openresty/crs` | OWASP CRS |
 | `:80` | HTTP listener before any configuration; afterwards as configured |
 
 ## Build and test
@@ -192,7 +201,8 @@ make build         # static binary in bin/
 make vet test      # go vet ./... && go test ./...
 make test-race     # race detector
 make lua-test      # Lua unit tests (resty in the OpenResty image)
-make docker        # image; bundles IPinfo Lite via a BuildKit secret when IPINFO_TOKEN is set
+make docker        # image (builds edgeweir-openresty too); bundles IPinfo Lite via a BuildKit secret when IPINFO_TOKEN is set
+make openresty-packages ARCH=arm64   # edgeweir-openresty deb / rpm and SBOM into out/openresty/
 make e2e           # container smoke test: fake console + node + whoami origins
 make proto-check   # regenerate from the proto tag and check for drift
 make snapshot      # local goreleaser snapshot (unsigned)
@@ -208,7 +218,7 @@ Conventions and proto generation: [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese).
 
 ## Verify release artifacts
 
-Releases are built in GitHub Actions from the tagged source and are reproducible (`-trimpath`, commit timestamps); the IPinfo Lite copy in a container image is identified by the sha256 in its `NOTICE`. `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact carries a SLSA build provenance attestation.
+Releases are built in GitHub Actions from the tagged source and are reproducible (`-trimpath`, commit timestamps); the IPinfo Lite copy in a container image is identified by the sha256 in its `NOTICE`. The edgeweir-openresty packages are built from the sources pinned in `packaging/openresty/sources.lock`: every source is checked against its SHA-256 and, where upstream signs it, its PGP signature against a pinned key; the same inputs build byte-identical packages. `checksums.txt` covers every archive, package (edgeweir-openresty included) and SBOM and is signed with cosign keyless; each artifact carries a SLSA build provenance attestation.
 
 ```sh
 cosign verify-blob \
@@ -222,7 +232,7 @@ gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli
 
 ## Known limitations
 
-- The OpenResty engine does not include Brotli or Zstd.
+- Sites with the OWASP CRS cost about 0.5 ms of CPU per request; request bodies are read in full before inspection and forwarding, response bodies are not inspected (ARCHITECTURE.md §3.18).
 - Certificate materials live in `certificates.json` (0600), readable by host administrators.
 - The V2 statistics RPC is incompatible with older consoles; upgrade the console and nodes together.
 - Each published site reserves a fixed 256 KiB rate-limit counter partition; up to 512 published sites per cluster. See [rate-limit storage](docs/rate-limit-storage.md).
