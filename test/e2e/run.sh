@@ -12,8 +12,14 @@
 #   6. dynamic bans: a site ban answers 403 ip-banned on that site only, a
 #      platform ban on every site, unbanning restores access (the node has
 #      no NET_ADMIN here: bans stay at the edge layer);
-#   7. a new site reserves its partition; later existing-site changes stay hot;
-#   8. restarting the container serves the last-known-good config.
+#   7. challenges: Under Attack with cookie302 (302 + pass, bound to the
+#      client), js and pow (token redeemed once at /.edgeweir/challenge/verify,
+#      303 + pass), 403 for other methods without a pass, the reserved
+#      prefix never reaches the origin;
+#   8. CC: an address over its rate is banned and reported, the site level
+#      rises under load (edgeweir-node security shows it);
+#   9. a new site reserves its partition; later existing-site changes stay hot;
+#  10. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -31,12 +37,14 @@ cleanup() {
     echo "--- console logs ---"
     compose logs --no-color --tail=50 console || true
   fi
+  [ -n "${TMPDIR_E2E:-}" ] && rm -rf "$TMPDIR_E2E"
   if [ "${E2E_KEEP:-0}" != "1" ]; then
     compose down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   exit "$status"
 }
 trap cleanup EXIT
+TMPDIR_E2E=$(mktemp -d)
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok   $*"; }
@@ -207,6 +215,102 @@ WAIT_SECS=10 wait_for "unbanned" pp_allowed demo.test 198.51.100.23
 pp_allowed keyed.test 198.51.100.24 || fail "the platform ban outlived its removal"
 pass "site ban 403 on its site only, platform ban on every site, unban restores access"
 
+# Challenges. The node fetched the cluster's keys with the configuration.
+hdrs() { curl -s -o /dev/null -D - "$@" | tr -d '\r'; }
+status_of() { sed -n '1s/^HTTP[^ ]* \([0-9]*\).*/\1/p'; }
+header_of() { awk -v h="$1" -F': ' 'tolower($1)==tolower(h){print $2}'; }
+cookie_of() { header_of set-cookie | cut -d';' -f1; }
+state=$(compose exec -T node edgeweir-node security)
+grep -q '"current": "e2e-key-2"' <<<"$state" || fail "challenge keys not installed: $state"
+resp=$(hdrs -H 'Host: ua.test' -A 'e2e-browser' "$NODE/ua-page?x=1")
+[ "$(status_of <<<"$resp")" = 302 ] || fail "Under Attack cookie302 answered $(status_of <<<"$resp"), want 302"
+[ "$(header_of x-edgeweir-challenge <<<"$resp")" = cookie302 ] || fail "no X-Edgeweir-Challenge: cookie302"
+[ "$(header_of location <<<"$resp")" = "http://ua.test/ua-page?x=1" ] || fail "cookie302 Location: $(header_of location <<<"$resp")"
+pass_cookie=$(cookie_of <<<"$resp")
+case "$pass_cookie" in __ew_pass=v1.e2e-key-2.*) ;; *) fail "pass cookie: $pass_cookie" ;; esac
+header_of set-cookie <<<"$resp" | grep -q '; HttpOnly; SameSite=Lax' || fail "pass cookie attributes: $(header_of set-cookie <<<"$resp")"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ua.test' -A 'e2e-browser' -H "Cookie: $pass_cookie" "$NODE/ua-page?x=1")
+[ "$code" = 200 ] || fail "request with the pass returned $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ua.test' -A 'another-agent' -H "Cookie: $pass_cookie" "$NODE/ua-page")
+[ "$code" = 302 ] || fail "pass accepted for another User-Agent ($code)"
+forged=${pass_cookie%?}
+case "$pass_cookie" in *A) forged="${forged}B" ;; *) forged="${forged}A" ;; esac
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ua.test' -A 'e2e-browser' -H "Cookie: $forged" "$NODE/ua-page")
+[ "$code" = 302 ] || fail "forged pass accepted ($code)"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: js.test' -A 'e2e-browser' -H "Cookie: $pass_cookie" "$NODE/")
+[ "$code" = 403 ] || fail "pass of ua.test accepted on js.test ($code)"
+code=$(curl -s -L -o /dev/null -w '%{http_code}' -b '' -c /dev/null -A 'e2e-browser' --connect-to "ua.test:80:127.0.0.1:${E2E_NODE_PORT:-28080}" "http://ua.test/followed")
+[ "$code" = 200 ] || fail "a client with cookies following redirects got $code"
+resp=$(hdrs -X POST -H 'Host: ua.test' -d 'x=1' "$NODE/form")
+[ "$(status_of <<<"$resp")" = 403 ] && [ "$(header_of x-edgeweir-challenge <<<"$resp")" = required ] ||
+  fail "POST without a pass: $(status_of <<<"$resp") $(header_of x-edgeweir-challenge <<<"$resp")"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Host: ua.test' -A 'e2e-browser' -H "Cookie: $pass_cookie" -d 'x=1' "$NODE/form")
+[ "$code" = 200 ] || fail "POST with a pass returned $code"
+pass "Under Attack cookie302: 302 with a pass bound to site and User-Agent, POST without a pass 403"
+
+verify() { # host token answer -> response headers
+  hdrs -X POST -H "Host: $1" -A 'e2e-browser' --data-urlencode "t=$2" --data-urlencode "a=$3" --data-urlencode "r=/after?q=1" "$NODE/.edgeweir/challenge/verify"
+}
+page=$(curl -s -D "$TMPDIR_E2E/js.h" -H 'Host: js.test' -A 'e2e-browser' "$NODE/js-page")
+[ "$(tr -d '\r' <"$TMPDIR_E2E/js.h" | status_of)" = 403 ] || fail "js challenge page status"
+csp=$(tr -d '\r' <"$TMPDIR_E2E/js.h" | header_of content-security-policy)
+nonce=$(sed -n "s/.*script-src 'nonce-\([^']*\)'.*/\1/p" <<<"$csp")
+[ -n "$nonce" ] && grep -q "<script nonce=\"$nonce\">" <<<"$page" || fail "challenge page without its CSP nonce: $csp"
+grep -q "default-src 'none'" <<<"$csp" && grep -q "frame-ancestors 'none'" <<<"$csp" || fail "CSP: $csp"
+token=$(sed -n 's/.*name="t" value="\([^"]*\)".*/\1/p' <<<"$page" | head -1)
+answer=$(printf '%s' "$token" | sha256 | cut -d' ' -f1)
+resp=$(verify js.test "$token" "$answer")
+[ "$(status_of <<<"$resp")" = 303 ] && [ "$(header_of location <<<"$resp")" = "http://js.test/after?q=1" ] ||
+  fail "js verify: $(status_of <<<"$resp") $(header_of location <<<"$resp")"
+js_cookie=$(cookie_of <<<"$resp")
+[ -n "$js_cookie" ] || fail "js verify set no pass"
+resp=$(verify js.test "$token" "$answer")
+[ "$(status_of <<<"$resp")" = 303 ] && [ -z "$(cookie_of <<<"$resp")" ] || fail "a redeemed token was accepted again"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: js.test' -A 'e2e-browser' -H "Cookie: $js_cookie" "$NODE/after?q=1")
+[ "$code" = 200 ] || fail "js pass returned $code"
+pass "js challenge: CSP nonce, token redeemed once, 303 with a pass"
+
+page=$(curl -s -H 'Host: pow.test' -A 'e2e-browser' "$NODE/pow-page")
+token=$(sed -n 's/.*name="t" value="\([^"]*\)".*/\1/p' <<<"$page" | head -1)
+grep -q 'data-d="8"' <<<"$page" || fail "pow page without the site's difficulty"
+n=0
+until printf '%s:%d' "$token" "$n" | sha256 | grep -q '^00'; do n=$((n + 1)); done
+resp=$(verify pow.test "$token" "$n")
+[ "$(status_of <<<"$resp")" = 303 ] && [ -n "$(cookie_of <<<"$resp")" ] || fail "pow verify with n=$n: $(status_of <<<"$resp")"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: pow.test' -A 'e2e-browser' -H "Cookie: $(cookie_of <<<"$resp")" "$NODE/pow-page")
+[ "$code" = 200 ] || fail "pow pass returned $code"
+worker=$(hdrs -H 'Host: pow.test' "$NODE/.edgeweir/challenge/worker.js")
+[ "$(status_of <<<"$worker")" = 200 ] && header_of content-type <<<"$worker" | grep -q javascript || fail "worker script: $worker"
+resp=$(hdrs -H 'Host: demo.test' "$NODE/.edgeweir/other")
+[ "$(status_of <<<"$resp")" = 404 ] && [ "$(header_of x-edgeweir-error <<<"$resp")" = not-found ] || fail "reserved prefix reached the origin: $resp"
+pass "pow challenge (8 bits), worker script, reserved prefix answered at the edge"
+
+# CC: one address over 2 requests per second is banned and reported.
+cc_codes=""
+for _ in $(seq 1 14); do cc_codes="$cc_codes $(pp_status cc.test 203.0.113.50)"; done
+grep -q 403 <<<"$cc_codes" || fail "no CC ban after 14 requests: $cc_codes"
+[ "$(pp_status cc.test 203.0.113.51)" = 200 ] || fail "the CC ban hit another address"
+pp_banned cc.test 203.0.113.50 || fail "the banned address still reaches cc.test"
+security_event() { curl -fsS "$HELPER/security-events" | grep -q "^$1"; }
+WAIT_SECS=30 wait_for "ip_banned event" security_event "ip_banned site-cc [a-z]* 203.0.113.50 ip_qps"
+pass "CC: an address over its rate is banned once and reported"
+
+# CC: sustained load on the site raises its level to cookie302.
+end=$((SECONDS + 9))
+i=0
+while [ "$SECONDS" -lt "$end" ]; do
+  i=$((i + 1))
+  pp_status cc.test "198.18.$((i / 200)).$((i % 200 + 1))" >/dev/null &
+  [ $((i % 10)) -eq 0 ] && { wait; sleep 0.1; }
+done
+wait
+level_is() { compose exec -T node edgeweir-node security | grep -A2 '"site_id": "site-cc"' | grep -q "\"level\": \"$1\""; }
+WAIT_SECS=15 wait_for "site-cc at cookie302" level_is cookie302
+resp=$(pp_request cc.test 192.0.2.77 /under-load | tr -d '\r')
+[ "$(status_of <<<"$resp")" = 302 ] && grep -qi '^X-Edgeweir-Challenge: cookie302$' <<<"$resp" || fail "CC level not applied: $(head -1 <<<"$resp")"
+WAIT_SECS=30 wait_for "site_level event" security_event "site_level site-cc cookie302"
+pass "CC: sustained load raised site-cc to cookie302 ($i requests)"
+
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
@@ -226,6 +330,7 @@ pass "revision $rev hot-updated without nginx reload"
 compose restart node >/dev/null
 wait_for "node back after restart" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo2.test' $NODE/)\" = 200 ]"
 compose logs node | grep "serving last-known-good configuration" >/dev/null || fail "LKG not restored on restart"
+compose exec -T node edgeweir-node security | grep -q '"current": "e2e-key-2"' || fail "challenge keys not restored on restart"
 pass "last-known-good configuration served after restart"
 
 if [ "${E2E_STATS:-0}" = "1" ]; then

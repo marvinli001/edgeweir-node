@@ -11,6 +11,13 @@
 //	tls-ok.test     -> https://console:8444, SNI origin.test (200)
 //	tls-bad.test    -> https://console:8444, SNI wrong.test (502: the
 //	                   certificate is only valid for origin.test)
+//	ua.test, js.test, pow.test  Under Attack with cookie302, js and pow
+//	                   (8 bits), passes of 5 minutes
+//	cc.test         CC: 2 requests per second per address, 20 per second
+//	                   for the site, 2 seconds to escalate, up to cookie302
+//
+// Every revision carries three challenge keys (e2e-key-1..3, current
+// e2e-key-2) that GetChallengeKeys hands out.
 //
 // The HTTPS origin's certificate comes from a separate CA that is written
 // to --origin-ca-out; the node trusts it through --trusted-ca.
@@ -36,6 +43,10 @@
 //	POST /unban?id=  lift a ban; answers the sequence
 //	GET /ban-status  "<applied_sequence> <entries> <unapplied> <kernel_entries>
 //	              <kernel-ban-v1: yes|no>" from the last ReportStatus
+//	GET /security-events  "<kind> <site> <level> <address> <metric>" per
+//	              reported CC event
+//	GET /security-state   "<site> <level> <escalated paths>" per site above
+//	              normal in the last ReportStatus
 package main
 
 import (
@@ -96,6 +107,13 @@ func serveTLSOrigin(addr, caOut string) {
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
+func cmpOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
 func site(id, domain, origin string, port uint32) *nodev1.Site {
 	return &nodev1.Site{
 		Id: id, Name: id, Enabled: true,
@@ -137,8 +155,15 @@ func ownNetworks() []string {
 
 var allowList []string
 
+// challengeKeys are the cluster's pass keys.
+var challengeKeys = []*nodev1.ChallengeKeyRef{
+	{Id: "e2e-key-1", Role: "previous"}, {Id: "e2e-key-2", Role: "current"}, {Id: "e2e-key-3", Role: "next"},
+}
+
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
+		ChallengeKeys:    challengeKeys,
+		RequiredFeatures: []string{"challenge-v1"},
 		Listeners: []*nodev1.Listener{
 			{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
 			// Behind a load balancer that speaks the PROXY protocol.
@@ -161,7 +186,29 @@ func baseSites(origin string) []*nodev1.Site {
 		tlsSite("site-tls-bad", "tls-bad.test", "wrong.test"),
 		keyedSite(origin),
 		authSite(origin),
+		underAttackSite("site-ua", "ua.test", origin, "cookie302"),
+		underAttackSite("site-js", "js.test", origin, "js"),
+		underAttackSite("site-pow", "pow.test", origin, "pow"),
+		ccSite(origin),
 	}
+}
+
+// underAttackSite challenges every request without a pass.
+func underAttackSite(id, domain, origin, challenge string) *nodev1.Site {
+	s := site(id, domain, origin, 80)
+	s.Protection = &nodev1.SiteProtection{UnderAttack: true, UnderAttackChallenge: challenge, PassTtlSeconds: 300, PowDifficulty: 8, PowHighDifficulty: 8}
+	return s
+}
+
+// ccSite bans addresses over 2 requests per second and escalates to
+// cookie302 after 2 seconds over 20 requests per second.
+func ccSite(origin string) *nodev1.Site {
+	s := site("site-cc", "cc.test", origin, 80)
+	s.Protection = &nodev1.SiteProtection{Cc: &nodev1.CcPolicy{
+		Enabled: true, MaxLevel: "cookie302", WindowSeconds: 5, SiteQps: 20, IpQps: 2, IpBanSeconds: 60,
+		EscalateAfterSeconds: 2, CooldownSeconds: 5,
+	}}
+	return s
 }
 
 // authSite caches requests with Authorization (cache_authorized).
@@ -201,6 +248,9 @@ func main() {
 		log.Fatal(err)
 	}
 	c.AddToken(*token)
+	for i, k := range challengeKeys {
+		c.SetChallengeKey(k.GetId(), []byte(fmt.Sprintf("e2e challenge key %d, 32 bytes!!", i+1)))
+	}
 	c.Publish(config(baseSites(*origin)...))
 
 	tlsCfg, err := c.TLSConfig(strings.Split(*names, ","), []net.IP{net.IPv4(127, 0, 0, 1)})
@@ -292,6 +342,18 @@ func main() {
 			kernel = "yes"
 		}
 		fmt.Fprintf(w, "%d %d %d %d %s", b.GetAppliedSequence(), b.GetEntries(), b.GetUnapplied(), b.GetKernelEntries(), kernel)
+	})
+	mux.HandleFunc("GET /security-events", func(w http.ResponseWriter, _ *http.Request) {
+		events, _ := c.SecurityEvents()
+		for _, e := range events {
+			fmt.Fprintf(w, "%s %s %s %s %s\n", strings.ToLower(strings.TrimPrefix(e.GetKind().String(), "SECURITY_EVENT_KIND_")),
+				e.GetSiteId(), e.GetLevel(), cmpOr(e.GetAddress(), "-"), e.GetMetric())
+		}
+	})
+	mux.HandleFunc("GET /security-state", func(w http.ResponseWriter, _ *http.Request) {
+		for _, s := range c.LastStatus().GetSecurity() {
+			fmt.Fprintf(w, "%s %s %d\n", s.GetSiteId(), s.GetLevel(), s.GetEscalatedPaths())
+		}
 	})
 	go func() {
 		log.Printf("helper API on %s", *helper)
