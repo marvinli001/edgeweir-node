@@ -188,7 +188,7 @@ func Draw(r io.Reader, answer string) ([]byte, error) {
 		cx := cell*(float64(i)+0.5) + between(-3, 3)
 		cy := float64(Height)/2 + between(-5, 5)
 		sx, sy := between(3.6, 4.5), between(3.6, 4.4)
-		angle, shear := between(-0.35, 0.35), between(-0.3, 0.3)
+		angle, shear := between(-0.25, 0.25), between(-0.2, 0.2)
 		cos, sin := math.Cos(angle), math.Sin(angle)
 		for y := 0; y < Height; y++ {
 			for x := int(cx - cell); x <= int(cx+cell); x++ {
