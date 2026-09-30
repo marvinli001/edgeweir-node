@@ -63,6 +63,10 @@ const (
 	// NodeServiceReportTaskResultProcedure is the fully-qualified name of the NodeService's
 	// ReportTaskResult RPC.
 	NodeServiceReportTaskResultProcedure = "/edgeweir.node.v1.NodeService/ReportTaskResult"
+	// NodeServiceGetBansProcedure is the fully-qualified name of the NodeService's GetBans RPC.
+	NodeServiceGetBansProcedure = "/edgeweir.node.v1.NodeService/GetBans"
+	// NodeServiceReportBansProcedure is the fully-qualified name of the NodeService's ReportBans RPC.
+	NodeServiceReportBansProcedure = "/edgeweir.node.v1.NodeService/ReportBans"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -97,6 +101,13 @@ type NodeServiceClient interface {
 	PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error)
 	// ReportTaskResult records the outcome of a task on the calling node.
 	ReportTaskResult(context.Context, *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error)
+	// GetBans returns the dynamic IP bans of the node's cluster, incrementally
+	// by sequence. Bans never travel in NodeConfig and never create a
+	// revision. Added in v0.9.0 (feature bans-v1).
+	GetBans(context.Context, *connect.Request[v1.GetBansRequest]) (*connect.Response[v1.GetBansResponse], error)
+	// ReportBans uploads bans the node created itself (automatic mitigation).
+	// Idempotent: the console keys them by (node, site, cidr). Added in v0.9.0.
+	ReportBans(context.Context, *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -182,6 +193,18 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportTaskResult")),
 			connect.WithClientOptions(opts...),
 		),
+		getBans: connect.NewClient[v1.GetBansRequest, v1.GetBansResponse](
+			httpClient,
+			baseURL+NodeServiceGetBansProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("GetBans")),
+			connect.WithClientOptions(opts...),
+		),
+		reportBans: connect.NewClient[v1.ReportBansRequest, v1.ReportBansResponse](
+			httpClient,
+			baseURL+NodeServiceReportBansProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("ReportBans")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -199,6 +222,8 @@ type nodeServiceClient struct {
 	getCertificates      *connect.Client[v1.GetCertificatesRequest, v1.GetCertificatesResponse]
 	pullTasks            *connect.Client[v1.PullTasksRequest, v1.PullTasksResponse]
 	reportTaskResult     *connect.Client[v1.ReportTaskResultRequest, v1.ReportTaskResultResponse]
+	getBans              *connect.Client[v1.GetBansRequest, v1.GetBansResponse]
+	reportBans           *connect.Client[v1.ReportBansRequest, v1.ReportBansResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -261,6 +286,16 @@ func (c *nodeServiceClient) ReportTaskResult(ctx context.Context, req *connect.R
 	return c.reportTaskResult.CallUnary(ctx, req)
 }
 
+// GetBans calls edgeweir.node.v1.NodeService.GetBans.
+func (c *nodeServiceClient) GetBans(ctx context.Context, req *connect.Request[v1.GetBansRequest]) (*connect.Response[v1.GetBansResponse], error) {
+	return c.getBans.CallUnary(ctx, req)
+}
+
+// ReportBans calls edgeweir.node.v1.NodeService.ReportBans.
+func (c *nodeServiceClient) ReportBans(ctx context.Context, req *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error) {
+	return c.reportBans.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -293,6 +328,13 @@ type NodeServiceHandler interface {
 	PullTasks(context.Context, *connect.Request[v1.PullTasksRequest]) (*connect.Response[v1.PullTasksResponse], error)
 	// ReportTaskResult records the outcome of a task on the calling node.
 	ReportTaskResult(context.Context, *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error)
+	// GetBans returns the dynamic IP bans of the node's cluster, incrementally
+	// by sequence. Bans never travel in NodeConfig and never create a
+	// revision. Added in v0.9.0 (feature bans-v1).
+	GetBans(context.Context, *connect.Request[v1.GetBansRequest]) (*connect.Response[v1.GetBansResponse], error)
+	// ReportBans uploads bans the node created itself (automatic mitigation).
+	// Idempotent: the console keys them by (node, site, cidr). Added in v0.9.0.
+	ReportBans(context.Context, *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -374,6 +416,18 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportTaskResult")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceGetBansHandler := connect.NewUnaryHandler(
+		NodeServiceGetBansProcedure,
+		svc.GetBans,
+		connect.WithSchema(nodeServiceMethods.ByName("GetBans")),
+		connect.WithHandlerOptions(opts...),
+	)
+	nodeServiceReportBansHandler := connect.NewUnaryHandler(
+		NodeServiceReportBansProcedure,
+		svc.ReportBans,
+		connect.WithSchema(nodeServiceMethods.ByName("ReportBans")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -400,6 +454,10 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServicePullTasksHandler.ServeHTTP(w, r)
 		case NodeServiceReportTaskResultProcedure:
 			nodeServiceReportTaskResultHandler.ServeHTTP(w, r)
+		case NodeServiceGetBansProcedure:
+			nodeServiceGetBansHandler.ServeHTTP(w, r)
+		case NodeServiceReportBansProcedure:
+			nodeServiceReportBansHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -455,4 +513,12 @@ func (UnimplementedNodeServiceHandler) PullTasks(context.Context, *connect.Reque
 
 func (UnimplementedNodeServiceHandler) ReportTaskResult(context.Context, *connect.Request[v1.ReportTaskResultRequest]) (*connect.Response[v1.ReportTaskResultResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportTaskResult is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) GetBans(context.Context, *connect.Request[v1.GetBansRequest]) (*connect.Response[v1.GetBansResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetBans is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) ReportBans(context.Context, *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportBans is not implemented"))
 }
