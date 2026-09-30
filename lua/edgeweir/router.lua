@@ -77,6 +77,11 @@ function _M.cdn_loop_value(incoming, cdn_id)
   return cdn_id
 end
 
+-- remote_addr is read only when some ban could apply (edgeweir.bans).
+local function remote_addr()
+  return ngx.var.remote_addr
+end
+
 -- platform_allowed reports whether addr is on a platform allow list of
 -- the site's table.
 function _M.platform_allowed(site, addr)
@@ -164,7 +169,7 @@ function _M.access()
   end
   -- Dynamic bans: platform scope, then the site's; addresses on a
   -- platform allow list are never banned.
-  if bans.match(site.id, var.remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
+  if bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   local original_path = var.uri

@@ -64,9 +64,19 @@ test("keys mask host bits for IPv4 and IPv6", function()
 end)
 
 test("no bans: match reads nothing but the version", function()
-  eq(bans.match("site-a", "203.0.113.7"), nil)
+  local asked = 0
+  local function addr()
+    asked = asked + 1
+    return "203.0.113.7"
+  end
+  eq(bans.match("site-a", addr), nil)
   put("1", {})
-  eq(bans.match("site-a", "203.0.113.7"), nil)
+  eq(bans.match("site-a", addr), nil)
+  put("2", { ban("s", "198.51.100.0/24", "site", "m", nil, "site-b") })
+  eq(bans.match("site-a", addr), nil)
+  eq(asked, 0, "the client address was read without any ban in scope")
+  eq(bans.match("site-b", addr), nil)
+  eq(asked, 1)
 end)
 
 test("lookup across prefix lengths, scopes and families", function()

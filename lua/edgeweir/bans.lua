@@ -849,7 +849,8 @@ local function mapped(a)
 end
 
 -- match returns the kind and id of the ban holding addr on site_id
--- (platform bans first), or nil.
+-- (platform bans first), or nil. addr may be a function returning the
+-- address: it is only called when a scope has bans.
 function _M.match(site_id, addr)
   local dict = shdict()
   local ver = dict and dict:get("#ver")
@@ -863,6 +864,9 @@ function _M.match(site_id, addr)
   local sl = site_id and lengths(dict, site_id)
   if not pl and not sl then
     return nil
+  end
+  if type(addr) == "function" then
+    addr = addr()
   end
   local bytes = ipaddr.parse(addr)
   if not bytes then
