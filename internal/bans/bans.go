@@ -314,37 +314,6 @@ func (s *State) Prune(now time.Time) int {
 	return n
 }
 
-// Ordered returns the unexpired bans in the order the data plane must
-// hold them: manual bans first (oldest first), then automatic bans from
-// the newest to the oldest. Automatic bans beyond capacity are dropped
-// and counted; manual bans are never dropped (the data plane reports those
-// it cannot hold).
-func (s *State) Ordered(now time.Time, capacity int) (bans []Ban, dropped int) {
-	var manual, auto []Ban
-	for _, b := range s.Bans {
-		if !b.ExpiresAt.After(now) {
-			continue
-		}
-		if b.Manual() {
-			manual = append(manual, b)
-		} else {
-			auto = append(auto, b)
-		}
-	}
-	slices.SortFunc(manual, func(a, b Ban) int {
-		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID))
-	})
-	slices.SortFunc(auto, func(a, b Ban) int {
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID))
-	})
-	room := max(capacity-len(manual), 0)
-	if len(auto) > room {
-		dropped = len(auto) - room
-		auto = auto[:room]
-	}
-	return append(manual, auto...), dropped
-}
-
 // Platform returns the unexpired platform bans.
 func (s *State) Platform(now time.Time) []Ban {
 	var out []Ban
@@ -357,44 +326,116 @@ func (s *State) Platform(now time.Time) []Ban {
 	return out
 }
 
-func (b Ban) equal(o Ban) bool {
-	return b.ID == o.ID && b.Prefix == o.Prefix && b.Scope == o.Scope && b.SiteID == o.SiteID &&
-		b.Source == o.Source && b.Reason == o.Reason && b.CreatedAt.Equal(o.CreatedAt) && b.ExpiresAt.Equal(o.ExpiresAt)
+// SlotKey is where a ban lives in the data plane: bans of the same scope,
+// site and prefix share one entry.
+type SlotKey struct {
+	Scope  Scope
+	SiteID string
+	Prefix netip.Prefix
 }
 
-// Delta is the difference between two states: bans to write and bans to
-// delete (their previous version, so the data plane can find them).
-type Delta struct {
-	Upsert []Ban
-	Remove []Ban
+// Slot is the data plane entry of one or more bans with the same key
+// (several nodes can report an automatic ban for the same address, next
+// to a manual one).
+type Slot struct {
+	SlotKey
+	// ID is the ban the entry is reported under: the manual ban if there is
+	// one, otherwise the automatic ban that expires last.
+	ID     string
+	Manual bool
+	// CreatedAt is the creation time of the ban with ID.
+	CreatedAt time.Time
+	// ExpiresAt is the latest expiry of the bans in the slot.
+	ExpiresAt time.Time
 }
 
-// Len returns the number of operations.
-func (d Delta) Len() int { return len(d.Upsert) + len(d.Remove) }
+// Key returns the slot key of a ban.
+func (b Ban) Key() SlotKey { return SlotKey{Scope: b.Scope, SiteID: b.SiteID, Prefix: b.Prefix} }
 
-// Diff returns what turns from into to. A ban whose address, scope or
-// site changed is removed under its old key and written under the new one.
-func Diff(from, to *State) Delta {
-	var d Delta
-	for id, nb := range to.Bans {
-		ob, ok := from.Bans[id]
+// Slots groups the unexpired bans by data plane key.
+func (s *State) Slots(now time.Time) map[SlotKey]Slot {
+	out := make(map[SlotKey]Slot, len(s.Bans))
+	for _, b := range s.Bans {
+		if !b.ExpiresAt.After(now) {
+			continue
+		}
+		k := b.Key()
+		cur, ok := out[k]
+		if !ok {
+			out[k] = Slot{SlotKey: k, ID: b.ID, Manual: b.Manual(), CreatedAt: b.CreatedAt, ExpiresAt: b.ExpiresAt}
+			continue
+		}
+		expires := cur.ExpiresAt
+		if b.ExpiresAt.After(expires) {
+			expires = b.ExpiresAt
+		}
+		// The representative: manual before automatic, then the later
+		// expiry, then the smaller id, whatever the map order.
+		var replace bool
 		switch {
-		case !ok:
-			d.Upsert = append(d.Upsert, nb)
-		case !ob.equal(nb):
-			if ob.Prefix != nb.Prefix || ob.Scope != nb.Scope || ob.SiteID != nb.SiteID {
-				d.Remove = append(d.Remove, ob)
-			}
-			d.Upsert = append(d.Upsert, nb)
+		case b.Manual() != cur.Manual:
+			replace = b.Manual()
+		case !b.ExpiresAt.Equal(cur.ExpiresAt):
+			replace = b.ExpiresAt.After(cur.ExpiresAt)
+		default:
+			replace = b.ID < cur.ID
+		}
+		if replace {
+			cur = Slot{SlotKey: k, ID: b.ID, Manual: b.Manual(), CreatedAt: b.CreatedAt}
+		}
+		cur.ExpiresAt = expires
+		out[k] = cur
+	}
+	return out
+}
+
+func compareSlots(a, b Slot) int {
+	return cmp.Or(strings.Compare(string(a.Scope), string(b.Scope)), strings.Compare(a.SiteID, b.SiteID),
+		a.Prefix.Addr().Compare(b.Prefix.Addr()), cmp.Compare(a.Prefix.Bits(), b.Prefix.Bits()))
+}
+
+// Ordered returns the slots in the order the data plane must hold them:
+// manual bans first (oldest first), then automatic bans from the newest to
+// the oldest. Automatic bans beyond capacity are dropped and counted;
+// manual bans are never dropped (the data plane reports those it cannot
+// hold).
+func Ordered(slots map[SlotKey]Slot, capacity int) (ordered []Slot, dropped int) {
+	var manual, auto []Slot
+	for _, s := range slots {
+		if s.Manual {
+			manual = append(manual, s)
+		} else {
+			auto = append(auto, s)
 		}
 	}
-	for id, ob := range from.Bans {
-		if _, ok := to.Bans[id]; !ok {
-			d.Remove = append(d.Remove, ob)
+	slices.SortFunc(manual, func(a, b Slot) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID), compareSlots(a, b))
+	})
+	slices.SortFunc(auto, func(a, b Slot) int {
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID), compareSlots(a, b))
+	})
+	room := max(capacity-len(manual), 0)
+	if len(auto) > room {
+		dropped = len(auto) - room
+		auto = auto[:room]
+	}
+	return append(manual, auto...), dropped
+}
+
+// Diff returns the slots to write and the slots to delete (with the id
+// the data plane holds them under) to turn from into to.
+func Diff(from, to map[SlotKey]Slot) (upsert, remove []Slot) {
+	for k, n := range to {
+		if o, ok := from[k]; !ok || o.ID != n.ID || o.Manual != n.Manual || !o.ExpiresAt.Equal(n.ExpiresAt) {
+			upsert = append(upsert, n)
 		}
 	}
-	byID := func(a, b Ban) int { return strings.Compare(a.ID, b.ID) }
-	slices.SortFunc(d.Upsert, byID)
-	slices.SortFunc(d.Remove, byID)
-	return d
+	for k, o := range from {
+		if _, ok := to[k]; !ok {
+			remove = append(remove, o)
+		}
+	}
+	slices.SortFunc(upsert, compareSlots)
+	slices.SortFunc(remove, compareSlots)
+	return upsert, remove
 }

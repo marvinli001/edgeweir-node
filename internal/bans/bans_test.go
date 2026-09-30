@@ -129,6 +129,14 @@ func TestApplyPages(t *testing.T) {
 	}
 }
 
+func slotIDs(slots []Slot) []string {
+	out := make([]string, len(slots))
+	for i, s := range slots {
+		out[i] = s.ID
+	}
+	return out
+}
+
 func TestDiff(t *testing.T) {
 	from := New()
 	from.Apply(&nodev1.GetBansResponse{Reset_: true, Sequence: 3, Bans: []*nodev1.Ban{
@@ -143,20 +151,48 @@ func TestDiff(t *testing.T) {
 		platform("extended", "198.51.100.2/32", 2*time.Hour),
 		platform("new", "198.51.100.4/32", time.Hour),
 	}}, now)
-	d := Diff(from, to)
-	if got := ids(d.Upsert); !slices.Equal(got, []string{"extended", "moved", "new"}) {
+	upsert, remove := Diff(from.Slots(now), to.Slots(now))
+	if got := slotIDs(upsert); !slices.Equal(got, []string{"extended", "new", "moved"}) {
 		t.Errorf("upsert = %v", got)
 	}
-	if got := ids(d.Remove); !slices.Equal(got, []string{"moved", "removed"}) {
+	if got := slotIDs(remove); !slices.Equal(got, []string{"moved", "removed"}) {
 		t.Errorf("remove = %v", got)
 	}
-	for _, b := range d.Remove {
-		if b.ID == "moved" && b.Scope != ScopePlatform {
-			t.Errorf("removal of a moved ban must carry its old key: %+v", b)
+	for _, s := range remove {
+		if s.ID == "moved" && s.Scope != ScopePlatform {
+			t.Errorf("removal of a moved ban must carry its old key: %+v", s)
 		}
 	}
-	if d := Diff(to, to.Clone()); d.Len() != 0 {
-		t.Errorf("diff of equal states = %+v", d)
+	if u, r := Diff(to.Slots(now), to.Clone().Slots(now)); len(u)+len(r) != 0 {
+		t.Errorf("diff of equal states = %v %v", u, r)
+	}
+}
+
+func TestSlotsShareOneEntryPerKey(t *testing.T) {
+	s := New()
+	s.Apply(&nodev1.GetBansResponse{Reset_: true, Sequence: 1, Bans: []*nodev1.Ban{
+		// Two nodes reported the same address, and an operator banned it too.
+		pb("auto-1", "192.0.2.1/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Hour, 3*time.Hour),
+		pb("auto-2", "192.0.2.1/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Hour, 2*time.Hour),
+		pb("manual", "192.0.2.1/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_MANUAL, -2*time.Hour, time.Hour),
+		// Same address on another site and on the platform: separate entries.
+		auto("auto-3", "192.0.2.1/32", "site-b", -time.Hour),
+		platform("platform", "192.0.2.1/32", time.Hour),
+	}}, now)
+	slots := s.Slots(now)
+	if len(slots) != 3 {
+		t.Fatalf("slots = %v", slots)
+	}
+	a := slots[SlotKey{Scope: ScopeSite, SiteID: "site-a", Prefix: netip.MustParsePrefix("192.0.2.1/32")}]
+	if a.ID != "manual" || !a.Manual || !a.ExpiresAt.Equal(now.Add(3*time.Hour)) {
+		t.Fatalf("site-a slot = %+v", a)
+	}
+	// Once the manual ban is removed the entry stays, under the automatic
+	// ban that expires last.
+	s.Apply(&nodev1.GetBansResponse{Sequence: 2, RemovedIds: []string{"manual"}}, now)
+	up, rm := Diff(slots, s.Slots(now))
+	if len(rm) != 0 || len(up) != 1 || up[0].ID != "auto-1" || up[0].Manual {
+		t.Fatalf("after removing the manual ban: upsert %+v remove %+v", up, rm)
 	}
 }
 
@@ -171,17 +207,17 @@ func TestOrderedPutsManualFirstAndDropsOldestAuto(t *testing.T) {
 		pb("expired", "192.0.2.6/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_MANUAL, -2*time.Hour, time.Minute),
 	}}, now)
 	later := now.Add(2 * time.Minute)
-	all, dropped := s.Ordered(later, 100)
-	if got := ids(all); !slices.Equal(got, []string{"m1", "m2", "a-new", "a-mid", "a-old"}) || dropped != 0 {
+	all, dropped := Ordered(s.Slots(later), 100)
+	if got := slotIDs(all); !slices.Equal(got, []string{"m1", "m2", "a-new", "a-mid", "a-old"}) || dropped != 0 {
 		t.Fatalf("ordered = %v dropped %d", got, dropped)
 	}
-	some, dropped := s.Ordered(later, 3)
-	if got := ids(some); !slices.Equal(got, []string{"m1", "m2", "a-new"}) || dropped != 2 {
+	some, dropped := Ordered(s.Slots(later), 3)
+	if got := slotIDs(some); !slices.Equal(got, []string{"m1", "m2", "a-new"}) || dropped != 2 {
 		t.Fatalf("capacity 3 = %v dropped %d", got, dropped)
 	}
 	// Manual bans are never dropped, even beyond capacity.
-	manual, dropped := s.Ordered(later, 1)
-	if got := ids(manual); !slices.Equal(got, []string{"m1", "m2"}) || dropped != 3 {
+	manual, dropped := Ordered(s.Slots(later), 1)
+	if got := slotIDs(manual); !slices.Equal(got, []string{"m1", "m2"}) || dropped != 3 {
 		t.Fatalf("capacity 1 = %v dropped %d", got, dropped)
 	}
 	if n := s.Prune(later); n != 1 || len(s.Bans) != 5 {
@@ -210,7 +246,7 @@ func TestSaveLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ClusterID != "cl-1" || got.Sequence != 1<<60 || len(got.Bans) != 2 || Diff(s, got).Len() != 0 {
+	if got.ClusterID != "cl-1" || got.Sequence != 1<<60 || len(got.Bans) != 2 || !sameSlots(s, got) {
 		t.Fatalf("loaded %+v", got)
 	}
 
@@ -230,6 +266,11 @@ func TestSaveLoad(t *testing.T) {
 	if _, err := Load(path); err == nil {
 		t.Fatal("unreadable file accepted")
 	}
+}
+
+func sameSlots(a, b *State) bool {
+	up, rm := Diff(a.Slots(now), b.Slots(now))
+	return len(up)+len(rm) == 0
 }
 
 func TestPlatform(t *testing.T) {
