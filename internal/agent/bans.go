@@ -181,7 +181,9 @@ func (a *Agent) installBans(ctx context.Context, next *bans.State, reset bool) {
 	next.Prune(now)
 	from, to := prev.Slots(now), next.Slots(now)
 	up, rm := bans.Diff(from, to)
-	unchanged := !reset && prev.Sequence == next.Sequence && prev.ClusterID == next.ClusterID && len(up)+len(rm) == 0
+	// A console without any ban answers every request with an empty
+	// snapshot (sequence 0): nothing to do then.
+	unchanged := prev.Sequence == next.Sequence && prev.ClusterID == next.ClusterID && len(up)+len(rm) == 0
 	if unchanged {
 		a.banMu.Unlock()
 		return
@@ -190,7 +192,7 @@ func (a *Agent) installBans(ctx context.Context, next *bans.State, reset bool) {
 		a.log.Error("cannot persist bans; applying them anyway", "err", err)
 	}
 	a.bans = next
-	kernel := reset || !slices.EqualFunc(prev.Platform(now), next.Platform(now), func(x, y bans.Ban) bool {
+	kernel := !slices.EqualFunc(prev.Platform(now), next.Platform(now), func(x, y bans.Ban) bool {
 		return x.ID == y.ID && x.Prefix == y.Prefix && x.ExpiresAt.Equal(y.ExpiresAt)
 	})
 	if reset || len(up)+len(rm) > maxBanDelta {

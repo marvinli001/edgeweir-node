@@ -151,6 +151,22 @@ func TestBansChannel(t *testing.T) {
 	}
 }
 
+// TestBansEmptyConsoleIsQuiet: a console without any ban answers every
+// poll with an empty snapshot; the node does not rewrite anything.
+func TestBansEmptyConsoleIsQuiet(t *testing.T) {
+	kernel := &nft.Fake{}
+	e := startEnrolled(t, "bans-quiet", func(c *agent.Config) {
+		c.Kernel = kernel
+		c.PollInterval = 100 * time.Millisecond
+	}, demoSite("site-a", "site-a.test"))
+	eventually(t, "several polls", func() bool { return len(e.console.GetBansCalls()) >= 5 })
+	calls, scripts := len(e.dp.BanCalls()), len(kernel.Scripts())
+	eventually(t, "more polls", func() bool { return len(e.console.GetBansCalls()) >= 10 })
+	if len(e.dp.BanCalls()) != calls || len(kernel.Scripts()) != scripts {
+		t.Fatalf("empty snapshots rewrote bans: data plane %v, %d nft scripts (was %d)", e.dp.BanCalls(), len(kernel.Scripts()), scripts)
+	}
+}
+
 // TestBansCapacityKeepsManualAndNewestAutomatic: beyond --ban-capacity the
 // oldest automatic bans are left out, manual ones never.
 func TestBansCapacityKeepsManualAndNewestAutomatic(t *testing.T) {
