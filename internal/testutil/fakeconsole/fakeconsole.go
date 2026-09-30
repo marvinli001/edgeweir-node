@@ -89,6 +89,14 @@ type Console struct {
 	reportedBans   []*nodev1.AutoBan
 	reportBansFail int
 
+	// Challenges and CC events.
+	challengeKeys      map[string][]byte
+	keyRequests        [][]string
+	securityEvents     []*nodev1.SecurityEvent
+	securitySeen       map[string]bool
+	securityCalls      []int
+	reportSecurityFail int
+
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -118,16 +126,18 @@ func New(opts Options) (*Console, error) {
 		return nil, err
 	}
 	return &Console{
-		CA:           ca,
-		opts:         opts,
-		tokens:       map[string]bool{},
-		watchers:     map[chan struct{}]struct{}{},
-		taskWatchers: map[chan struct{}]struct{}{},
-		banWatchers:  map[chan struct{}]struct{}{},
-		bans:         map[string]*banRow{},
-		credentials:  map[string]*nodev1.OriginCredential{},
-		mtlsCalls:    map[string]int{},
-		done:         make(chan struct{}),
+		CA:            ca,
+		opts:          opts,
+		tokens:        map[string]bool{},
+		watchers:      map[chan struct{}]struct{}{},
+		taskWatchers:  map[chan struct{}]struct{}{},
+		banWatchers:   map[chan struct{}]struct{}{},
+		bans:          map[string]*banRow{},
+		credentials:   map[string]*nodev1.OriginCredential{},
+		challengeKeys: map[string][]byte{},
+		securitySeen:  map[string]bool{},
+		mtlsCalls:     map[string]int{},
+		done:          make(chan struct{}),
 	}, nil
 }
 
@@ -790,4 +800,67 @@ func (c *Console) ReportBans(_ context.Context, req *connect.Request[nodev1.Repo
 		c.reportedBans = append(c.reportedBans, proto.CloneOf(b))
 	}
 	return connect.NewResponse(&nodev1.ReportBansResponse{Accepted: uint32(len(req.Msg.GetBans()))}), nil
+}
+
+// SetChallengeKey makes GetChallengeKeys hand out a key.
+func (c *Console) SetChallengeKey(id string, secret []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.challengeKeys[id] = slices.Clone(secret)
+}
+
+// ChallengeKeyRequests returns the ids of every GetChallengeKeys call.
+func (c *Console) ChallengeKeyRequests() [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.keyRequests)
+}
+
+func (c *Console) GetChallengeKeys(_ context.Context, req *connect.Request[nodev1.GetChallengeKeysRequest]) (*connect.Response[nodev1.GetChallengeKeysResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keyRequests = append(c.keyRequests, slices.Clone(req.Msg.GetIds()))
+	resp := &nodev1.GetChallengeKeysResponse{}
+	for _, id := range req.Msg.GetIds() {
+		if secret, ok := c.challengeKeys[id]; ok {
+			resp.Keys = append(resp.Keys, &nodev1.ChallengeKey{Id: id, Secret: slices.Clone(secret)})
+		}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// FailReportSecurityEvents makes the next n ReportSecurityEvents calls fail.
+func (c *Console) FailReportSecurityEvents(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reportSecurityFail = n
+}
+
+// SecurityEvents returns the stored events (each id once, in arrival order)
+// and the size of every accepted call.
+func (c *Console) SecurityEvents() ([]*nodev1.SecurityEvent, []int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.securityEvents), slices.Clone(c.securityCalls)
+}
+
+func (c *Console) ReportSecurityEvents(_ context.Context, req *connect.Request[nodev1.ReportSecurityEventsRequest]) (*connect.Response[nodev1.ReportSecurityEventsResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.reportSecurityFail > 0 {
+		c.reportSecurityFail--
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("injected ReportSecurityEvents failure"))
+	}
+	if len(req.Msg.GetEvents()) > 500 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("more than 500 events"))
+	}
+	c.securityCalls = append(c.securityCalls, len(req.Msg.GetEvents()))
+	for _, e := range req.Msg.GetEvents() {
+		if c.securitySeen[e.GetId()] {
+			continue
+		}
+		c.securitySeen[e.GetId()] = true
+		c.securityEvents = append(c.securityEvents, proto.CloneOf(e))
+	}
+	return connect.NewResponse(&nodev1.ReportSecurityEventsResponse{Accepted: uint32(len(req.Msg.GetEvents()))}), nil
 }
