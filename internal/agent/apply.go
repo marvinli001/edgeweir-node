@@ -252,6 +252,7 @@ func (a *Agent) dataPlaneLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			a.reconcileDataPlane(ctx)
+			a.reconcileBans(ctx)
 		case <-a.engine.Started():
 			// The control socket needs a moment after the master starts.
 			for range 20 {
@@ -259,6 +260,7 @@ func (a *Agent) dataPlaneLoop(ctx context.Context) {
 					break
 				}
 			}
+			a.reconcileBans(ctx)
 		}
 	}
 }
@@ -467,6 +469,7 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.mu.Unlock()
 	a.pruneSecrets(cfg, previousConfig)
 	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings))
+	a.triggerKernel() // platform allow lists may have changed
 	a.triggerReport()
 }
 

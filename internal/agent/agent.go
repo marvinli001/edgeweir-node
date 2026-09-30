@@ -7,6 +7,9 @@
 //	      ─► verify hash ─► validate ─► render/test/reload (structural only)
 //	      ─► push site table to Lua ─► persist LKG ─► ReportStatus
 //
+// Dynamic bans travel outside revisions (bans.go): GetBans ─► bans.json
+// ─► Lua (delta or full set) and nftables for platform bans.
+//
 // The data plane keeps serving the last-known-good configuration whenever
 // the console is unreachable or a new configuration is rejected.
 package agent
@@ -16,12 +19,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/marvinli001/edgeweir-node/internal/bans"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/configstore"
 	"github.com/marvinli001/edgeweir-node/internal/controlplane"
@@ -29,6 +34,7 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
+	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 )
 
@@ -55,6 +61,10 @@ type DataPlane interface {
 	PutPurge(ctx context.Context, t *dataplane.PurgeTable) (*dataplane.PurgeStatus, error)
 	AddPurge(ctx context.Context, t *dataplane.PurgeTable) (*dataplane.PurgeStatus, error)
 	OriginHealth(ctx context.Context) ([]dataplane.OriginHealth, error)
+	BanStatus(ctx context.Context) (*dataplane.BanStatus, error)
+	PutBans(ctx context.Context, t *dataplane.BanTable) (*dataplane.BanStatus, error)
+	AddBans(ctx context.Context, d *dataplane.BanDelta) (*dataplane.BanStatus, error)
+	DrainAutoBans(ctx context.Context) ([]dataplane.AutoBan, error)
 }
 
 // Config configures the agent.
@@ -96,6 +106,18 @@ type Config struct {
 	// from the pull (default 4m: the console hands a task out again after
 	// 5 minutes without a result).
 	PrefetchBudget time.Duration
+
+	// BanCapacity is the number of bans the data plane holds (default
+	// render.DefaultBanCapacity; the same value goes into nginx.conf).
+	BanCapacity int
+	// Kernel runs nft scripts for kernel bans; nil disables them.
+	Kernel nft.Executor
+	// AutoBanInterval: the node's own bans are drained and reported this
+	// often (default 5s).
+	AutoBanInterval time.Duration
+	// BanRetryInterval: manual bans that did not fit are retried this often
+	// (default 1m).
+	BanRetryInterval time.Duration
 }
 
 func (c *Config) setDefaults() {
@@ -118,6 +140,11 @@ func (c *Config) setDefaults() {
 	def(&c.TaskPollInterval, 30*time.Second)
 	def(&c.PrefetchTimeout, time.Minute)
 	def(&c.PrefetchBudget, 4*time.Minute)
+	def(&c.AutoBanInterval, 5*time.Second)
+	def(&c.BanRetryInterval, time.Minute)
+	if c.BanCapacity <= 0 {
+		c.BanCapacity = render.DefaultBanCapacity
+	}
 	if c.PrefetchHost == "" {
 		c.PrefetchHost = "127.0.0.1"
 	}
@@ -168,12 +195,31 @@ type Agent struct {
 	rejectedAt   time.Time
 	lastRenew    time.Time
 
+	banStatus *dataplane.BanStatus // last ban status of the data plane (mu)
+
 	pushMu       sync.Mutex
 	activationMu sync.Mutex // structural reload and table activation/compensation
 	purgeMu      sync.Mutex // serializes purge writes to the data plane
 	syncCh       chan struct{}
 	reportCh     chan struct{}
 	taskCh       chan struct{}
+
+	// Dynamic bans (bans.go). banMu serializes changes of the applied
+	// state and writes of bans to the data plane.
+	banMu          sync.Mutex
+	bans           *bans.State
+	banForcePut    bool                 // the next write replaces the whole set
+	banRetryAt     time.Time            // next retry of unfit manual bans
+	banDropped     uint64               // automatic bans left out for capacity
+	banDroppedSeen map[string]time.Time // ... counted once each
+	banCh          chan struct{}
+	banUnsupported sync.Once    // logs an older console once
+	nft            *nft.Manager // nil without kernel bans
+	kernelCh       chan struct{}
+
+	addrMu            sync.Mutex
+	consoleAddrsCache []netip.Prefix
+	consoleAddrsAt    time.Time
 }
 
 // New creates an agent.
@@ -196,7 +242,20 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		syncCh:       make(chan struct{}, 1),
 		reportCh:     make(chan struct{}, 1),
 		taskCh:       make(chan struct{}, 1),
+
+		bans:           bans.New(),
+		banDroppedSeen: map[string]time.Time{},
+		banCh:          make(chan struct{}, 1),
+		kernelCh:       make(chan struct{}, 1),
+		nft:            kernelManager(cfg.Kernel, log),
 	}
+}
+
+func kernelManager(exec nft.Executor, log *slog.Logger) *nft.Manager {
+	if exec == nil {
+		return nil
+	}
+	return nft.NewManager(exec, log)
 }
 
 // Run runs the agent until ctx is cancelled.
@@ -254,8 +313,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.loadCertificates()
 	a.loadPurge()
 	a.serveInitialConfig(ctx)
+	a.startBans(ctx)
+	// Runs before the loops finish (defers are last in, first out); a sync
+	// after it finds the manager inactive.
+	defer a.stopKernel()
 	spawn("dataplane", a.dataPlaneLoop)
 	spawn("ocsp", a.ocspLoop)
+	spawn("kernel", a.kernelLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down
@@ -273,6 +337,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.log.Info("node identity loaded", "node_id", id.NodeID, "cluster_id", id.ClusterID,
 		"node_name", id.NodeName, "server", id.ServerURL,
 		"certificate_not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339))
+	// The console's addresses join the nftables allow list before the
+	// first RPC.
+	a.syncKernel(ctx)
 
 	spawn("sync", a.syncLoop)
 	spawn("watch", a.watchLoop)
@@ -281,7 +348,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("stats", a.statsLoop)
 	spawn("logs", a.logsLoop)
 	spawn("tasks", a.taskLoop)
+	spawn("bans", a.bansLoop)
+	spawn("autobans", a.autoBansLoop)
 	a.triggerSync()
+	a.triggerBans()
 
 	<-ctx.Done()
 	a.log.Info("shutting down")

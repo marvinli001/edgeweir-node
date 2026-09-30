@@ -1,0 +1,90 @@
+package agent
+
+import (
+	"context"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/identity"
+)
+
+// TestProtectedPrefixes: nftables never drops loopback, the node's own
+// addresses, the console and the platform allow lists.
+func TestProtectedPrefixes(t *testing.T) {
+	dir := t.TempDir()
+	write := func(server string) {
+		t.Helper()
+		raw := `{"node_id":"node-1","cluster_id":"cl-1","server_url":"` + server + `"}`
+		if err := os.WriteFile(filepath.Join(dir, identity.IdentityFile), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := New(Config{StateDir: dir}, nil, nil, nil)
+	a.applied = &nodev1.NodeConfig{IpLists: []*nodev1.IpList{
+		{Id: "platform-allow", Kind: "allow", Platform: true, Entries: []string{"203.0.113.0/24", "2001:db8:7::/48"}},
+		{Id: "site-allow", Kind: "allow", Entries: []string{"198.51.100.0/24"}},
+		{Id: "platform-block", Kind: "block", Platform: true, Entries: []string{"198.51.101.0/24"}},
+	}}
+
+	// Before enrollment there is no console address.
+	got := a.protectedPrefixes(context.Background())
+	for _, want := range []string{"127.0.0.0/8", "::1/128", "203.0.113.0/24", "2001:db8:7::/48"} {
+		if !slices.Contains(got, netip.MustParsePrefix(want)) {
+			t.Errorf("protected set lacks %s: %v", want, got)
+		}
+	}
+	for _, not := range []string{"198.51.100.0/24", "198.51.101.0/24"} {
+		if slices.Contains(got, netip.MustParsePrefix(not)) {
+			t.Errorf("protected set holds %s", not)
+		}
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, addr := range addrs {
+			ip, _ := netip.AddrFromSlice(addr.(*net.IPNet).IP)
+			ip = ip.Unmap()
+			if !slices.Contains(got, netip.PrefixFrom(ip, ip.BitLen())) {
+				t.Errorf("protected set lacks the interface address %s", ip)
+			}
+		}
+	}
+
+	write("https://192.0.2.44:8443")
+	got = a.protectedPrefixes(context.Background())
+	if !slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) {
+		t.Fatalf("console address missing: %v", got)
+	}
+	// Cached until the refresh; then resolved again (a host name here).
+	write("https://localhost:8443")
+	if got := a.protectedPrefixes(context.Background()); !slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) {
+		t.Fatalf("console address not cached: %v", got)
+	}
+	a.consoleAddrsAt = a.consoleAddrsAt.Add(-protectedRefresh)
+	got = a.protectedPrefixes(context.Background())
+	if slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) ||
+		!slices.ContainsFunc(got, func(p netip.Prefix) bool { return p.Addr().IsLoopback() && p.IsSingleIP() }) {
+		t.Fatalf("console host name not resolved again: %v", got)
+	}
+}
+
+func TestConvertAutoBan(t *testing.T) {
+	b, ok := convertAutoBan(dataplane.AutoBan{SiteID: "site-a", IP: "2001:DB8::7", PrefixLen: 128, CreatedAt: 1790000000.5, ExpiresAt: 1790000060.5})
+	if !ok || b.GetCidr() != "2001:db8::7/128" || b.GetReason() != "cc_ip_rate" ||
+		b.GetCreatedAt().AsTime().UnixMilli() != 1790000000500 || b.GetExpiresAt().AsTime().Unix() != 1790000060 {
+		t.Fatalf("converted = %v, %v", b, ok)
+	}
+	for _, bad := range []dataplane.AutoBan{
+		{SiteID: "site-a", IP: "not-an-ip", ExpiresAt: 1},
+		{SiteID: "site a", IP: "192.0.2.1", ExpiresAt: 1},
+		{SiteID: "site-a", IP: "192.0.2.1"},
+	} {
+		if _, ok := convertAutoBan(bad); ok {
+			t.Errorf("accepted %+v", bad)
+		}
+	}
+}

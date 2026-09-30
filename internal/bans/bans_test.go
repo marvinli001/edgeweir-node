@@ -208,17 +208,17 @@ func TestOrderedPutsManualFirstAndDropsOldestAuto(t *testing.T) {
 	}}, now)
 	later := now.Add(2 * time.Minute)
 	all, dropped := Ordered(s.Slots(later), 100)
-	if got := slotIDs(all); !slices.Equal(got, []string{"m1", "m2", "a-new", "a-mid", "a-old"}) || dropped != 0 {
-		t.Fatalf("ordered = %v dropped %d", got, dropped)
+	if got := slotIDs(all); !slices.Equal(got, []string{"m1", "m2", "a-new", "a-mid", "a-old"}) || len(dropped) != 0 {
+		t.Fatalf("ordered = %v dropped %v", got, slotIDs(dropped))
 	}
 	some, dropped := Ordered(s.Slots(later), 3)
-	if got := slotIDs(some); !slices.Equal(got, []string{"m1", "m2", "a-new"}) || dropped != 2 {
-		t.Fatalf("capacity 3 = %v dropped %d", got, dropped)
+	if got := slotIDs(some); !slices.Equal(got, []string{"m1", "m2", "a-new"}) || !slices.Equal(slotIDs(dropped), []string{"a-mid", "a-old"}) {
+		t.Fatalf("capacity 3 = %v dropped %v", got, slotIDs(dropped))
 	}
 	// Manual bans are never dropped, even beyond capacity.
 	manual, dropped := Ordered(s.Slots(later), 1)
-	if got := slotIDs(manual); !slices.Equal(got, []string{"m1", "m2"}) || dropped != 3 {
-		t.Fatalf("capacity 1 = %v dropped %d", got, dropped)
+	if got := slotIDs(manual); !slices.Equal(got, []string{"m1", "m2"}) || len(dropped) != 3 {
+		t.Fatalf("capacity 1 = %v dropped %v", got, slotIDs(dropped))
 	}
 	if n := s.Prune(later); n != 1 || len(s.Bans) != 5 {
 		t.Fatalf("prune dropped %d, %d left", n, len(s.Bans))

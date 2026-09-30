@@ -399,7 +399,7 @@ func compareSlots(a, b Slot) int {
 // the oldest. Automatic bans beyond capacity are dropped and counted;
 // manual bans are never dropped (the data plane reports those it cannot
 // hold).
-func Ordered(slots map[SlotKey]Slot, capacity int) (ordered []Slot, dropped int) {
+func Ordered(slots map[SlotKey]Slot, capacity int) (ordered, dropped []Slot) {
 	var manual, auto []Slot
 	for _, s := range slots {
 		if s.Manual {
@@ -416,7 +416,7 @@ func Ordered(slots map[SlotKey]Slot, capacity int) (ordered []Slot, dropped int)
 	})
 	room := max(capacity-len(manual), 0)
 	if len(auto) > room {
-		dropped = len(auto) - room
+		dropped = auto[room:]
 		auto = auto[:room]
 	}
 	return append(manual, auto...), dropped

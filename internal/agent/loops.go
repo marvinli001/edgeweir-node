@@ -89,6 +89,10 @@ func (a *Agent) watchOnce(ctx context.Context) (gotMessage bool, err error) {
 			a.log.Info("tasks announced")
 			a.triggerTasks()
 		}
+		if msg.GetEvent() == nodev1.WatchEvent_WATCH_EVENT_BANS && msg.GetBanSequence() > a.appliedBanSequence() {
+			a.log.Debug("ban changes announced", "sequence", msg.GetBanSequence())
+			a.triggerBans()
+		}
 	}
 	if err := stream.Err(); err != nil {
 		select {
@@ -105,13 +109,14 @@ func (a *Agent) watchOnce(ctx context.Context) (gotMessage bool, err error) {
 }
 
 // pollLoop is the fallback when the stream is unavailable or a
-// notification was missed: GetConfig every PollInterval regardless of
+// notification was missed: GetConfig (and GetBans) every PollInterval regardless of
 // stream health (cheap: an up-to-date node gets an empty diff). Every
 // interval is jittered by ±20% so that nodes started together (a cluster
 // restart, a console outage) do not poll in lockstep (ADR-0014).
 func (a *Agent) pollLoop(ctx context.Context) {
 	for sleepCtx(ctx, jittered(a.cfg.PollInterval)) {
 		a.triggerSync()
+		a.triggerBans()
 	}
 }
 
@@ -176,6 +181,10 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		scancel()
 	}
 	req.OriginHealth = a.originHealth(cctx)
+	req.Bans = a.banReport(cctx)
+	if a.kernelActive() {
+		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "kernel-ban-v1")
+	}
 	resp, err := a.channel.Client().ReportStatus(cctx, connect.NewRequest(req))
 	if err != nil {
 		if ctx.Err() == nil {
