@@ -161,7 +161,7 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	a.mu.Unlock()
 	req.RevisionReceipt = a.receiptFor(req.AppliedRevision, req.AppliedContentHash)
 	req.Info = hostinfo.Collect(a.engineVersion)
-	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.geoFeatures...)
+	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.extraFeatures()...)
 
 	if id := a.channel.Identity(); id != nil {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
@@ -294,7 +294,9 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			CacheHits:     m.CacheHits,
 			CacheMisses:   m.CacheMisses,
 			StatusCodes:   codes,
-			TopUrls:       topCounters(m.TopURLs), TopIps: topCounters(m.TopIPs),
+			TopUrls:       topCounters(m.TopURLs),
+			TopIps:        topCounters(m.TopIPs),
+			WafRules:      wafRules(m.WAFRules),
 		})
 	}
 	return out
@@ -337,6 +339,29 @@ func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
 
 func unixFloat(s float64) time.Time {
 	return time.UnixMilli(int64(s * 1000)).UTC()
+}
+
+// maxWAFRules bounds MinuteStats.waf_rules (the data plane keeps the
+// heaviest 20 per site and minute as well).
+const maxWAFRules = 20
+
+// wafRules converts matched CRS rule counts; values that are not rule ids
+// are dropped.
+func wafRules(input map[string]uint64) []*nodev1.TopCounter {
+	valid := make(map[string]uint64, len(input))
+	for id, count := range input {
+		if n, err := strconv.ParseUint(id, 10, 32); err == nil && n > 0 && strconv.FormatUint(n, 10) == id {
+			valid[id] = count
+		}
+	}
+	out := topCounters(valid)
+	if len(out) > maxWAFRules {
+		out = out[:maxWAFRules]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func topCounters(input map[string]uint64) []*nodev1.TopCounter {

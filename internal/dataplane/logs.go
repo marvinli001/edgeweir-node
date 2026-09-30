@@ -23,7 +23,14 @@ type sampledLog struct {
 	CacheStatus string  `json:"cache_status"`
 	SampleRate  uint32  `json:"sample_rate"`
 	JA4         string  `json:"ja4"`
+	// WAFRuleIDs are the CRS rules that matched (at most 16), WAFBlocked
+	// whether CRS blocked the request.
+	WAFRuleIDs []uint32 `json:"waf_rule_ids"`
+	WAFBlocked bool     `json:"waf_blocked"`
 }
+
+// maxLogRuleIDs bounds AccessLog.waf_rule_ids.
+const maxLogRuleIDs = 16
 
 func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 	var out struct {
@@ -42,8 +49,12 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 	}
 	logs := make([]*nodev1.AccessLog, 0, len(rows))
 	for _, l := range rows {
+		if len(l.WAFRuleIDs) > maxLogRuleIDs {
+			l.WAFRuleIDs = l.WAFRuleIDs[:maxLogRuleIDs]
+		}
 		logs = append(logs, &nodev1.AccessLog{
 			Time: timestamppb.New(time.UnixMilli(int64(l.Time * 1000))), SiteId: l.SiteID, ClientIp: l.ClientIP, Method: l.Method, Host: l.Host, Path: l.Path, Status: l.Status, BytesSent: l.BytesSent, DurationMs: l.DurationMS, CacheStatus: l.CacheStatus, SampleRate: l.SampleRate, Ja4: l.JA4,
+			WafRuleIds: l.WAFRuleIDs, WafBlocked: l.WAFBlocked,
 		})
 	}
 	return logs, nil

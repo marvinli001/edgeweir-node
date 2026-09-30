@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,11 +41,23 @@ type fakeEngine struct {
 	dp            *fakedataplane.Server
 	ignoreReloads bool
 	failTests     bool // `nginx -t` rejects every configuration
+	// features are the engine's static modules (ModuleFeatures); probes
+	// counts configuration tests of the ModSecurity probe, failProbe
+	// makes them fail.
+	features  []string
+	probes    int
+	failProbe bool
 }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{started: make(chan struct{}, 1)} }
 
 func (e *fakeEngine) Run(ctx context.Context) error { <-ctx.Done(); return nil }
+
+func (e *fakeEngine) ModuleFeatures(context.Context) ([]string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.features), nil
+}
 func (e *fakeEngine) Version(context.Context) (string, error) {
 	return "1.31.1.1", nil
 }
@@ -56,6 +69,13 @@ func (e *fakeEngine) Test(_ context.Context, conf string) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if strings.HasSuffix(conf, "modsecurity-probe.nginx.conf") {
+		e.probes++
+		if e.failProbe {
+			return errors.New("nginx: [emerg] injected ModSecurity load failure")
+		}
+		return nil
+	}
 	e.tests++
 	e.conf = string(b)
 	if e.failTests {

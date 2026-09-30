@@ -48,6 +48,10 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	if err != nil {
 		return &permanentError{err}
 	}
+	modsecConf, err := a.installModSecurityConf(plan)
+	if err != nil {
+		return err
+	}
 	for _, z := range plan.CacheZones {
 		dir := filepath.Join(a.cfg.Render.CacheDir, z.Name)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -116,6 +120,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 		}
 		a.log.Info("nginx configuration installed and reloaded",
 			"listeners", len(plan.Listeners), "cache_zones", len(plan.CacheZones), "conf", a.cfg.ConfPath)
+		a.removeStaleModSecurityConfs(modsecConf)
 	}
 
 	// Purge markers go in before sites: a data plane that just (re)started

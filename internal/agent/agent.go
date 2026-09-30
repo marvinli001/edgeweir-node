@@ -52,6 +52,9 @@ type Engine interface {
 	Running() bool
 	// Started fires whenever a managed engine (re)starts.
 	Started() <-chan struct{}
+	// ModuleFeatures returns the features of the optional static modules
+	// compiled into the engine (brotli-v1, zstd-v1).
+	ModuleFeatures(ctx context.Context) ([]string, error)
 }
 
 // DataPlane is the Lua control API (see package dataplane).
@@ -191,9 +194,12 @@ type Agent struct {
 	ids    identity.Store
 	lkg    configstore.Store
 
-	geoFeatures   []string
-	engineVersion string
-	channel       *controlplane.Channel
+	geoFeatures []string
+	// moduleFeatures are the optional OpenResty modules this node can use
+	// (brotli-v1, zstd-v1, modsecurity-v1), detected at startup.
+	moduleFeatures []string
+	engineVersion  string
+	channel        *controlplane.Channel
 	// connectedCh is channel for loops that start before enrollment.
 	connectedCh   atomic.Pointer[controlplane.Channel]
 	nodeID        string // guarded by mu; empty until the identity is known
@@ -332,6 +338,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	} else {
 		a.engineVersion = v
 	}
+	a.detectModules(ctx)
 
 	var wg sync.WaitGroup
 	spawn := func(name string, f func(context.Context)) {
@@ -447,7 +454,7 @@ func (a *Agent) prepareDirs() error {
 }
 
 func (a *Agent) buildOptions() configir.Options {
-	opts := configir.Options{DefaultPort: a.cfg.DefaultPort, ExtraFeatures: a.geoFeatures}
+	opts := configir.Options{DefaultPort: a.cfg.DefaultPort, ExtraFeatures: a.extraFeatures()}
 	if a.channel != nil {
 		opts.ClusterID = a.channel.Identity().ClusterID
 	}

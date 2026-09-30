@@ -148,6 +148,9 @@ type MinuteStats struct {
 	StatusCodes   map[string]uint64 `json:"status_codes"`
 	TopURLs       map[string]uint64 `json:"top_urls"`
 	TopIPs        map[string]uint64 `json:"top_ips"`
+	// WAFRules counts the CRS rules that matched, by rule id (the heaviest
+	// 20 of the minute).
+	WAFRules map[string]uint64 `json:"waf_rules"`
 }
 
 // Client talks to the control socket.

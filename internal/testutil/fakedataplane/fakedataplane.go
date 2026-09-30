@@ -567,6 +567,13 @@ func (s *Server) AddStats(m ...dataplane.MinuteStats) {
 	s.pending = append(s.pending, m...)
 }
 
+// AddLogEntry queues a raw sampled access log entry (JSON fields).
+func (s *Server) AddLogEntry(entry map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logs = append(s.logs, entry)
+}
+
 func (s *Server) AddLog(site string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

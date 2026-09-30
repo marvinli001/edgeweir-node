@@ -245,3 +245,24 @@ func TestSecurityEventJSONFromLua(t *testing.T) {
 		t.Fatalf("{} = %v, %v", out.Events, err)
 	}
 }
+
+func TestDrainLogsCarriesCRSMatches(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	ids := make([]any, 20)
+	for i := range ids {
+		ids[i] = 941100 + i
+	}
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000000.5, "path": "/", "status": 403, "waf_rule_ids": ids, "waf_blocked": true})
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000001, "path": "/", "status": 200})
+	logs, err := c.DrainLogs(context.Background())
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("DrainLogs = %v, %v", logs, err)
+	}
+	if got := logs[0].GetWafRuleIds(); len(got) != 16 || got[0] != 941100 || got[15] != 941115 || !logs[0].GetWafBlocked() {
+		t.Fatalf("CRS fields = %v %v", got, logs[0].GetWafBlocked())
+	}
+	if logs[1].GetWafRuleIds() != nil || logs[1].GetWafBlocked() {
+		t.Fatalf("request without CRS matches: %v", logs[1])
+	}
+}
