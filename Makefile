@@ -58,9 +58,11 @@ pin-check: ## Fail if an image or GitHub Action is referenced by a movable tag
 lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) sh -c '\
 		resty -I /lua --shdict "edgeweir_sites 4m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_stats 4m" \
-			--shdict "edgeweir_purge 4m" --shdict "edgeweir_health 1m" --shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_topstats 4m" /t/run.lua && \
+			--shdict "edgeweir_purge 4m" --shdict "edgeweir_health 1m" --shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_topstats 4m" \
+			--shdict "edgeweir_bans 4m" /t/run.lua && \
 		resty -I /lua /t/sigv4.lua && resty -I /lua /t/expressions.lua && resty -I /lua /t/http3.lua && \
-		resty -I /lua --shdict "edgeweir_rate_61 256k" --shdict "edgeweir_rate_62 256k" /t/ratelimit.lua'
+		resty -I /lua --shdict "edgeweir_rate_61 256k" --shdict "edgeweir_rate_62 256k" /t/ratelimit.lua && \
+		resty -I /lua --shdict "edgeweir_bans 4m" /t/bans.lua && resty -I /lua --shdict "edgeweir_bans 64k" /t/bans_memory.lua'
 
 .PHONY: docker
 docker: ## Build the node container image (bundles IPinfo Lite when IPINFO_TOKEN is set)

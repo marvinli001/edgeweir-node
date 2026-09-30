@@ -9,11 +9,16 @@
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
 --   POST /v1/purge            merge purge markers {id, markers}
 --   GET  /v1/origins/health   origins with recorded failures
+--   GET  /v1/bans             ban status (?list=1 adds up to 1000 bans)
+--   PUT  /v1/bans             replace the console bans {sequence, bans}
+--   POST /v1/bans             apply a delta {base, sequence, upsert, remove}
+--   POST /v1/bans/auto/drain  return and delete up to 1000 queued own bans
 local cjson = require("cjson.safe")
 local store = require("edgeweir.store")
 local stats = require("edgeweir.stats")
 local purge = require("edgeweir.purge")
 local health = require("edgeweir.health")
+local bans = require("edgeweir.bans")
 
 local _M = {}
 
@@ -131,6 +136,46 @@ function _M.handle()
     ngx.log(ngx.NOTICE, "edgeweir: purge markers ", method == "PUT" and "replaced" or "added",
       ": ", res.entries, " entries")
     return reply(200, res)
+  end
+
+  if uri == "/v1/bans" then
+    if method == "GET" then
+      local args = ngx.req.get_uri_args(1)
+      return reply(200, bans.status(args.list == "1"))
+    end
+    if method ~= "PUT" and method ~= "POST" then
+      return reply(405, { error = "method not allowed" })
+    end
+    local body, err = read_body()
+    if not body then
+      return reply(400, { error = "read body: " .. tostring(err) })
+    end
+    local doc, derr = cjson.decode(body)
+    if type(doc) ~= "table" then
+      return reply(400, { error = "invalid JSON: " .. tostring(derr) })
+    end
+    local res, perr, code
+    if method == "PUT" then
+      res, perr, code = bans.replace(doc)
+    else
+      res, perr, code = bans.add(doc)
+    end
+    if not res then
+      if code ~= 409 then
+        ngx.log(ngx.ERR, "edgeweir: ban update rejected: ", perr)
+      end
+      return reply(code or 500, { error = perr })
+    end
+    ngx.log(ngx.NOTICE, "edgeweir: bans ", method == "PUT" and "replaced" or "updated", ": sequence ",
+      res.sequence, ", ", res.entries, " held, ", res.unapplied, " unapplied")
+    return reply(200, res)
+  end
+
+  if uri == "/v1/bans/auto/drain" then
+    if method ~= "POST" then
+      return reply(405, { error = "method not allowed" })
+    end
+    return reply(200, { bans = bans.drain(1000) })
   end
 
   if uri == "/v1/origins/health" then

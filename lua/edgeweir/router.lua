@@ -1,7 +1,8 @@
 -- edgeweir.router: edge layer (public listeners).
 --
 -- access(): rejects requests that already passed this node (CDN-Loop,
--- 508), resolves the site by Host (404 for unknown hosts), handles
+-- 508), resolves the site by Host (404 for unknown hosts), rejects banned
+-- client addresses (403 ip-banned, edgeweir.bans), handles
 -- WebSocket upgrades, evaluates the request conditions of the cache rules
 -- and prepares the variables used by proxy_cache in nginx.conf: the cache
 -- key (edgeweir.cachekey, including the purge epoch from edgeweir.purge),
@@ -18,6 +19,7 @@ local cachekey = require("edgeweir.cachekey")
 local purge = require("edgeweir.purge")
 local policy = require("edgeweir.policy")
 local ipaddr = require("edgeweir.ipaddr")
+local bans = require("edgeweir.bans")
 
 local _M = {}
 
@@ -73,6 +75,20 @@ function _M.cdn_loop_value(incoming, cdn_id)
     return incoming .. ", " .. cdn_id
   end
   return cdn_id
+end
+
+-- platform_allowed reports whether addr is on a platform allow list of
+-- the site's table.
+function _M.platform_allowed(site, addr)
+  local allows = site._config and site._config.allows
+  if allows then
+    for i = 1, #allows do
+      if allows[i](addr) then
+        return true
+      end
+    end
+  end
+  return false
 end
 
 local function rule_ids(chain)
@@ -145,6 +161,11 @@ function _M.access()
   ngx.ctx.edgeweir_site = site
   if var.scheme == "https" and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
+  end
+  -- Dynamic bans: platform scope, then the site's; addresses on a
+  -- platform allow list are never banned.
+  if bans.match(site.id, var.remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
+    return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   local original_path = var.uri
   ngx.ctx.edgeweir_original_path = original_path

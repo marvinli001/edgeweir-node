@@ -16,11 +16,16 @@ function _M.init(opts)
   _M.conf_id = type(opts.conf_id) == "string" and opts.conf_id or ""
   -- Load every module eagerly: workers inherit them after fork.
   require("edgeweir.geoip").socket = opts.geoip_socket or ""
+  local capacity = tonumber(opts.ban_capacity)
+  if capacity and capacity >= 1 then
+    require("edgeweir.bans").capacity = capacity
+  end
   require("edgeweir.ipaddr")
   require("edgeweir.store")
   require("edgeweir.rules")
   require("edgeweir.cachekey")
   require("edgeweir.purge")
+  require("edgeweir.bans")
   require("edgeweir.health")
   require("edgeweir.lb")
   require("edgeweir.sigv4")
