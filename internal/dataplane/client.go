@@ -36,6 +36,8 @@ type SiteTable struct {
 	HTTPChallenges []configir.HTTPChallenge `json:"http_challenges,omitempty"`
 	IPLists        []*nodev1.IpList         `json:"ip_lists,omitempty"`
 	PlatformRules  []*nodev1.EdgeRule       `json:"platform_rules,omitempty"`
+	// PlatformProtection is the platform-wide Under Attack.
+	PlatformProtection *configir.PlatformProtection `json:"platform_protection,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -44,6 +46,7 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.HTTPChallenges = p.HTTPChallenges
 	t.IPLists = p.IPLists
 	t.PlatformRules = p.PlatformRules
+	t.PlatformProtection = p.PlatformProtection
 	if t.Sites == nil {
 		t.Sites = []configir.Site{}
 	}

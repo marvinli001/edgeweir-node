@@ -184,3 +184,64 @@ func TestClientBans(t *testing.T) {
 		t.Fatalf("lua-cjson status: %+v, %v", decoded, err)
 	}
 }
+
+func TestClientChallengeAndSecurity(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	ctx := context.Background()
+
+	st, err := c.ChallengeStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Current != "" || len(st.Keys) != 0 || st.Captchas != 0 {
+		t.Fatalf("fresh challenge status = %+v", st)
+	}
+	st, err = c.PutChallengeKeys(ctx, &dataplane.ChallengeKeys{ID: "set", Current: "k2", Keys: []dataplane.ChallengeKey{{ID: "k1", Secret: "YQ=="}, {ID: "k2", Secret: "Yg=="}}})
+	if err != nil || st.KeysID != "set" || st.Current != "k2" || len(st.Keys) != 2 {
+		t.Fatalf("after PUT keys: %+v, %v", st, err)
+	}
+	st, err = c.PutCaptchas(ctx, &dataplane.CaptchaPool{ID: "pool", Images: []dataplane.Captcha{{Answer: "ABCDE", PNG: "iVBORw0KGgo="}}})
+	if err != nil || st.Captchas != 1 || st.CaptchasID != "pool" {
+		t.Fatalf("after PUT captchas: %+v, %v", st, err)
+	}
+
+	sec, err := c.SecurityStatus(ctx)
+	if err != nil || len(sec.Sites) != 0 {
+		t.Fatalf("empty security status: %+v, %v", sec, err)
+	}
+	events, err := c.DrainSecurity(ctx)
+	if err != nil || events != nil {
+		t.Fatalf("empty drain: %v, %v", events, err)
+	}
+	srv.SetSecurity(dataplane.SecuritySite{SiteID: "s1", Level: "js", EscalatedPaths: 1, Paths: dataplane.List[dataplane.SecurityPath]{{Path: "/login", Level: "pow"}}})
+	srv.AddSecurityEvents(dataplane.SecurityEvent{ID: "b-1", SiteID: "s1", Kind: "site_level", Level: "js", PreviousLevel: "cookie302"})
+	sec, err = c.SecurityStatus(ctx)
+	if err != nil || len(sec.Sites) != 1 || sec.Sites[0].Paths[0].Path != "/login" || sec.PendingEvents != 1 {
+		t.Fatalf("security status: %+v, %v", sec, err)
+	}
+	events, err = c.DrainSecurity(ctx)
+	if err != nil || len(events) != 1 || events[0].ID != "b-1" {
+		t.Fatalf("drain: %+v, %v", events, err)
+	}
+}
+
+// lua-cjson writes empty tables as {}; the lists accept both forms.
+func TestSecurityEventJSONFromLua(t *testing.T) {
+	raw := `{"events":[{"id":"a1b2-7","site_id":"s1","time":1790000000.5,"kind":"ip_banned","level":"normal",` +
+		`"previous_level":"normal","address":"198.51.100.23","metric":"ip_qps","observed":6.2,"threshold":5,` +
+		`"top_ips":[{"value":"198.51.100.23","count":31}],"top_paths":{}}]}`
+	var out struct {
+		Events dataplane.List[dataplane.SecurityEvent] `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatal(err)
+	}
+	e := out.Events[0]
+	if e.Kind != "ip_banned" || e.Address != "198.51.100.23" || len(e.TopIPs) != 1 || e.TopIPs[0].Count != 31 || e.TopPaths != nil {
+		t.Fatalf("event = %+v", e)
+	}
+	if err := json.Unmarshal([]byte(`{"events":{}}`), &out); err != nil || out.Events != nil {
+		t.Fatalf("{} = %v, %v", out.Events, err)
+	}
+}

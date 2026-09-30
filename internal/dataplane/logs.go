@@ -22,6 +22,7 @@ type sampledLog struct {
 	DurationMS  uint32  `json:"duration_ms"`
 	CacheStatus string  `json:"cache_status"`
 	SampleRate  uint32  `json:"sample_rate"`
+	JA4         string  `json:"ja4"`
 }
 
 func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
@@ -42,7 +43,7 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 	logs := make([]*nodev1.AccessLog, 0, len(rows))
 	for _, l := range rows {
 		logs = append(logs, &nodev1.AccessLog{
-			Time: timestamppb.New(time.UnixMilli(int64(l.Time * 1000))), SiteId: l.SiteID, ClientIp: l.ClientIP, Method: l.Method, Host: l.Host, Path: l.Path, Status: l.Status, BytesSent: l.BytesSent, DurationMs: l.DurationMS, CacheStatus: l.CacheStatus, SampleRate: l.SampleRate,
+			Time: timestamppb.New(time.UnixMilli(int64(l.Time * 1000))), SiteId: l.SiteID, ClientIp: l.ClientIP, Method: l.Method, Host: l.Host, Path: l.Path, Status: l.Status, BytesSent: l.BytesSent, DurationMs: l.DurationMS, CacheStatus: l.CacheStatus, SampleRate: l.SampleRate, Ja4: l.JA4,
 		})
 	}
 	return logs, nil

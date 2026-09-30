@@ -52,6 +52,14 @@ type Server struct {
 	autoBans    []dataplane.AutoBan
 	banCalls    []string
 	failBans    int
+
+	// Challenges (lua/edgeweir/challenge.lua) and CC (lua/edgeweir/cc.lua).
+	challengeKeys  *dataplane.ChallengeKeys
+	captchas       *dataplane.CaptchaPool
+	keyPuts        int
+	captchaPuts    int
+	security       dataplane.SecurityStatus
+	securityEvents []dataplane.SecurityEvent
 }
 
 var (
@@ -203,6 +211,40 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(w, 200, map[string]any{"bans": out})
+	case r.URL.Path == "/v1/challenge" && r.Method == http.MethodGet:
+		reply(w, 200, s.challengeStatusLocked())
+	case r.URL.Path == "/v1/challenge/keys" && r.Method == http.MethodPut:
+		var k dataplane.ChallengeKeys
+		if err := json.NewDecoder(r.Body).Decode(&k); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		s.challengeKeys = &k
+		s.keyPuts++
+		reply(w, 200, s.challengeStatusLocked())
+	case r.URL.Path == "/v1/challenge/captchas" && r.Method == http.MethodPut:
+		var p dataplane.CaptchaPool
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		s.captchas = &p
+		s.captchaPuts++
+		reply(w, 200, s.challengeStatusLocked())
+	case r.URL.Path == "/v1/security" && r.Method == http.MethodGet:
+		st := map[string]any{"sites": map[string]any{}, "pending_events": len(s.securityEvents)}
+		if len(s.security.Sites) > 0 {
+			st["sites"] = s.security.Sites
+		}
+		reply(w, 200, st)
+	case r.URL.Path == "/v1/security/drain" && r.Method == http.MethodPost:
+		out := s.securityEvents[:min(len(s.securityEvents), 1000)]
+		s.securityEvents = slices.Clone(s.securityEvents[len(out):])
+		if len(out) == 0 {
+			reply(w, 200, map[string]any{"events": map[string]any{}})
+			return
+		}
+		reply(w, 200, map[string]any{"events": out})
 	case r.URL.Path == "/v1/origins/health" && r.Method == http.MethodGet:
 		if len(s.health) == 0 {
 			reply(w, 200, map[string]any{"origins": map[string]any{}})
@@ -358,6 +400,61 @@ func (s *Server) AddAutoBans(b ...dataplane.AutoBan) {
 	s.autoBans = append(s.autoBans, b...)
 }
 
+// challengeStatusLocked mimics GET /v1/challenge (an empty key list is
+// encoded as {}, like lua-cjson without array metatables).
+func (s *Server) challengeStatusLocked() map[string]any {
+	st := map[string]any{"keys_id": "", "current": "", "keys": map[string]any{}, "captchas": 0, "captchas_id": ""}
+	if k := s.challengeKeys; k != nil {
+		ids := []string{}
+		for _, key := range k.Keys {
+			ids = append(ids, key.ID)
+		}
+		st["keys_id"], st["current"] = k.ID, k.Current
+		if len(ids) > 0 {
+			st["keys"] = ids
+		}
+	}
+	if p := s.captchas; p != nil {
+		st["captchas"], st["captchas_id"] = len(p.Images), p.ID
+	}
+	return st
+}
+
+// ChallengeKeys returns the installed challenge keys (nil: none).
+func (s *Server) ChallengeKeys() *dataplane.ChallengeKeys {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.challengeKeys
+}
+
+// Captchas returns the installed captcha pool and how many pools were put.
+func (s *Server) Captchas() (*dataplane.CaptchaPool, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.captchas, s.captchaPuts
+}
+
+// KeyPuts counts the PUT /v1/challenge/keys calls.
+func (s *Server) KeyPuts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keyPuts
+}
+
+// SetSecurity sets the sites GET /v1/security reports.
+func (s *Server) SetSecurity(sites ...dataplane.SecuritySite) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.security.Sites = sites
+}
+
+// AddSecurityEvents queues CC events for the next drains.
+func (s *Server) AddSecurityEvents(e ...dataplane.SecurityEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.securityEvents = append(s.securityEvents, e...)
+}
+
 // Table returns the currently installed site table.
 func (s *Server) Table() *dataplane.SiteTable {
 	s.mu.Lock()
@@ -380,6 +477,7 @@ func (s *Server) Restart() {
 	s.table = nil
 	s.markers = nil
 	s.bans, s.unapplied, s.banSeq, s.autoBans, s.autoEvicted = nil, nil, 0, nil, 0
+	s.challengeKeys, s.captchas, s.securityEvents = nil, nil, nil
 }
 
 func markerKey(m dataplane.PurgeMarker) string {
