@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点当前（MVP M4）的实现。需求来源是控制面仓库的 `docs/specs/mvp.md` 与 `docs/audits/2026-09-25-wrapup.md`；节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.7.0`）里的 `edgeweir.node.v1`。
+本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.8.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -123,7 +123,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - **snapshot**：直接进入校验。
 - **diff**：以本地 LKG 为基础，listeners / cache_zones / certificates / origin_allowed_cidrs 整体替换，按 id upsert 站点，删除 `removed_site_ids`，重新规范排序后计算哈希，与 `diff.content_hash` 比较。基础 revision 不符、哈希不一致或任何错误 → 重新请求快照（`base_revision=0`）。
 - LKG 属于其他集群（重新注册到别的集群）时不作为 diff 基础。
-- 控制台返回比已应用更旧的 revision（例如从备份恢复）时忽略，继续服务 LKG（控制台备份恢复的处理见控制面延后项 D3）。
+- 控制台返回比已应用更旧的 revision（例如从备份恢复）时忽略，继续服务 LKG；控制台恢复备份后凭节点保存的认证回执发布更高的 revision（见 §6「运维」）。
 
 **content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）。
 
@@ -132,11 +132,11 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 情况 | 处理 |
 | --- | --- |
 | 哈希不符（快照或 diff 回退后的快照） | 整个配置拒绝 |
-| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（旧占位字段；M4 使用类型化 `Site.rules`） |
+| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（旧占位字段；规则表达式用类型化的 `Site.rules`） |
 | `cluster_id` 与节点所属集群不同 | 整个配置拒绝 |
 | 站点、源站、缓存规则 id 含 `[A-Za-z0-9_-]` 以外的字符或超过 128 个字符 | 整个配置拒绝（id 在数据面里作为分隔符的一部分） |
 | listener 端口非法 / 重复 | 跳过该 listener 并告警 |
-| HTTPS listener | M3 起支持，证书材料通过 mTLS 单独获取 |
+| HTTPS listener | 支持，证书材料通过 mTLS 单独获取 |
 | 没有可用 listener | 使用默认端口（80）并告警 |
 | cache zone 名非法或与内部 shared dict 重名 | 跳过并告警；没有 zone 时使用内置 `edgeweir_default` |
 | 站点引用不存在的 zone / 未指定 zone | 使用第一个 zone |
@@ -165,7 +165,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 - `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
 - 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
-- 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），另按分钟汇总 Top URL / Top IP。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次（见下方 M5 记录）。
+- 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），另按分钟汇总 Top URL / Top IP。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
 - 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时和缓存状态，放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
 
 ### 2.5 WatchConfig
@@ -398,20 +398,19 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 
 ## 6. 已知限制
 
-- HTTPS 监听与证书下发已在 M3 实现，具体见下方 M3 记录。
-- 旧占位字段 `CacheRuleMatch.expression` 仍拒绝非空值；M4 通用表达式通过 `EdgeRule` 结构化 AST 下发，公共缓存 API 不暴露旧占位字段。
+- 旧占位字段 `CacheRuleMatch.expression` 仍拒绝非空值；通用表达式通过 `EdgeRule` 结构化 AST 下发，公共缓存 API 不暴露旧占位字段。
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
-- 访问日志默认关闭，M6 支持站点采样、有界私有队列和持久批次去重。
-- 预热只预热桌面变体；前缀与全站预热在 v1。
+- 访问日志默认关闭，按站点采样，经有界私有队列与持久批次去重上报。
+- 预热只预热桌面变体，不支持前缀与全站预热。
 - 使用 required_features 协商能力；未知枚举或能力拒绝整份配置，保留 LKG。
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。
 
-## MVP M3（2026-09-27）
+## HTTPS 与证书
 
 支持 HTTPS、HTTP/2、HTTP/3 与 SNI 证书热更新。证书材料在 certificates.json（0600）中保存当前与前一份 LKG 的引用；节点身份私钥与网站 TLS 私钥分别管理。激活后推送失败会恢复，配置未持久化不能回报 APPLIED。详情见控制面 docs/guide/https.md。
 
-## MVP M4（2026-09-27）
+## 规则与 GeoIP
 
 - `Site.rules`、`NodeConfig.ip_lists/platform_rules` 进入热更新表，Go 验证后 Lua 编译为固定闭包。禁止运行用户 Lua。每阶段平台规则先执行，平台 IP 白名单仅覆盖平台 IP 黑名单；站点放行不能绕过平台 WAF。
 - IP 前缀树、有限 PCRE 工作量、不会淘汰现有键的固定窗口限速；规则或依赖数据执行错误时拒绝请求。
@@ -420,11 +419,11 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 - 持久化失败在恢复旧配置后退避五分钟或等下一版本，避免每次轮询重新激活未持久化内容。
 - `test/lua/expression-vectors.json` 镜像控制面规则包的 19 个共享向量；GeoIP MMDB（City、ASN 及 IPinfo Lite 结构）为 `internal/testutil/geofixture` 自行生成的数据。
 
-## M5 statistics (2026-09-27)
+## 统计
 
-`traffic-spool.json` (0600) keeps immutable batches and monotonic sequence numbers before `ReportStatsV2`. A cursor query recovers after local state loss. The queue is bounded to 10000 buckets / 32 MiB. Lua Space-Saving summaries use a separate shared dictionary and omit query strings and headers; they are approximate. See the console DNS/alert guide for retention and delivery semantics.
+`traffic-spool.json`（0600）在调用 `ReportStatsV2` 之前保存不可变的批次和单调递增的序号；本地状态丢失后用游标查询恢复。队列上限为 10000 个分钟桶或 32 MiB。Lua 的 Space-Saving 摘要（Top URL / Top IP）用单独的共享字典，不含查询串和请求头，是近似值。全部批次确认后上报统计水位 `complete_until`（§2.4）。
 
-## MVP M6 运维闭环
+## 运维
 
 固定监督进程持独占状态锁，经本机 0600 socket 接收类型化任务。发布来源、cosign 和公钥由节点运维配置；控制面不能选择公钥或任意命令。验证已签名清单和归档哈希、文件布局、ELF 架构与版本后，程序和 Lua 在私有版本目录内切换。原子状态记录准备 / 试运行 / 当前版本，健康窗口失败或中途重启恢复前一版本及配置快照。结果保留到控制面确认；基础安装指纹变化时采用新镜像 / 软件包，避免旧自升级程序掩盖系统更新。
 
