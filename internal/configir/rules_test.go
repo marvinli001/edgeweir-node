@@ -76,17 +76,17 @@ func TestSharedExpressionVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	var vectors []struct {
-		Source   string              `json:"source"`
-		Phase    string              `json:"phase"`
-		Rejected bool                `json:"rejected"`
-		Reason   string              `json:"reason"`
-		Action   json.RawMessage     `json:"action"`
+		Source   string          `json:"source"`
+		Phase    string          `json:"phase"`
+		Rejected bool            `json:"rejected"`
+		Reason   string          `json:"reason"`
+		Action   json.RawMessage `json:"action"`
 		// ActionRejected: nodes refuse the action in this phase.
-		ActionRejected bool `json:"actionRejected"`
-		Request  map[string]any      `json:"request"`
-		Lists    map[string][]string `json:"lists"`
-		Expected bool                `json:"expected"`
-		IR       json.RawMessage     `json:"ir"`
+		ActionRejected bool                `json:"actionRejected"`
+		Request        map[string]any      `json:"request"`
+		Lists          map[string][]string `json:"lists"`
+		Expected       bool                `json:"expected"`
+		IR             json.RawMessage     `json:"ir"`
 	}
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)
