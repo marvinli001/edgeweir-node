@@ -236,11 +236,24 @@ func (n *Nginx) runOnce(ctx context.Context) error {
 }
 
 // lineLogger forwards nginx's stderr (error_log stderr) line by line.
+//
+// ModSecurity logs every request it denies with the request line; under an
+// attack that would flood the agent's log. Those lines are counted instead
+// and summarized at most once a minute (the matched rules reach the console
+// through the statistics).
 type lineLogger struct {
 	log *slog.Logger
 	mu  sync.Mutex
 	buf []byte
+
+	now          func() time.Time // for tests; nil = time.Now
+	denied       int
+	deniedSince  time.Time
+	deniedLogged time.Time
 }
+
+// modsecDenied marks ModSecurity's log line of a denied request.
+const modsecDenied = "ModSecurity: Access denied"
 
 func (l *lineLogger) Write(p []byte) (int, error) {
 	l.mu.Lock()
@@ -268,11 +281,41 @@ func (l *lineLogger) flush() {
 		l.emit(string(l.buf))
 		l.buf = nil
 	}
+	l.summarizeDenied(true)
+}
+
+// summarizeDenied logs the number of denied requests counted since the last
+// summary, at most once a minute unless force is set.
+func (l *lineLogger) summarizeDenied(force bool) {
+	if l.denied == 0 {
+		return
+	}
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	if !force && now.Sub(l.deniedLogged) < time.Minute {
+		return
+	}
+	l.log.Info("ModSecurity denied requests (OWASP CRS)", "requests", l.denied,
+		"since", l.deniedSince.UTC().Format(time.RFC3339))
+	l.denied, l.deniedLogged = 0, now
 }
 
 func (l *lineLogger) emit(line string) {
 	line = strings.TrimRight(line, "\r")
 	if line == "" {
+		return
+	}
+	if strings.Contains(line, modsecDenied) {
+		if l.denied == 0 {
+			l.deniedSince = time.Now()
+			if l.now != nil {
+				l.deniedSince = l.now()
+			}
+		}
+		l.denied++
+		l.summarizeDenied(false)
 		return
 	}
 	level := slog.LevelInfo
