@@ -16,13 +16,24 @@ local TTL = 7200
 local HIT = { HIT = true, STALE = true, UPDATING = true, REVALIDATED = true }
 local MISS = { MISS = true, EXPIRED = true }
 
-function _M.log()
+-- MAX_WAF_RULES bounds the CRS rules of a site's minute (heaviest first).
+_M.MAX_WAF_RULES = 20
+
+-- log(waf_location): waf_location in the edge layer's CRS locations, where
+-- the request context comes back first and matched CRS rules are counted.
+function _M.log(waf_location)
+  local waf_ids, waf_blocked
+  if waf_location then
+    local waf = require("edgeweir.waf")
+    waf.restore()
+    waf_ids, waf_blocked = waf.result()
+  end
   local var = ngx.var
   local site = var.edgeweir_site
   if not site or site == "" then
     return
   end
-  require("edgeweir.accesslogs").log()
+  require("edgeweir.accesslogs").log(waf_ids, waf_blocked)
   local ctx_site = ngx.ctx.edgeweir_site
   if ctx_site and ctx_site._cc then require("edgeweir.cc").log(ctx_site) end
   local dict = ngx.shared.edgeweir_stats
@@ -46,6 +57,11 @@ function _M.log()
     end
   end
   dict:incr(p .. "s" .. ngx.status, 1, 0, TTL)
+  if waf_ids then
+    for i = 1, #waf_ids do
+      dict:incr(p .. "w" .. waf_ids[i], 1, 0, TTL)
+    end
+  end
 end
 
 -- drain collects completed minutes (strictly before the minute containing
@@ -87,6 +103,10 @@ function _M.drain(now)
         elseif sub(metric, 1, 1) == "s" then
           local code = sub(metric, 2)
           b.status_codes[code] = (b.status_codes[code] or 0) + v
+        elseif sub(metric, 1, 1) == "w" then
+          local id = sub(metric, 2)
+          b.waf_rules = b.waf_rules or {}
+          b.waf_rules[id] = (b.waf_rules[id] or 0) + v
         end
       end
     end
@@ -103,11 +123,14 @@ function _M.drain(now)
     for value, count in pairs(record.ips or {}) do bucket.top_ips[value] = (bucket.top_ips[value] or 0) + count end
   end
   for _, bucket in ipairs(list) do
-    for _, field in ipairs({"top_urls", "top_ips"}) do
-      local sorted = {}; for value,count in pairs(bucket[field] or {}) do sorted[#sorted+1] = {value=value,count=count} end
-      table.sort(sorted,function(a,b) return a.count>b.count or (a.count==b.count and a.value<b.value) end)
-      local selected = {}; for i=1,math.min(50,#sorted) do selected[sorted[i].value] = sorted[i].count end
-      bucket[field] = selected
+    for _, field in ipairs({"top_urls", "top_ips", "waf_rules"}) do
+      if field ~= "waf_rules" or bucket[field] then
+        local limit = field == "waf_rules" and _M.MAX_WAF_RULES or 50
+        local sorted = {}; for value,count in pairs(bucket[field] or {}) do sorted[#sorted+1] = {value=value,count=count} end
+        table.sort(sorted,function(a,b) return a.count>b.count or (a.count==b.count and a.value<b.value) end)
+        local selected = {}; for i=1,math.min(limit,#sorted) do selected[sorted[i].value] = sorted[i].count end
+        bucket[field] = selected
+      end
     end
   end
   if cjson.array_mt then

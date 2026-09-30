@@ -5,7 +5,9 @@ local MAX_PENDING = 2000
 local function clean(value, limit)
   return string.sub(tostring(value or ""):gsub("[%z\1-\31\127]", ""), 1, limit)
 end
-function M.log()
+-- log(waf_ids, waf_blocked): the CRS rules that matched (at most 16) and
+-- whether CRS blocked the request, for requests of CRS sites.
+function M.log(waf_ids, waf_blocked)
   if ngx.is_subrequest then return end
   local site = ngx.ctx.edgeweir_site
   local rate = site and tonumber(site.log_sample_rate) or 0
@@ -24,6 +26,8 @@ function M.log()
     duration_ms = math.min(86400000, math.floor((tonumber(var.request_time) or 0) * 1000)),
     cache_status = clean(var.upstream_cache_status, 32), sample_rate = rate,
     ja4 = site.protection and site.protection.log_ja4 and clean(require("edgeweir.ja4").value(), 64) or nil,
+    waf_rule_ids = waf_ids and #waf_ids > 0 and setmetatable(waf_ids, json.array_mt) or nil,
+    waf_blocked = waf_blocked or nil,
   })
   if not raw or not dict:rpush("pending", raw) then dict:incr("dropped", 1, 0) end
 end

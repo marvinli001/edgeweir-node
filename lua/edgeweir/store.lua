@@ -143,6 +143,8 @@ function _M.prepare(s, cfg)
     return type(r) == "table" and ((r.expression and ja4(r.expression)) or (type(r.action) == "table" and r.action.key == "tls.ja4"))
   end
   if type(s.protection) ~= "table" then s.protection = nil end
+  if type(s.waf) ~= "table" then s.waf = nil end
+  if type(s.tls) ~= "table" then s.tls = nil end
   s._ja4 = s.protection ~= nil and s.protection.log_ja4 == true
   for _, r in ipairs(s.rules or {}) do if uses_ja4(r) then s._ja4 = true end end
   for _, r in ipairs(s._config.platform_rules or {}) do if uses_ja4(r) then s._ja4 = true end end

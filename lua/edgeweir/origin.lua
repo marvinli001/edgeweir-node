@@ -24,6 +24,7 @@ local dns = require("edgeweir.dns")
 local health = require("edgeweir.health")
 local sigv4 = require("edgeweir.sigv4")
 local upstreamerr = require("edgeweir.upstreamerr")
+local compress = require("edgeweir.compress")
 
 local _M = {}
 
@@ -351,6 +352,9 @@ function _M.header_filter()
   if not site then
     return
   end
+  -- Sites the edge compresses asked for identity: the cached object does
+  -- not vary by Accept-Encoding.
+  compress.origin_header_filter(site)
   local status = ngx.status
   local chain = ctx.chain
   if status >= 500 and ngx.var.http_x_edgeweir_cache_status == "EXPIRED" and stale_capable(chain, ctx.authorized) then

@@ -15,8 +15,13 @@
 -- to the origin layer in X-Edgeweir-Rules, which decides the TTL once the
 -- response status and size are known.
 --
+-- Sites that run the OWASP CRS continue in the edge layer's CRS location
+-- once these checks pass (edgeweir.waf); sites the edge compresses ask the
+-- origin for uncompressed responses (edgeweir.compress).
+--
 -- header_filter(): restores the origin's Cache-Control header that the
--- origin layer replaced to carry stale-* extensions for nginx's cache.
+-- origin layer replaced to carry stale-* extensions for nginx's cache, and
+-- chooses the response's content coding (edgeweir.compress).
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
@@ -26,6 +31,8 @@ local ipaddr = require("edgeweir.ipaddr")
 local bans = require("edgeweir.bans")
 local cc = require("edgeweir.cc")
 local challenge = require("edgeweir.challenge")
+local compress = require("edgeweir.compress")
+local waf = require("edgeweir.waf")
 
 local _M = {}
 
@@ -143,7 +150,9 @@ local function key_request(site, var, path, headers)
   return req
 end
 
-function _M.access()
+-- access returns true when the request goes on to the cache and origin;
+-- every other outcome has answered the request already.
+local function access()
   local headers = strip_internal_headers()
 
   local var = ngx.var
@@ -238,6 +247,10 @@ function _M.access()
   if not site.tls_verify then
     var.edgeweir_origin_layer = "edgeweir_origin_noverify"
   end
+  -- The edge compresses: the origin sends (and the cache keeps) identity.
+  if compress.enabled(site) then
+    var.edgeweir_strip_ae = "1"
+  end
 
   local upgrade = var.http_upgrade
   if upgrade and lower(upgrade) == "websocket" then
@@ -247,25 +260,25 @@ function _M.access()
     -- Proxied as is, never cached.
     var.edgeweir_upgrade = "websocket"
     var.edgeweir_connection = "upgrade"
-    return
+    return true
   end
 
   local method = ngx.req.get_method()
   if method ~= "GET" and method ~= "HEAD" then
     var.edgeweir_range_mode = "pass"
-    return
+    return true
   end
   -- RFC 9111, section 3.5: responses to requests with Authorization are
   -- shared only when the applying rule allows it (cache_authorized).
   local authorized = var.http_authorization ~= nil
   if ngx.ctx.edgeweir_policy and ngx.ctx.edgeweir_policy.cache_bypass then
     var.edgeweir_range_mode = "pass"
-    return
+    return true
   end
   local chain = rules.chain(site, original_path, authorized)
   if not rules.may_cache(chain, authorized) then
     var.edgeweir_range_mode = "pass"
-    return
+    return true
   end
 
   var.edgeweir_cache_bypass = "0"
@@ -280,6 +293,16 @@ function _M.access()
   local path = original_path
   local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
   var.edgeweir_cache_key = cachekey.build(site, key_request(site, var, path, headers), epoch)
+  return true
+end
+
+function _M.access()
+  if access() then
+    local site = ngx.ctx.edgeweir_site
+    if site and site.waf then
+      return waf.enter(site)
+    end
+  end
 end
 
 local function port_number(value)
@@ -307,8 +330,18 @@ function _M.http3_port(authority, listener_port)
   if host then return port_number(port) end
 end
 
-function _M.header_filter()
+-- header_filter(waf_location): waf_location in the CRS locations, where the
+-- request context must come back first (a request ModSecurity blocks never
+-- reaches their access phase).
+function _M.header_filter(waf_location)
   local h = ngx.header
+  if waf_location then
+    waf.restore()
+    if ngx.var.modsecurity_intervention == "1" then
+      h["X-Edgeweir-Error"] = "waf-blocked"
+      h["Cache-Control"] = "no-store"
+    end
+  end
   local site = ngx.ctx.edgeweir_site
   if ngx.var.scheme == "https" and site and site.tls and site.tls.hsts_max_age > 0 then
     local value = "max-age=" .. tostring(site.tls.hsts_max_age)
@@ -332,6 +365,7 @@ function _M.header_filter()
   if site then
     local ok = pcall(policy.response, site)
     if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
+    compress.header_filter(site)
   end
 end
 
