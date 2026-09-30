@@ -65,6 +65,11 @@ type DataPlane interface {
 	PutBans(ctx context.Context, t *dataplane.BanTable) (*dataplane.BanStatus, error)
 	AddBans(ctx context.Context, d *dataplane.BanDelta) (*dataplane.BanStatus, error)
 	DrainAutoBans(ctx context.Context) ([]dataplane.AutoBan, error)
+	ChallengeStatus(ctx context.Context) (*dataplane.ChallengeStatus, error)
+	PutChallengeKeys(ctx context.Context, k *dataplane.ChallengeKeys) (*dataplane.ChallengeStatus, error)
+	PutCaptchas(ctx context.Context, p *dataplane.CaptchaPool) (*dataplane.ChallengeStatus, error)
+	SecurityStatus(ctx context.Context) (*dataplane.SecurityStatus, error)
+	DrainSecurity(ctx context.Context) ([]dataplane.SecurityEvent, error)
 }
 
 // Config configures the agent.
@@ -118,6 +123,17 @@ type Config struct {
 	// BanRetryInterval: manual bans that did not fit are retried this often
 	// (default 1m).
 	BanRetryInterval time.Duration
+	// CaptchaInterval: a new captcha pool of CaptchaPoolSize images is
+	// generated this often while the configuration uses challenges
+	// (default 10m, 256 images).
+	CaptchaInterval time.Duration
+	CaptchaPoolSize int
+	// SecurityInterval: CC events are drained and reported this often
+	// (default 5s).
+	SecurityInterval time.Duration
+	// ChallengeKeyRetry: challenge keys the configuration names but the
+	// console did not hand out are asked for again this often (default 30s).
+	ChallengeKeyRetry time.Duration
 }
 
 func (c *Config) setDefaults() {
@@ -142,6 +158,12 @@ func (c *Config) setDefaults() {
 	def(&c.PrefetchBudget, 4*time.Minute)
 	def(&c.AutoBanInterval, 5*time.Second)
 	def(&c.BanRetryInterval, time.Minute)
+	def(&c.CaptchaInterval, 10*time.Minute)
+	def(&c.SecurityInterval, 5*time.Second)
+	def(&c.ChallengeKeyRetry, 30*time.Second)
+	if c.CaptchaPoolSize <= 0 {
+		c.CaptchaPoolSize = 256
+	}
 	if c.BanCapacity <= 0 {
 		c.BanCapacity = render.DefaultBanCapacity
 	}
@@ -222,6 +244,16 @@ type Agent struct {
 	addrMu            sync.Mutex
 	consoleAddrsCache []netip.Prefix
 	consoleAddrsAt    time.Time
+
+	// Challenges (challenge.go): keys by id (challengeMu), the captcha
+	// pool pushed last (challengePushMu, which also serializes pushes).
+	challengeMu         sync.Mutex
+	challengeKeys       map[string][]byte
+	challengePushMu     sync.Mutex
+	captchaID           string
+	captchaCh           chan struct{}
+	keysFetchedAt       time.Time // data plane loop only
+	securityUnsupported sync.Once
 }
 
 // New creates an agent.
@@ -250,6 +282,9 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		banCh:          make(chan struct{}, 1),
 		kernelCh:       make(chan struct{}, 1),
 		nft:            kernelManager(cfg.Kernel, log),
+
+		challengeKeys: map[string][]byte{},
+		captchaCh:     make(chan struct{}, 1),
 	}
 }
 
@@ -314,6 +349,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.loadCredentials()
 	a.loadCertificates()
 	a.loadPurge()
+	a.loadChallengeKeys()
 	a.serveInitialConfig(ctx)
 	a.startBans(ctx)
 	// Runs before the loops finish (defers are last in, first out); a sync
@@ -322,6 +358,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("dataplane", a.dataPlaneLoop)
 	spawn("ocsp", a.ocspLoop)
 	spawn("kernel", a.kernelLoop)
+	spawn("captchas", a.captchaLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down
@@ -352,6 +389,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("tasks", a.taskLoop)
 	spawn("bans", a.bansLoop)
 	spawn("autobans", a.autoBansLoop)
+	spawn("security", a.securityLoop)
 	a.triggerSync()
 	a.triggerBans()
 

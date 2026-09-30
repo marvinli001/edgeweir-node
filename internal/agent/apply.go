@@ -125,6 +125,9 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	if err := a.syncPurgeWithRetry(ctx); err != nil {
 		a.log.Warn("cannot install purge markers before the site table; retrying in the background", "err", err)
 	}
+	// Keys go in before the sites that need them; the data plane check
+	// retries a failure.
+	a.pushChallengeKeysWithRetry(ctx, plan)
 	table := dataplane.FromPlan(plan)
 	table.CDNID = a.cdnID()
 	touched = true
@@ -136,6 +139,12 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.desired = table
 	a.plan = plan
 	a.mu.Unlock()
+	a.challengePushMu.Lock()
+	noPool := a.captchaID == ""
+	a.challengePushMu.Unlock()
+	if len(plan.ChallengeKeys) > 0 && noPool {
+		a.triggerCaptchas()
+	}
 	return nil
 }
 
@@ -253,6 +262,7 @@ func (a *Agent) dataPlaneLoop(ctx context.Context) {
 		case <-t.C:
 			a.reconcileDataPlane(ctx)
 			a.reconcileBans(ctx)
+			a.reconcileChallenge(ctx)
 		case <-a.engine.Started():
 			// The control socket needs a moment after the master starts.
 			for range 20 {
@@ -261,6 +271,7 @@ func (a *Agent) dataPlaneLoop(ctx context.Context) {
 				}
 			}
 			a.reconcileBans(ctx)
+			a.reconcileChallenge(ctx)
 		}
 	}
 }
@@ -427,6 +438,10 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		return
 	}
 	a.attachCredentials(plan)
+	if err := a.ensureChallengeKeys(ctx, plan); err != nil {
+		a.fail(cfg, key, err) // transient: retried with the next sync
+		return
+	}
 	if err := a.ensureCertificates(ctx, plan); err != nil {
 		a.fail(cfg, key, err)
 		return
@@ -468,6 +483,7 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.rejectedKey = ""
 	a.mu.Unlock()
 	a.pruneSecrets(cfg, previousConfig)
+	a.pruneChallengeKeys(cfg, previousConfig)
 	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings))
 	a.triggerKernel() // platform allow lists may have changed
 	a.triggerReport()

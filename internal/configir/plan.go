@@ -69,6 +69,9 @@ var regionRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 // X-Edgeweir-Rules), so nothing else is accepted. The console uses UUIDs.
 var idRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
+// ValidID reports whether s is a valid id (see idRE).
+func ValidID(s string) bool { return idRE.MatchString(s) }
+
 var bucketRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 
 // Defaults for zero values in OriginPool.health_check and .connection.
