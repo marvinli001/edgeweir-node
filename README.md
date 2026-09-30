@@ -91,7 +91,7 @@ edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...   # --to
 edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
                   [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80]
                   [--trusted-ca FILE] [--purge-dict-mb 32] [--purge-markers-per-site 1000]
-                  [--prefetch-budget 4m] [--edge-socket PATH] ...
+                  [--prefetch-budget 4m] [--edge-socket PATH] [--ban-capacity 100000] [--kernel-bans auto] ...
 edgeweir-node supervise --manage-nginx ...   # 参数同 run；systemd unit 与容器镜像的入口
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node version
@@ -144,12 +144,16 @@ edgeweir-node version
 | `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`）大小，单位 MiB |
 | `--purge-markers-per-site` | `1000` | 每站点 URL 与前缀标记上限，超出后合并为全站标记 |
 | `--prefetch-budget` | `4m` | 单批预热任务的时间上限 |
+| `--ban-capacity` | `100000` | 数据面最多保存的动态封禁条数（控制台条目与本机自动封禁）；超出时先淘汰最早的自动封禁，手动封禁写不下时如实上报 |
+| `--ban-dict-mb` | `32` | 封禁存储（`lua_shared_dict edgeweir_bans`）大小，单位 MiB |
+| `--kernel-bans` | `auto` | 平台范围的封禁同时写入 nftables：`auto`（`nft` 可用且有 `CAP_NET_ADMIN` 时）、`off` |
+| `--nft-bin` | `nft` | 内核封禁使用的 nftables 可执行文件 |
 | `--log-level` | `info` | 日志级别：`debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | 日志格式：`text`、`json` |
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`nginx/`（prefix 与渲染后的 `nginx.conf`） |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`nginx/`（prefix 与渲染后的 `nginx.conf`） |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | Lua 数据面本地控制 API（仅 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |

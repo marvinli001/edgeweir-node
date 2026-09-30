@@ -3,7 +3,7 @@
 //	EDGEWEIR_TOKEN=T edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name N] [--state-dir DIR] [--force]
 //	edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...  (--token T also works but shows in ps)
 //	edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
-//	                  [--lua-dir DIR] [--control-socket PATH] ...
+//	                  [--lua-dir DIR] [--control-socket PATH] [--kernel-bans auto|off] ...
 //	edgeweir-node healthcheck [--control-socket PATH]
 //	edgeweir-node version
 //
@@ -32,6 +32,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
+	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 	"github.com/marvinli001/edgeweir-node/internal/version"
@@ -345,6 +346,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
 		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
+		banCapacity   = fs.Int("ban-capacity", render.DefaultBanCapacity, "dynamic bans the data plane holds (console and own); the oldest automatic bans make room first")
+		banDictMB     = fs.Int("ban-dict-mb", render.DefaultBanDictMB, "size of the ban store (lua_shared_dict edgeweir_bans) in MiB")
+		kernelBans    = fs.String("kernel-bans", "auto", "also drop platform bans in the kernel with nftables: auto (when nft works; needs CAP_NET_ADMIN) or off")
+		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -372,6 +377,18 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *purgePerSite < 1 {
 		fmt.Fprintln(stderr, "run: --purge-markers-per-site must be at least 1")
+		return 2
+	}
+	if *banCapacity < 1 || *banCapacity > render.MaxBanCapacity {
+		fmt.Fprintf(stderr, "run: --ban-capacity must be 1-%d\n", render.MaxBanCapacity)
+		return 2
+	}
+	if *banDictMB < 1 || *banDictMB > 65536 {
+		fmt.Fprintln(stderr, "run: --ban-dict-mb must be 1-65536")
+		return 2
+	}
+	if *kernelBans != "auto" && *kernelBans != "off" {
+		fmt.Fprintln(stderr, "run: --kernel-bans must be auto or off")
 		return 2
 	}
 
@@ -453,6 +470,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		WorkerRlimitNofile: nofile,
 		WorkerConnections:  workerConnections,
 		PurgeDictMB:        *purgeDictMB,
+		BanDictMB:          *banDictMB,
+		BanCapacity:        *banCapacity,
 	}
 	if *noVerifySock != "" {
 		params.OriginSocketNoVerify = abs(*noVerifySock)
@@ -481,6 +500,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket},
 		Logger:       log,
 	})
+	var kernel nft.Executor
+	if *kernelBans == "auto" {
+		kernel = nft.Command{Bin: *nftBin}
+	}
 	ipinfoPath, ipinfoOptional, err := geoip.ResolveIPinfo(*geoIPinfo)
 	if err != nil {
 		log.Error("cannot resolve --geoip-ipinfo", "err", err)
@@ -495,6 +518,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		PurgeMarkersPerSite: *purgePerSite,
 		PrefetchBudget:      *prefetchTime,
 		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, IPinfoOptional: ipinfoOptional, City: *geoCity, ASN: *geoASN},
+		BanCapacity:         *banCapacity,
+		Kernel:              kernel,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
