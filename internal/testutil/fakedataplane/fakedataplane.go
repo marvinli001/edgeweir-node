@@ -56,7 +56,7 @@ type Server struct {
 	// Challenges (lua/edgeweir/challenge.lua) and CC (lua/edgeweir/cc.lua).
 	challengeKeys  *dataplane.ChallengeKeys
 	captchas       *dataplane.CaptchaPool
-	keyPuts        int
+	keyPuts        []dataplane.ChallengeKeys
 	captchaPuts    int
 	security       dataplane.SecurityStatus
 	securityEvents []dataplane.SecurityEvent
@@ -220,7 +220,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.challengeKeys = &k
-		s.keyPuts++
+		s.keyPuts = append(s.keyPuts, k)
 		reply(w, 200, s.challengeStatusLocked())
 	case r.URL.Path == "/v1/challenge/captchas" && r.Method == http.MethodPut:
 		var p dataplane.CaptchaPool
@@ -438,7 +438,14 @@ func (s *Server) Captchas() (*dataplane.CaptchaPool, int) {
 func (s *Server) KeyPuts() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.keyPuts
+	return len(s.keyPuts)
+}
+
+// KeySets returns the key sets put so far, oldest first.
+func (s *Server) KeySets() []dataplane.ChallengeKeys {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.keyPuts)
 }
 
 // SetSecurity sets the sites GET /v1/security reports.

@@ -228,7 +228,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.8 挑战密钥与验证码池
 
-- **密钥**：每个集群三把（`next`、`current`、`previous`），IR 只带 id 与角色，明文经 `GetChallengeKeys` 获取（§2.3 第 1 步）。数据面拿到的是配置引用且本机持有的全部密钥，`current` 签名、三把都验证（`PUT /v1/challenge/keys`，body `{id, current, keys: [{id, secret}]}`，secret 为 base64；`id` 是密钥集合的哈希，`GET /v1/challenge` 报告它，不一致时重推）。控制台每天轮换一次，节点只需获取新的 `next`。启动时先从 `challenge-keys.json` 装入，控制面不可达时已签发的凭证仍然有效。配置不再使用挑战时数据面的密钥被清空。
+- **密钥**：每个集群三把（`next`、`current`、`previous`），IR 只带 id 与角色，明文经 `GetChallengeKeys` 获取（§2.3 第 1 步）。数据面拿到的是配置引用且本机持有的全部密钥，`current` 签名、三把都验证（`PUT /v1/challenge/keys`，body `{id, current, keys: [{id, secret}]}`，secret 为 base64；`id` 是密钥集合的哈希，`GET /v1/challenge` 报告它，不一致时重推）。数据面检查的重推与应用串行，不会用较旧配置的密钥集合覆盖应用刚装入的密钥。控制台每天轮换一次，节点只需获取新的 `next`。启动时先从 `challenge-keys.json` 装入，控制面不可达时已签发的凭证仍然有效。配置不再使用挑战时数据面的密钥被清空。
 - **验证码池**：配置带 `challenge_keys`（即集群使用挑战）时，agent 每 10 分钟用 `internal/captcha` 生成 256 张不重复答案的图片（160×60 PNG，字母表 `ABCDEFGHJKMNPQRSTUVWXYZ23456789`，5 个字符），经 `PUT /v1/challenge/captchas` 整池替换；数据面没有池（nginx 重启）或池 id 不符时立即重新生成。答案只存在于本机数据面的字典里。
 
 ### 2.9 CC 事件

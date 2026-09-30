@@ -325,6 +325,19 @@ func (a *Agent) pushChallengeKeysWithRetry(ctx context.Context, plan *configir.P
 	}
 }
 
+// syncChallengeKeys installs the key set of the plan in effect. Reading
+// the plan under activationMu guarantees a concurrent apply, which pushes
+// its keys before it publishes its plan, cannot be overwritten by an older
+// set (as pushDesired does for the site table).
+func (a *Agent) syncChallengeKeys(ctx context.Context) error {
+	a.activationMu.Lock()
+	defer a.activationMu.Unlock()
+	a.mu.Lock()
+	plan := a.plan
+	a.mu.Unlock()
+	return a.pushChallengeKeys(ctx, plan)
+}
+
 // reconcileChallenge runs with the data plane check: it fetches keys the
 // applied configuration names but the node lacks (at most every
 // ChallengeKeyRetry),
@@ -343,7 +356,7 @@ func (a *Agent) reconcileChallenge(ctx context.Context) {
 			a.logRPCError("GetChallengeKeys failed; will retry", err)
 		}
 	}
-	if err := a.pushChallengeKeys(ctx, plan); err != nil {
+	if err := a.syncChallengeKeys(ctx); err != nil {
 		a.log.Debug("cannot sync challenge keys", "err", err)
 		return
 	}

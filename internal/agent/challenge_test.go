@@ -105,10 +105,12 @@ func TestChallengeKeysAndCaptchas(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "applied", statusWith(console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
-	current, ids := dpKeys(dp)
-	if current != "key-2" || !slices.Equal(ids, []string{"key-1", "key-2", "key-3"}) {
-		t.Fatalf("data plane keys: current %q, %v", current, ids)
-	}
+	// Keys go in before the site table but never hold up the apply; a
+	// push that fails is left to the data plane check.
+	eventually(t, "keys installed", func() bool {
+		current, ids := dpKeys(dp)
+		return current == "key-2" && slices.Equal(ids, []string{"key-1", "key-2", "key-3"})
+	})
 	for _, k := range dp.ChallengeKeys().Keys {
 		if got, _ := base64.StdEncoding.DecodeString(k.Secret); !bytes.Equal(got, secret(k.ID)) {
 			t.Fatalf("secret of %s", k.ID)
@@ -179,6 +181,15 @@ func TestChallengeKeysAndCaptchas(t *testing.T) {
 		_, ids := dpKeys(dp)
 		return slices.Contains(ids, "key-6")
 	})
+	// The data plane check never replaces the keys of an apply with the
+	// set of an older configuration.
+	var currents []string
+	for _, k := range dp.KeySets() {
+		currents = append(currents, k.Current)
+	}
+	if !slices.IsSorted(currents) || slices.Contains(currents, "") {
+		t.Fatalf("current key of each key set put: %q", currents)
+	}
 
 	// Offline restart: the stored keys go back into a fresh data plane.
 	stop()
