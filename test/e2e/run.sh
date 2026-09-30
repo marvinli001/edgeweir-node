@@ -9,8 +9,11 @@
 #      508;
 #   5. origin HTTPS verification uses the origin's name (SNI): trusted CA +
 #      matching name 200, wrong name 502;
-#   6. a new site reserves its partition; later existing-site changes stay hot;
-#   7. restarting the container serves the last-known-good config.
+#   6. dynamic bans: a site ban answers 403 ip-banned on that site only, a
+#      platform ban on every site, unbanning restores access (the node has
+#      no NET_ADMIN here: bans stay at the edge layer);
+#   7. a new site reserves its partition; later existing-site changes stay hot;
+#   8. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -96,9 +99,10 @@ pass "client-supplied X-Edgeweir-* headers never reach the origin"
 
 # PROXY protocol listener: origins see the client address from the PROXY
 # header, not the load balancer's.
-pp_request() {
+pp_request() { # [host [client address [path]]]
   exec 3<>"/dev/tcp/127.0.0.1/${E2E_PP_PORT:-28081}"
-  printf 'PROXY TCP4 198.51.100.23 10.0.0.1 40000 8081\r\nGET /pp HTTP/1.1\r\nHost: demo.test\r\nConnection: close\r\n\r\n' >&3
+  printf 'PROXY TCP4 %s 10.0.0.1 40000 8081\r\nGET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' \
+    "${2:-198.51.100.23}" "${3:-/pp}" "${1:-demo.test}" >&3
   cat <&3
   exec 3<&-
 }
@@ -177,6 +181,31 @@ task=$(curl -fsS -X POST "$HELPER/purge-prefix?site=site-demo&host=demo.test&pat
 wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
 [ "$(x_cache_path demo.test /%73tatic/e2e.js)" = MISS ] || fail "prefix purge of /static/ did not cover /%73tatic/e2e.js"
 pass "prefix purge covers percent-encoded variants"
+
+# Dynamic bans, with the client address taken from the PROXY protocol.
+# (Responses are read completely first: with pipefail an early grep -q
+# would fail the pipeline through SIGPIPE.)
+pp_status() { local r; r=$(pp_request "$1" "$2" "/ban-$RANDOM" | tr -d '\r'); echo "$r" | sed -n '1s/^HTTP[^ ]* \([0-9]*\).*/\1/p'; }
+pp_banned() { local r; r=$(pp_request "$1" "$2" /banned | tr -d '\r'); grep -qi '^X-Edgeweir-Error: ip-banned$' <<<"$r"; }
+resp=$(curl -fsS -X POST "$HELPER/ban?site=site-demo&cidr=198.51.100.23/32") # "<id> <sequence>"
+site_ban=${resp% *}
+WAIT_SECS=10 wait_for "site ban $site_ban" pp_banned demo.test 198.51.100.23
+[ "$(pp_status keyed.test 198.51.100.23)" = 200 ] || fail "a site ban of demo.test also blocked keyed.test"
+[ "$(pp_status demo.test 198.51.100.24)" = 200 ] || fail "the site ban blocked a neighbouring address"
+resp=$(curl -fsS -X POST "$HELPER/ban?cidr=198.51.100.0/24")
+platform_ban=${resp% *} seq=${resp#* }
+WAIT_SECS=10 wait_for "platform ban $platform_ban" pp_banned keyed.test 198.51.100.24
+[ "$(pp_status demo.test 203.0.113.9)" = 200 ] || fail "the platform ban blocked an address outside it"
+ban_status_is() { curl -fsS "$HELPER/ban-status" | grep -q "^$1 2 0 0 no$"; }
+WAIT_SECS=30 wait_for "ban status reported" ban_status_is "$seq"
+listed=$(compose exec -T node edgeweir-node bans --list)
+grep -q '"cidr": "198.51.100.0/24"' <<<"$listed" || fail "edgeweir-node bans does not list the platform ban: $listed"
+curl -fsS -X POST "$HELPER/unban?id=$platform_ban" >/dev/null
+seq=$(curl -fsS -X POST "$HELPER/unban?id=$site_ban")
+pp_allowed() { [ "$(pp_status "$1" "$2")" = 200 ]; }
+WAIT_SECS=10 wait_for "unbanned" pp_allowed demo.test 198.51.100.23
+pp_allowed keyed.test 198.51.100.24 || fail "the platform ban outlived its removal"
+pass "site ban 403 on its site only, platform ban on every site, unban restores access"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

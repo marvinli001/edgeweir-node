@@ -31,6 +31,11 @@
 //	              ReportStatus: "<site> <origin> <code> <error>"
 //	POST /publish publish a new revision adding site demo2.test
 //	POST /update  update the existing demo2 site with an alias, without adding a site ID
+//	POST /ban?cidr=&site=&ttl=  add a manual ban (platform scope without site);
+//	              answers "<id> <sequence>"
+//	POST /unban?id=  lift a ban; answers the sequence
+//	GET /ban-status  "<applied_sequence> <entries> <unapplied> <kernel_entries>
+//	              <kernel-ban-v1: yes|no>" from the last ReportStatus
 package main
 
 import (
@@ -43,6 +48,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -254,6 +260,38 @@ func main() {
 		updated.CacheGeneration++
 		rev := c.Publish(config(append(baseSites(*origin), updated)...))
 		fmt.Fprint(w, rev)
+	})
+	mux.HandleFunc("POST /ban", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		ttl, err := time.ParseDuration(q.Get("ttl") + "s")
+		if q.Get("ttl") == "" {
+			ttl, err = time.Hour, nil
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		b := &nodev1.Ban{
+			Id: fmt.Sprintf("ban-%d", time.Now().UnixNano()), Cidr: q.Get("cidr"), Scope: nodev1.BanScope_BAN_SCOPE_PLATFORM,
+			Source: nodev1.BanSource_BAN_SOURCE_MANUAL, Reason: "abuse",
+			CreatedAt: timestamppb.Now(), ExpiresAt: timestamppb.New(time.Now().Add(ttl)),
+		}
+		if site := q.Get("site"); site != "" {
+			b.Scope, b.SiteId = nodev1.BanScope_BAN_SCOPE_SITE, site
+		}
+		fmt.Fprintf(w, "%s %d", b.Id, c.AddBan(b))
+	})
+	mux.HandleFunc("POST /unban", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, c.RemoveBan(r.URL.Query().Get("id")))
+	})
+	mux.HandleFunc("GET /ban-status", func(w http.ResponseWriter, _ *http.Request) {
+		s := c.LastStatus()
+		b := s.GetBans()
+		kernel := "no"
+		if slices.Contains(s.GetInfo().GetSupportedFeatures(), "kernel-ban-v1") {
+			kernel = "yes"
+		}
+		fmt.Fprintf(w, "%d %d %d %d %s", b.GetAppliedSequence(), b.GetEntries(), b.GetUnapplied(), b.GetKernelEntries(), kernel)
 	})
 	go func() {
 		log.Printf("helper API on %s", *helper)
