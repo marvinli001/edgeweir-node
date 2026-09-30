@@ -8,6 +8,7 @@ local bans = require("edgeweir.bans")
 local dict = ngx.shared.edgeweir_cc
 local passed, failed = 0, 0
 local T = 1790000000
+local table_sites = cc.sites
 
 local function reset()
   dict:flush_all()
@@ -16,6 +17,7 @@ local function reset()
   ngx.shared.edgeweir_bans:flush_expired()
   bans.forget()
   cc.forget()
+  cc.sites = table_sites
   T = 1790000000
   cc.clock = function() return T end
   bans.clock = function() return T end
@@ -174,6 +176,77 @@ test("an attacked path escalates alone", function()
   eq(e[1].metric, "url_qps")
   eq(e[1].top_paths[1].value, "/login")
   eq(#events("site_level"), 0, "no site event")
+end)
+
+test("turning CC off clears the site's state, thresholds changes keep it", function()
+  local policy = { window = 5, site_qps = 50, url_qps = 20, escalate = 1, cooldown = 300, max_level = "captcha" }
+  local s = site(policy)
+  local other = { id = "site-b", protection = { cc = { window = 5, site_qps = 1000 } } }
+  cc.prepare(other)
+  local on = { s, other }
+  cc.sites = function() return on end
+  local function attack(seconds)
+    for _ = 1, seconds do
+      for i = 1, 60 do
+        T = T + 1 / 70
+        cc.count(s, "192.0.2." .. i, "/login")
+      end
+      T = math.floor(T) + 1
+      cc.flush(T)
+      cc.evaluate(T)
+    end
+  end
+  local function escalated()
+    for _, e in ipairs(cc.status().sites) do
+      if e.site_id == "site-a" then return e.level, e.escalated_paths end
+    end
+  end
+  attack(8)
+  local site_level, path_level = level(s, "/"), level(s, "/login")
+  assert(site_level >= 1 and path_level >= 1, "site and path escalated: " .. site_level .. ", " .. path_level)
+  local name, paths = escalated()
+  eq(name, cc.NAMES[site_level])
+  eq(paths, 1, "escalated paths")
+  -- Other thresholds: the state stays.
+  policy.site_qps, policy.url_qps = 100, 100
+  s = site(policy)
+  on = { s, other }
+  T = T + 1
+  cc.evaluate(T)
+  eq(level(s, "/"), site_level, "site level after a threshold change")
+  eq(level(s, "/login"), path_level, "path level after a threshold change")
+  -- No site table (before the first push): nothing is cleared.
+  cc.sites = function() return nil end
+  T = T + 1
+  cc.evaluate(T)
+  assert(dict:get("st|site-a"), "state kept without a site table")
+  cc.sites = function() return on end
+  -- Off: the next evaluation drops the site's state, not the other site's.
+  on = { other }
+  T = T + 1
+  cc.evaluate(T)
+  for _, k in ipairs({ "st|", "pc|", "xm|", "lv|", "ta|", "ps|", "is|" }) do
+    eq(dict:get(k .. "site-a"), nil, k .. "site-a")
+  end
+  eq(dict:get("#sites"), "site-b")
+  assert(dict:get("st|site-b"), "the other site keeps its state")
+  eq(escalated(), nil, "not listed without CC")
+  -- On again with other thresholds: normal, no escalated path.
+  policy.url_qps = 30
+  s = site(policy)
+  on = { s, other }
+  T = T + 1
+  cc.evaluate(T)
+  eq(level(s, "/"), 0, "site level after off and on")
+  eq(level(s, "/login"), 0, "path level after off and on")
+  name, paths = escalated()
+  eq(name, "normal")
+  eq(paths, 0)
+  -- An attack escalates the path again under a new version.
+  local version = dict:get("xv|site-a")
+  attack(3)
+  assert(level(s, "/login") >= 1, "path escalated again")
+  assert(dict:get("xv|site-a") > version, "the path map version keeps rising")
 end)
 
 test("origin error rate needs the minimum requests", function()

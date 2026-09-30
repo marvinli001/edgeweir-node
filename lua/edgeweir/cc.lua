@@ -37,8 +37,15 @@
 --   xm|<site>   escalated paths "level\tpath"; lv|<site> = version * 8 + level
 --               (version 0: no escalated path), read on the hot path
 --   ta|<site>   heaviest addresses "count\tip" (decaying, at most 64)
+--   #sites      ids of the sites evaluated last, one per line
 --   #ev         events for the agent (POST /v1/security/drain), at most
 --               10000; #evseq and #boot give unique ids
+--
+-- State survives reloads and threshold changes. A site that has left the
+-- sites with CC (policy turned off, or the site removed) loses it at the
+-- next evaluation: turned on again it starts from normal. xv| stays (the
+-- version must keep rising for the workers' cached path maps); window
+-- counters expire on their own and automatic bans at their own expiry.
 local cjson = require("cjson.safe")
 
 local _M = {}
@@ -532,20 +539,48 @@ function _M.forget()
   locals, pmaps = {}, {}
 end
 
--- sites returns the current sites with CC (from the site table).
-local function cc_sites()
+-- sites returns the current sites with CC (from the site table), or nil
+-- before the first table (replaced in tests).
+_M.sites = function()
   local store = require("edgeweir.store")
+  local ids = store.config().cc_sites
+  if not ids then return nil end
   local out = {}
-  for _, id in ipairs(store.config().cc_sites or {}) do
+  for _, id in ipairs(ids) do
     local site = store.site_current(id)
     if site and site._cc then out[#out + 1] = site end
   end
   return out
 end
 
+local CLEARED = { "st|", "pc|", "xm|", "lv|", "ta|", "ps|", "is|" }
+
+-- sweep clears the state of the sites evaluated last that are no longer
+-- in list (their policy went away) and records list as #sites.
+local function sweep(d, list)
+  local ids = {}
+  for i, site in ipairs(list) do ids[i] = site.id end
+  local current = concat(ids, "\n")
+  local last = d:get("#sites")
+  if last == current then return end
+  if last then
+    local on = {}
+    for _, id in ipairs(ids) do on[id] = true end
+    for id in last:gmatch("[^\n]+") do
+      if not on[id] then
+        for _, prefix in ipairs(CLEARED) do d:delete(prefix .. id) end
+      end
+    end
+  end
+  d:set("#sites", current)
+end
+
 -- evaluate runs one evaluation of every site with CC.
 function _M.evaluate(now)
-  for _, site in ipairs(cc_sites()) do
+  local list = _M.sites()
+  if not list then return end
+  sweep(dict(), list)
+  for _, site in ipairs(list) do
     local ok, err = pcall(_M.evaluate_site, site, now)
     if not ok then ngx.log(ngx.ERR, "edgeweir: CC evaluation failed site=", site.id, ": ", err) end
   end
@@ -577,7 +612,7 @@ end
 function _M.status()
   local d = dict()
   local sites = {}
-  for _, site in ipairs(cc_sites()) do
+  for _, site in ipairs(_M.sites() or {}) do
     local s = load_state(d, site.id)
     local paths = {}
     for line in (d:get("xm|" .. site.id) or ""):gmatch("[^\n]+") do

@@ -61,6 +61,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -203,12 +204,13 @@ func underAttackSite(id, domain, origin, challenge string) *nodev1.Site {
 }
 
 // ccSite bans addresses over 2 requests per second and escalates to
-// cookie302 after 2 seconds over 20 requests per second.
+// cookie302 after 2 seconds over 20 requests per second. The long
+// cooldown holds the level for the policy changes checked afterwards.
 func ccSite(origin string) *nodev1.Site {
 	s := site("site-cc", "cc.test", origin, 80)
 	s.Protection = &nodev1.SiteProtection{Cc: &nodev1.CcPolicy{
 		Enabled: true, MaxLevel: "cookie302", WindowSeconds: 5, SiteQps: 20, IpQps: 2, IpBanSeconds: 60,
-		EscalateAfterSeconds: 2, CooldownSeconds: 5,
+		EscalateAfterSeconds: 2, CooldownSeconds: 300,
 	}}
 	return s
 }
@@ -312,6 +314,21 @@ func main() {
 		updated.CacheGeneration++
 		rev := c.Publish(config(append(baseSites(*origin), updated)...))
 		fmt.Fprint(w, rev)
+	})
+	// POST /cc publishes the base sites with site-cc's site threshold set
+	// to site_qps, or with its CC policy off (enabled=false).
+	mux.HandleFunc("POST /cc", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		sites := baseSites(*origin)
+		for _, s := range sites {
+			if cc := s.GetProtection().GetCc(); s.GetId() == "site-cc" && cc != nil {
+				cc.Enabled = q.Get("enabled") != "false"
+				if v, err := strconv.ParseUint(q.Get("site_qps"), 10, 32); err == nil {
+					cc.SiteQps = uint32(v)
+				}
+			}
+		}
+		fmt.Fprint(w, c.Publish(config(sites...)))
 	})
 	mux.HandleFunc("POST /ban", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

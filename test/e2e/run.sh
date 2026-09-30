@@ -17,7 +17,8 @@
 #      303 + pass), 403 for other methods without a pass, the reserved
 #      prefix never reaches the origin;
 #   8. CC: an address over its rate is banned and reported, the site level
-#      rises under load (edgeweir-node security shows it);
+#      rises under load (edgeweir-node security shows it), stays through a
+#      threshold change and starts from normal after the policy was off;
 #   9. a new site reserves its partition; later existing-site changes stay hot;
 #  10. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards.
@@ -329,6 +330,22 @@ resp=$(pp_request cc.test 192.0.2.77 /under-load | tr -d '\r')
 [ "$(status_of <<<"$resp")" = 302 ] && grep -qi '^X-Edgeweir-Challenge: cookie302$' <<<"$resp" || fail "CC level not applied: $(head -1 <<<"$resp")"
 WAIT_SECS=30 wait_for "site_level event" security_event "site_level site-cc cookie302"
 pass "CC: sustained load raised site-cc to cookie302 ($i requests)"
+
+# CC: other thresholds keep the level; off and on again starts from normal.
+rev=$(curl -fsS -X POST "$HELPER/cc?site_qps=40")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+level_is cookie302 || fail "a threshold change reset the CC level"
+rev=$(curl -fsS -X POST "$HELPER/cc?enabled=false")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+state=$(compose exec -T node edgeweir-node security)
+! grep -q '"site_id": "site-cc"' <<<"$state" || fail "site-cc listed with CC off"
+[ "$(pp_status cc.test 192.0.2.78)" = 200 ] || fail "site-cc challenged with CC off"
+sleep 2 # the next evaluation (every second) clears the state
+rev=$(curl -fsS -X POST "$HELPER/cc?site_qps=40")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+level_is normal || fail "CC turned off and on again kept its level: $(compose exec -T node edgeweir-node security)"
+[ "$(pp_status cc.test 192.0.2.79)" = 200 ] || fail "site-cc challenged after CC was turned off and on again"
+pass "CC: a threshold change keeps the level, off and on again starts from normal"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
