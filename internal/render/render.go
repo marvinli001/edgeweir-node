@@ -86,7 +86,21 @@ type Params struct {
 	// used challenge nonces).
 	CCDictMB        int
 	ChallengeDictMB int
+	// ModSecurityModule is the ModSecurity-nginx dynamic module; nginx.conf
+	// loads it only while a site runs the OWASP CRS. Empty: the node has
+	// none (such configurations are rejected earlier, see configir).
+	ModSecurityModule string
+	// CRSDir holds crs-setup.conf and rules/ of the OWASP CRS.
+	CRSDir string
+	// ModSecurityUnicodeMap is ModSecurity's unicode.mapping (optional).
+	ModSecurityUnicodeMap string
 }
+
+// Default locations of the edgeweir-openresty packages.
+const (
+	DefaultCRSDir     = "/usr/share/edgeweir-openresty/crs"
+	DefaultUnicodeMap = "/usr/share/edgeweir-openresty/modsecurity/unicode.mapping"
+)
 
 // Ban store defaults (--ban-dict-mb, --ban-capacity) and the capacity
 // bounds.
@@ -146,6 +160,9 @@ func (p Params) WithDefaults() Params {
 	if p.ResolvConf == "" {
 		p.ResolvConf = "/etc/resolv.conf"
 	}
+	if p.CRSDir == "" {
+		p.CRSDir = DefaultCRSDir
+	}
 	return p
 }
 
@@ -199,6 +216,12 @@ type data struct {
 	CacheZones   []configir.CacheZone
 	DefaultZone  string
 	OriginLayers []originLayer
+	// ModSecurityConf is the CRS configuration (ModSecurityConf) when a
+	// site runs the CRS; WAFBodyLimits are the request body limits of the
+	// edge layer's CRS locations.
+	ModSecurityConf string
+	WAFBodyLimits   []uint32
+	WAFHeader       string
 }
 
 // sharedDict is one lua_shared_dict of the data plane.
@@ -273,6 +296,16 @@ type edgeServer struct {
 	GzipMinLength uint32
 	GzipTypes     string
 	CipherProfile string
+	// Brotli and Zstandard follow gzip: levels, minimum lengths and types
+	// are static directives of the site's server block.
+	Brotli          bool
+	BrotliLevel     uint32
+	BrotliMinLength uint32
+	BrotliTypes     string
+	Zstd            bool
+	ZstdLevel       uint32
+	ZstdMinLength   uint32
+	ZstdTypes       string
 }
 
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
@@ -323,6 +356,10 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			}
 			custom.Gzip, custom.GzipMinLength = site.TLS.Gzip, max(site.TLS.GzipMinLength, 1)
 			custom.GzipTypes = strings.Join(site.TLS.GzipTypes, " ")
+			custom.Brotli, custom.BrotliLevel = site.TLS.Brotli, site.TLS.BrotliLevel
+			custom.BrotliMinLength, custom.BrotliTypes = max(site.TLS.BrotliMinLength, 1), strings.Join(site.TLS.BrotliTypes, " ")
+			custom.Zstd, custom.ZstdLevel = site.TLS.Zstd, site.TLS.ZstdLevel
+			custom.ZstdMinLength, custom.ZstdTypes = max(site.TLS.ZstdMinLength, 1), strings.Join(site.TLS.ZstdTypes, " ")
 			custom.CipherProfile = site.TLS.CipherProfile
 			out = append(out, custom)
 		}
@@ -358,6 +395,13 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateCompression(plan); err != nil {
+		return nil, err
+	}
+	modsecConf, _, err := ModSecurityConf(p, plan)
+	if err != nil {
+		return nil, err
+	}
 	d := data{
 		Params:      p,
 		SharedDicts: dicts,
@@ -368,6 +412,11 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 			{Socket: p.OriginSocket, Verify: true},
 			{Socket: p.OriginSocketNoVerify, Verify: false},
 		},
+		ModSecurityConf: modsecConf,
+		WAFHeader:       WAFHeader,
+	}
+	if modsecConf != "" {
+		d.WAFBodyLimits = plan.WAFBodyLimits()
 	}
 	// The configuration id is the hash of the file rendered without it:
 	// equal settings give equal files, and the data plane reports the id
@@ -383,6 +432,30 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		return nil, fmt.Errorf("render nginx.conf: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+var mimeTypeRE = regexp.MustCompile(`^[a-z0-9.+-]+/[a-z0-9.+-]+$`)
+
+// validateCompression checks what the site server blocks render unquoted
+// (configir validates the same; nginx.conf never trusts its input).
+func validateCompression(plan *configir.Plan) error {
+	for _, s := range plan.Sites {
+		if s.TLS == nil {
+			continue
+		}
+		if s.TLS.BrotliLevel > configir.MaxBrotliLevel || s.TLS.ZstdLevel > configir.MaxZstdLevel ||
+			(s.TLS.Brotli && s.TLS.BrotliLevel == 0) || (s.TLS.Zstd && s.TLS.ZstdLevel == 0) {
+			return fmt.Errorf("site %q: invalid compression level", s.ID)
+		}
+		for _, list := range [][]string{s.TLS.GzipTypes, s.TLS.BrotliTypes, s.TLS.ZstdTypes} {
+			for _, mime := range list {
+				if !mimeTypeRE.MatchString(mime) {
+					return fmt.Errorf("site %q: invalid compression type %q", s.ID, mime)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 var confIDRE = regexp.MustCompile(`(?m)^\s*conf_id = "([0-9a-f]{16})",$`)

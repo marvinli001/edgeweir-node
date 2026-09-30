@@ -5,6 +5,12 @@
 # hot-updated through the control socket into lua_shared_dict and never
 # cause a reload.
 
+{{- if .ModSecurityConf }}
+
+# ModSecurity-nginx: loaded because a site runs the OWASP CRS.
+load_module {{ .ModSecurityModule }};
+{{- end }}
+
 worker_processes {{ .WorkerProcesses }};
 {{- if .WorkerRlimitNofile }}
 worker_rlimit_nofile {{ .WorkerRlimitNofile }};
@@ -53,9 +59,20 @@ http {
             geoip_socket = "{{ .GeoIPSocket }}",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = {{ .BanCapacity }},
+{{- if .ModSecurityConf }}
+            -- Request body limits of the edge layer's CRS locations
+            -- (@edgeweir_waf_<limit>, edgeweir.waf).
+            waf_body_limits = { {{- range $i, $l := .WAFBodyLimits }}{{ if $i }}, {{ end }}{{ $l }}{{ end -}} },
+{{- end }}
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }
+{{- if .ModSecurityConf }}
+
+    # OWASP CRS, parsed once and shared by the CRS locations; ModSecurity
+    # stays off everywhere else.
+    modsecurity_rules_file {{ .ModSecurityConf }};
+{{- end }}
 
     # Nameservers from {{ .ResolvConf }} (origins are resolved in Lua).
     resolver {{ join .Resolvers " " }} valid=30s{{ if not .ResolverIPv6 }} ipv6=off{{ end }};
@@ -83,6 +100,13 @@ http {
         volatile;
         default "";
         slice   "|$slice_range";
+    }
+    # Accept-Encoding towards the origin: the client's, or none for sites
+    # the edge compresses (edgeweir.router sets $edgeweir_strip_ae), so the
+    # cache holds one uncompressed object that serves every encoding.
+    map $edgeweir_strip_ae $edgeweir_upstream_ae {
+        default $http_accept_encoding;
+        1       "";
     }
     map $http_upgrade $edgeweir_origin_connection {
         default upgrade;
@@ -153,6 +177,9 @@ http {
             proxy_set_header X-Edgeweir-Site "";
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
+{{- if $.ModSecurityConf }}
+            proxy_set_header {{ $.WAFHeader }} "";
+{{- end }}
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, $proxy_host, would be
@@ -221,6 +248,25 @@ http {
 {{- if .GzipTypes }}
         gzip_types {{ .GzipTypes }};
 {{- end }}
+{{- else if or .Brotli .Zstd }}
+        # Vary: Accept-Encoding on responses Brotli or Zstandard could encode.
+        gzip_vary on;
+{{- end }}
+{{- if .Brotli }}
+        brotli on;
+        brotli_comp_level {{ .BrotliLevel }};
+        brotli_min_length {{ .BrotliMinLength }};
+{{- if .BrotliTypes }}
+        brotli_types {{ .BrotliTypes }};
+{{- end }}
+{{- end }}
+{{- if .Zstd }}
+        zstd on;
+        zstd_comp_level {{ .ZstdLevel }};
+        zstd_min_length {{ .ZstdMinLength }};
+{{- if .ZstdTypes }}
+        zstd_types {{ .ZstdTypes }};
+{{- end }}
 {{- end }}
 {{- if .ProxyProtocol }}
         # Every connection here starts with a PROXY protocol header: its
@@ -244,8 +290,38 @@ http {
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
+{{- if $.ModSecurityConf }}
+            set $edgeweir_ctx_ref "";
+{{- end }}
             access_by_lua_block { require("edgeweir.router").access() }
+{{ template "edge_proxy" $ }}
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+{{- range $.WAFBodyLimits }}
 
+        # OWASP CRS for sites inspecting {{ if . }}up to {{ . }} bytes of the request body{{ else }}no request body{{ end }}:
+        # edgeweir.router sends their requests here at the end of its access
+        # phase, before the cache lookup, so cache hits are inspected too.
+        location @edgeweir_waf_{{ . }} {
+            modsecurity on;
+{{- if . }}
+            modsecurity_rules 'SecRequestBodyLimit {{ . }}';
+            modsecurity_rules 'SecRequestBodyNoFilesLimit {{ . }}';
+{{- else }}
+            modsecurity_rules 'SecRequestBodyAccess Off';
+{{- end }}
+            access_by_lua_block { require("edgeweir.waf").access() }
+{{ template "edge_proxy" $ }}
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+{{- end }}
+    }
+{{- end }}
+}
+{{- define "edge_proxy" }}
             slice 1m;
             proxy_pass http://$edgeweir_origin_layer;
             proxy_http_version 1.1;
@@ -255,6 +331,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
             # layer forwards it to the origin unchanged.
             proxy_set_header CDN-Loop $edgeweir_cdn_loop;
@@ -282,9 +359,4 @@ http {
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
 
             add_header X-Cache $upstream_cache_status always;
-            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
-            log_by_lua_block { require("edgeweir.stats").log() }
-        }
-    }
 {{- end }}
-}

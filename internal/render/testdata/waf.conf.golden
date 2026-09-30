@@ -5,6 +5,9 @@
 # hot-updated through the control socket into lua_shared_dict and never
 # cause a reload.
 
+# ModSecurity-nginx: loaded because a site runs the OWASP CRS.
+load_module /usr/lib/edgeweir-openresty/modules/ngx_http_modsecurity_module.so;
+
 worker_processes auto;
 pid /var/lib/edgeweir-node/nginx/logs/nginx.pid;
 error_log stderr notice;
@@ -41,6 +44,10 @@ http {
     lua_shared_dict edgeweir_bans 32m;
     lua_shared_dict edgeweir_challenge 8m;
     lua_shared_dict edgeweir_cc 32m;
+    lua_shared_dict edgeweir_rate_6372732d626c6f636b 256k;
+    lua_shared_dict edgeweir_rate_6372732d646574656374 256k;
+    lua_shared_dict edgeweir_rate_6372732d73616d652d6c696d6974 256k;
+    lua_shared_dict edgeweir_rate_736974652d776974686f75742d637273 256k;
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).
     lua_capture_error_log 64k;
@@ -50,19 +57,26 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "75321685809b63d2",
+            conf_id = "4b68121f09e89bc7",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
+            -- Request body limits of the edge layer's CRS locations
+            -- (@edgeweir_waf_<limit>, edgeweir.waf).
+            waf_body_limits = {0, 131072},
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }
+
+    # OWASP CRS, parsed once and shared by the CRS locations; ModSecurity
+    # stays off everywhere else.
+    modsecurity_rules_file /var/lib/edgeweir-node/nginx/conf/modsecurity-d89bca8cd67f1024.conf;
 
     # Nameservers from /etc/resolv.conf (origins are resolved in Lua).
     resolver 127.0.0.11 valid=30s ipv6=off;
     resolver_timeout 5s;
 
-    proxy_cache_path /var/cache/edgeweir-node/edgeweir_default levels=1:2 keys_zone=edgeweir_default:16m max_size=1024m inactive=3600s use_temp_path=off;
+    proxy_cache_path /var/cache/edgeweir-node/default levels=1:2 keys_zone=default:16m max_size=1024m inactive=3600s use_temp_path=off;
 
     # Range handling at the edge, chosen by edgeweir.router per request:
     # "slice" fetches and caches 1 MiB slices, "pass" forwards the client's
@@ -160,6 +174,7 @@ http {
             proxy_set_header X-Edgeweir-Site "";
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Waf "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, $proxy_host, would be
@@ -204,6 +219,7 @@ http {
             proxy_set_header X-Edgeweir-Site "";
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Waf "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, $proxy_host, would be
@@ -231,7 +247,7 @@ http {
 
         location / {
             set $edgeweir_site "";
-            set $edgeweir_cache_zone "edgeweir_default";
+            set $edgeweir_cache_zone "default";
             set $edgeweir_cache_key "";
             set $edgeweir_cache_bypass 1;
             set $edgeweir_no_cache 1;
@@ -242,6 +258,7 @@ http {
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
+            set $edgeweir_ctx_ref "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -284,6 +301,105 @@ http {
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
         }
+
+        # OWASP CRS for sites inspecting no request body:
+        # edgeweir.router sends their requests here at the end of its access
+        # phase, before the cache lookup, so cache hits are inspected too.
+        location @edgeweir_waf_0 {
+            modsecurity on;
+            modsecurity_rules 'SecRequestBodyAccess Off';
+            access_by_lua_block { require("edgeweir.waf").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+
+            add_header X-Cache $upstream_cache_status always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
+        # OWASP CRS for sites inspecting up to 131072 bytes of the request body:
+        # edgeweir.router sends their requests here at the end of its access
+        # phase, before the cache lookup, so cache hits are inspected too.
+        location @edgeweir_waf_131072 {
+            modsecurity on;
+            modsecurity_rules 'SecRequestBodyLimit 131072';
+            modsecurity_rules 'SecRequestBodyNoFilesLimit 131072';
+            access_by_lua_block { require("edgeweir.waf").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+
+            add_header X-Cache $upstream_cache_status always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
     }
 
     # Local edge listener (agent prefetches; never PROXY protocol).
@@ -293,7 +409,7 @@ http {
 
         location / {
             set $edgeweir_site "";
-            set $edgeweir_cache_zone "edgeweir_default";
+            set $edgeweir_cache_zone "default";
             set $edgeweir_cache_key "";
             set $edgeweir_cache_bypass 1;
             set $edgeweir_no_cache 1;
@@ -304,6 +420,7 @@ http {
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
+            set $edgeweir_ctx_ref "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -345,6 +462,105 @@ http {
             add_header X-Cache $upstream_cache_status always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # OWASP CRS for sites inspecting no request body:
+        # edgeweir.router sends their requests here at the end of its access
+        # phase, before the cache lookup, so cache hits are inspected too.
+        location @edgeweir_waf_0 {
+            modsecurity on;
+            modsecurity_rules 'SecRequestBodyAccess Off';
+            access_by_lua_block { require("edgeweir.waf").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+
+            add_header X-Cache $upstream_cache_status always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
+        # OWASP CRS for sites inspecting up to 131072 bytes of the request body:
+        # edgeweir.router sends their requests here at the end of its access
+        # phase, before the cache lookup, so cache hits are inspected too.
+        location @edgeweir_waf_131072 {
+            modsecurity on;
+            modsecurity_rules 'SecRequestBodyLimit 131072';
+            modsecurity_rules 'SecRequestBodyNoFilesLimit 131072';
+            access_by_lua_block { require("edgeweir.waf").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+
+            add_header X-Cache $upstream_cache_status always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
         }
     }
 }

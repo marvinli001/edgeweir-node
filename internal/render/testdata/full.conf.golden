@@ -52,7 +52,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "f6b0f83a6962e462",
+            conf_id = "bedfd03a4d75ea33",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -86,6 +86,13 @@ http {
         volatile;
         default "";
         slice   "|$slice_range";
+    }
+    # Accept-Encoding towards the origin: the client's, or none for sites
+    # the edge compresses (edgeweir.router sets $edgeweir_strip_ae), so the
+    # cache holds one uncompressed object that serves every encoding.
+    map $edgeweir_strip_ae $edgeweir_upstream_ae {
+        default $http_accept_encoding;
+        1       "";
     }
     map $http_upgrade $edgeweir_origin_connection {
         default upgrade;
@@ -242,6 +249,7 @@ http {
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -253,6 +261,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
             # layer forwards it to the origin unchanged.
             proxy_set_header CDN-Loop $edgeweir_cdn_loop;
@@ -307,6 +316,7 @@ http {
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -318,6 +328,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
             # layer forwards it to the origin unchanged.
             proxy_set_header CDN-Loop $edgeweir_cdn_loop;
@@ -367,6 +378,7 @@ http {
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -378,6 +390,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
             # layer forwards it to the origin unchanged.
             proxy_set_header CDN-Loop $edgeweir_cdn_loop;
