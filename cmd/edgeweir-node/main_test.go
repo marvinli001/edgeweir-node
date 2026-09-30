@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"flag"
 	"io"
 	"os"
@@ -9,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 )
 
 func TestEnvName(t *testing.T) {
@@ -183,5 +187,38 @@ func TestEnrollReadsTokenFromEnvAndFile(t *testing.T) {
 	}
 	if enrollments, _, _, _ := console.Counters(); enrollments != 3 {
 		t.Fatalf("enrollments = %d, want 3", enrollments)
+	}
+}
+
+func TestBansCommand(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	if _, err := c.PutBans(context.Background(), &dataplane.BanTable{Sequence: 42, Bans: []dataplane.Ban{
+		{ID: "p1", CIDR: "198.51.100.0/24", Scope: "platform", Kind: "m", ExpiresAt: 1790000000},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := realMain([]string{"bans", "--control-socket", srv.Socket, "--list"}, &out, io.Discard); code != 0 {
+		t.Fatalf("bans --list: code %d", code)
+	}
+	var got struct {
+		Sequence     string               `json:"sequence"`
+		Entries      int                  `json:"entries"`
+		UnappliedIDs []string             `json:"unapplied_ids"`
+		Bans         []dataplane.BanEntry `json:"bans"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	if got.Sequence != "42" || got.Entries != 1 || got.UnappliedIDs == nil || len(got.Bans) != 1 || got.Bans[0].CIDR != "198.51.100.0/24" {
+		t.Fatalf("bans --list printed %s", out.String())
+	}
+	out.Reset()
+	if code := realMain([]string{"bans", "--control-socket", srv.Socket}, &out, io.Discard); code != 0 || strings.Contains(out.String(), `"bans"`) {
+		t.Fatalf("bans: code %d, %s", code, out.String())
+	}
+	if code := realMain([]string{"bans", "--control-socket", "/nonexistent/control.sock", "--timeout", "100ms"}, io.Discard, io.Discard); code != 1 {
+		t.Fatalf("bans against a missing socket: code %d", code)
 	}
 }

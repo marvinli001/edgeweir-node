@@ -5,6 +5,7 @@
 //	edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
 //	                  [--lua-dir DIR] [--control-socket PATH] [--kernel-bans auto|off] ...
 //	edgeweir-node healthcheck [--control-socket PATH]
+//	edgeweir-node bans [--control-socket PATH] [--list]
 //	edgeweir-node version
 //
 // Every flag can also be set with an environment variable
@@ -13,6 +14,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -64,6 +66,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdRunMode(args[1:], stderr, true)
 	case "healthcheck":
 		return cmdHealthcheck(args[1:], stderr)
+	case "bans":
+		return cmdBans(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version.String())
 		return 0
@@ -86,6 +90,7 @@ Usage:
   edgeweir-node run [--manage-nginx] [flags]
   edgeweir-node supervise --manage-nginx [flags]
   edgeweir-node healthcheck [--control-socket PATH]
+  edgeweir-node bans [--control-socket PATH] [--list]
   edgeweir-node version
 
 Run "edgeweir-node <command> -h" for the flags of a command. Every flag can
@@ -551,5 +556,47 @@ func cmdHealthcheck(args []string, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stderr, "healthy: revision "+strconv.FormatUint(st.Revision, 10)+", "+strconv.Itoa(st.SiteCount)+" sites")
+	return 0
+}
+
+// cmdBans prints the data plane's ban status as JSON (with --list also up
+// to 1000 bans it holds).
+func cmdBans(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("bans", stderr)
+	controlSocket := fs.String("control-socket", defaultControlSocket, "unix socket of the data plane control API")
+	list := fs.Bool("list", false, "also list the bans held (at most 1000)")
+	timeout := fs.Duration("timeout", 3*time.Second, "timeout")
+	if ok, code := parse(fs, args); !ok {
+		return code
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	c := dataplane.NewClient(*controlSocket)
+	out := struct {
+		*dataplane.BanStatus
+		Bans *[]dataplane.BanEntry `json:"bans,omitempty"`
+	}{}
+	var err error
+	if *list {
+		var entries []dataplane.BanEntry
+		out.BanStatus, entries, err = c.ListBans(ctx)
+		entries = append([]dataplane.BanEntry{}, entries...)
+		out.Bans = &entries
+	} else {
+		out.BanStatus, err = c.BanStatus(ctx)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "bans:", err)
+		return 1
+	}
+	if out.UnappliedIDs == nil {
+		out.UnappliedIDs = []string{}
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		fmt.Fprintln(stderr, "bans:", err)
+		return 1
+	}
 	return 0
 }

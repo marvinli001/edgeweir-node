@@ -94,6 +94,7 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
                   [--prefetch-budget 4m] [--edge-socket PATH] [--ban-capacity 100000] [--kernel-bans auto] ...
 edgeweir-node supervise --manage-nginx ...   # 参数同 run；systemd unit 与容器镜像的入口
 edgeweir-node healthcheck [--control-socket PATH]
+edgeweir-node bans [--control-socket PATH] [--list]   # 数据面的封禁状态（JSON），--list 另列出最多 1000 条
 edgeweir-node version
 ```
 

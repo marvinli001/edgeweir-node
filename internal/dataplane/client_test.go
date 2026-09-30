@@ -166,6 +166,11 @@ func TestClientBans(t *testing.T) {
 		t.Fatalf("delta: %+v, %v", st, err)
 	}
 
+	st, list, err := c.ListBans(ctx)
+	if err != nil || st.Entries != 1 || len(list) != 1 || list[0].ID != "m2" || list[0].SiteID != "site-a" || list[0].Kind != "m" {
+		t.Fatalf("list = %+v %+v, %v", st, list, err)
+	}
+
 	srv.AddAutoBans(dataplane.AutoBan{SiteID: "site-a", IP: "192.0.2.1", PrefixLen: 32, CreatedAt: 1, ExpiresAt: 61, Reason: "cc_ip_rate", Metric: "ip_qps", Observed: 150, Threshold: 100, WindowSeconds: 10})
 	auto, err := c.DrainAutoBans(ctx)
 	if err != nil || len(auto) != 1 || auto[0].IP != "192.0.2.1" || auto[0].WindowSeconds != 10 {

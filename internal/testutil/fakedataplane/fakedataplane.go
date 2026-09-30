@@ -180,7 +180,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.status.Purge = dataplane.PurgeStatus{ID: t.ID, Entries: len(s.markers), Markers: len(s.markers)}
 		reply(w, 200, s.status.Purge)
 	case r.URL.Path == "/v1/bans" && r.Method == http.MethodGet:
-		reply(w, 200, s.banStatusLocked())
+		st := s.banStatusLocked()
+		if r.URL.Query().Get("list") == "1" {
+			list := []dataplane.BanEntry{}
+			for _, b := range s.bans {
+				list = append(list, dataplane.BanEntry{ID: b.ID, Kind: b.Kind, CIDR: b.CIDR, Scope: b.Scope, SiteID: b.SiteID, ExpiresAt: b.ExpiresAt})
+			}
+			slices.SortFunc(list, func(a, b dataplane.BanEntry) int { return strings.Compare(a.ID, b.ID) })
+			st["bans"] = list
+		}
+		reply(w, 200, st)
 	case r.URL.Path == "/v1/bans" && (r.Method == http.MethodPut || r.Method == http.MethodPost):
 		s.serveBansLocked(w, r)
 	case r.URL.Path == "/v1/bans/auto/drain" && r.Method == http.MethodPost:

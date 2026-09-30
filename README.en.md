@@ -94,6 +94,7 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
                   [--prefetch-budget 4m] [--edge-socket PATH] [--ban-capacity 100000] [--kernel-bans auto] ...
 edgeweir-node supervise --manage-nginx ...   # same flags as run; entry point of the systemd unit and the image
 edgeweir-node healthcheck [--control-socket PATH]
+edgeweir-node bans [--control-socket PATH] [--list]   # ban status of the data plane (JSON); --list adds up to 1000 bans
 edgeweir-node version
 ```
 

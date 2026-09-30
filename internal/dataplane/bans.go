@@ -157,3 +157,40 @@ func (c *Client) DrainAutoBans(ctx context.Context) ([]AutoBan, error) {
 	}
 	return list, nil
 }
+
+// BanEntry is one ban as GET /v1/bans?list=1 lists it (at most 1000).
+type BanEntry struct {
+	ID string `json:"id"`
+	// Kind is "m" (console, manual), "c" (console, automatic) or "a" (the
+	// node's own).
+	Kind      string  `json:"kind"`
+	CIDR      string  `json:"cidr"`
+	Scope     string  `json:"scope"`
+	SiteID    string  `json:"site_id,omitempty"`
+	ExpiresAt float64 `json:"expires_at"`
+}
+
+// ListBans returns the status and up to 1000 bans held.
+func (c *Client) ListBans(ctx context.Context) (*BanStatus, []BanEntry, error) {
+	var raw json.RawMessage
+	if err := c.do(ctx, http.MethodGet, "/v1/bans?list=1", nil, &raw); err != nil {
+		return nil, nil, err
+	}
+	var st BanStatus
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return nil, nil, fmt.Errorf("decode ban status: %w", err)
+	}
+	var out struct {
+		Bans json.RawMessage `json:"bans"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, nil, fmt.Errorf("decode bans: %w", err)
+	}
+	var list []BanEntry
+	if !isEmptyJSON(out.Bans) {
+		if err := json.Unmarshal(out.Bans, &list); err != nil {
+			return nil, nil, fmt.Errorf("decode bans: %w", err)
+		}
+	}
+	return &st, list, nil
+}
