@@ -62,6 +62,7 @@ type Console struct {
 	statuses         []*nodev1.ReportStatusRequest
 	getConfigs       []GetConfigCall
 	stats            []*nodev1.MinuteStats
+	watermarks       []Watermark
 	statsSequence    uint64
 	statsAckFailures int
 	statsSequences   []uint64
@@ -250,6 +251,21 @@ func (c *Console) GetConfigCalls() []GetConfigCall {
 }
 
 // Stats returns all uploaded minute stats.
+// Watermark is one complete_until a node reported, with the batch sequence
+// of its request and the highest sequence acknowledged at that time.
+type Watermark struct {
+	CompleteUntil time.Time
+	BatchSequence uint64
+	Acknowledged  uint64
+}
+
+// Watermarks returns the statistics watermarks received, oldest first.
+func (c *Console) Watermarks() []Watermark {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Watermark(nil), c.watermarks...)
+}
+
 func (c *Console) Stats() []*nodev1.MinuteStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -540,6 +556,15 @@ func (c *Console) ReportStatsV2(ctx context.Context, req *connect.Request[nodev1
 	result, err := c.ReportStats(ctx, connect.NewRequest(&nodev1.ReportStatsRequest{Stats: req.Msg.Stats, BatchSequence: req.Msg.BatchSequence}))
 	if err != nil {
 		return nil, err
+	}
+	if req.Msg.CompleteUntil != nil {
+		c.mu.Lock()
+		c.watermarks = append(c.watermarks, Watermark{
+			CompleteUntil: req.Msg.CompleteUntil.AsTime(),
+			BatchSequence: req.Msg.BatchSequence,
+			Acknowledged:  c.statsSequence,
+		})
+		c.mu.Unlock()
 	}
 	return connect.NewResponse(&nodev1.ReportStatsV2Response{Accepted: result.Msg.Accepted, BatchSequence: result.Msg.BatchSequence}), nil
 }

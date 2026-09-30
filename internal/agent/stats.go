@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const maxStatsSpoolBytes = 32 << 20
@@ -91,9 +92,16 @@ func (a *Agent) saveStatsSpool(state *statsSpool) error {
 // A lost acknowledgement, failed local ACK write, or agent restart resends the
 // same sequence. New counters stay in Lua while a drained batch awaits a disk write. A crash
 // before that write may lose the in-memory batch.
+//
+// Once every batch is acknowledged, the loop reports its statistics watermark
+// (complete_until) with an empty cursor query: the start of the minute in
+// which the last successful drain began. The data plane drains every minute
+// before the minute of its own clock at drain time, which is not earlier, so
+// every minute before the watermark has been uploaded.
 func (a *Agent) statsLoop(ctx context.Context) {
 	var state *statsSpool
 	dirty := false
+	var drained, reported time.Time
 	ticker := time.NewTicker(a.cfg.StatsInterval)
 	defer ticker.Stop()
 	for {
@@ -111,11 +119,14 @@ func (a *Agent) statsLoop(ctx context.Context) {
 			}
 		}
 		if !dirty {
+			boundary := time.Now().UTC().Truncate(time.Minute)
 			dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			items, err := a.dp.DrainStats(dctx)
 			cancel()
 			if err != nil {
 				a.log.Debug("cannot drain data plane stats", "err", err)
+			} else {
+				drained = boundary
 			}
 			converted := convertStats(items)
 			for len(converted) > 0 {
@@ -169,6 +180,18 @@ func (a *Agent) statsLoop(ctx context.Context) {
 			}
 			state = candidate
 			a.markConnected()
+		}
+		if len(state.Batches) == 0 && !dirty && drained.After(reported) {
+			cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
+			_, err := a.channel.Client().ReportStatsV2(cctx, connect.NewRequest(&nodev1.ReportStatsV2Request{CompleteUntil: timestamppb.New(drained)}))
+			cancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					a.logRPCError("reporting the statistics watermark failed; will retry", err)
+				}
+				continue
+			}
+			reported = drained
 		}
 	}
 }

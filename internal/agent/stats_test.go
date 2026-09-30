@@ -54,3 +54,38 @@ func TestStatsRecoverCursorAfterLocalStateLoss(t *testing.T) {
 		t.Fatal("accepted cursor was reused")
 	}
 }
+
+func TestStatsWatermarkFollowsAcknowledgedDrains(t *testing.T) {
+	e := startEnrolled(t, "stats-watermark", nil, demoSite("site-a", "site-a.test"))
+	minute := time.Now().Add(-time.Minute).Truncate(time.Minute)
+	e.console.FailStatsAcknowledgements(1)
+	e.dp.AddStats(dataplane.MinuteStats{Minute: minute.Unix(), SiteID: "site-a", Requests: 5})
+	eventually(t, "watermark after the batch", func() bool {
+		for _, w := range e.console.Watermarks() {
+			if !w.CompleteUntil.After(minute) {
+				continue
+			}
+			return true
+		}
+		return false
+	})
+	if stats := e.console.Stats(); len(stats) != 1 || stats[0].Requests != 5 {
+		t.Fatalf("batch not delivered before the watermark: %v", stats)
+	}
+	previous := time.Time{}
+	for _, w := range e.console.Watermarks() {
+		if w.BatchSequence != 0 {
+			t.Fatalf("watermark sent with batch %d, want an empty cursor query", w.BatchSequence)
+		}
+		if w.Acknowledged == 0 {
+			t.Fatal("watermark reported before the batch was acknowledged")
+		}
+		if w.CompleteUntil.Before(previous) || !w.CompleteUntil.Equal(w.CompleteUntil.Truncate(time.Minute)) {
+			t.Fatalf("watermarks must be whole minutes that never go back: %v", e.console.Watermarks())
+		}
+		if w.CompleteUntil.After(time.Now()) {
+			t.Fatalf("watermark %v is in the future", w.CompleteUntil)
+		}
+		previous = w.CompleteUntil
+	}
+}
