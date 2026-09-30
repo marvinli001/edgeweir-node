@@ -5,78 +5,62 @@
 [![CI](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
-The edge node of [Edgeweir](https://github.com/marvinli001/edgeweir). A Go agent handles enrollment, configuration sync, tasks and signed upgrades; an OpenResty (Lua) data plane handles routing, caching, origin requests and policy enforcement.
-
-## Relationship to the console
-
-| Repository | Contents |
-| --- | --- |
-| [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | Console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR; runs the internal CA and the node channel (default `:8443`). |
-| **marvinli001/edgeweir-node** (this repo) | Node: Go agent `edgeweir-node` + OpenResty (Lua). |
-
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`). This repository generates its Go code with buf from a git tag of that directory (currently `proto/v0.10.1`) and never copies `.proto` files.
+Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir-node` Go agent and an OpenResty (Lua) data plane.
 
 ## Features
 
 | Area | Capabilities |
 | --- | --- |
-| HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, Gzip; hot certificate rotation |
-| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; dynamic bans take effect within seconds without a revision, platform bans can also be dropped in the kernel with nftables; GeoIP reads local MMDBs and sends no client IPs to third parties; release images bundle IPinfo Lite (country, ASN) |
-| Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing with passive health checks, purge and prefetch |
-| Statistics and logs | Per-site per-minute traffic statistics (persisted before upload, recovered by sequence after lost acknowledgements or restarts), bounded approximate Top URL / IP, sampled access logs (off by default; no query strings, headers or bodies) |
-| Configuration reliability | Validated before apply; structural changes recover on activation failure; persisted last-known-good (LKG) configuration; keeps serving LKG while the console is unreachable |
-| Signed upgrades | `supervise` parent process, locally pinned release source and trust anchor, agent and Lua switched together, node-group trials with explicit promotion, automatic rollback |
+| HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, Gzip, hot certificate rotation |
+| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
+| Challenges and CC mitigation | Four challenge levels (cookie redirect, JS, proof of work, image captcha), signed passes, node-local tiered CC mitigation, JA4 fingerprints |
+| Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing, passive health checks, purge, prefetch |
+| Statistics and logs | Per-site per-minute traffic statistics (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
+| GeoIP | Local MMDB lookups; release images bundle IPinfo Lite (country, ASN) |
+| Configuration reliability | Validated apply, rollback on activation failure, persisted last-known-good (LKG) configuration; serves LKG while the console is unreachable |
+| Signed upgrades | `supervise` parent process, locally pinned release source and trust anchor, node-group trials, automatic rollback |
 
-## How it works
+## Architecture
 
-1. **Enroll**: `edgeweir-node enroll` generates an ECDSA P-256 key locally (it never leaves the node), pins the console's internal CA by the SHA-256 in the install command, and exchanges a single-use token and a CSR for a node certificate.
-2. **mTLS channel**: every later RPC authenticates with the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is polled about every 30 s as a fallback, with ±20 % jitter.
-3. **Apply**: snapshots and diffs are checked against `content_hash` and validated. Structural changes (listeners, cache zones, resolver, the set of published site IDs, domains and protocol settings of sites with HTTPS settings) re-render `nginx.conf` and reload OpenResty after `openresty -t`; origins, cache rules, certificates and policy rules of existing sites are hot-updated through a local unix socket without a reload. An applied configuration is persisted as LKG.
-4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (`X-Cache: MISS/HIT/BYPASS`), balances over origin pools with passive health checks, and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`. Origins may not point at special-purpose addresses (loopback, link-local / cloud metadata, private networks, ...) unless the platform administrator allows them; every upstream request carries `CDN-Loop`, and loops end with `508`.
-5. **Tasks and reports**: purge and prefetch tasks, status heartbeats (applied revision, origin health), per-site per-minute traffic statistics, automatic certificate renewal.
-6. **Configuration receipts**: persisted before apply and returned over mTLS. After a console database restore, only console-authenticated higher revisions can advance the publication counter.
+| Component | Role |
+| --- | --- |
+| `edgeweir-node` agent | Enrollment, mTLS channel (`WatchConfig` push, `GetConfig` fallback poll about every 30 s), configuration validation and apply, tasks, heartbeats and statistics, signed upgrades |
+| OpenResty data plane | Routing, caching, origin requests, policy enforcement; hot updates for sites, origins, certificates and rules over a local unix socket |
+| [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
+
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`), generated with buf from git tag `proto/v0.10.1`.
+- Structural changes (listeners, cache zones, resolver, the set of sites, domains and protocol settings of HTTPS sites) re-render `nginx.conf` and reload after `openresty -t`; all other changes are hot-updated without a reload.
+
+| Data-plane behavior | Response |
+| --- | --- |
+| Cache status | `X-Cache: MISS` / `HIT` / `BYPASS` |
+| Unknown host | `404`, `X-Edgeweir-Error: unknown-host` |
+| Forwarding loop | Upstream requests carry `CDN-Loop`; loops end with `508` |
+| Origin addresses | Special-purpose ranges (loopback, link-local / cloud metadata, private networks, ...) rejected unless allowed by the platform |
 
 Details: [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese).
 
 ## Install
 
-### One-line install (recommended)
+### Console install command (recommended)
 
-The console generates an install command for each node. `install.sh` is served by the console and:
+The console generates an install command per node. `install.sh` verifies the SHA-256 and cosign signature of the release artifacts, installs OpenResty and `edgeweir-node`, enrolls with the pinned CA fingerprint and starts the service; the one-time token is passed in `EDGEWEIR_TOKEN`. `--allow-unsigned` is for development only: it skips the signature check and keeps the SHA-256 check.
 
-1. Downloads the release artifacts (optionally through the console's mirror) and verifies their SHA-256 and cosign signature before executing anything. `--allow-unsigned` is for development only: it skips the signature check; SHA-256 is still verified.
-2. Installs OpenResty and the `edgeweir-node` package.
-3. Enrolls with the pinned CA fingerprint. The one-time token is passed in the `EDGEWEIR_TOKEN` environment variable, never on a command line.
-4. Starts the service.
+### deb / rpm
 
-The console never stores SSH credentials.
+Prerequisite: OpenResty from the [official repositories](https://openresty.org/en/linux-packages.html) with its own service disabled (`sudo systemctl disable --now openresty`); the agent runs OpenResty as a child process.
 
-### Manual install (deb / rpm)
+Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
 
-1. Install OpenResty from the [official repositories](https://openresty.org/en/linux-packages.html) and disable its own service (the agent runs OpenResty as a child process): `sudo systemctl disable --now openresty`.
-2. Download `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`) or `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`) and `checksums.txt*` from the release page and [verify them](#verify-release-artifacts).
-3. Install, enroll and start:
-
-   ```sh
-   sudo apt install ./edgeweir-node_<version>_amd64.deb   # or: sudo dnf install ./edgeweir-node-<version>-1.x86_64.rpm
-   # the token file keeps the one-time token out of the process list
-   sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
-   sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
-   sudo rm /root/edgeweir-token
-   sudo systemctl enable --now edgeweir-node
-   ```
-
-Package contents: `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/edgeweir-node/lua`, the systemd unit and `/etc/default/edgeweir-node`; creates the unprivileged `edgeweir` user and the state and cache directories it owns.
-
-Kernel bans (platform bans dropped by nftables) need `nftables` and `CAP_NET_ADMIN`, which the default unit does not grant. To enable them add `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`:
-
-```ini
-[Service]
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+```sh
+sudo apt install ./edgeweir-node_<version>_amd64.deb   # or sudo dnf install ./edgeweir-node-<version>-1.x86_64.rpm
+sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
+sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
+sudo rm /root/edgeweir-token
+sudo systemctl enable --now edgeweir-node
 ```
 
-and run `sudo systemctl daemon-reload && sudo systemctl restart edgeweir-node`. Without it bans are enforced at L7 only (`403`).
+Package contents: `/usr/bin/edgeweir-node`, `/usr/share/edgeweir-node/lua`, the systemd unit, `/etc/default/edgeweir-node`; creates the unprivileged `edgeweir` user and its state and cache directories.
 
 ### Docker
 
@@ -84,123 +68,145 @@ and run `sudo systemctl daemon-reload && sudo systemctl restart edgeweir-node`. 
 docker run -d --name edgeweir-node -p 80:80 \
   -v edgeweir-node:/var/lib/edgeweir-node \
   ghcr.io/marvinli001/edgeweir-node:<version>
-read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN   # paste the one-time token
+read -rs EDGEWEIR_TOKEN && export EDGEWEIR_TOKEN
 docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
-The container starts OpenResty immediately (every host answers `404 unknown-host`) and follows the console once enrolled. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume. Kernel bans need an image built with `docker build --build-arg NFT_CAPABILITY=true` and a container started with `--cap-add NET_ADMIN`; the default image adds no privilege and enforces bans at L7 only.
+The container runs as uid 10001; before enrollment every host answers `404 unknown-host`. Identity and LKG configuration live in the `/var/lib/edgeweir-node` volume.
 
-Release images contain `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`, the [IPinfo Lite](https://ipinfo.io/lite) database downloaded at build time (CC BY-SA 4.0, IP address data is powered by [IPinfo](https://ipinfo.io); the `NOTICE` next to it records the download time and sha256). It answers `ip.geoip.country` and `ip.geoip.asnum` locally, with no runtime download. For newer data, pull a newer image, or mount a separately downloaded copy and set `EDGEWEIR_GEOIP_IPINFO`. Packages and archives do not bundle the database; point `EDGEWEIR_GEOIP_IPINFO` at a downloaded file. Subdivisions need a City MMDB (`EDGEWEIR_GEOIP_CITY`).
+### Kernel bans
+
+Platform bans dropped by nftables require `nftables` and `CAP_NET_ADMIN`. Neither is granted by default; bans are then enforced at L7 (`403`).
+
+- systemd: add `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`, then run `sudo systemctl daemon-reload && sudo systemctl restart edgeweir-node`.
+
+  ```ini
+  [Service]
+  AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+  CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+  ```
+
+- Docker: build the image with `docker build --build-arg NFT_CAPABILITY=true` and start the container with `--cap-add NET_ADMIN`.
+
+### GeoIP
+
+| Database | Source | Flag |
+| --- | --- | --- |
+| IPinfo Lite (country, ASN) | Bundled in release images at `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` (downloaded at build time; the adjacent `NOTICE` records download time and sha256); not bundled in packages or archives | `--geoip-ipinfo` |
+| City (subdivisions) | Operator-provided | `--geoip-city` |
+| ASN | Operator-provided | `--geoip-asn` |
+
+Lookups are local: no runtime download, no client IPs sent to third parties. To update, pull a newer image or mount a newer copy and set `EDGEWEIR_GEOIP_IPINFO`.
 
 ## Command line
 
 ```text
 EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force]
-edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...   # --token TOKEN also works but shows in ps
+edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...
 edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
                   [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80]
                   [--trusted-ca FILE] [--purge-dict-mb 32] [--purge-markers-per-site 1000]
                   [--prefetch-budget 4m] [--edge-socket PATH] [--ban-capacity 100000] [--kernel-bans auto] ...
-edgeweir-node supervise --manage-nginx ...   # same flags as run; entry point of the systemd unit and the image
+edgeweir-node supervise --manage-nginx ...            # same flags as run; systemd unit and image entry point
 edgeweir-node healthcheck [--control-socket PATH]
-edgeweir-node bans [--control-socket PATH] [--list]   # ban status of the data plane (JSON); --list adds up to 1000 bans
-edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool and CC levels of the sites (JSON)
+edgeweir-node bans [--control-socket PATH] [--list]   # ban status (JSON); --list adds up to 1000 bans
+edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool, per-site CC levels (JSON)
 edgeweir-node version
 ```
 
-- Every flag can also be set as an environment variable `EDGEWEIR_<FLAG>` (e.g. `--state-dir` → `EDGEWEIR_STATE_DIR`, `--token` → `EDGEWEIR_TOKEN`, `--token-file` → `EDGEWEIR_TOKEN_FILE`); command-line flags take precedence.
-- `run` polls the state directory every 2 s until the node is enrolled, so `enroll` may run after `run` has started.
+- Every flag can be set as `EDGEWEIR_<FLAG>` (e.g. `--state-dir` → `EDGEWEIR_STATE_DIR`); command-line flags take precedence.
+- `run` polls the state directory every 2 s until enrolled and may start before `enroll`.
 - `supervise` adds signed upgrades, trials and rollback on top of `run`.
 
-| `enroll` flag | Default | Purpose |
+| `enroll` flag | Default | Description |
 | --- | --- | --- |
 | `--server` | required | Console node-channel URL, e.g. `https://console.example.com:8443` |
-| `--ca-sha256` | required | SHA-256 of the console's internal CA certificate (DER, hex) from the install command |
-| `--token-file` | none | Read the one-time token from this file (surrounding whitespace ignored) |
-| `--token` | none | The one-time token; visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
+| `--ca-sha256` | required | SHA-256 of the console's internal CA certificate (DER, hex) |
+| `--token-file` | none | One-time token file (surrounding whitespace ignored) |
+| `--token` | none | One-time token; visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
 | `--server-name` | host of `--server` | TLS server name to verify |
-| `--state-dir` | `/var/lib/edgeweir-node` | State directory for the node identity |
+| `--state-dir` | `/var/lib/edgeweir-node` | State directory |
 | `--force` | off | Replace an existing identity (re-enroll) |
 | `--timeout` | `30s` | Enrollment RPC timeout |
-| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
-| `--log-format` | `text` | `text` or `json` |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format` | `text` | `text`, `json` |
 
-| `run` flag | Default | Purpose |
+| `run` flag | Default | Description |
 | --- | --- | --- |
 | `--manage-nginx` | off | Run OpenResty as a supervised child process (set by the container and the systemd unit) |
 | `--state-dir` | `/var/lib/edgeweir-node` | State directory (identity, LKG configuration) |
 | `--nginx-bin` | `openresty` | OpenResty binary |
 | `--nginx-prefix` | `<state-dir>/nginx` | nginx prefix directory |
-| `--nginx-user` | none | User for nginx workers when the agent runs as root (running the agent unprivileged is preferred) |
+| `--nginx-user` | none | nginx worker user when the agent runs as root |
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | Directory containing `edgeweir/*.lua` |
-| `--cache-dir` | `/var/cache/edgeweir-node` | Parent directory of the proxy cache zones |
-| `--control-socket` | `/run/edgeweir-node/control.sock` | Unix socket of the data-plane control API |
-| `--origin-socket` | `/run/edgeweir-node/origin.sock` | Unix socket of the internal origin layer |
-| `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Unix socket of the origin layer without TLS verification |
+| `--cache-dir` | `/var/cache/edgeweir-node` | Parent directory of the cache zones |
+| `--control-socket` | `/run/edgeweir-node/control.sock` | Data-plane control API socket |
+| `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket |
+| `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Origin layer socket without TLS verification |
 | `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches when every listener uses the PROXY protocol |
-| `--trusted-ca` | system bundle | CA bundle for verifying HTTPS origins |
+| `--trusted-ca` | system bundle | CA bundle for HTTPS origins |
 | `--resolv-conf` | `/etc/resolv.conf` | Source of the nginx resolvers |
-| `--resolver` | none | Comma-separated resolver addresses (overrides `--resolv-conf`) |
-| `--resolver-ipv6` | `auto` | Resolve AAAA records for origins: `auto` (when the host has a global IPv6 address), `on` or `off` |
-| `--listen-ipv6` | `auto` | Also listen on IPv6: `auto` (when the host can bind IPv6), `on` or `off` |
-| `--default-port` | `80` | HTTP port served before any configuration exists |
+| `--resolver` | none | Comma-separated resolver addresses; overrides `--resolv-conf` |
+| `--resolver-ipv6` | `auto` | Resolve AAAA for origins: `auto` (host has a global IPv6 address), `on`, `off` |
+| `--listen-ipv6` | `auto` | Listen on IPv6: `auto` (host can bind IPv6), `on`, `off` |
+| `--default-port` | `80` | HTTP port before any configuration |
 | `--worker-processes` | `auto` | nginx `worker_processes` |
-| `--geoip-ipinfo` | `auto` | IPinfo Lite MMDB (country, ASN): `auto` uses `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` when the image bundles it, `off` disables it, any other value is a path |
-| `--geoip-city` | empty | Operator-provided City MMDB; empty disables it |
-| `--geoip-asn` | empty | Operator-provided ASN MMDB; empty disables it |
-| `--cosign-bin` | `cosign` | Local signature verifier in supervise mode |
-| `--upgrade-source` | official GitHub release download base | Operator-trusted release mirror; upgrade tasks cannot change it |
-| `--upgrade-public-key` | empty | Local release public key; when empty, the official GitHub OIDC identity is pinned |
-| `--upgrade-allow-http` | `false` | Permit plaintext HTTP for a local test or air-gapped mirror |
-| `--purge-dict-mb` | `32` | Size of the purge marker store (`lua_shared_dict edgeweir_purge`) in MiB |
-| `--purge-markers-per-site` | `1000` | URL and prefix purge markers per site before they collapse into one site-level marker |
-| `--prefetch-budget` | `4m` | Time limit for one pulled batch of prefetches |
-| `--ban-capacity` | `100000` | Dynamic bans the data plane holds (console bans and the node's own); the oldest automatic bans make room first, manual bans that do not fit are reported |
-| `--ban-dict-mb` | `32` | Size of the ban store (`lua_shared_dict edgeweir_bans`) in MiB |
-| `--cc-dict-mb` | `32` | Size of the CC mitigation store (`lua_shared_dict edgeweir_cc`: counters, levels, events) in MiB |
-| `--challenge-dict-mb` | `8` | Size of the challenge store (`lua_shared_dict edgeweir_challenge`: keys, captcha pool, used challenge nonces) in MiB |
-| `--kernel-bans` | `auto` | Also write platform bans into nftables: `auto` (when `nft` works and `CAP_NET_ADMIN` is granted) or `off` |
-| `--nft-bin` | `nft` | nftables binary for kernel bans |
-| `--log-level` | `info` | `debug`, `info`, `warn` or `error` |
-| `--log-format` | `text` | `text` or `json` |
+| `--geoip-ipinfo` | `auto` | IPinfo Lite MMDB: `auto` (bundled copy if present), `off`, or a path |
+| `--geoip-city` | empty | City MMDB path |
+| `--geoip-asn` | empty | ASN MMDB path |
+| `--cosign-bin` | `cosign` | Signature verifier in supervise mode |
+| `--upgrade-source` | official GitHub release download base | Release mirror; upgrade tasks cannot change it |
+| `--upgrade-public-key` | empty | Release public key; empty pins the official GitHub OIDC identity |
+| `--upgrade-allow-http` | `false` | Permit a plaintext HTTP mirror (local test, air-gapped) |
+| `--purge-dict-mb` | `32` | Purge marker store (`lua_shared_dict edgeweir_purge`), MiB |
+| `--purge-markers-per-site` | `1000` | URL and prefix markers per site before collapsing into a site-level marker |
+| `--prefetch-budget` | `4m` | Time limit per prefetch batch |
+| `--ban-capacity` | `100000` | Maximum dynamic bans; oldest automatic bans are evicted first |
+| `--ban-dict-mb` | `32` | Ban store (`lua_shared_dict edgeweir_bans`), MiB |
+| `--cc-dict-mb` | `32` | CC mitigation store (`lua_shared_dict edgeweir_cc`), MiB |
+| `--challenge-dict-mb` | `8` | Challenge store (`lua_shared_dict edgeweir_challenge`), MiB |
+| `--kernel-bans` | `auto` | Write platform bans into nftables: `auto` (`nft` works and `CAP_NET_ADMIN` granted), `off` |
+| `--nft-bin` | `nft` | nftables binary |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format` | `text` | `text`, `json` |
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and their sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `nginx/` (prefix, rendered `nginx.conf`) |
-| `/var/cache/edgeweir-node` | Proxy cache zones |
-| `/run/edgeweir-node/control.sock` | Local control API of the Lua data plane (unix socket only) |
+| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `nginx/` (prefix, `nginx.conf`) |
+| `/var/cache/edgeweir-node` | Cache zones |
+| `/run/edgeweir-node/control.sock` | Data-plane control API (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
-| `/usr/share/edgeweir-node/geoip` | Bundled IPinfo Lite database and its `NOTICE` (container image) |
-| `:80` | HTTP listener before any configuration; afterwards the listeners in the configuration |
+| `/usr/share/edgeweir-node/geoip` | IPinfo Lite database and `NOTICE` (container image) |
+| `:80` | HTTP listener before any configuration; afterwards as configured |
 
 ## Build and test
 
-Requirements: Go 1.27.1, Docker; buf, goreleaser and syft for release work.
+Requirements: Go 1.27.1, Docker; buf, goreleaser and syft for releases.
 
 ```sh
 make build         # static binary in bin/
 make vet test      # go vet ./... && go test ./...
-make test-race     # tests with the race detector
-make lua-test      # Lua unit tests with resty in the OpenResty image
-make docker        # docker build -t edgeweir-node:dev .; with IPINFO_TOKEN set, downloads and bundles IPinfo Lite via a BuildKit secret, otherwise the image has no GeoIP data
+make test-race     # race detector
+make lua-test      # Lua unit tests (resty in the OpenResty image)
+make docker        # image; bundles IPinfo Lite via a BuildKit secret when IPINFO_TOKEN is set
 make e2e           # container smoke test: fake console + node + whoami origins
-make proto-check   # regenerate from the proto git tag and fail on drift
-make snapshot      # goreleaser release --snapshot --clean (unsigned)
+make proto-check   # regenerate from the proto tag and check for drift
+make snapshot      # local goreleaser snapshot (unsigned)
 ```
 
-`make e2e` publishes host ports on 127.0.0.1: 28080 (node), 28081 (PROXY protocol listener) and 28090 (fake console helper) by default. `COMPOSE_PROJECT_NAME` separates only containers, networks and volumes; to run alongside another stack, also choose free ports with `E2E_NODE_PORT`, `E2E_PP_PORT` and `E2E_HELPER_PORT`:
+`make e2e` binds 127.0.0.1 ports 28080, 28081 and 28090 by default. To run alongside another compose project, set both the project name and the ports:
 
 ```sh
 COMPOSE_PROJECT_NAME=node-e2e-2 E2E_NODE_PORT=38080 E2E_PP_PORT=38081 E2E_HELPER_PORT=38090 make e2e
 ```
 
-Proto regeneration flow and conventions: [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese).
+Conventions and proto generation: [CONTRIBUTING.md](CONTRIBUTING.md) (Chinese).
 
 ## Verify release artifacts
 
-Releases are built in GitHub Actions from the tagged source and are reproducible (`-trimpath`, timestamps from the commit); the container image also carries the IPinfo Lite data of its build day, so a rebuild carries different data, and the sha256 in `/usr/share/edgeweir-node/geoip/NOTICE` identifies the copy. `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact also carries a SLSA build provenance attestation.
+Releases are built in GitHub Actions from the tagged source and are reproducible (`-trimpath`, commit timestamps); the IPinfo Lite copy in a container image is identified by the sha256 in its `NOTICE`. `checksums.txt` covers every archive, package and SBOM and is signed with cosign keyless; each artifact carries a SLSA build provenance attestation.
 
 ```sh
 cosign verify-blob \
@@ -214,17 +220,22 @@ gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli
 
 ## Known limitations
 
-- The stock OpenResty engine does not include Brotli or Zstd.
-- Certificate materials live in `certificates.json` (0600) and are readable by host administrators.
-- The V2 statistics RPC does not fall back to an older console; upgrade the console and nodes together.
-- Each published site reserves a fixed 256 KiB rate-limit counter partition; a cluster supports up to 512 published sites, and adding a site does not resize existing partitions. See [rate-limit storage](docs/rate-limit-storage.md).
-- Self-update covers the agent and Lua only. The supervisor, cosign and OpenResty are upgraded through system packages or the image; a system package or image takes precedence over an older self-updated bundle in the state volume.
+- The OpenResty engine does not include Brotli or Zstd.
+- Certificate materials live in `certificates.json` (0600), readable by host administrators.
+- The V2 statistics RPC is incompatible with older consoles; upgrade the console and nodes together.
+- Each published site reserves a fixed 256 KiB rate-limit counter partition; up to 512 published sites per cluster. See [rate-limit storage](docs/rate-limit-storage.md).
+- Self-update covers the agent and Lua only; the supervisor, cosign and OpenResty are upgraded with system packages or the image, which take precedence over an older self-updated bundle in the state volume.
 
 ## Security
 
+- The node key (ECDSA P-256) is generated locally and never leaves the node; enrollment pins the console CA by `--ca-sha256`.
+- All RPCs after enrollment use mTLS; the data-plane control API listens on a unix socket only.
+- Configuration receipts are persisted before apply; after a console database restore, only console-authenticated higher revisions advance the publication counter.
+- Outbound connections: the control channel reaches only the enrolling console; the data plane reaches configured origins and, with OCSP checks enabled, OCSP responders.
+- The console never stores SSH credentials.
 - No vendor phone-home, no license checks, no telemetry.
-- The control channel connects only to the console the node enrolled with; the data plane connects to configured origins and, when OCSP checks are enabled, to certificate OCSP responders.
-- Report vulnerabilities through [GitHub private vulnerability reporting](https://github.com/marvinli001/edgeweir-node/security/advisories/new); see [SECURITY.md](SECURITY.md).
+
+Report vulnerabilities through [GitHub private vulnerability reporting](https://github.com/marvinli001/edgeweir-node/security/advisories/new); see [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
@@ -242,8 +253,6 @@ Documents other than the READMEs are in Chinese.
 
 ## License
 
-[AGPL-3.0-only](LICENSE); commercial use is permitted subject to the license.
+[AGPL-3.0-only](LICENSE); commercial use is permitted under its terms. Open-source core and commercial product boundaries: [LICENSING.md](LICENSING.md).
 
-Nodes and the console's organizations, members and isolation are part of the open-source core; customer portals, plans and billing, finance and reselling belong to a separate commercial product. Node operation does not depend on an official commercial license. See [LICENSING.md](LICENSING.md).
-
-The bundled GeoIP data is [IPinfo Lite](https://ipinfo.io/lite) under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): IP address data is powered by [IPinfo](https://ipinfo.io).
+Bundled GeoIP data: [IPinfo Lite](https://ipinfo.io/lite), [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). IP address data is powered by [IPinfo](https://ipinfo.io).
