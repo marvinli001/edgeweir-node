@@ -67,6 +67,12 @@ const (
 	NodeServiceGetBansProcedure = "/edgeweir.node.v1.NodeService/GetBans"
 	// NodeServiceReportBansProcedure is the fully-qualified name of the NodeService's ReportBans RPC.
 	NodeServiceReportBansProcedure = "/edgeweir.node.v1.NodeService/ReportBans"
+	// NodeServiceGetChallengeKeysProcedure is the fully-qualified name of the NodeService's
+	// GetChallengeKeys RPC.
+	NodeServiceGetChallengeKeysProcedure = "/edgeweir.node.v1.NodeService/GetChallengeKeys"
+	// NodeServiceReportSecurityEventsProcedure is the fully-qualified name of the NodeService's
+	// ReportSecurityEvents RPC.
+	NodeServiceReportSecurityEventsProcedure = "/edgeweir.node.v1.NodeService/ReportSecurityEvents"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -108,6 +114,13 @@ type NodeServiceClient interface {
 	// ReportBans uploads bans the node created itself (automatic mitigation).
 	// Idempotent: the console keys them by (node, site, cidr). Added in v0.9.0.
 	ReportBans(context.Context, *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error)
+	// GetChallengeKeys returns the HMAC secrets of challenge passes named by
+	// NodeConfig.challenge_keys. Added in v0.10.0 (feature challenge-v1).
+	GetChallengeKeys(context.Context, *connect.Request[v1.GetChallengeKeysRequest]) (*connect.Response[v1.GetChallengeKeysResponse], error)
+	// ReportSecurityEvents uploads CC mitigation events: level changes, attacked
+	// paths and banned addresses. Idempotent by (node, event id). Added in
+	// v0.10.0.
+	ReportSecurityEvents(context.Context, *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -205,6 +218,18 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportBans")),
 			connect.WithClientOptions(opts...),
 		),
+		getChallengeKeys: connect.NewClient[v1.GetChallengeKeysRequest, v1.GetChallengeKeysResponse](
+			httpClient,
+			baseURL+NodeServiceGetChallengeKeysProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("GetChallengeKeys")),
+			connect.WithClientOptions(opts...),
+		),
+		reportSecurityEvents: connect.NewClient[v1.ReportSecurityEventsRequest, v1.ReportSecurityEventsResponse](
+			httpClient,
+			baseURL+NodeServiceReportSecurityEventsProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("ReportSecurityEvents")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -224,6 +249,8 @@ type nodeServiceClient struct {
 	reportTaskResult     *connect.Client[v1.ReportTaskResultRequest, v1.ReportTaskResultResponse]
 	getBans              *connect.Client[v1.GetBansRequest, v1.GetBansResponse]
 	reportBans           *connect.Client[v1.ReportBansRequest, v1.ReportBansResponse]
+	getChallengeKeys     *connect.Client[v1.GetChallengeKeysRequest, v1.GetChallengeKeysResponse]
+	reportSecurityEvents *connect.Client[v1.ReportSecurityEventsRequest, v1.ReportSecurityEventsResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -296,6 +323,16 @@ func (c *nodeServiceClient) ReportBans(ctx context.Context, req *connect.Request
 	return c.reportBans.CallUnary(ctx, req)
 }
 
+// GetChallengeKeys calls edgeweir.node.v1.NodeService.GetChallengeKeys.
+func (c *nodeServiceClient) GetChallengeKeys(ctx context.Context, req *connect.Request[v1.GetChallengeKeysRequest]) (*connect.Response[v1.GetChallengeKeysResponse], error) {
+	return c.getChallengeKeys.CallUnary(ctx, req)
+}
+
+// ReportSecurityEvents calls edgeweir.node.v1.NodeService.ReportSecurityEvents.
+func (c *nodeServiceClient) ReportSecurityEvents(ctx context.Context, req *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error) {
+	return c.reportSecurityEvents.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -335,6 +372,13 @@ type NodeServiceHandler interface {
 	// ReportBans uploads bans the node created itself (automatic mitigation).
 	// Idempotent: the console keys them by (node, site, cidr). Added in v0.9.0.
 	ReportBans(context.Context, *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error)
+	// GetChallengeKeys returns the HMAC secrets of challenge passes named by
+	// NodeConfig.challenge_keys. Added in v0.10.0 (feature challenge-v1).
+	GetChallengeKeys(context.Context, *connect.Request[v1.GetChallengeKeysRequest]) (*connect.Response[v1.GetChallengeKeysResponse], error)
+	// ReportSecurityEvents uploads CC mitigation events: level changes, attacked
+	// paths and banned addresses. Idempotent by (node, event id). Added in
+	// v0.10.0.
+	ReportSecurityEvents(context.Context, *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -428,6 +472,18 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportBans")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceGetChallengeKeysHandler := connect.NewUnaryHandler(
+		NodeServiceGetChallengeKeysProcedure,
+		svc.GetChallengeKeys,
+		connect.WithSchema(nodeServiceMethods.ByName("GetChallengeKeys")),
+		connect.WithHandlerOptions(opts...),
+	)
+	nodeServiceReportSecurityEventsHandler := connect.NewUnaryHandler(
+		NodeServiceReportSecurityEventsProcedure,
+		svc.ReportSecurityEvents,
+		connect.WithSchema(nodeServiceMethods.ByName("ReportSecurityEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -458,6 +514,10 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceGetBansHandler.ServeHTTP(w, r)
 		case NodeServiceReportBansProcedure:
 			nodeServiceReportBansHandler.ServeHTTP(w, r)
+		case NodeServiceGetChallengeKeysProcedure:
+			nodeServiceGetChallengeKeysHandler.ServeHTTP(w, r)
+		case NodeServiceReportSecurityEventsProcedure:
+			nodeServiceReportSecurityEventsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -521,4 +581,12 @@ func (UnimplementedNodeServiceHandler) GetBans(context.Context, *connect.Request
 
 func (UnimplementedNodeServiceHandler) ReportBans(context.Context, *connect.Request[v1.ReportBansRequest]) (*connect.Response[v1.ReportBansResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportBans is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) GetChallengeKeys(context.Context, *connect.Request[v1.GetChallengeKeysRequest]) (*connect.Response[v1.GetChallengeKeysResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetChallengeKeys is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) ReportSecurityEvents(context.Context, *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportSecurityEvents is not implemented"))
 }
