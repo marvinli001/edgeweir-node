@@ -208,10 +208,12 @@ type Agent struct {
 	// state and writes of bans to the data plane.
 	banMu          sync.Mutex
 	bans           *bans.State
-	banForcePut    bool                 // the next write replaces the whole set
-	banRetryAt     time.Time            // next retry of unfit manual bans
-	banDropped     uint64               // automatic bans left out for capacity
-	banDroppedSeen map[string]time.Time // ... counted once each
+	banForcePut    bool                       // the next write replaces the whole set
+	banSent        map[bans.SlotKey]bans.Slot // what the data plane was given (nil: unknown)
+	banSentSeq     uint64                     // ... under this sequence
+	banRetryAt     time.Time                  // next retry of unfit manual bans
+	banDropped     uint64                     // automatic bans left out for capacity
+	banDroppedSeen map[string]time.Time       // ... counted once each
 	banCh          chan struct{}
 	banUnsupported sync.Once    // logs an older console once
 	nft            *nft.Manager // nil without kernel bans

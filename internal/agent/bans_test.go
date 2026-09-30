@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -171,16 +172,31 @@ func TestBansEmptyConsoleIsQuiet(t *testing.T) {
 // oldest automatic bans are left out, manual ones never.
 func TestBansCapacityKeepsManualAndNewestAutomatic(t *testing.T) {
 	e := startEnrolled(t, "bans-cap", func(c *agent.Config) { c.BanCapacity = 2 }, demoSite("site-a", "site-a.test"))
+	e.dp.SetBanCapacity(2) // like the data plane with --ban-capacity 2
 	auto := func(id, cidr string, created time.Duration) *nodev1.Ban {
 		return consoleBan(id, cidr, nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, created)
 	}
-	e.console.AddBan(auto("a-old", "192.0.2.1/32", -3*time.Hour))
-	e.console.AddBan(auto("a-new", "192.0.2.2/32", -time.Hour))
-	e.console.AddBan(siteBan("m1", "192.0.2.3/32", "site-a"))
-	seq := e.console.AddBan(auto("a-mid", "192.0.2.4/32", -2*time.Hour))
+	var seq uint64
+	for _, b := range []*nodev1.Ban{
+		siteBan("m1", "192.0.2.3/32", "site-a"), // the first ban arrives in a snapshot
+		auto("a-old", "192.0.2.1/32", -3*time.Hour),
+		auto("a-new", "192.0.2.2/32", -time.Hour), // a-old is left out from here on
+		auto("a-mid", "192.0.2.4/32", -2*time.Hour),
+	} {
+		seq = e.console.AddBan(b)
+		eventually(t, "ban "+b.GetId()+" applied", func() bool { return e.dp.BanSequence() == seq })
+	}
 	eventually(t, "manual and newest automatic ban held", func() bool {
 		return e.dp.BanSequence() == seq && slices.Equal(banIDs(e.dp.Bans()), []string{"a-new", "m1"})
 	})
+	// Deltas stay within the capacity: the left-out ban is removed before
+	// the newer one is written.
+	if calls := e.dp.BanCalls(); calls[len(calls)-1] != "POST" {
+		t.Fatalf("ban writes = %v, want deltas", calls)
+	}
+	if st, err := dataplane.NewClient(e.dp.Socket).BanStatus(context.Background()); err != nil || st.Unapplied != 0 || st.AutoEvicted != 0 {
+		t.Fatalf("data plane status = %+v, %v", st, err)
+	}
 	eventually(t, "left-out automatic bans reported", func() bool {
 		return lastBanStatus(e).GetAutoEvicted() == 2 && lastBanStatus(e).GetCapacity() == 2
 	})

@@ -195,10 +195,10 @@ func (a *Agent) installBans(ctx context.Context, next *bans.State, reset bool) {
 	kernel := !slices.EqualFunc(prev.Platform(now), next.Platform(now), func(x, y bans.Ban) bool {
 		return x.ID == y.ID && x.Prefix == y.Prefix && x.ExpiresAt.Equal(y.ExpiresAt)
 	})
-	if reset || len(up)+len(rm) > maxBanDelta {
-		a.banForcePut = true
+	if reset {
+		a.banForcePut = true // the console dropped everything: replace the set
 	}
-	err := a.pushBansLocked(ctx, prev.Sequence, up, rm)
+	err := a.pushBansLocked(ctx)
 	a.banMu.Unlock()
 	if err != nil {
 		a.log.Warn("cannot push bans to the data plane; retrying", "err", err)
@@ -228,37 +228,53 @@ func slotsToDataPlane(list []bans.Slot) []dataplane.Ban {
 	return out
 }
 
-// pushBansLocked brings the data plane from the state at base to a.bans:
-// a delta when the data plane holds base, otherwise (or when forced, or
-// when bans must be dropped for capacity) the whole ordered set. banMu is
-// held.
-func (a *Agent) pushBansLocked(ctx context.Context, base uint64, up, rm []bans.Slot) error {
+// pushBansLocked brings the data plane to a.bans: the slots are ordered
+// for the capacity (manual first, automatic newest first, the oldest
+// automatic ones left out) and sent as a delta against what the data plane
+// was last given when it still holds that sequence; otherwise (forced,
+// unknown data plane, too many changes, 409) the whole ordered set
+// replaces it. banMu is held.
+func (a *Agent) pushBansLocked(ctx context.Context) error {
 	now := time.Now()
 	ordered, dropped := bans.Ordered(a.bans.Slots(now), a.cfg.BanCapacity)
 	a.countDroppedLocked(dropped, now)
+	want := make(map[bans.SlotKey]bans.Slot, len(ordered))
+	for _, s := range ordered {
+		want[s.SlotKey] = s
+	}
+	for k, s := range a.banSent {
+		if !s.ExpiresAt.After(now) {
+			delete(a.banSent, k) // expired in the data plane as well
+		}
+	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if !a.banForcePut && len(dropped) == 0 {
+	if !a.banForcePut && a.banSent != nil {
 		st, err := a.dp.BanStatus(cctx)
 		if err != nil {
 			a.banForcePut = true
 			return err
 		}
-		if st.Sequence == base {
-			if base == a.bans.Sequence && len(up)+len(rm) == 0 {
+		if st.Sequence == a.banSentSeq {
+			up, rm := bans.Diff(a.banSent, want)
+			if a.banSentSeq == a.bans.Sequence && len(up)+len(rm) == 0 {
 				a.setBanStatus(st)
 				return nil
 			}
-			st, err = a.dp.AddBans(cctx, &dataplane.BanDelta{Base: base, Sequence: a.bans.Sequence,
-				Upsert: slotsToDataPlane(up), Remove: slotsToDataPlane(rm)})
-			if err == nil {
-				a.setBanStatus(st)
-				return nil
-			}
-			var apiErr *dataplane.APIError
-			if !errors.As(err, &apiErr) || apiErr.Status != 409 {
-				a.banForcePut = true
-				return err
+			if len(up)+len(rm) <= maxBanDelta {
+				st, err = a.dp.AddBans(cctx, &dataplane.BanDelta{Base: a.banSentSeq, Sequence: a.bans.Sequence,
+					Upsert: slotsToDataPlane(up), Remove: slotsToDataPlane(rm)})
+				if err == nil {
+					a.banSent, a.banSentSeq = want, a.bans.Sequence
+					a.setBanStatus(st)
+					a.logDropped(dropped)
+					return nil
+				}
+				var apiErr *dataplane.APIError
+				if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+					a.banForcePut = true
+					return err
+				}
 			}
 		}
 	}
@@ -268,11 +284,16 @@ func (a *Agent) pushBansLocked(ctx context.Context, base uint64, up, rm []bans.S
 		return err
 	}
 	a.banForcePut = false
+	a.banSent, a.banSentSeq = want, a.bans.Sequence
 	a.setBanStatus(st)
+	a.logDropped(dropped)
+	return nil
+}
+
+func (a *Agent) logDropped(dropped []bans.Slot) {
 	if len(dropped) > 0 {
 		a.log.Warn("automatic bans beyond the ban capacity were left out", "dropped", len(dropped), "capacity", a.cfg.BanCapacity)
 	}
-	return nil
 }
 
 // countDroppedLocked counts automatic bans left out for capacity, each
@@ -304,9 +325,9 @@ func (a *Agent) pushBansWithRetry(ctx context.Context) {
 	delay := 100 * time.Millisecond
 	for {
 		a.banMu.Lock()
-		a.banForcePut = false
-		// Against an unknown data plane state: a delta from nothing.
-		err := a.pushBansLocked(ctx, a.bans.Sequence, nil, nil)
+		// The data plane's content is unknown (banSent is nil): the whole
+		// set goes in.
+		err := a.pushBansLocked(ctx)
 		a.banMu.Unlock()
 		if err == nil {
 			return
@@ -342,7 +363,7 @@ func (a *Agent) reconcileBans(ctx context.Context) {
 		a.log.Info("data plane bans out of sync (nginx restarted?); installing them again",
 			"data_plane_sequence", st.Sequence, "sequence", a.bans.Sequence)
 		a.banForcePut = true
-		if err := a.pushBansLocked(ctx, a.bans.Sequence, nil, nil); err != nil {
+		if err := a.pushBansLocked(ctx); err != nil {
 			a.log.Warn("cannot install bans", "err", err)
 		}
 		return
@@ -354,7 +375,7 @@ func (a *Agent) reconcileBans(ctx context.Context) {
 	a.banRetryAt = now.Add(a.cfg.BanRetryInterval)
 	if st.Unapplied > len(st.UnappliedIDs) {
 		a.banForcePut = true
-		if err := a.pushBansLocked(ctx, a.bans.Sequence, nil, nil); err != nil {
+		if err := a.pushBansLocked(ctx); err != nil {
 			a.log.Warn("cannot retry the manual bans that did not fit", "err", err)
 		}
 		return
