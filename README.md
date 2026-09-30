@@ -14,7 +14,7 @@
 | [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，单应用、单镜像。将站点与规则编译为与引擎无关的 `NodeConfig` IR，运行内部 CA 与节点通道（默认 `:8443`）。 |
 | **marvinli001/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-两个仓库间唯一的契约为 `edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`）。本仓库以 buf 从该目录的 git tag（当前 `proto/v0.10.0`）生成 Go 代码，不复制 `.proto` 文件。
+两个仓库间唯一的契约为 `edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`）。本仓库以 buf 从该目录的 git tag（当前 `proto/v0.10.1`）生成 Go 代码，不复制 `.proto` 文件。
 
 ## 功能
 

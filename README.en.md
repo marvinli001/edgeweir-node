@@ -14,7 +14,7 @@ The edge node of [Edgeweir](https://github.com/marvinli001/edgeweir). A Go agent
 | [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | Console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR; runs the internal CA and the node channel (default `:8443`). |
 | **marvinli001/edgeweir-node** (this repo) | Node: Go agent `edgeweir-node` + OpenResty (Lua). |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`). This repository generates its Go code with buf from a git tag of that directory (currently `proto/v0.10.0`) and never copies `.proto` files.
+The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`). This repository generates its Go code with buf from a git tag of that directory (currently `proto/v0.10.1`) and never copies `.proto` files.
 
 ## Features
 

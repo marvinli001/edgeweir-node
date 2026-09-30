@@ -1217,7 +1217,9 @@ type ReportStatusRequest struct {
 	// State of the dynamic bans on this node; unset on nodes without bans-v1.
 	// Added in v0.9.0.
 	Bans *BanStatus `protobuf:"bytes,11,opt,name=bans,proto3" json:"bans,omitempty"`
-	// Current CC mitigation level of every site above normal. Added in v0.10.0.
+	// Current CC mitigation level of every site above normal or with escalated
+	// paths. Added in v0.10.0; sites at normal with escalated paths since
+	// v0.10.1 (earlier nodes leave them out).
 	Security      []*SiteSecurity `protobuf:"bytes,12,rep,name=security,proto3" json:"security,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1341,7 +1343,8 @@ func (x *ReportStatusRequest) GetSecurity() []*SiteSecurity {
 type SiteSecurity struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	SiteId string                 `protobuf:"bytes,1,opt,name=site_id,json=siteId,proto3" json:"site_id,omitempty"`
-	// cookie302, js, pow or captcha; normal sites are left out.
+	// normal, cookie302, js, pow or captcha; sites at normal without escalated
+	// paths are left out.
 	Level string `protobuf:"bytes,2,opt,name=level,proto3" json:"level,omitempty"`
 	// Paths challenged above the site's level.
 	EscalatedPaths uint32 `protobuf:"varint,3,opt,name=escalated_paths,json=escalatedPaths,proto3" json:"escalated_paths,omitempty"`
