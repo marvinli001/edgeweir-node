@@ -14,7 +14,7 @@
 | [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | 控制台（控制面）：TypeScript，单应用、单镜像。将站点与规则编译为与引擎无关的 `NodeConfig` IR，运行内部 CA 与节点通道（默认 `:8443`）。 |
 | **marvinli001/edgeweir-node**（本仓库） | 节点：Go agent `edgeweir-node` + OpenResty（Lua）。 |
 
-两个仓库间唯一的契约为 `edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`）。本仓库以 buf 从该目录的 git tag（当前 `proto/v0.7.0`）生成 Go 代码，不复制 `.proto` 文件。
+两个仓库间唯一的契约为 `edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`）。本仓库以 buf 从该目录的 git tag（当前 `proto/v0.8.0`）生成 Go 代码，不复制 `.proto` 文件。
 
 ## 功能
 
@@ -31,7 +31,7 @@
 
 1. **注册**：`edgeweir-node enroll` 在本机生成 ECDSA P-256 私钥（不离开节点），按安装命令中的 SHA-256 固定控制台内部 CA，以一次性 token 与 CSR 换取节点证书。
 2. **mTLS 通道**：后续 RPC 均以节点证书认证。`WatchConfig` 服务端流推送 revision 通知；`GetConfig` 约每 30 秒轮询兜底，间隔带 ±20% 随机抖动。
-3. **应用配置**：快照与增量 diff 先校验 `content_hash` 与合法性。结构性变更（监听端口、缓存 zone、resolver、已发布站点 ID 集合）重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；既有站点的源站、缓存与策略规则经本地 unix socket 热更新，不 reload。应用成功的配置持久化为 LKG。
+3. **应用配置**：快照与增量 diff 先校验 `content_hash` 与合法性。结构性变更（监听端口、缓存 zone、resolver、已发布站点 ID 集合、带 HTTPS 设置的站点的域名与协议设置）重新渲染 `nginx.conf`，经 `openresty -t` 检查后 reload；既有站点的源站、缓存、证书与策略规则经本地 unix socket 热更新，不 reload。应用成功的配置持久化为 LKG。
 4. **服务流量**：Lua 数据面按 `Host` 路由，以 `proxy_cache` 缓存（响应头 `X-Cache: MISS/HIT/BYPASS`），在源站池间负载均衡并做被动健康检查；未知域名返回 `404` 与 `X-Edgeweir-Error: unknown-host`。源站不得指向特殊地址段（回环、链路本地 / 云元数据、私网等），平台管理员放行的除外；回源请求携带 `CDN-Loop`，环路以 `508` 终止。
 5. **任务与上报**：清缓存与预热任务、状态心跳（已应用 revision、源站健康状态）、按站点按分钟流量统计、证书自动续期。
 6. **配置回执**：回执在应用前持久化，经 mTLS 回传。控制台恢复数据库后，仅经控制台认证的更高 revision 可推进发布序号。

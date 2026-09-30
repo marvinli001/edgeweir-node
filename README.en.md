@@ -14,7 +14,7 @@ The edge node of [Edgeweir](https://github.com/marvinli001/edgeweir). A Go agent
 | [marvinli001/edgeweir](https://github.com/marvinli001/edgeweir) | Console (control plane): TypeScript, one app, one image. Compiles sites and rules into the engine-agnostic `NodeConfig` IR; runs the internal CA and the node channel (default `:8443`). |
 | **marvinli001/edgeweir-node** (this repo) | Node: Go agent `edgeweir-node` + OpenResty (Lua). |
 
-The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`). This repository generates its Go code with buf from a git tag of that directory (currently `proto/v0.7.0`) and never copies `.proto` files.
+The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`). This repository generates its Go code with buf from a git tag of that directory (currently `proto/v0.8.0`) and never copies `.proto` files.
 
 ## Features
 
@@ -31,7 +31,7 @@ The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir
 
 1. **Enroll**: `edgeweir-node enroll` generates an ECDSA P-256 key locally (it never leaves the node), pins the console's internal CA by the SHA-256 in the install command, and exchanges a single-use token and a CSR for a node certificate.
 2. **mTLS channel**: every later RPC authenticates with the node certificate. `WatchConfig` streams revision notifications; `GetConfig` is polled about every 30 s as a fallback, with ±20 % jitter.
-3. **Apply**: snapshots and diffs are checked against `content_hash` and validated. Structural changes (listeners, cache zones, resolver, the set of published site IDs) re-render `nginx.conf` and reload OpenResty after `openresty -t`; origins, cache rules and policy rules of existing sites are hot-updated through a local unix socket without a reload. An applied configuration is persisted as LKG.
+3. **Apply**: snapshots and diffs are checked against `content_hash` and validated. Structural changes (listeners, cache zones, resolver, the set of published site IDs, domains and protocol settings of sites with HTTPS settings) re-render `nginx.conf` and reload OpenResty after `openresty -t`; origins, cache rules, certificates and policy rules of existing sites are hot-updated through a local unix socket without a reload. An applied configuration is persisted as LKG.
 4. **Serve**: the Lua data plane routes by `Host`, caches with `proxy_cache` (`X-Cache: MISS/HIT/BYPASS`), balances over origin pools with passive health checks, and answers unknown hosts with `404` and `X-Edgeweir-Error: unknown-host`. Origins may not point at special-purpose addresses (loopback, link-local / cloud metadata, private networks, ...) unless the platform administrator allows them; every upstream request carries `CDN-Loop`, and loops end with `508`.
 5. **Tasks and reports**: purge and prefetch tasks, status heartbeats (applied revision, origin health), per-site per-minute traffic statistics, automatic certificate renewal.
 6. **Configuration receipts**: persisted before apply and returned over mTLS. After a console database restore, only console-authenticated higher revisions can advance the publication counter.
