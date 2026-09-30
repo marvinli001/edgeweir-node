@@ -51,6 +51,8 @@ http {
             -- can tell that a reload really loaded it.
             conf_id = "{{ .ConfID }}",
             geoip_socket = "{{ .GeoIPSocket }}",
+            -- Bans held in edgeweir_bans (edgeweir.bans).
+            ban_capacity = {{ .BanCapacity }},
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }

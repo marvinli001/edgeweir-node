@@ -120,6 +120,10 @@ func TestRenderRejectsUnsafeInput(t *testing.T) {
 		func(p *Params) { p.EdgeSocket = "/run/edge sock" },
 		func(p *Params) { p.PurgeDictMB = 100000 },
 		func(p *Params) { p.PurgeDictMB = -1 },
+		func(p *Params) { p.BanDictMB = 70000 },
+		func(p *Params) { p.BanDictMB = -2 },
+		func(p *Params) { p.BanCapacity = -1 },
+		func(p *Params) { p.BanCapacity = MaxBanCapacity + 1 },
 	}
 	for i, mutate := range bad {
 		p := params()
@@ -283,6 +287,23 @@ func TestRenderPurgeDictSize(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "lua_shared_dict edgeweir_purge 128m;") {
 		t.Fatal("purge dict size not rendered")
+	}
+}
+
+// TestRenderBanStore: --ban-dict-mb sizes edgeweir_bans and --ban-capacity
+// reaches edgeweir.bans through init_by_lua.
+func TestRenderBanStore(t *testing.T) {
+	p := params()
+	p.BanDictMB, p.BanCapacity = 64, 250000
+	got, err := Render(p, configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "lua_shared_dict edgeweir_bans 64m;") {
+		t.Error("ban dict size not rendered")
+	}
+	if !strings.Contains(string(got), "ban_capacity = 250000,") {
+		t.Error("ban capacity not rendered")
 	}
 }
 

@@ -77,7 +77,19 @@ type Params struct {
 	SitesDictMB        int
 	StatsDictMB        int
 	PurgeDictMB        int
+	// BanDictMB sizes lua_shared_dict edgeweir_bans; BanCapacity is the
+	// number of bans it may hold (edgeweir.bans).
+	BanDictMB   int
+	BanCapacity int
 }
+
+// Ban store defaults (--ban-dict-mb, --ban-capacity) and the capacity
+// bounds.
+const (
+	DefaultBanDictMB   = 32
+	DefaultBanCapacity = 100000
+	MaxBanCapacity     = 10000000
+)
 
 // WithDefaults fills zero values with production defaults.
 func (p Params) WithDefaults() Params {
@@ -98,6 +110,12 @@ func (p Params) WithDefaults() Params {
 	}
 	if p.PurgeDictMB == 0 {
 		p.PurgeDictMB = 32
+	}
+	if p.BanDictMB == 0 {
+		p.BanDictMB = DefaultBanDictMB
+	}
+	if p.BanCapacity == 0 {
+		p.BanCapacity = DefaultBanCapacity
 	}
 	if p.GeoIPSocket == "" && p.ControlSocket != "" {
 		p.GeoIPSocket = p.ControlSocket + ".geo"
@@ -143,7 +161,10 @@ func (p Params) validate() error {
 	if p.User != "" && !regexp.MustCompile(`^[a-z_][a-z0-9_-]*( [a-z_][a-z0-9_-]*)?$`).MatchString(p.User) {
 		return fmt.Errorf("invalid nginx user %q", p.User)
 	}
-	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB} {
+	if p.BanCapacity < 1 || p.BanCapacity > MaxBanCapacity {
+		return fmt.Errorf("ban capacity %d out of range (1-%d)", p.BanCapacity, MaxBanCapacity)
+	}
+	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB, "ban dict": p.BanDictMB} {
 		if v < 1 || v > 65536 {
 			return fmt.Errorf("%s size %d MiB out of range (1-65536)", name, v)
 		}
@@ -184,6 +205,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictPolicyLogs: 1,
 		configir.DictTopStats:   8,
 		configir.DictLogs:       8,
+		configir.DictBans:       p.BanDictMB,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {
