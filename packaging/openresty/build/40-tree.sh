@@ -49,6 +49,9 @@ glibc=$(objdump -T "$nginx" "$prefix/lib/libmodsecurity.so.3" "$prefix/modules/n
   "$prefix"/luajit/lib/libluajit-5.1.so.2 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
 [ "$glibc" = GLIBC_2.34 ] || { echo "the binaries need $glibc; the baseline is glibc 2.34" >&2; exit 1; }
 glibcxx=$(objdump -T "$prefix/lib/libmodsecurity.so.3" | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -1)
+# libstdc++ of GCC 11 (EL9); Debian 12 and Ubuntu 22.04 ship newer ones.
+[ "$(printf '%s\n' "$glibcxx" GLIBCXX_3.4.29 | sort -V | tail -1)" = GLIBCXX_3.4.29 ] ||
+  { echo "libmodsecurity needs $glibcxx, more than EL9's GLIBCXX_3.4.29" >&2; exit 1; }
 echo "glibc baseline $glibc, libmodsecurity needs $glibcxx"
 # (Symbol lists go through files: grep -q closing a pipe early would fail
 # the pipeline under pipefail.)
