@@ -285,6 +285,25 @@ resp=$(hdrs -H 'Host: demo.test' "$NODE/.edgeweir/other")
 [ "$(status_of <<<"$resp")" = 404 ] && [ "$(header_of x-edgeweir-error <<<"$resp")" = not-found ] || fail "reserved prefix reached the origin: $resp"
 pass "pow challenge (8 bits), worker script, reserved prefix answered at the edge"
 
+token_of() { sed -n 's/.*name="t" value="\([^"]*\)".*/\1/p' | head -1; }
+page=$(curl -s -H 'Host: captcha.test' -A 'e2e-browser' -H 'Accept-Language: zh-CN,zh;q=0.9' "$NODE/c")
+grep -q 'src="data:image/png;base64,' <<<"$page" && grep -q 'name="alt" value="pow"' <<<"$page" && grep -q '<html lang="zh-CN">' <<<"$page" ||
+  fail "captcha page without image, alternative or Chinese text"
+token=$(token_of <<<"$page")
+page=$(curl -s -X POST -H 'Host: captcha.test' -A 'e2e-browser' --data-urlencode "t=$token" --data-urlencode "a=ZZZZZ" --data-urlencode "r=/c" "$NODE/.edgeweir/challenge/verify")
+grep -q 'role="alert"' <<<"$page" || fail "wrong captcha answer without an error message"
+token=$(token_of <<<"$page")
+page=$(curl -s -X POST -H 'Host: captcha.test' -A 'e2e-browser' --data-urlencode "t=$token" --data-urlencode "alt=pow" --data-urlencode "r=/c" "$NODE/.edgeweir/challenge/verify")
+grep -q 'data-d="8"' <<<"$page" || fail "captcha alternative is not the high-difficulty proof of work"
+token=$(token_of <<<"$page")
+n=0
+until printf '%s:%d' "$token" "$n" | sha256 | grep -q '^00'; do n=$((n + 1)); done
+resp=$(verify captcha.test "$token" "$n")
+[ "$(status_of <<<"$resp")" = 303 ] && [ -n "$(cookie_of <<<"$resp")" ] || fail "high-difficulty proof of work: $(status_of <<<"$resp")"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: captcha.test' -A 'e2e-browser' -H "Cookie: $(cookie_of <<<"$resp")" "$NODE/c")
+[ "$code" = 200 ] || fail "captcha-level pass from the proof of work returned $code"
+pass "captcha: image page in Chinese, wrong answer shown, accessible proof of work grants the captcha level"
+
 # CC: one address over 2 requests per second is banned and reported.
 cc_codes=""
 for _ in $(seq 1 14); do cc_codes="$cc_codes $(pp_status cc.test 203.0.113.50)"; done

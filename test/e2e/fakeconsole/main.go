@@ -11,8 +11,9 @@
 //	tls-ok.test     -> https://console:8444, SNI origin.test (200)
 //	tls-bad.test    -> https://console:8444, SNI wrong.test (502: the
 //	                   certificate is only valid for origin.test)
-//	ua.test, js.test, pow.test  Under Attack with cookie302, js and pow
-//	                   (8 bits), passes of 5 minutes
+//	ua.test, js.test, pow.test, captcha.test  Under Attack with cookie302,
+//	                   js, pow and captcha (proofs of work of 8 bits),
+//	                   passes of 5 minutes
 //	cc.test         CC: 2 requests per second per address, 20 per second
 //	                   for the site, 2 seconds to escalate, up to cookie302
 //
@@ -189,6 +190,7 @@ func baseSites(origin string) []*nodev1.Site {
 		underAttackSite("site-ua", "ua.test", origin, "cookie302"),
 		underAttackSite("site-js", "js.test", origin, "js"),
 		underAttackSite("site-pow", "pow.test", origin, "pow"),
+		underAttackSite("site-captcha", "captcha.test", origin, "captcha"),
 		ccSite(origin),
 	}
 }
