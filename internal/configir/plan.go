@@ -36,13 +36,18 @@ const (
 	DictTopStats   = "edgeweir_topstats"
 	DictLogs       = "edgeweir_logs"
 	DictBans       = "edgeweir_bans"
+	// DictChallenge holds the challenge keys, the captcha pool and used
+	// challenge nonces; DictCC the CC mitigation counters, levels and
+	// events.
+	DictChallenge = "edgeweir_challenge"
+	DictCC        = "edgeweir_cc"
 )
 
 // SharedDicts lists the static lua_shared_dicts in declaration order.
 // nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.

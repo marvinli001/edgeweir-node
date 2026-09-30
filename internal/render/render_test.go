@@ -292,6 +292,35 @@ func TestRenderPurgeDictSize(t *testing.T) {
 
 // TestRenderBanStore: --ban-dict-mb sizes edgeweir_bans and --ban-capacity
 // reaches edgeweir.bans through init_by_lua.
+func TestRenderChallengeAndCCStores(t *testing.T) {
+	got, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"lua_shared_dict edgeweir_challenge 8m;", "lua_shared_dict edgeweir_cc 32m;"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("default %q not rendered", want)
+		}
+	}
+	p := params()
+	p.CCDictMB, p.ChallengeDictMB = 128, 16
+	if got, err = Render(p, configir.Bootstrap(80)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"lua_shared_dict edgeweir_challenge 16m;", "lua_shared_dict edgeweir_cc 128m;"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("%q not rendered", want)
+		}
+	}
+	for _, bad := range []func(*Params){func(p *Params) { p.CCDictMB = -1 }, func(p *Params) { p.ChallengeDictMB = 65537 }} {
+		p := params()
+		bad(&p)
+		if _, err := Render(p, configir.Bootstrap(80)); err == nil {
+			t.Error("out-of-range store size accepted")
+		}
+	}
+}
+
 func TestRenderBanStore(t *testing.T) {
 	p := params()
 	p.BanDictMB, p.BanCapacity = 64, 250000
