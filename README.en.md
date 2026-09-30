@@ -21,7 +21,7 @@ The only contract between the two is the protobuf in `edgeweir/proto` (`edgeweir
 | Area | Capabilities |
 | --- | --- |
 | HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, Gzip; hot certificate rotation |
-| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; GeoIP reads local MMDBs and sends no client IPs to third parties; release images bundle IPinfo Lite (country, ASN) |
+| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; dynamic bans take effect within seconds without a revision, platform bans can also be dropped in the kernel with nftables; GeoIP reads local MMDBs and sends no client IPs to third parties; release images bundle IPinfo Lite (country, ASN) |
 | Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing with passive health checks, purge and prefetch |
 | Statistics and logs | Per-site per-minute traffic statistics (persisted before upload, recovered by sequence after lost acknowledgements or restarts), bounded approximate Top URL / IP, sampled access logs (off by default; no query strings, headers or bodies) |
 | Configuration reliability | Validated before apply; structural changes recover on activation failure; persisted last-known-good (LKG) configuration; keeps serving LKG while the console is unreachable |
@@ -68,6 +68,16 @@ The console never stores SSH credentials.
 
 Package contents: `/usr/bin/edgeweir-node`, the Lua modules in `/usr/share/edgeweir-node/lua`, the systemd unit and `/etc/default/edgeweir-node`; creates the unprivileged `edgeweir` user and the state and cache directories it owns.
 
+Kernel bans (platform bans dropped by nftables) need `nftables` and `CAP_NET_ADMIN`, which the default unit does not grant. To enable them add `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`:
+
+```ini
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+```
+
+and run `sudo systemctl daemon-reload && sudo systemctl restart edgeweir-node`. Without it bans are enforced at L7 only (`403`).
+
 ### Docker
 
 ```sh
@@ -79,7 +89,7 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
-The container starts OpenResty immediately (every host answers `404 unknown-host`) and follows the console once enrolled. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume.
+The container starts OpenResty immediately (every host answers `404 unknown-host`) and follows the console once enrolled. It runs as uid 10001 and keeps its identity and LKG configuration in the `/var/lib/edgeweir-node` volume. Kernel bans need an image built with `docker build --build-arg NFT_CAPABILITY=true` and a container started with `--cap-add NET_ADMIN`; the default image adds no privilege and enforces bans at L7 only.
 
 Release images contain `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`, the [IPinfo Lite](https://ipinfo.io/lite) database downloaded at build time (CC BY-SA 4.0, IP address data is powered by [IPinfo](https://ipinfo.io); the `NOTICE` next to it records the download time and sha256). It answers `ip.geoip.country` and `ip.geoip.asnum` locally, with no runtime download. For newer data, pull a newer image, or mount a separately downloaded copy and set `EDGEWEIR_GEOIP_IPINFO`. Packages and archives do not bundle the database; point `EDGEWEIR_GEOIP_IPINFO` at a downloaded file. Subdivisions need a City MMDB (`EDGEWEIR_GEOIP_CITY`).
 

@@ -14,15 +14,18 @@
 │ edgeweir-node (Go, 静态二进制)                                               │
 │  enroll ─ pki ─ identity    controlplane (Connect 客户端, 证书热替换)        │
 │  agent: watch / poll / sync / report / renew / stats / logs / tasks /        │
-│         dataplane / ocsp；任务类型: purge / prefetch / upgrade               │
+│         dataplane / ocsp / bans / autobans / kernel；                        │
+│         任务类型: purge / prefetch / upgrade                                 │
 │  configir (规范排序, content_hash, diff, 校验 → Plan)   configstore (LKG)    │
 │  render (nginx.conf 模板)   engine (openresty -t / reload / 子进程托管)      │
 │  dataplane (unix socket JSON 客户端)   geoip (MMDB, unix socket)             │
 │  upgrade (supervise 监督进程: 验签 / 试运行 / 回滚)                          │
+│  bans (封禁状态、bans.json)   nft (table inet edgeweir，`nft -f -`)          │
 └───────────────┬──────────────────────────────────┬───────────────────────────┘
      nginx.conf │ -t / HUP / 子进程                │ /v1/health /v1/status /v1/sites
                 │                                  │ /v1/purge /v1/origins/health
-                ▼                                  ▼ /v1/stats/drain /v1/logs/drain
+                │                                  │ /v1/stats/drain /v1/logs/drain
+                ▼                                  ▼ /v1/bans /v1/bans/auto/drain
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ OpenResty                                                                    │
 │  控制 server   unix:/run/edgeweir-node/control.sock  → edgeweir.control      │
@@ -30,7 +33,8 @@
 │                设置了 Site.tls 的站点在每个 listener 上另有 server 块        │
 │  回源层 server  unix:origin.sock / origin-noverify.sock → origin (balancer)  │
 │  lua_shared_dict: edgeweir_sites / meta / stats / purge / health /           │
-│    policy_logs / topstats / logs；每个已发布站点一个 edgeweir_rate_<hex(id)> │
+│    policy_logs / topstats / logs / bans；                                    │
+│    每个已发布站点一个 edgeweir_rate_<hex(id)>                                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,13 +54,15 @@
 | `internal/geoip` | 读取本地 MMDB（内置 IPinfo Lite、运维提供的 City / ASN），经 0600 unix socket（默认 `control.sock.geo`）为 Lua 提供查询；`internal/geoip/check` 在镜像构建时校验下载的 IPinfo Lite |
 | `internal/upgrade` | `supervise` 监督进程：经 `upgrade.sock` 接收升级任务，按本机信任策略下载并用 cosign 验签发布包，试运行新版本，失败时回滚（§2.6） |
 | `internal/hostinfo` | 上报给控制台的 `NodeInfo`（主机名、非回环非链路本地地址、版本），以及渲染用的本机探测：是否有全局 IPv6（resolver 是否查 AAAA）、能否监听 IPv6、打开文件数硬上限（`worker_rlimit_nofile`） |
+| `internal/bans` | 控制台动态封禁的状态：校验 `GetBans` 页、应用（reset、upsert、removed_ids）、持久化 `bans.json`、按数据面键分组（slot）、差量与容量排序 |
+| `internal/nft` | 内核封禁：管理 `table inet edgeweir`，生成并以 `nft -f -` 执行事务脚本，去除重叠元素；执行器接口 `nft.Executor`（测试用假的执行器） |
 | `internal/fsutil` | 崩溃安全的文件操作：`WriteFileAtomic`（临时文件 → fsync → rename → fsync 目录）、`Rename`、`SyncDir`；所有持久化写入都用它 |
 | `internal/version` | 构建信息（版本、commit、提交时间），由 `-ldflags -X` 注入，`edgeweir-node version` 和 `NodeInfo.agent_version` 使用 |
 | `internal/testutil`、`internal/pki/pkitest` | 只用于测试：假控制台（内存中的 NodeService，也用于容器冒烟测试）、假数据面（控制 API）、临时内部 CA、合成 MMDB（`geofixture`，`test/geoip` 用它生成 e2e 夹具） |
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
-Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`control`（控制 API）、`init`。
+Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`control`（控制 API）、`init`。
 
 第三方 Go 依赖（`go.mod` 的直接依赖；版本以 `go.mod` 为准）：
 
@@ -78,6 +84,7 @@ run 启动
   ├─ 准备目录，读取 credentials.json、certificates.json、purge.json
   ├─ 有 LKG 且仍合法 → 按 LKG 渲染并启动 OpenResty、推送标记和站点表
   │            否则 → bootstrap 配置（:80，所有 Host 返回 404 unknown-host）
+  ├─ 读取 bans.json，试建 nftables 表，把封禁装入数据面和内核（§2.7）
   │
   ├─ 未注册：每 2s 检查 identity.json（此时数据面已经在服务）
   │     └─ `edgeweir-node enroll`（可在 run 运行时执行，如 docker compose exec）
@@ -94,8 +101,11 @@ run 启动
         stats  : 每 60s 从 Lua 取出已结束分钟的统计，ReportStatsV2 上报
         logs   : 每 10s 从 Lua 取出采样访问日志，ReportLogs 上报
         tasks  : 流通知、心跳 tasks_pending 或约每 30s（抖动）PullTasks
-        dataplane: 每 5s 及 nginx (重)启动时检查 GET /v1/status，不一致则重推（注册前已运行）
+        dataplane: 每 5s 及 nginx (重)启动时检查 GET /v1/status 与 GET /v1/bans，不一致则重推（注册前已运行）
         ocsp   : 每 5 分钟刷新 1 小时内到期的 OCSP 响应，有变化时重推站点表（注册前已运行）
+        bans   : 流通知 BANS、约每 30s 的轮询和启动时 GetBans，持久化后推给数据面与内核
+        autobans: 每 5s 取出本机自动封禁，ReportBans 上报
+        kernel : 封禁或配置变化、被覆盖的封禁需要写入、每 5 分钟刷新受保护地址时同步 nftables（注册前已运行）
 ```
 
 ### 2.1 注册（`enroll`）
@@ -163,17 +173,17 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.4 状态回报、续期、统计
 
-- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）、`bans`（`BanStatus`，§2.7）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
 - 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
 - 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码），另按分钟汇总 Top URL / Top IP。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
 - 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时和缓存状态，放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
 
 ### 2.5 WatchConfig
 
-- 请求带 `known_revision`；首条消息是 `WATCH_EVENT_REVISION`，之后约每 15s 一条 `KEEPALIVE`，有新任务时 `WATCH_EVENT_TASKS`。
+- 请求带 `known_revision`；首条消息是 `WATCH_EVENT_REVISION`，之后约每 15s 一条 `KEEPALIVE`，有新任务时 `WATCH_EVENT_TASKS`，封禁变化时 `WATCH_EVENT_BANS`（`ban_sequence` 为集群当前的封禁序号，比已应用的新时触发 `GetBans`）。
 - 45s 内没有任何消息视为死流，主动断开重连。
 - 断线重连退避 1s → 30s，带随机抖动；收到过消息后退避复位。
-- 无论流是否健康，约每 30s（0.8–1.2 倍随机）都会 `GetConfig` 轮询一次；已是最新时控制台返回空 diff，开销很小；流恢复后仍保留轮询作为兜底。
+- 无论流是否健康，约每 30s（0.8–1.2 倍随机）都会 `GetConfig` 与 `GetBans` 轮询一次；已是最新时控制台返回空 diff，开销很小；流恢复后仍保留轮询作为兜底。
 
 ### 2.6 类型化任务（清缓存、预热、升级）
 
@@ -195,6 +205,19 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `upgrade_rolled_back` | `version` | 新版本启动失败、试运行中退出或没通过健康窗口，已恢复前一版本和配置快照 |
 | `upgrade_interrupted` | `version` | 激活前或结果确认前，基础安装（镜像或系统包）发生了变化 |
 
+### 2.7 动态封禁
+
+封禁不进 `NodeConfig`，不产生 revision，也不 reload。控制台条目有范围（平台 / 站点）、CIDR（IPv4 至少 /16，IPv6 至少 /48）、到期时间（最长 7 天）和来源（手动 / 自动）。
+
+- **拉取**：`GetBans(after_sequence, limit=2000)` 从已应用的序号开始，逐页取到 `more=false`（每轮最多 1000 页）。`after_sequence=0`、序号超过控制台当前值（数据库恢复）或节点重新注册到别的集群时，控制台返回 `reset=true` 的快照，节点先清空全部控制台条目。触发时机：`WATCH_EVENT_BANS` 的 `ban_sequence` 大于已应用序号、配置轮询（约 30s ±20%）、连上控制台时。控制台不支持 `GetBans` 时只记一次日志。
+- **校验**：id 与站点 id 只接受 `[A-Za-z0-9_-]`（最长 128），CIDR 规范化（主机位清零，IPv4 映射地址转为 IPv4），前缀短于下限、范围未知、缺到期时间的条目丢弃并告警；到期超过 7 天的缩短为 7 天；已到期的不写入。
+- **持久化**：`bans.json`（0600，原子写入）保存集群 id、序号和条目。agent 启动时先读取、剔除到期条目，在连接控制台之前装入数据面和内核；文件损坏时从空集合开始，等控制台重新下发。
+- **推送**：同一（范围、站点、CIDR）的条目合并为数据面的一个条目（slot），代表 id 优先取手动封禁，否则取最晚到期的自动封禁，到期时间取最晚的一个。数据面持有的序号等于 agent 之前的序号时 `POST /v1/bans` 增量（先删后写）；否则（nginx 重启、reset、写入失败后、变化超过 10000 条）`PUT /v1/bans` 全量替换，顺序为手动在前（从旧到新）、自动按创建时间从新到旧，超过 `--ban-capacity` 的最早自动条目不发送并计数。数据面检查（每 5s）发现序号不符就全量重推。
+- **写不下的手动封禁**：数据面把它们记为未生效并在 `GET /v1/bans` 报告，agent 每分钟重试一次（未生效条目都列得出 id 时增量重写，否则全量替换）。
+- **本机自动封禁**：Lua 写入本地字典并排入上报队列（最多 10000 条），agent 每 5 秒 `POST /v1/bans/auto/drain`（每次最多 1000 条），把地址规范化为单地址 CIDR 后经 `ReportBans` 上报；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。
+- **状态回报**：`ReportStatus.bans`（`BanStatus`）带数据面已应用的序号、条目数、容量、未生效的手动封禁（最多 100 个 id 与总数）、内核条目数，以及因容量丢弃的自动封禁数（数据面淘汰的与 agent 没有发送的，自 agent 启动起）。
+- **能力**：`bans-v1` 总是上报；`kernel-ban-v1` 只在 nftables 表可用时上报（§3.12）。
+
 ## 3. 数据面
 
 ### 3.1 双层缓存
@@ -207,6 +230,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
               · 删除客户端带来的 X-Edgeweir-* 请求头（读取全部请求头）
               · CDN-Loop 已含本节点 cdn-id → 508 loop-detected；否则追加 cdn-id
               · 按 Host 查站点：精确匹配 → 上一级域名的泛域名；查不到 → 404 unknown-host
+              · 动态封禁：先平台范围、后站点范围；命中且不在平台 allow 名单 → 403 ip-banned
               · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403
               · 非 GET/HEAD：透传（Range 原样转发）
               · 按规则链判断是否可能缓存（带 Authorization 的请求见 §3.3）
@@ -237,7 +261,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache` 和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）；对客户端只有 `X-Cache` 和错误时的 `X-Edgeweir-Error`（`unknown-host`、`loop-detected`、`ip-banned`、`websocket-disabled`、`no-origin`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -314,6 +338,10 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `POST /v1/purge` | 合并标记；装不下时 507（agent 随后全量替换） |
 | `GET /v1/purge` | 标记集合状态 |
 | `GET /v1/origins/health` | 有失败记录的源站 |
+| `GET /v1/bans` | 封禁状态 `{sequence, entries, capacity, unapplied, unapplied_ids, auto_evicted, pending_reports}`；`?list=1` 另带 `bans`（最多 1000 条） |
+| `PUT /v1/bans` | 全量替换控制台条目 `{sequence, bans: [{id, cidr, scope, site_id, kind, expires_at}]}`，本机自动封禁保留；内容非法 400，另一次写入进行中 409 |
+| `POST /v1/bans` | 增量 `{base, sequence, upsert, remove}`：数据面持有的序号不等于 `base` 时 409；`remove` 只删除 id 相同的控制台条目 |
+| `POST /v1/bans/auto/drain` | 返回并删除最多 1000 条待上报的本机自动封禁 |
 
 站点表 JSON（Go 结构见 `dataplane.SiteTable` 和 `configir.Site`，由 agent 从 IR 转换，Lua 不接触 protobuf）：
 
@@ -358,6 +386,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | agent 启动参数：resolver（`--resolver`，或启动时读取的 `--resolv-conf`）、回源 CA bundle（`--trusted-ca` 或系统 bundle）、`--purge-dict-mb`、IPv6 探测、worker 与 nginx 用户设置、socket 与目录 | agent 重启后生效：启动后的第一次应用总会写入、检查并 reload（托管模式下是启动 OpenResty） |
 | 站点表里的其他内容：源站与源站池设置、缓存规则与 TTL、缓存键、缓存代际号、所用 cache zone、Range 分片与 WebSocket 开关、边缘规则、日志采样率、证书与私钥（同一站点换证书）、OCSP stapling 开关与 OCSP 响应、强制 HTTPS、HSTS、最低 TLS 版本；表级的源站允许清单、cdn-id、HTTP-01 应答、IP 名单、平台规则 | 热更新：`PUT /v1/sites`，不 reload |
 | 清缓存 | 热更新：`POST` / `PUT /v1/purge` |
+| 动态封禁 | 热更新：`POST` / `PUT /v1/bans`，平台范围另写 nftables；`--ban-dict-mb` 与 `--ban-capacity` 属于 agent 启动参数 |
 
 `resolver` 取自 `/etc/resolv.conf`（`--resolv-conf`）的 nameserver（Docker 中为 `127.0.0.11`；IPv6 加方括号；带 zone 的链路本地地址跳过；没有时回退到 `127.0.0.1`），`--resolver` 可直接指定；Lua 按 min(TTL, 30s) 缓存结果（失败 5 秒）；主机没有全局 IPv6 地址时不查询 AAAA。
 
@@ -371,6 +400,64 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 - **非托管模式**：OpenResty 由外部管理，agent 用 `-s reload` 通知，同样确认新配置 id。
 - `worker_rlimit_nofile` 取进程的硬上限（os/exec 子进程只继承默认软上限），`worker_connections` 随之调整。
 
+### 3.12 封禁的执行
+
+`edgeweir.bans` 把封禁保存在 `lua_shared_dict edgeweir_bans`（`--ban-dict-mb`，默认 32 MiB），条数上限 `--ban-capacity`（默认 100000，经 `init_by_lua` 传入）：
+
+| 键 | 内容 |
+| --- | --- |
+| `e\|<范围>\|<4 或 6>/<前缀长度>\|<字节>` | 一条封禁，值为 `<类型>\|<id>\|<到期时间>\|<cidr>`；范围 `*` 为平台、否则为站点 id；字节是掩码后地址的前 ceil(len/8) 个字节；类型 `m`（控制台手动）、`c`（控制台自动）、`a`（本机自动）；TTL 为剩余有效期 |
+| `#len\|<范围>` | 该范围控制台条目出现过的前缀长度；全量替换时重算 |
+| `#loc\|<范围>` | 该范围有过本机自动封禁（/32、/128） |
+| `#ver` | 长度列表变化时递增；worker 按版本缓存各范围的长度列表 |
+| `#seq` | 控制台条目的序号（补零到 20 位，更新不需要新内存） |
+| `#live`、`#x\|<分钟>` | 条目数；每分钟到期数在分钟结束后从 `#live` 扣除，全量替换时重新计数 |
+| `#q`、`#r` | 本机自动封禁的淘汰队列（写入顺序）与上报队列 |
+| `#unapplied`、`#unapplied_more` | 写不下的手动封禁（最多 1000 个 id，其余只计数） |
+| `#evicted` | 为腾出空间淘汰或丢弃的自动封禁数 |
+
+- **查找**：边缘层解析站点之后、规则之前。每个请求读一次 `#ver`；平台与站点范围都没有长度时到此为止。否则按各长度掩码客户端地址逐个查找（IPv4 映射的 IPv6 地址也按 IPv4 查），先平台后站点。平台 `allow` 名单命中的地址不受封禁，其余返回 `403`、`X-Edgeweir-Error: ip-banned`。
+- **容量与内存**：所有写入用 `safe_set` / `safe_add`，共享内存不会自行淘汰封禁。新条目超出容量或内存不足时，先按写入顺序淘汰最早的本机自动封禁；控制台条目从不在数据面被淘汰。仍然写不下时，手动封禁记为未生效并上报，控制台自动封禁丢弃并计数。
+- **本机自动封禁**：`bans.add_auto(site_id, ip, ttl_seconds, trigger)` 写入站点范围的单地址封禁（已有控制台条目时只上报），排入上报队列（最多 10000 条，满了丢弃最旧的）。
+- **重启**：reload 保留字典，nginx 重启后字典为空、序号为 0，agent 在 5 秒内全量重推；本机自动封禁与未上报队列随之丢失。
+
+### 3.13 内核封禁（nftables）
+
+平台范围的封禁同时写入内核，被封禁的客户端连 TCP 与 TLS 握手都完成不了。站点范围的封禁只在边缘层执行。
+
+```text
+table inet edgeweir {
+	set ban4 { type ipv4_addr; flags interval, timeout; }     元素带剩余秒数（向上取整）的 timeout
+	set ban6 { type ipv6_addr; flags interval, timeout; }
+	set allow4 { type ipv4_addr; flags interval; }            受保护地址
+	set allow6 { type ipv6_addr; flags interval; }
+	chain input {
+		type filter hook input priority -10; policy accept;
+		ip saddr @allow4 accept
+		ip6 saddr @allow6 accept
+		ip saddr @ban4 drop
+		ip6 saddr @ban6 drop
+	}
+}
+```
+
+- **启用**：`--kernel-bans auto`（默认）时 agent 启动即用 `nft -f -` 执行 `add table inet edgeweir`、`delete table inet edgeweir` 再定义整张表（清掉上次留下的表；Debian bookworm 的 nft 1.0.6 没有 `destroy`）。失败（没有 `nft`、没有 `CAP_NET_ADMIN`、内核没有 nf_tables）时只做边缘层封禁，记一次日志，不上报 `kernel-ban-v1`。agent 退出时 `delete table inet edgeweir`；agent 被强制杀掉时残留的元素按 timeout 自行失效，下次启动重建。
+- **同步**：每次变化执行一个事务脚本，依次 `flush set` 四个集合再 `add element`（每条语句最多 500 个元素），原子生效；集合写入失败（例如表被别人删除）时重建一次表再写。元素只由 `netip` 解析、格式化后的地址生成，不拼接控制台传来的字符串。示例：
+
+  ```text
+  flush set inet edgeweir allow4
+  flush set inet edgeweir allow6
+  flush set inet edgeweir ban4
+  flush set inet edgeweir ban6
+  add element inet edgeweir allow4 { 10.0.0.5, 127.0.0.0/8, 192.0.2.10 }
+  add element inet edgeweir allow6 { ::1 }
+  add element inet edgeweir ban4 { 198.51.100.0/24 timeout 3600s, 203.0.113.7 timeout 60s }
+  ```
+
+- **受保护地址**（`allow` 集合，永不丢弃）：回环（`127.0.0.0/8`、`::1`）、本机所有网卡地址、控制台地址（`identity.json` 中控制台 URL 的主机名解析出的全部地址，5 分钟刷新一次，解析失败时沿用上次结果）、已应用配置中平台 `allow` 名单的条目。
+- **去重叠**：区间集合不接受重叠元素。被更大前缀覆盖、且到期不晚于它的条目不写入；被覆盖但更晚到期的条目在覆盖条目到期后重新同步写入。`allow` 集合同样去掉被覆盖的前缀。
+- **权限**：需要 `CAP_NET_ADMIN`。默认 systemd unit 和默认镜像都不授予（§5）。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -382,6 +469,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | `/var/lib/edgeweir-node/credentials.json` | 当前配置引用的 S3 源站凭据（access key 与 secret key 明文，0600），控制台不可达时重启仍能服务 S3 源站 |
 | `/var/lib/edgeweir-node/purge.json` | 清缓存标记与任务时间（0600） |
 | `/var/lib/edgeweir-node/certificates.json` | 当前与上一份 LKG 引用的网站证书链、私钥与 OCSP 响应（0600） |
+| `/var/lib/edgeweir-node/bans.json` | 已应用的控制台动态封禁、序号与集群 id（0600） |
 | `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json` | 控制台尚未确认的统计批次与采样访问日志批次（0600） |
 | `/var/lib/edgeweir-node/upgrade.sock`、`upgrades/` | `supervise` 监督进程的本机 socket（0600）；升级状态 `upgrades/state.json` 与各版本目录 `upgrades/releases/<任务 id>/`（0700） |
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`）、`logs/nginx.pid`、`tmp/` |
@@ -393,8 +481,17 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 
 ## 5. 部署形态
 
-- **容器**：`openresty/openresty:1.31.1.1-bookworm` 为基础，agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node supervise --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。
-- **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty 作为 agent 的子进程运行，与发行版自带的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
+- **容器**：`openresty/openresty:1.31.1.1-bookworm` 为基础，agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node supervise --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。镜像带 Debian 的 `nftables` 包。内核封禁需要两项：镜像以 `--build-arg NFT_CAPABILITY=true` 构建（给 `/usr/sbin/nft` 加文件能力 `cap_net_admin+ep`），容器以 `--cap-add NET_ADMIN` 启动（compose 中为 `cap_add: [NET_ADMIN]`）。默认镜像不加任何能力；只加了文件能力而容器没有 `NET_ADMIN` 时 `nft` 无法执行，agent 退回边缘层封禁。nftables 规则作用于容器自己的网络命名空间。
+- **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty 作为 agent 的子进程运行，与发行版自带的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`，推荐安装 `nftables`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
+- **systemd 下的内核封禁**：默认 unit 不授予 `CAP_NET_ADMIN`。需要时安装 `nftables`，加一个 drop-in `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`：
+
+  ```ini
+  [Service]
+  AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+  CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+  ```
+
+  然后执行 `systemctl daemon-reload && systemctl restart edgeweir-node`，日志出现 `kernel bans active` 即生效。环境能力同样被 OpenResty 子进程继承。
 
 ## 6. 已知限制
 
@@ -405,6 +502,8 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 - 预热只预热桌面变体，不支持前缀与全站预热。
 - 使用 required_features 协商能力；未知枚举或能力拒绝整份配置，保留 LKG。
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。
+- 内核封禁在 input 链丢弃被封地址的全部入站包，节点也无法与该地址建立出站连接（例如该地址恰好是源站）；受保护地址不受影响。
+- 本机自动封禁只在数据面字典里，nginx 重启后丢失（已上报并由控制台共享的条目会再次下发）。
 
 ## HTTPS 与证书
 

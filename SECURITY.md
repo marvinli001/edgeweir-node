@@ -62,6 +62,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - `credentials.json`（0600）：当前与前一份同集群 LKG 配置引用的 S3 源站凭据，access key 和 secret key 是**明文**。它让节点在控制面不可达时重启后仍能为 S3 源站签名；凭据只经 mTLS 的 `GetOriginCredentials` 获取，不进入配置和 LKG，两份配置均不再引用时从文件中删除。能读取该文件的人可以访问对应的存储桶，请只授予只读的最小权限。
 - `purge.json`（0600）：清缓存标记和任务时间，不含敏感数据。文件存在但无法读取或解析时，节点在下一次应用配置时给每个站点加一个全站标记（宁可多刷）；文件缺失则视为没有标记，已清除的内容会重新可见，所以不要删除它。
 - `config/`（目录 0700，`current.binpb`、`previous.binpb` 为 0600）：last-known-good 配置及其备份，不含凭据。
+- `bans.json`（0600）：控制台下发的动态封禁（被封禁的地址、范围、到期时间）和已应用的序号。文件无法读取时节点从空集合开始，等控制台重新下发。
 
 **源站与回源**
 
@@ -77,6 +78,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 本地控制 API 只监听 unix socket，从不监听 TCP。
 - OpenResty 内层回源层（`origin.sock`、`origin-noverify.sock`）和给预热用的本地边缘监听（`edge.sock`）同样只监听 unix socket。
 - agent 和 OpenResty 以非特权用户运行：容器内是 `edgeweir` 用户（uid 10001）；deb/rpm 包创建系统用户 `edgeweir`，systemd unit 只授予 `CAP_NET_BIND_SERVICE`（用于监听 80/443），开启 `NoNewPrivileges`、`ProtectSystem=strict` 等文件系统和内核保护选项，详见 `packaging/systemd/edgeweir-node.service` 中的说明。
+- 内核封禁（nftables）需要 `CAP_NET_ADMIN`，默认不授予：systemd 需要运维者加 drop-in，容器需要 `--cap-add NET_ADMIN` 且镜像以 `NFT_CAPABILITY=true` 构建（见 ARCHITECTURE.md §5）。授予后 agent 只管理自己的表 `table inet edgeweir`，控制台地址、本机地址、回环和平台 `allow` 名单永不丢弃；agent 执行的 nft 脚本只由校验过的地址生成。systemd 的环境能力同样被 OpenResty 子进程继承；容器里 `nft` 带文件能力后，容器内任何进程都能用它修改该容器网络命名空间的规则。
 - 控制 socket 所在目录权限为 `0750`，只有服务用户能连接。
 
 **配置处理**

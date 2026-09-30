@@ -15,7 +15,15 @@
 #   - MemoryDenyWriteExecute= is NOT set: LuaJIT's JIT compiler needs
 #     writable+executable memory.
 #   - AF_NETLINK is allowed for enumerating interface addresses reported to
-#     the console.
+#     the console (and for nft).
+#   - Kernel bans (nftables) are off: they need nftables and CAP_NET_ADMIN,
+#     which this unit does not grant. To enable them add a drop-in
+#     /etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf:
+#       [Service]
+#       AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+#       CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+#     then `systemctl daemon-reload && systemctl restart edgeweir-node`
+#     (OpenResty inherits the ambient capabilities as well).
 # Enroll first (as root is fine: files are handed to the service user). The
 # token goes through the environment or --token-file, never the command line
 # (`sudo EDGEWEIR_TOKEN=...` and --token show it in ps):

@@ -21,7 +21,7 @@
 | 领域 | 能力 |
 | --- | --- |
 | HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、Gzip；证书热轮换 |
-| 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均为热更新；GeoIP 读取本地 MMDB，不向第三方发送客户端 IP；发布镜像内置 IPinfo Lite（国家、ASN） |
+| 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均为热更新；动态封禁不经 revision、秒级生效，平台封禁可经 nftables 在内核丢包；GeoIP 读取本地 MMDB，不向第三方发送客户端 IP；发布镜像内置 IPinfo Lite（国家、ASN） |
 | 缓存与回源 | 按 `Host` 路由、`proxy_cache` 缓存、源站池负载均衡与被动健康检查、清缓存与预热 |
 | 统计与日志 | 按站点、按分钟的流量统计（上传前持久化，回执丢失或重启后按序号恢复）、有界 Top URL / IP 估算、采样访问日志（默认关闭，不记录查询参数、请求头与正文） |
 | 配置可靠性 | 校验后应用，结构性变更激活失败时恢复原配置；last-known-good（LKG）配置持久化；控制台不可达时按 LKG 持续服务 |
@@ -68,6 +68,16 @@
 
 安装包内容：`/usr/bin/edgeweir-node`、`/usr/share/edgeweir-node/lua` 下的 Lua 模块、systemd unit、`/etc/default/edgeweir-node`；创建非特权用户 `edgeweir` 及其所属的状态目录与缓存目录。
 
+内核封禁（平台范围的封禁经 nftables 丢包）需要 `nftables` 和 `CAP_NET_ADMIN`，默认 unit 不授予。启用时添加 `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`：
+
+```ini
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+```
+
+再执行 `sudo systemctl daemon-reload && sudo systemctl restart edgeweir-node`。没有该权限时封禁只在 L7 执行（`403`）。
+
 ### Docker
 
 ```sh
@@ -79,7 +89,7 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
-容器启动即运行 OpenResty（所有域名返回 `404 unknown-host`），注册完成后开始同步控制台配置。容器以 uid 10001 运行，节点身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷中。
+容器启动即运行 OpenResty（所有域名返回 `404 unknown-host`），注册完成后开始同步控制台配置。容器以 uid 10001 运行，节点身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷中。内核封禁需要以 `docker build --build-arg NFT_CAPABILITY=true` 构建的镜像，并以 `--cap-add NET_ADMIN` 启动容器；默认镜像不带任何额外权限，封禁只在 L7 执行。
 
 发布镜像包含构建时下载的 [IPinfo Lite](https://ipinfo.io/lite) 数据库 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb`（CC BY-SA 4.0，IP address data is powered by [IPinfo](https://ipinfo.io)；同目录 `NOTICE` 记录下载时间与 sha256），在本地回答 `ip.geoip.country` 与 `ip.geoip.asnum`，运行时不下载。更新数据：拉取新镜像，或挂载另行下载的副本并设置 `EDGEWEIR_GEOIP_IPINFO`。安装包与压缩包不内置该数据库，将 `EDGEWEIR_GEOIP_IPINFO` 指向自行下载的文件。一级行政区需另行提供 City MMDB（`EDGEWEIR_GEOIP_CITY`）。
 
