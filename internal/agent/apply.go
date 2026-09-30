@@ -244,7 +244,7 @@ func (a *Agent) setDataPlaneHealthy(ok bool) {
 	changed := a.dpHealthy != ok
 	a.dpHealthy = ok
 	a.mu.Unlock()
-	if changed && a.channel != nil {
+	if changed && a.connectedCh.Load() != nil {
 		a.triggerReport()
 	}
 }
@@ -316,7 +316,7 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 	a.mu.Lock()
 	failed := a.state == nodev1.ApplyState_APPLY_STATE_FAILED
 	a.mu.Unlock()
-	if failed && a.channel != nil {
+	if failed && a.connectedCh.Load() != nil {
 		a.triggerSync() // retry the apply that failed while the data plane was down
 	}
 	return purgeOK

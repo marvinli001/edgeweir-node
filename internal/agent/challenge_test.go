@@ -185,7 +185,9 @@ func TestChallengeKeysAndCaptchas(t *testing.T) {
 	console.Close()
 	srv.Close()
 	dp2 := fakedataplane.Start(t)
-	startAgent(t, h.agentConfig(dp2.Socket), newFakeEngine(), dataplane.NewClient(dp2.Socket))
+	cfg2 := h.agentConfig(dp2.Socket)
+	cfg2.CaptchaPoolSize = 8
+	startAgent(t, cfg2, newFakeEngine(), dataplane.NewClient(dp2.Socket))
 	eventually(t, "stored keys served offline", func() bool {
 		current, ids := dpKeys(dp2)
 		return current == "key-5" && slices.Equal(ids, []string{"key-4", "key-5", "key-6"})

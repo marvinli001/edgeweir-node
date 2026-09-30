@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/bans"
@@ -193,6 +194,8 @@ type Agent struct {
 	geoFeatures   []string
 	engineVersion string
 	channel       *controlplane.Channel
+	// connectedCh is channel for loops that start before enrollment.
+	connectedCh   atomic.Pointer[controlplane.Channel]
 	nodeID        string // guarded by mu; empty until the identity is known
 	connectedOnce sync.Once
 
@@ -368,6 +371,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return nil // shutting down
 	}
 	a.channel = ch
+	a.connectedCh.Store(ch)
 	defer ch.Close()
 	id := ch.Identity()
 	a.mu.Lock()

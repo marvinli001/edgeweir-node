@@ -112,11 +112,12 @@ func (a *Agent) missingChallengeKeys(plan *configir.Plan) []string {
 // stay missing.
 func (a *Agent) ensureChallengeKeys(ctx context.Context, plan *configir.Plan) error {
 	missing := a.missingChallengeKeys(plan)
-	if len(missing) == 0 || a.channel == nil {
+	ch := a.connectedCh.Load()
+	if len(missing) == 0 || ch == nil {
 		return nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
-	resp, err := a.channel.Client().GetChallengeKeys(cctx, connect.NewRequest(&nodev1.GetChallengeKeysRequest{Ids: missing}))
+	resp, err := ch.Client().GetChallengeKeys(cctx, connect.NewRequest(&nodev1.GetChallengeKeysRequest{Ids: missing}))
 	cancel()
 	if err != nil {
 		return fmt.Errorf("fetch challenge keys: %w", err)
@@ -271,12 +272,20 @@ func (a *Agent) captchaLoop(ctx context.Context) {
 }
 
 func (a *Agent) pushCaptchas(ctx context.Context) error {
-	pool, err := captcha.Pool(nil, a.cfg.CaptchaPoolSize)
-	if err != nil {
-		return err
-	}
-	body := &dataplane.CaptchaPool{ID: strconv.FormatInt(time.Now().UnixNano(), 36), Images: make([]dataplane.Captcha, 0, len(pool))}
-	for _, img := range pool {
+	body := &dataplane.CaptchaPool{ID: strconv.FormatInt(time.Now().UnixNano(), 36), Images: make([]dataplane.Captcha, 0, a.cfg.CaptchaPoolSize)}
+	seen := make(map[string]bool, a.cfg.CaptchaPoolSize)
+	for len(body.Images) < a.cfg.CaptchaPoolSize {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		img, err := captcha.New(nil)
+		if err != nil {
+			return err
+		}
+		if seen[img.Answer] {
+			continue
+		}
+		seen[img.Answer] = true
 		body.Images = append(body.Images, dataplane.Captcha{Answer: img.Answer, PNG: base64.StdEncoding.EncodeToString(img.PNG)})
 	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -328,7 +337,7 @@ func (a *Agent) reconcileChallenge(ctx context.Context) {
 	if plan == nil {
 		return
 	}
-	if a.channel != nil && len(a.missingChallengeKeys(plan)) > 0 && time.Since(a.keysFetchedAt) >= a.cfg.ChallengeKeyRetry {
+	if a.connectedCh.Load() != nil && len(a.missingChallengeKeys(plan)) > 0 && time.Since(a.keysFetchedAt) >= a.cfg.ChallengeKeyRetry {
 		a.keysFetchedAt = time.Now()
 		if err := a.ensureChallengeKeys(ctx, plan); err != nil {
 			a.logRPCError("GetChallengeKeys failed; will retry", err)
