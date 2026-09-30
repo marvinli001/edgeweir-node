@@ -77,12 +77,20 @@ func Canonicalize(c *nodev1.NodeConfig) {
 
 // CanonicalizeSite sorts the repeated fields inside a site.
 func CanonicalizeSite(s *nodev1.Site) {
-	if s != nil && s.Tls != nil {
-		slices.Sort(s.Tls.GzipTypes)
-		s.Tls.GzipTypes = slices.Compact(s.Tls.GzipTypes)
-	}
 	if s == nil {
 		return
+	}
+	if s.Tls != nil {
+		slices.Sort(s.Tls.GzipTypes)
+		s.Tls.GzipTypes = slices.Compact(s.Tls.GzipTypes)
+		slices.Sort(s.Tls.BrotliTypes)
+		s.Tls.BrotliTypes = slices.Compact(s.Tls.BrotliTypes)
+		slices.Sort(s.Tls.ZstdTypes)
+		s.Tls.ZstdTypes = slices.Compact(s.Tls.ZstdTypes)
+	}
+	if s.Waf != nil {
+		slices.Sort(s.Waf.ExcludedRuleIds)
+		s.Waf.ExcludedRuleIds = slices.Compact(s.Waf.ExcludedRuleIds)
 	}
 	slices.SortStableFunc(s.Domains, func(a, b *nodev1.Domain) int {
 		return cmp.Compare(a.GetName(), b.GetName())

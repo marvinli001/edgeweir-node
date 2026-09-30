@@ -161,6 +161,8 @@ type Site struct {
 	Rules         []*nodev1.EdgeRule `json:"rules,omitempty"`
 	// Protection holds Under Attack, challenge and CC settings.
 	Protection *Protection `json:"protection,omitempty"`
+	// WAF runs the OWASP CRS on the site's requests (nil: off).
+	WAF *WAF `json:"waf,omitempty"`
 }
 
 type TLSOptions struct {
@@ -176,6 +178,16 @@ type TLSOptions struct {
 	GzipMinLength         uint32   `json:"gzip_min_length"`
 	GzipTypes             []string `json:"gzip_types"`
 	OCSPStapling          bool     `json:"ocsp_stapling"`
+	// Brotli and Zstandard (features brotli-v1, zstd-v1): levels have their
+	// defaults applied; unset while the algorithm is off.
+	Brotli          bool     `json:"brotli,omitempty"`
+	BrotliLevel     uint32   `json:"brotli_level,omitempty"`
+	BrotliMinLength uint32   `json:"brotli_min_length,omitempty"`
+	BrotliTypes     []string `json:"brotli_types,omitempty"`
+	Zstd            bool     `json:"zstd,omitempty"`
+	ZstdLevel       uint32   `json:"zstd_level,omitempty"`
+	ZstdMinLength   uint32   `json:"zstd_min_length,omitempty"`
+	ZstdTypes       []string `json:"zstd_types,omitempty"`
 }
 
 type Certificate struct {
@@ -405,11 +417,16 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if p.ChallengeKeys, err = buildChallengeKeys(c.GetChallengeKeys()); err != nil {
 		return nil, err
 	}
-	// Every site's protection is checked, disabled sites included: an
-	// unknown challenge type rejects the whole configuration.
+	// Every site's protection and CRS setting is checked, disabled sites
+	// included: an unknown challenge type or CRS mode rejects the whole
+	// configuration.
 	protections := map[string]*Protection{}
+	wafs := map[string]*WAF{}
 	for _, s := range c.GetSites() {
 		if protections[s.GetId()], err = buildProtection(s.GetProtection()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", s.GetId(), err)
+		}
+		if wafs[s.GetId()], err = buildWAF(s.GetWaf()); err != nil {
 			return nil, fmt.Errorf("site %q: %w", s.GetId(), err)
 		}
 	}
@@ -512,6 +529,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			Rules:           s.GetRules(),
 		}
 		site.Protection = protections[id]
+		site.WAF = wafs[id]
 		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
 			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)
 		}
@@ -519,15 +537,13 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
 			}
-			for _, mime := range tls.GetGzipTypes() {
-				if !regexp.MustCompile(`^[a-z0-9.+-]+/[a-z0-9.+-]+$`).MatchString(mime) {
-					return nil, fmt.Errorf("%w: invalid compression type", ErrRejected)
-				}
-			}
 			if site.CertificateID == "" && (tls.GetForceHttps() || tls.GetHstsMaxAge() > 0) {
 				return nil, fmt.Errorf("%w: HTTPS policy without a certificate", ErrRejected)
 			}
 			site.TLS = &TLSOptions{ForceHTTPS: tls.GetForceHttps(), HSTSMaxAge: tls.GetHstsMaxAge(), HSTSIncludeSubdomains: tls.GetHstsIncludeSubdomains(), HSTSPreload: tls.GetHstsPreload(), MinimumVersion: tls.GetMinimumVersion(), CipherProfile: tls.GetCipherProfile(), HTTP2: tls.GetHttp2(), HTTP3: tls.GetHttp3(), Gzip: tls.GetGzip(), GzipMinLength: tls.GetGzipMinLength(), GzipTypes: tls.GetGzipTypes(), OCSPStapling: tls.GetOcspStapling()}
+			if err := buildCompression(tls, site.TLS); err != nil {
+				return nil, err
+			}
 		}
 		key, keyWarnings := buildCacheKey(s.GetCacheKey())
 		site.CacheKey = key
@@ -595,6 +611,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 				continue
 			}
 			site.CacheRules = append(site.CacheRules, rule)
+		}
+		if err := requireModules(&site, opts.ExtraFeatures); err != nil {
+			return nil, err
 		}
 		p.Sites = append(p.Sites, site)
 	}
