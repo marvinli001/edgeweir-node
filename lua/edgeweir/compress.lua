@@ -153,7 +153,9 @@ end
 -- header_filter rewrites the request's Accept-Encoding for the filters
 -- (edge layer header filter, before the compression filters run).
 function _M.header_filter(site)
-  if not _M.enabled(site) then return end
+  -- Slice subrequests share the main request's headers; the main request
+  -- decides for the response the client gets.
+  if not _M.enabled(site) or ngx.is_subrequest then return end
   local h = ngx.header
   local length = tonumber(header_value(h["Content-Length"]) or "")
   local candidates = _M.applicable(site.tls, {

@@ -118,10 +118,11 @@ end)
 
 -- header_filter with a fake ngx: the request's Accept-Encoding after the
 -- edge layer chose (nil: removed).
-local function edge(site, accept_encoding, status, headers, method)
+local function edge(site, accept_encoding, status, headers, method, subrequest)
   local runtime = ngx
   local req_headers = { ["Accept-Encoding"] = accept_encoding }
   _G.ngx = {
+    is_subrequest = subrequest or false,
     status = status,
     header = headers,
     var = { http_accept_encoding = accept_encoding },
@@ -154,6 +155,10 @@ end)
 
 test("responses the origin encoded are never compressed again", function()
   eq(edge(site, "zstd, br, gzip", 200, { ["Content-Type"] = "text/plain", ["Content-Encoding"] = "gzip" }), nil)
+end)
+
+test("subrequests leave the request headers to the main request", function()
+  eq(edge(site, "gzip, br, zstd", 200, { ["Content-Type"] = "text/plain" }, "GET", true), "gzip, br, zstd")
 end)
 
 test("sites without edge compression keep the client's Accept-Encoding", function()
