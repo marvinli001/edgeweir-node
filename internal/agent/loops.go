@@ -193,6 +193,13 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	if err != nil {
 		if ctx.Err() == nil {
 			a.logRPCError("ReportStatus failed", err)
+			// The console refuses a disabled node's heartbeats but still
+			// renews its certificate, so the node can come back once enabled.
+			if connect.CodeOf(err) == connect.CodePermissionDenied {
+				if id := a.channel.Identity(); id != nil && pki.NeedsRenewal(id.Certificate, time.Now()) {
+					a.renew(ctx, "less than 1/3 of the certificate lifetime left while disabled")
+				}
+			}
 		}
 		return interval
 	}

@@ -70,6 +70,7 @@ type Console struct {
 	corruptNextDiff  bool
 	pinned           uint64 // serve this revision as the latest (0: the newest)
 	renewNext        bool
+	refuseReports    bool
 	renewals         int
 	enrollments      int
 	mtlsCalls        map[string]int
@@ -239,6 +240,14 @@ func (c *Console) CorruptNextDiff() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.corruptNextDiff = true
+}
+
+// RefuseReports answers ReportStatus with PermissionDenied while on, as the
+// console does for a disabled node.
+func (c *Console) RefuseReports(on bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refuseReports = on
 }
 
 // RequestRenewal sets renew_certificate in the next ReportStatus response.
@@ -476,6 +485,9 @@ func (c *Console) GetConfig(_ context.Context, req *connect.Request[nodev1.GetCo
 func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.ReportStatusRequest]) (*connect.Response[nodev1.ReportStatusResponse], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.refuseReports {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("node is disabled"))
+	}
 	c.statuses = append(c.statuses, proto.CloneOf(req.Msg))
 	renew := c.renewNext
 	c.renewNext = false
