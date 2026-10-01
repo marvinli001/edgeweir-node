@@ -116,6 +116,9 @@ const (
 	DefaultChallengeDictMB = 8
 	// DefaultTagDictMB sizes the Cache-Tag index (--tag-dict-mb).
 	DefaultTagDictMB = 64
+	// DefaultSitesDictMB sizes the site table store (--sites-dict-mb): the
+	// current and the previous table, error page templates included.
+	DefaultSitesDictMB = 64
 )
 
 // WithDefaults fills zero values with production defaults.
@@ -130,7 +133,7 @@ func (p Params) WithDefaults() Params {
 		p.ErrorLogLevel = "notice"
 	}
 	if p.SitesDictMB == 0 {
-		p.SitesDictMB = 64
+		p.SitesDictMB = DefaultSitesDictMB
 	}
 	if p.StatsDictMB == 0 {
 		p.StatsDictMB = 16

@@ -448,6 +448,34 @@ func TestRenderTagStore(t *testing.T) {
 	}
 }
 
+// TestRenderSitesStore: --sites-dict-mb sizes edgeweir_sites, which holds
+// the current and the previous site table (error page templates
+// included).
+func TestRenderSitesStore(t *testing.T) {
+	got, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "lua_shared_dict edgeweir_sites 64m;") {
+		t.Error("default sites dict size not rendered")
+	}
+	p := params()
+	p.SitesDictMB = 512
+	if got, err = Render(p, configir.Bootstrap(80)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "lua_shared_dict edgeweir_sites 512m;") {
+		t.Error("sites dict size not rendered")
+	}
+	for _, size := range []int{-1, 65537} {
+		p := params()
+		p.SitesDictMB = size
+		if _, err := Render(p, configir.Bootstrap(80)); err == nil {
+			t.Errorf("sites dict size %d accepted", size)
+		}
+	}
+}
+
 // locations returns the bodies of the location blocks of conf by name
 // ("/" of every server, "@edgeweir_waf_<limit>"), in order.
 func locations(conf string) map[string][]string {

@@ -170,6 +170,7 @@ edgeweir-node version
 | `--upgrade-source` | official GitHub release download base | Release mirror; upgrade tasks cannot change it |
 | `--upgrade-public-key` | empty | Release public key; empty pins the official GitHub OIDC identity |
 | `--upgrade-allow-http` | `false` | Permit a plaintext HTTP mirror (local test, air-gapped) |
+| `--sites-dict-mb` | `64` | Site table store (`lua_shared_dict edgeweir_sites`: the current and the previous site table, error page templates included), MiB |
 | `--purge-dict-mb` | `32` | Purge marker store (`lua_shared_dict edgeweir_purge`), MiB |
 | `--purge-markers-per-site` | `1000` | URL and prefix markers per site before collapsing into a site-level marker |
 | `--purge-tags-per-site` | `5000` | Tag markers per site before the site's markers collapse into a site-level marker |

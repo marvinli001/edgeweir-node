@@ -370,6 +370,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		geoIPinfo     = fs.String("geoip-ipinfo", "auto", "IPinfo Lite MMDB path; auto uses the database bundled at build time if present, off disables it")
 		geoCity       = fs.String("geoip-city", "", "operator-provided City MMDB path")
 		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
+		sitesDictMB   = fs.Int("sites-dict-mb", render.DefaultSitesDictMB, "size of the site table store (lua_shared_dict edgeweir_sites: the current and the previous site table, error page templates included) in MiB")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
 		purgeTags     = fs.Int("purge-tags-per-site", agent.DefaultPurgeTagsPerSite, "tag purge markers per site before the site's markers collapse into one site-level marker")
@@ -398,6 +399,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *defaultPort == 0 || *defaultPort > 65535 {
 		fmt.Fprintln(stderr, "run: --default-port must be 1-65535")
+		return 2
+	}
+	if *sitesDictMB < 1 || *sitesDictMB > 65536 {
+		fmt.Fprintln(stderr, "run: --sites-dict-mb must be 1-65536")
 		return 2
 	}
 	if *purgeDictMB < 1 || *purgeDictMB > 65536 {
@@ -522,6 +527,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		WorkerProcesses:    *workers,
 		WorkerRlimitNofile: nofile,
 		WorkerConnections:  workerConnections,
+		SitesDictMB:        *sitesDictMB,
 		PurgeDictMB:        *purgeDictMB,
 		BanDictMB:          *banDictMB,
 		BanCapacity:        *banCapacity,

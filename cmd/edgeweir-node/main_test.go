@@ -79,6 +79,13 @@ func TestRealMain(t *testing.T) {
 	if code := realMain([]string{"run", "--purge-dict-mb", "0"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid purge dict size: code=%d", code)
 	}
+	for _, size := range []string{"0", "65537"} {
+		errOut.Reset()
+		if code := realMain([]string{"run", "--sites-dict-mb", size}, io.Discard, &errOut); code != 2 ||
+			!strings.Contains(errOut.String(), "--sites-dict-mb must be 1-65536") {
+			t.Fatalf("run with sites dict size %s: code=%d stderr=%q", size, code, errOut.String())
+		}
+	}
 	if code := realMain([]string{"run", "--prefetch-budget", "0s"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid prefetch budget: code=%d", code)
 	}
