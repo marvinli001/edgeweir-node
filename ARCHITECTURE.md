@@ -705,7 +705,7 @@ proto v0.13.0 的规则扩展由能力 `rules-v2` 标明，用到其中任何一
 
 区域探针（§2.11）用它判断节点的监听是否可用，与站点配置无关：
 
-- **HTTP**：边缘层 access 阶段最开始（CDN-Loop、HTTP-01 应答、站点查找、封禁、规则、CC、挑战之前），对任意 Host 的 `GET`（或 `HEAD`）`/.edgeweir/health`（规范化后的 `$uri`，查询串不影响）返回 `200`，正文 `ok`，`Content-Type: text/plain`、`Cache-Control: no-store`。它不经过缓存与回源，不计入站点统计，不进入采样访问日志（这两者都需要站点），不受封禁与规则影响。其他方法与路径照常处理（`/.edgeweir/` 仍是挑战的保留前缀）。所有监听都提供它，包括 PROXY protocol 监听（nginx 先解析 PROXY 头）与本地 `edge.sock`。
+- **HTTP**：边缘层 access 阶段最开始（CDN-Loop、HTTP-01 应答、站点查找、封禁、规则、CC、挑战之前），对任意 Host 的 `GET`（或 `HEAD`）`/.edgeweir/health`（规范化后的 `$uri`，查询串不影响）返回 `200`，正文 `ok`，`Content-Type: text/plain`、`Content-Length: 2`、`Cache-Control: no-store`。它不经过缓存与回源，不计入站点统计，不进入采样访问日志（这两者都需要站点），不受封禁与规则影响。其他方法与路径照常处理（`/.edgeweir/` 仍是挑战的保留前缀）。所有监听都提供它，包括 PROXY protocol 监听（nginx 先解析 PROXY 头）与本地 `edge.sock`。
 - **HTTPS**：`ssl_client_hello` 与 `ssl_certificate` 阶段（`edgeweir.tls`）对 SNI `health.edgeweir.invalid`（不区分大小写）或没有 SNI 的握手使用节点的健康证书；站点表里没有健康证书时与其他未知 SNI 一样中止握手。`.invalid` 是保留顶级域，不会与站点域名冲突。这样建立的连接只能访问健康端点：其他请求（含其他方法）在 access 阶段一开始返回 `421`，`X-Edgeweir-Error: sni-host-mismatch`，不进入站点逻辑。
 - **健康证书**：agent 启动时读取状态目录中的 `health.crt` / `health.key`（均为 0600）；缺失、损坏、不是健康证书或 30 天内到期时生成新的：ECDSA P-256 自签名，`CN` 与唯一 SAN 为 `health.edgeweir.invalid`，有效期 10 年，ServerAuth。它与站点证书一样经控制 socket 随每张站点表下发（`health_certificate`，存在站点表配置项 `v<N>:cfg` 中），不写进 `nginx.conf`；nginx 加载 TLS 监听所需的静态证书仍是占位证书 `conf/bootstrap.crt`。证书不由任何 CA 签发，探针不校验它。
 

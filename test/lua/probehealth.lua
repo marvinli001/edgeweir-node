@@ -116,6 +116,7 @@ test("the health request is answered for any Host before the site logic", functi
     eq(out.body, "ok", "body")
     eq(out.header["Content-Type"], "text/plain")
     eq(out.header["Cache-Control"], "no-store")
+    eq(out.header["Content-Length"], 2)
     eq(out.exit, ngx.HTTP_OK)
   end
 end)

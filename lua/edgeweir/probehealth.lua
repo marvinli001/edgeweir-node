@@ -43,10 +43,12 @@ function _M.material(cfg)
   return nil
 end
 
--- respond answers the health request (nginx drops the body for HEAD).
+-- respond answers the health request with a fixed length (never chunked;
+-- nginx drops the body for HEAD).
 function _M.respond()
   ngx.status = ngx.HTTP_OK
   ngx.header["Content-Type"] = "text/plain"
+  ngx.header["Content-Length"] = 2
   ngx.header["Cache-Control"] = "no-store"
   ngx.print("ok")
   return ngx.exit(ngx.HTTP_OK)
