@@ -3,7 +3,8 @@
 -- Served only on a unix socket (see nginx.conf); never exposed over TCP.
 --
 --   GET  /v1/health           liveness
---   GET  /v1/status           {version, revision, content_hash, site_count, purge, conf_id, ...}
+--   GET  /v1/status           {version, revision, content_hash, site_count, purge, conf_id,
+--                             connections_active, ...}
 --   PUT  /v1/sites            replace the whole site table atomically
 --   POST /v1/stats/drain      return and delete completed per-minute counters
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
@@ -80,6 +81,10 @@ function _M.handle()
     st.ngx_lua_version = ngx.config.ngx_lua_version
     st.worker_pid = ngx.worker.pid()
     st.conf_id = require("edgeweir.init").conf_id
+    -- Connections nginx holds ($connections_active of the stub_status
+    -- module) without this request; nil when the module is missing.
+    local active = tonumber(ngx.var.connections_active)
+    st.connections_active = active and math.max(active - 1, 0) or nil
     return reply(200, st)
   end
 

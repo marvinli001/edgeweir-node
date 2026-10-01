@@ -78,6 +78,13 @@ func Lookup(socket string) *Server {
 	return registry[socket]
 }
 
+// SetConnections sets the connections_active the status reports.
+func (s *Server) SetConnections(n uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status.ConnectionsActive = n
+}
+
 // LoadConf simulates nginx loading a configuration with id confID: the
 // status reports it from now on (it survives Restart, like the file).
 func (s *Server) LoadConf(confID string) {
@@ -150,13 +157,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.pushes = append(s.pushes, &t)
 		s.events = append(s.events, "sites")
 		s.status = dataplane.Status{
-			ConfID:      s.status.ConfID,
-			Version:     s.status.Version + 1,
-			Revision:    t.Revision,
-			ContentHash: t.ContentHash,
-			SiteCount:   len(t.Sites),
-			CDNID:       t.CDNID,
-			Purge:       s.status.Purge,
+			ConfID:            s.status.ConfID,
+			ConnectionsActive: s.status.ConnectionsActive,
+			Version:           s.status.Version + 1,
+			Revision:          t.Revision,
+			ContentHash:       t.ContentHash,
+			SiteCount:         len(t.Sites),
+			CDNID:             t.CDNID,
+			Purge:             s.status.Purge,
 		}
 		reply(w, 200, s.status)
 	case r.URL.Path == "/v1/purge" && (r.Method == http.MethodPut || r.Method == http.MethodPost):

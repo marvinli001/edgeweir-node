@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/controlplane"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
@@ -165,6 +166,9 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	req.RevisionReceipt = a.receiptFor(req.AppliedRevision, req.AppliedContentHash)
 	req.Info = hostinfo.Collect(a.engineVersion)
 	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.extraFeatures()...)
+	if a.cfg.Metrics.Enabled() {
+		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, configir.FeatureMetrics)
+	}
 
 	if id := a.channel.Identity(); id != nil {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
@@ -183,6 +187,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		}
 		scancel()
 	}
+	req.Metrics = a.nodeMetrics(cctx)
 	req.OriginHealth = a.originHealth(cctx)
 	req.Bans = a.banReport(cctx)
 	req.Security = a.securityReport(cctx)
@@ -311,6 +316,22 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 		})
 	}
 	return out
+}
+
+// nodeMetrics measures the host metrics of a heartbeat (nil where the
+// platform has none) with the data plane's active connections.
+func (a *Agent) nodeMetrics(ctx context.Context) *nodev1.NodeMetrics {
+	m, err := a.cfg.Metrics.Collect()
+	if err != nil {
+		a.log.Debug("some host metrics are unavailable", "err", err)
+	}
+	if m == nil {
+		return nil
+	}
+	if st, err := a.dp.Status(ctx); err == nil {
+		m.ActiveConnections = st.ConnectionsActive
+	}
+	return m
 }
 
 // maxOriginHealth bounds the origin health entries of one heartbeat.

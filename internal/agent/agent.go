@@ -36,6 +36,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/healthcheck"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
+	"github.com/marvinli001/edgeweir-node/internal/metrics"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
@@ -155,6 +156,9 @@ type Config struct {
 	// Prober probes the other nodes while the console lets this node probe
 	// (nil: the defaults; tests replace the dialer).
 	Prober *probe.Prober
+	// Metrics measures the host metrics of the heartbeats (nil: /proc on
+	// Linux, none elsewhere).
+	Metrics *metrics.Collector
 }
 
 func (c *Config) setDefaults() {
@@ -203,6 +207,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.DefaultPort == 0 {
 		c.DefaultPort = 80
+	}
+	if c.Metrics == nil {
+		c.Metrics = metrics.New()
 	}
 }
 

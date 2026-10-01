@@ -99,6 +99,10 @@ type Status struct {
 	// ConfID is the id of the nginx.conf the answering worker runs (see
 	// render.ConfID).
 	ConfID string `json:"conf_id,omitempty"`
+	// ConnectionsActive is nginx's $connections_active (stub_status) without
+	// the status request itself: client connections, and the edge layer's
+	// connections to the origin layer's unix sockets.
+	ConnectionsActive uint64 `json:"connections_active,omitempty"`
 }
 
 // InSync reports whether the data plane serves exactly table t.
