@@ -47,7 +47,9 @@
 //	                   gzip=false)
 //
 // The configuration names offline hosts (old.test disabled, *.gone.test
-// suspended) and a platform page for suspended sites.
+// suspended) and a platform page for suspended sites. The listeners are
+// :80, :8081 (PROXY protocol) and :8443 (HTTPS, reached from this
+// container for the health certificate checks).
 //
 // Every revision carries three challenge keys (e2e-key-1..3, current
 // e2e-key-2) that GetChallengeKeys hands out.
@@ -97,16 +99,31 @@
 //	POST /health?port=&status=  the status of the test origin's /health
 //	GET /active-health  "<site> <origin> <healthy> <code>" per ACTIVE entry
 //	              of the last ReportStatus ("-" for no code)
+//	GET /tls-health?sni=&host=&path=  a TLS request to node:8443 with that
+//	              SNI (none when empty): "<certificate CN> <status> <body>",
+//	              or "handshake-failed <error>"
+//	GET /probe-token  a new one-time probe token
+//	POST /probe-node?enabled=  let the node probe (targets: node-peer at the
+//	              node's address on :9 (closed), :80 HTTP and TCP, :8081
+//	              HTTP with PROXY protocol, :8443 HTTPS, and node-e2e itself
+//	              on :80; 5 s interval, 2 s timeout, 3 attempts) or stop it
+//	GET /probe-results  the latest round of each prober: "<prober> <node>
+//	              <method> <port> <sent> <lost> <rtt_ms> <error>" per result
+//	GET /metrics  "<cpu %> <load1> <memory total> <memory used> <egress bps>
+//	              <connections>" of the last ReportStatus
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -335,6 +352,8 @@ func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 			{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
 			// Behind a load balancer that speaks the PROXY protocol.
 			{Port: 8081, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP, ProxyProtocol: true},
+			// HTTPS: the probes' health certificate (no site has a certificate).
+			{Port: 8443, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS},
 		},
 		CacheZones:         []*nodev1.CacheZone{{Name: "default", MaxSizeMb: 256, KeysZoneMb: 8, InactiveSeconds: 600}},
 		Sites:              sites,
@@ -561,6 +580,73 @@ func keyedSite(origin string) *nodev1.Site {
 	s := site("site-keyed", "keyed.test", origin, 80)
 	s.CacheKey = &nodev1.CacheKeyPolicy{Headers: []string{"accept-language"}}
 	return s
+}
+
+// nodeIPv4 resolves the node container's address on this network.
+func nodeIPv4() (string, error) {
+	ips, err := net.LookupIP("node")
+	if err != nil {
+		return "", err
+	}
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			return ip.String(), nil
+		}
+	}
+	return "", fmt.Errorf("node has no IPv4 address: %v", ips)
+}
+
+// probeTargets are the targets the probes get, sorted by (node, address,
+// port) like the console's.
+func probeTargets(ip string) *nodev1.GetProbeTargetsResponse {
+	const (
+		tcp   = nodev1.ProbeMethod_PROBE_METHOD_TCP
+		plain = nodev1.ProbeMethod_PROBE_METHOD_HTTP
+		https = nodev1.ProbeMethod_PROBE_METHOD_HTTPS
+	)
+	return &nodev1.GetProbeTargetsResponse{IntervalSeconds: 5, TimeoutMs: 2000, Attempts: 3, Targets: []*nodev1.ProbeTarget{
+		{NodeId: "node-e2e", Address: ip, Port: 80, Method: plain},
+		{NodeId: "node-peer", Address: ip, Port: 9, Method: tcp},
+		{NodeId: "node-peer", Address: ip, Port: 80, Method: plain},
+		{NodeId: "node-peer", Address: ip, Port: 80, Method: tcp},
+		{NodeId: "node-peer", Address: ip, Port: 8081, Method: plain, ProxyProtocol: true},
+		{NodeId: "node-peer", Address: ip, Port: 8443, Method: https},
+	}}
+}
+
+// tlsHealth asks node:8443 for a path over TLS with an SNI (none when
+// empty) and reports the certificate's CN, the status and the body.
+func tlsHealth(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	ip, err := nodeIPv4()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "8443"), 5*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	// The node's health certificate is self-signed; an empty ServerName
+	// (dialing an IP) sends no SNI.
+	tc := tls.Client(conn, &tls.Config{ServerName: q.Get("sni"), InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}) //nolint:gosec // test helper
+	if err := tc.Handshake(); err != nil {
+		fmt.Fprintf(w, "handshake-failed %v", err)
+		return
+	}
+	cn := tc.ConnectionState().PeerCertificates[0].Subject.CommonName
+	fmt.Fprintf(tc, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", cmpOr(q.Get("path"), "/.edgeweir/health"), cmpOr(q.Get("host"), "unknown.test"))
+	resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
+	if err != nil {
+		fmt.Fprintf(w, "%s no-response %v", cn, err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	fmt.Fprintf(w, "%s %d %s", cn, resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 func main() {
@@ -798,6 +884,42 @@ func main() {
 				fmt.Fprintf(w, "%s %s %d\n", m.GetSiteId(), r.GetValue(), r.GetCount())
 			}
 		}
+	})
+	mux.HandleFunc("GET /tls-health", tlsHealth)
+	mux.HandleFunc("GET /probe-token", func(w http.ResponseWriter, _ *http.Request) {
+		token := fmt.Sprintf("probe-token-%d", time.Now().UnixNano())
+		c.AddProbeToken(token)
+		fmt.Fprint(w, token)
+	})
+	mux.HandleFunc("POST /probe-node", func(w http.ResponseWriter, r *http.Request) {
+		on := r.URL.Query().Get("enabled") != "false"
+		if on {
+			ip, err := nodeIPv4()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			c.SetProbeTargets(probeTargets(ip))
+		}
+		c.SetNodeProbe(on)
+	})
+	mux.HandleFunc("GET /probe-results", func(w http.ResponseWriter, _ *http.Request) {
+		latest := map[string]*nodev1.ReportProbeResultsRequest{}
+		for _, rep := range c.ProbeReports() {
+			latest[rep.Caller] = rep.Request
+		}
+		for _, prober := range slices.Sorted(maps.Keys(latest)) {
+			for _, res := range latest[prober].GetResults() {
+				fmt.Fprintf(w, "%s %s %s %d %d %d %d %s\n", prober, res.GetNodeId(),
+					strings.ToLower(strings.TrimPrefix(res.GetMethod().String(), "PROBE_METHOD_")), res.GetPort(),
+					res.GetSent(), res.GetLost(), res.GetRttMs(), cmpOr(res.GetError(), "-"))
+			}
+		}
+	})
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+		m := c.LastStatus().GetMetrics()
+		fmt.Fprintf(w, "%g %g %d %d %d %d", m.GetCpuPercent(), m.GetLoad1(), m.GetMemoryTotalBytes(), m.GetMemoryUsedBytes(),
+			m.GetEgressBps(), m.GetActiveConnections())
 	})
 	mux.HandleFunc("GET /security-state", func(w http.ResponseWriter, _ *http.Request) {
 		for _, s := range c.LastStatus().GetSecurity() {

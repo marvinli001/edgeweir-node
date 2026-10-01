@@ -39,7 +39,14 @@
 #      a cache rule condition with a browser TTL, compression rules and
 #      config gzip=false on a cached object;
 #  14. a new site reserves its partition; later existing-site changes stay hot;
-#  15. restarting the container serves the last-known-good config.
+#  15. probes: GET /.edgeweir/health answers 200 ok for any Host on HTTP,
+#      PROXY protocol and HTTPS (the health certificate for SNI
+#      health.edgeweir.invalid and without SNI, nothing but the health path
+#      on such connections), ahead of loops, bans and challenges; the node
+#      probes its peer (never itself) while the console lets it, and
+#      `edgeweir-node probe` enrolls and reports; heartbeats carry host
+#      metrics;
+#  16. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -328,6 +335,45 @@ worker=$(hdrs -H 'Host: pow.test' "$NODE/.edgeweir/challenge/worker.js")
 resp=$(hdrs -H 'Host: demo.test' "$NODE/.edgeweir/other")
 [ "$(status_of <<<"$resp")" = 404 ] && [ "$(header_of x-edgeweir-error <<<"$resp")" = not-found ] || fail "reserved prefix reached the origin: $resp"
 pass "pow challenge (8 bits), worker script, reserved prefix answered at the edge"
+
+# The probes' health endpoint (probe-health-v1): any Host, ahead of loops,
+# challenges and bans, never cached.
+health_ok() { # response headers and body
+  [ "$(status_of <<<"$1")" = 200 ] && [ "$(header_of content-type <<<"$1")" = text/plain ] &&
+    [ "$(header_of cache-control <<<"$1")" = no-store ] && [ "$(header_of content-length <<<"$1")" = 2 ] &&
+    [ -z "$(header_of x-cache <<<"$1")" ] && [ "$(tail -1 <<<"$1")" = ok ]
+}
+for h in unknown.test demo.test ua.test health.edgeweir.invalid; do
+  r=$(curl -s -D - -H "Host: $h" -A e2e-browser "$NODE/.edgeweir/health?x=1" | tr -d '\r')
+  health_ok "$r" || fail "health endpoint for Host $h: $r"
+done
+r=$(curl -s -D - -H 'Host: demo.test' -H "CDN-Loop: $CDN_ID" "$NODE/.edgeweir/health" | tr -d '\r')
+health_ok "$r" || fail "health endpoint with this node's CDN-Loop: $(status_of <<<"$r")"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -I -H 'Host: unknown.test' "$NODE/.edgeweir/health")" = 200 ] || fail "HEAD /.edgeweir/health"
+r=$(pp_request unknown.test 198.51.100.99 /.edgeweir/health | tr -d '\r')
+health_ok "$r" || fail "health endpoint on the PROXY protocol listener: $r"
+resp=$(curl -fsS -X POST "$HELPER/ban?cidr=198.51.100.66/32")
+health_ban=${resp% *}
+WAIT_SECS=10 wait_for "platform ban $health_ban" pp_banned demo.test 198.51.100.66
+r=$(pp_request demo.test 198.51.100.66 /.edgeweir/health | tr -d '\r')
+health_ok "$r" || fail "health endpoint for a banned address: $(status_of <<<"$r")"
+curl -fsS -X POST "$HELPER/unban?id=$health_ban" >/dev/null
+pass "health endpoint: 200 ok for any Host, HEAD, PROXY protocol, loops, challenges and bans do not apply"
+
+tls_health() { curl -fsS "$HELPER/tls-health?$1"; }
+[ "$(tls_health 'sni=health.edgeweir.invalid')" = "health.edgeweir.invalid 200 ok" ] ||
+  fail "HTTPS health with SNI health.edgeweir.invalid: $(tls_health 'sni=health.edgeweir.invalid')"
+[ "$(tls_health 'sni=HEALTH.edgeweir.INVALID&host=demo.test')" = "health.edgeweir.invalid 200 ok" ] ||
+  fail "HTTPS health, SNI in another case, Host of a site"
+[ "$(tls_health 'sni=')" = "health.edgeweir.invalid 200 ok" ] || fail "HTTPS health without SNI: $(tls_health 'sni=')"
+case "$(tls_health 'sni=health.edgeweir.invalid&path=/')" in "health.edgeweir.invalid 421 "*) ;;
+  *) fail "health SNI reached another path: $(tls_health 'sni=health.edgeweir.invalid&path=/')" ;; esac
+case "$(tls_health 'sni=&host=demo.test&path=/.well-known/acme-challenge/x')" in "health.edgeweir.invalid 421 "*) ;;
+  *) fail "no-SNI connection reached a site: $(tls_health 'sni=&host=demo.test&path=/.well-known/acme-challenge/x')" ;; esac
+case "$(tls_health 'sni=unknown.test')" in handshake-failed*) ;; *) fail "unknown SNI completed a handshake" ;; esac
+key_mode=$(compose exec -T node stat -c '%a' /var/lib/edgeweir-node/health.key)
+[ "$key_mode" = 600 ] || fail "health.key mode $key_mode"
+pass "HTTPS health: self-signed health certificate for SNI health.edgeweir.invalid and no SNI, 421 for anything else"
 
 token_of() { sed -n 's/.*name="t" value="\([^"]*\)".*/\1/p' | head -1; }
 page=$(curl -s -H 'Host: captcha.test' -A 'e2e-browser' -H 'Accept-Language: zh-CN,zh;q=0.9' "$NODE/c")
@@ -693,6 +739,48 @@ curl -s -o /dev/null -H 'Host: rules.test' "$NODE/sampled"
 WAIT_SECS=30 wait_for "the sampled request in the access logs" sh -c "curl -fsS $HELPER/logs | grep -q '^site-rules 200 /sampled '"
 if curl -fsS "$HELPER/logs" | grep -q '^site-rules .* /unsampled '; then fail "a request of a site sampling nothing was logged"; fi
 pass "rules-v2: dynamic and bulk redirects, rewrite, origin group, Host, port and timeout, WebSocket, Under Attack, sampling, browser TTL"
+
+# Heartbeats carry host metrics (metrics-v1); the data plane reports its
+# connections.
+read -r cpu _ mem_total mem_used _ _ <<<"$(curl -fsS "$HELPER/metrics")"
+[ "$mem_total" -gt 0 ] && [ "$mem_used" -gt 0 ] && [ "$mem_used" -le "$mem_total" ] &&
+  awk -v c="$cpu" 'BEGIN { exit !(c >= 0 && c <= 100) }' || fail "host metrics: $(curl -fsS "$HELPER/metrics")"
+curl -fsS "$HELPER/features" | grep -qx metrics-v1 || fail "metrics-v1 not announced"
+curl -fsS "$HELPER/features" | grep -qx probe-health-v1 || fail "probe-health-v1 not announced"
+control GET /v1/status | grep -q '"connections_active":[0-9]' || fail "no connections_active in the data plane status: $(control GET /v1/status)"
+pass "heartbeats carry host metrics ($(curl -fsS "$HELPER/metrics")), probe-health-v1 and metrics-v1 announced"
+
+# The node probes its peer (its own address under another node id) while
+# the console lets it, and never itself.
+curl -fsS -X POST "$HELPER/probe-node?enabled=true" >/dev/null
+WAIT_SECS=60 wait_for "a probe round of the node" sh -c "curl -fsS $HELPER/probe-results | grep -q '^node-e2e '"
+results=$(curl -fsS "$HELPER/probe-results")
+probed() { grep -Eq "^$1 $2 $3 $4 3 $5 $6 $7\$" <<<"$results" || fail "no result '$*' in: $results"; }
+for prober in node-e2e; do
+  probed "$prober" node-peer tcp 9 3 0 refused
+  probed "$prober" node-peer http 80 0 '[1-9][0-9]*' -
+  probed "$prober" node-peer tcp 80 0 '[1-9][0-9]*' -
+  probed "$prober" node-peer http 8081 0 '[1-9][0-9]*' -
+  probed "$prober" node-peer https 8443 0 '[1-9][0-9]*' -
+done
+if grep -q '^node-e2e node-e2e ' <<<"$results"; then fail "the node probed itself: $results"; fi
+curl -fsS -X POST "$HELPER/probe-node?enabled=false" >/dev/null
+node_logged() { local l; l=$(compose logs node); grep -q "$1" <<<"$l"; }
+WAIT_SECS=30 wait_for "the node stops probing" node_logged 'stopped probing the other nodes'
+pass "node as a probe: HTTP, PROXY protocol, HTTPS and TCP of its peer, refused port lost, never itself"
+
+# `edgeweir-node probe`: enrolls with a probe token (key 0600) and reports.
+PROBE_TOKEN=$(curl -fsS "$HELPER/probe-token")
+compose exec -T -e EDGEWEIR_TOKEN="$PROBE_TOKEN" node timeout --preserve-status 8 edgeweir-node probe \
+  --server https://console:8443 --ca-sha256 "$PIN" --state-dir /tmp/edgeweir-probe-e2e
+results=$(curl -fsS "$HELPER/probe-results")
+probed probe-1 node-e2e http 80 0 '[1-9][0-9]*' -
+probed probe-1 node-peer tcp 9 3 0 refused
+probed probe-1 node-peer https 8443 0 '[1-9][0-9]*' -
+probed probe-1 node-peer http 8081 0 '[1-9][0-9]*' -
+key_mode=$(compose exec -T node stat -c '%a' /tmp/edgeweir-probe-e2e/probe.key)
+[ "$key_mode" = 600 ] || fail "probe.key mode $key_mode"
+pass "edgeweir-node probe: enrolled (probe.key 0600) and reported a round"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
