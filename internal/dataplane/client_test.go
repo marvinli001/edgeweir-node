@@ -266,3 +266,138 @@ func TestDrainLogsCarriesCRSMatches(t *testing.T) {
 		t.Fatalf("request without CRS matches: %v", logs[1])
 	}
 }
+
+// TestSiteTableG4Fields pins the site table fields of proto v0.12.0: the
+// Cache-Tag, error page, active health and affinity settings of a site,
+// and the table's tag index lifetime, platform pages and offline hosts.
+func TestSiteTableG4Fields(t *testing.T) {
+	plan := &configir.Plan{
+		Revision: 3,
+		CacheZones: []configir.CacheZone{
+			{Name: "a", InactiveSeconds: 600}, {Name: "b", InactiveSeconds: 86400}, {Name: "c", InactiveSeconds: 3600},
+		},
+		Sites: []configir.Site{{
+			ID: "s1", KeepCacheTag: true,
+			ErrorPages:        &configir.ErrorPages{Pages: map[uint32]string{503: "page {{status}}", 403: "denied"}, Intercept: true},
+			ActiveHealthCheck: &configir.ActiveHealthCheck{Path: "/healthz", Method: "HEAD", ExpectedStatusMin: 200, ExpectedStatusMax: 299},
+			ActiveHealth:      true,
+			Affinity:          &configir.Affinity{TTL: 7200},
+		}, {ID: "s2"}},
+		PlatformErrorPages: &configir.PlatformErrorPages{SiteSuspended: "suspended"},
+		OfflineHosts:       []configir.OfflineHost{{Name: "old.test", Reason: "disabled"}, {Name: "gone.test", Wildcard: true, Reason: "suspended"}},
+	}
+	table := dataplane.FromPlan(plan)
+	if table.TagTTL != 86400 {
+		t.Fatalf("tag_ttl = %d, want the longest inactive time 86400", table.TagTTL)
+	}
+	b, err := json.Marshal(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{
+		`"keep_cache_tag":true`,
+		`"error_pages":{"pages":{"403":"denied","503":"page {{status}}"},"intercept":true}`,
+		`"active_health":true`,
+		`"affinity":{"ttl":7200}`,
+		`"tag_ttl":86400`,
+		`"platform_error_pages":{"site_suspended":"suspended"}`,
+		`"offline_hosts":[{"name":"old.test","reason":"disabled"},{"name":"gone.test","wildcard":true,"reason":"suspended"}]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("site table %s\nmissing %s", got, want)
+		}
+	}
+	// The active check's settings are for the agent's prober only.
+	for _, leak := range []string{"healthz", "HEAD", "expected"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("site table carries active health settings (%s): %s", leak, got)
+		}
+	}
+	// A site without the v0.12.0 settings carries none of their fields.
+	b, _ = json.Marshal(plan.Sites[1])
+	for _, field := range []string{"keep_cache_tag", "error_pages", "active_health", "affinity"} {
+		if strings.Contains(string(b), field) {
+			t.Errorf("plain site JSON %s has %s", b, field)
+		}
+	}
+}
+
+func TestPurgeTagMarkerJSON(t *testing.T) {
+	b, err := json.Marshal(dataplane.PurgeMarker{SiteID: "s1", Type: "tag", Tag: "product-42", Epoch: 1790000000123})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"site_id":"s1","type":"tag","tag":"product-42","epoch":1790000000123}`; string(b) != want {
+		t.Fatalf("JSON = %s, want %s", b, want)
+	}
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	st, err := c.AddPurge(context.Background(), &dataplane.PurgeTable{ID: "set-1", Markers: []dataplane.PurgeMarker{
+		{SiteID: "s1", Type: "tag", Tag: "a", Epoch: 10},
+		{SiteID: "s1", Type: "tag", Tag: "b", Epoch: 11},
+	}})
+	if err != nil || st.ID != "set-1" || len(srv.Markers()) != 2 {
+		t.Fatalf("tag markers: %+v %v (%v)", st, err, srv.Markers())
+	}
+}
+
+func TestClientPutActiveHealth(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	ctx := context.Background()
+	st, err := c.PutActiveHealth(ctx, &dataplane.ActiveHealth{TTL: 90, Down: []dataplane.ActiveOrigin{
+		{SiteID: "s1", OriginID: "o1"}, {SiteID: "s2", OriginID: "o-2"},
+	}})
+	if err != nil || st.Down != 2 {
+		t.Fatalf("PutActiveHealth = %+v, %v", st, err)
+	}
+	got, puts := srv.Active()
+	if puts != 1 || got.TTL != 90 || len(got.Down) != 2 || got.Down[1].OriginID != "o-2" {
+		t.Fatalf("installed = %+v (%d puts)", got, puts)
+	}
+	// No origin down: an empty array, never null.
+	b, _ := json.Marshal(dataplane.ActiveHealth{TTL: 90, Down: []dataplane.ActiveOrigin{}})
+	if want := `{"ttl":90,"down":[]}`; string(b) != want {
+		t.Fatalf("JSON = %s, want %s", b, want)
+	}
+	if st, err = c.PutActiveHealth(ctx, &dataplane.ActiveHealth{TTL: 90}); err != nil || st.Down != 0 {
+		t.Fatalf("empty set = %+v, %v", st, err)
+	}
+	if got, _ = srv.Active(); got.Down == nil {
+		t.Fatal("nil Down was sent as null")
+	}
+	_, err = c.PutActiveHealth(ctx, &dataplane.ActiveHealth{TTL: 0})
+	var apiErr *dataplane.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 400 {
+		t.Fatalf("ttl 0: %v", err)
+	}
+	if _, err = c.PutActiveHealth(ctx, nil); err == nil {
+		t.Fatal("nil set accepted")
+	}
+	srv.Restart()
+	if got, _ = srv.Active(); got != nil {
+		t.Fatal("marks survived an nginx restart")
+	}
+}
+
+func TestDrainLogsCarriesRequestID(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000000, "path": "/", "status": 502, "request_id": "0123456789abcdef0123456789abcdef"})
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000001, "path": "/", "status": 200, "request_id": strings.Repeat("r", 200)})
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000002, "path": "/", "status": 200})
+	logs, err := c.DrainLogs(context.Background())
+	if err != nil || len(logs) != 3 {
+		t.Fatalf("DrainLogs = %v, %v", logs, err)
+	}
+	if got := logs[0].GetRequestId(); got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("request id = %q", got)
+	}
+	if got := logs[1].GetRequestId(); len(got) != 128 {
+		t.Fatalf("request id not bounded to 128 bytes: %d", len(got))
+	}
+	if logs[2].GetRequestId() != "" {
+		t.Fatalf("request id without one: %q", logs[2].GetRequestId())
+	}
+}

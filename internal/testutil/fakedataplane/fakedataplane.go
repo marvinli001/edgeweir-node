@@ -60,6 +60,10 @@ type Server struct {
 	captchaPuts    int
 	security       dataplane.SecurityStatus
 	securityEvents []dataplane.SecurityEvent
+
+	// Active health marks (PUT /v1/origins/active, lua/edgeweir/health.lua).
+	active     *dataplane.ActiveHealth
+	activePuts int
 }
 
 var (
@@ -245,6 +249,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(w, 200, map[string]any{"events": out})
+	case r.URL.Path == "/v1/origins/active" && r.Method == http.MethodPut:
+		var a dataplane.ActiveHealth
+		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		if a.TTL < 1 || a.TTL > 86400 {
+			reply(w, 400, map[string]string{"error": "ttl must be 1-86400 seconds"})
+			return
+		}
+		seen := map[dataplane.ActiveOrigin]bool{}
+		for _, o := range a.Down {
+			if !validID(o.SiteID) || !validID(o.OriginID) {
+				reply(w, 400, map[string]string{"error": "invalid origin"})
+				return
+			}
+			seen[o] = true
+		}
+		s.active = &a
+		s.activePuts++
+		reply(w, 200, dataplane.ActiveHealthStatus{Down: len(seen)})
 	case r.URL.Path == "/v1/origins/health" && r.Method == http.MethodGet:
 		if len(s.health) == 0 {
 			reply(w, 200, map[string]any{"origins": map[string]any{}})
@@ -485,10 +510,32 @@ func (s *Server) Restart() {
 	s.markers = nil
 	s.bans, s.unapplied, s.banSeq, s.autoBans, s.autoEvicted = nil, nil, 0, nil, 0
 	s.challengeKeys, s.captchas, s.securityEvents = nil, nil, nil
+	s.active = nil
+}
+
+// Active returns the installed active health marks (nil before the first
+// push and after Restart) and the number of pushes.
+func (s *Server) Active() (*dataplane.ActiveHealth, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active == nil {
+		return nil, s.activePuts
+	}
+	a := *s.active
+	a.Down = slices.Clone(a.Down)
+	return &a, s.activePuts
+}
+
+// validID mirrors the data plane's id check ([A-Za-z0-9_-], 1-128).
+func validID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	return strings.Trim(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == ""
 }
 
 func markerKey(m dataplane.PurgeMarker) string {
-	return m.SiteID + "\x00" + m.Type + "\x00" + m.Host + "\x00" + m.Path + "\x00" + m.Query
+	return m.SiteID + "\x00" + m.Type + "\x00" + m.Host + "\x00" + m.Path + "\x00" + m.Query + "\x00" + strings.ToLower(m.Tag)
 }
 
 // Markers returns the installed purge markers.

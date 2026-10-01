@@ -38,6 +38,14 @@ type SiteTable struct {
 	PlatformRules  []*nodev1.EdgeRule       `json:"platform_rules,omitempty"`
 	// PlatformProtection is the platform-wide Under Attack.
 	PlatformProtection *configir.PlatformProtection `json:"platform_protection,omitempty"`
+	// TagTTL is the lifetime of Cache-Tag index entries in seconds: the
+	// longest inactive time of the cache zones (an object can stay cached
+	// that long after its last request).
+	TagTTL uint32 `json:"tag_ttl,omitempty"`
+	// PlatformErrorPages are the platform's pages for unknown and offline
+	// hosts; OfflineHosts the domains of disabled and suspended sites.
+	PlatformErrorPages *configir.PlatformErrorPages `json:"platform_error_pages,omitempty"`
+	OfflineHosts       []configir.OfflineHost       `json:"offline_hosts,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -47,6 +55,11 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.IPLists = p.IPLists
 	t.PlatformRules = p.PlatformRules
 	t.PlatformProtection = p.PlatformProtection
+	t.PlatformErrorPages = p.PlatformErrorPages
+	t.OfflineHosts = p.OfflineHosts
+	for _, z := range p.CacheZones {
+		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
+	}
 	if t.Sites == nil {
 		t.Sites = []configir.Site{}
 	}
@@ -93,11 +106,15 @@ func (s *Status) InSync(t *SiteTable) bool {
 // PurgeMarker invalidates cached objects of a site (see lua/edgeweir/purge.lua).
 type PurgeMarker struct {
 	SiteID string `json:"site_id"`
-	// Type is "url", "prefix" or "site".
+	// Type is "url", "prefix", "site" or "tag".
 	Type  string `json:"type"`
 	Host  string `json:"host,omitempty"`
 	Path  string `json:"path,omitempty"`
 	Query string `json:"query,omitempty"`
+	// Tag is the Cache-Tag of a "tag" marker: 1-128 bytes of printable
+	// ASCII without commas and without leading or trailing spaces
+	// (compared in lowercase).
+	Tag string `json:"tag,omitempty"`
 	// Epoch is the purge time in milliseconds; it becomes part of the keys.
 	Epoch int64 `json:"epoch"`
 }
@@ -134,6 +151,26 @@ type OriginHealth struct {
 	// console (see lua/edgeweir/health.lua); empty for unknown errors.
 	LastErrorCode   string            `json:"last_error_code"`
 	LastErrorParams map[string]string `json:"last_error_params,omitempty"`
+}
+
+// ActiveHealth is the body of PUT /v1/origins/active: the full set of
+// origins the agent's active health checks mark down. The marks expire
+// after TTL seconds, so they never outlive an agent that stopped pushing.
+type ActiveHealth struct {
+	TTL  uint32         `json:"ttl"`
+	Down []ActiveOrigin `json:"down"`
+}
+
+// ActiveOrigin is an origin of a site, marked down by the active check.
+type ActiveOrigin struct {
+	SiteID   string `json:"site_id"`
+	OriginID string `json:"origin_id"`
+}
+
+// ActiveHealthStatus is the answer of PUT /v1/origins/active: the number
+// of marks installed.
+type ActiveHealthStatus struct {
+	Down int `json:"down"`
 }
 
 // MinuteStats is one per-site, per-minute bucket from POST /v1/stats/drain.
@@ -274,6 +311,22 @@ func (c *Client) purge(ctx context.Context, method string, t *PurgeTable) (*Purg
 	}
 	var s PurgeStatus
 	if err := c.do(ctx, method, "/v1/purge", t, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// PutActiveHealth replaces the set of origins the active health checks
+// mark down.
+func (c *Client) PutActiveHealth(ctx context.Context, doc *ActiveHealth) (*ActiveHealthStatus, error) {
+	if doc == nil {
+		return nil, errors.New("nil active health set")
+	}
+	if doc.Down == nil {
+		doc = &ActiveHealth{TTL: doc.TTL, Down: []ActiveOrigin{}}
+	}
+	var s ActiveHealthStatus
+	if err := c.do(ctx, http.MethodPut, "/v1/origins/active", doc, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil

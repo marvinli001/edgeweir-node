@@ -27,7 +27,12 @@ type sampledLog struct {
 	// whether CRS blocked the request.
 	WAFRuleIDs []uint32 `json:"waf_rule_ids"`
 	WAFBlocked bool     `json:"waf_blocked"`
+	// RequestID is the X-Request-Id the node answered with.
+	RequestID string `json:"request_id"`
 }
+
+// maxRequestID bounds AccessLog.request_id.
+const maxRequestID = 128
 
 // maxLogRuleIDs bounds AccessLog.waf_rule_ids.
 const maxLogRuleIDs = 16
@@ -52,9 +57,12 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 		if len(l.WAFRuleIDs) > maxLogRuleIDs {
 			l.WAFRuleIDs = l.WAFRuleIDs[:maxLogRuleIDs]
 		}
+		if len(l.RequestID) > maxRequestID {
+			l.RequestID = l.RequestID[:maxRequestID]
+		}
 		logs = append(logs, &nodev1.AccessLog{
 			Time: timestamppb.New(time.UnixMilli(int64(l.Time * 1000))), SiteId: l.SiteID, ClientIp: l.ClientIP, Method: l.Method, Host: l.Host, Path: l.Path, Status: l.Status, BytesSent: l.BytesSent, DurationMs: l.DurationMS, CacheStatus: l.CacheStatus, SampleRate: l.SampleRate, Ja4: l.JA4,
-			WafRuleIds: l.WAFRuleIDs, WafBlocked: l.WAFBlocked,
+			WafRuleIds: l.WAFRuleIDs, WafBlocked: l.WAFBlocked, RequestId: l.RequestID,
 		})
 	}
 	return logs, nil
