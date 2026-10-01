@@ -70,6 +70,7 @@ type Console struct {
 	statuses         []*nodev1.ReportStatusRequest
 	getConfigs       []GetConfigCall
 	stats            []*nodev1.MinuteStats
+	l4Stats          []*nodev1.L4MinuteStats
 	watermarks       []Watermark
 	statsSequence    uint64
 	statsAckFailures int
@@ -322,6 +323,13 @@ func (c *Console) Stats() []*nodev1.MinuteStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.stats)
+}
+
+// L4Stats returns the layer-4 buckets of the accepted statistics batches.
+func (c *Console) L4Stats() []*nodev1.L4MinuteStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.l4Stats)
 }
 
 // Counters returns enrollments, renewals, watch streams and per-procedure
@@ -625,6 +633,14 @@ func (c *Console) ReportStats(_ context.Context, req *connect.Request[nodev1.Rep
 }
 
 func (c *Console) ReportStatsV2(ctx context.Context, req *connect.Request[nodev1.ReportStatsV2Request]) (*connect.Response[nodev1.ReportStatsV2Response], error) {
+	// Layer-4 buckets share the batch (and its sequence) with the sites'.
+	c.mu.Lock()
+	if req.Msg.BatchSequence > c.statsSequence {
+		for _, s := range req.Msg.L4Stats {
+			c.l4Stats = append(c.l4Stats, proto.CloneOf(s))
+		}
+	}
+	c.mu.Unlock()
 	result, err := c.ReportStats(ctx, connect.NewRequest(&nodev1.ReportStatsRequest{Stats: req.Msg.Stats, BatchSequence: req.Msg.BatchSequence}))
 	if err != nil {
 		return nil, err

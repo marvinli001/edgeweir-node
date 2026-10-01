@@ -428,6 +428,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		originSocket  = fs.String("origin-socket", defaultOriginSocket, "unix socket of the internal origin layer")
 		noVerifySock  = fs.String("origin-socket-noverify", "", "unix socket of the origin layer without TLS verification (default: origin-noverify.sock next to --origin-socket)")
 		edgeSock      = fs.String("edge-socket", "", "local edge listener for prefetch requests when every listener uses the PROXY protocol (default: edge.sock next to --control-socket)")
+		l4Sock        = fs.String("l4-socket", "", "unix socket of the stream subsystem's control relay for layer-4 applications (default: l4.sock next to --control-socket)")
 		trustedCA     = fs.String("trusted-ca", "", "CA bundle for verifying HTTPS origins (default: the system bundle)")
 		resolvConf    = fs.String("resolv-conf", "/etc/resolv.conf", "resolv.conf to take nginx resolvers from")
 		resolvers     = fs.String("resolver", "", "comma-separated nginx resolver addresses (overrides --resolv-conf)")
@@ -451,6 +452,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		challengeMB   = fs.Int("challenge-dict-mb", render.DefaultChallengeDictMB, "size of the challenge store (lua_shared_dict edgeweir_challenge: keys, captcha pool, used challenge nonces) in MiB")
 		tagDictMB     = fs.Int("tag-dict-mb", render.DefaultTagDictMB, "size of the Cache-Tag index (lua_shared_dict edgeweir_tags: tags and key epoch of cached objects, for purges by tag) in MiB")
 		rateDictKB    = fs.Int("rate-limit-dict-kb", render.DefaultRateLimitDictKB, "size of each published site's rate-limit counter store (lua_shared_dict edgeweir_rate_<hex site id>) in KiB")
+		l4DictMB      = fs.Int("l4-dict-mb", render.DefaultL4DictMB, "size of the layer-4 table store (lua_shared_dict edgeweir_l4: the current and the previous table of layer-4 applications with their IP lists) in MiB")
+		shutdownAfter = fs.Duration("stream-shutdown-timeout", 0, "close the connections a reload's old workers still serve after this long (worker_shutdown_timeout; 0: they serve them until they end)")
 		kernelBans    = fs.String("kernel-bans", "auto", "also drop platform bans in the kernel with nftables: auto (when nft works; needs CAP_NET_ADMIN) or off")
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		modsecModule  = fs.String("modsecurity-module", "auto", "ModSecurity-nginx dynamic module for sites that run the OWASP CRS: auto (the edgeweir-openresty-modsecurity package next to --nginx-bin), a path, or off")
@@ -610,6 +613,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		ChallengeDictMB:    *challengeMB,
 		TagDictMB:          *tagDictMB,
 		RateLimitDictKB:    *rateDictKB,
+		L4DictMB:           *l4DictMB,
+		// Reloads keep old workers serving their connections (layer-4
+		// sessions, WebSockets) until they end unless this is set.
+		WorkerShutdownTimeout: *shutdownAfter,
 	}
 	switch *modsecModule {
 	case "off":
@@ -627,6 +634,9 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *edgeSock != "" {
 		params.EdgeSocket = abs(*edgeSock)
+	}
+	if *l4Sock != "" {
+		params.L4Socket = abs(*l4Sock)
 	}
 	params = params.WithDefaults()
 	if _, err := os.Stat(filepath.Join(params.LuaDir, "edgeweir", "init.lua")); err != nil {
@@ -646,7 +656,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		Prefix:       prefix,
 		Conf:         conf,
 		Managed:      *manage,
-		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket},
+		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket, params.L4Socket},
 		Logger:       log,
 	})
 	var kernel nft.Executor

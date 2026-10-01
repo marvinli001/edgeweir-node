@@ -64,6 +64,14 @@ type Server struct {
 	// Active health marks (PUT /v1/origins/active, lua/edgeweir/health.lua).
 	active     *dataplane.ActiveHealth
 	activePuts int
+
+	// Layer-4 applications (/v1/l4, lua/edgeweir/l4.lua): the table, its
+	// status, every push and the statistics the next drain returns.
+	l4        *dataplane.L4Table
+	l4Status  dataplane.L4Status
+	l4Pushes  []*dataplane.L4Table
+	l4Pending []dataplane.L4MinuteStats
+	failL4    int
 }
 
 var (
@@ -135,6 +143,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/v1/health":
 		reply(w, 200, map[string]string{"status": "ok"})
+	case r.URL.Path == "/v1/l4" && r.Method == http.MethodGet:
+		reply(w, 200, s.l4Status)
+	case r.URL.Path == "/v1/l4" && r.Method == http.MethodPut:
+		if s.failL4 > 0 {
+			s.failL4--
+			reply(w, 503, map[string]string{"error": "injected failure"})
+			return
+		}
+		var t dataplane.L4Table
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil || t.Apps == nil || t.IPLists == nil {
+			reply(w, 400, map[string]string{"error": "invalid layer-4 table"})
+			return
+		}
+		s.l4 = &t
+		s.l4Pushes = append(s.l4Pushes, &t)
+		s.events = append(s.events, "l4")
+		s.l4Status = dataplane.L4Status{Version: s.l4Status.Version + 1, Revision: t.Revision, ContentHash: t.ContentHash, Apps: len(t.Apps)}
+		reply(w, 200, s.l4Status)
+	case r.URL.Path == "/v1/l4/stats/drain" && r.Method == http.MethodPost:
+		if s.failL4 > 0 {
+			s.failL4--
+			reply(w, 503, map[string]string{"error": "injected failure"})
+			return
+		}
+		pending := s.l4Pending
+		if pending == nil {
+			pending = []dataplane.L4MinuteStats{}
+		}
+		s.l4Pending = nil
+		reply(w, 200, map[string]any{"stats": pending})
 	case r.URL.Path == "/v1/status" && r.Method == http.MethodGet:
 		reply(w, 200, s.status)
 	case r.URL.Path == "/v1/sites" && r.Method == http.MethodPut:
@@ -519,6 +557,36 @@ func (s *Server) Restart() {
 	s.bans, s.unapplied, s.banSeq, s.autoBans, s.autoEvicted = nil, nil, 0, nil, 0
 	s.challengeKeys, s.captchas, s.securityEvents = nil, nil, nil
 	s.active = nil
+	s.l4, s.l4Status, s.l4Pending = nil, dataplane.L4Status{}, nil
+}
+
+// L4 returns the installed layer-4 table (nil before the first push and
+// after Restart).
+func (s *Server) L4() *dataplane.L4Table {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.l4
+}
+
+// L4Pushes returns every layer-4 table received.
+func (s *Server) L4Pushes() []*dataplane.L4Table {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.l4Pushes)
+}
+
+// AddL4Stats queues buckets returned by the next layer-4 drain.
+func (s *Server) AddL4Stats(m ...dataplane.L4MinuteStats) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.l4Pending = append(s.l4Pending, m...)
+}
+
+// FailNextL4 answers the next n layer-4 calls with 503.
+func (s *Server) FailNextL4(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failL4 = n
 }
 
 // Active returns the installed active health marks (nil before the first

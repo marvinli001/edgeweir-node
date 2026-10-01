@@ -78,6 +78,10 @@ type DataPlane interface {
 	SecurityStatus(ctx context.Context) (*dataplane.SecurityStatus, error)
 	DrainSecurity(ctx context.Context) ([]dataplane.SecurityEvent, error)
 	PutActiveHealth(ctx context.Context, doc *dataplane.ActiveHealth) (*dataplane.ActiveHealthStatus, error)
+	// Layer-4 applications (the stream subsystem, through the control API).
+	L4Status(ctx context.Context) (*dataplane.L4Status, error)
+	PutL4(ctx context.Context, t *dataplane.L4Table) (*dataplane.L4Status, error)
+	DrainL4Stats(ctx context.Context) ([]dataplane.L4MinuteStats, error)
 }
 
 // Config configures the agent.
@@ -233,11 +237,14 @@ type Agent struct {
 	nodeID        string // guarded by mu; empty until the identity is known
 	connectedOnce sync.Once
 
-	mu           sync.Mutex
-	applied      *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
-	appliedAt    time.Time
-	plan         *configir.Plan       // plan in effect (listeners and zones for tasks)
-	desired      *dataplane.SiteTable // table the data plane must serve
+	mu        sync.Mutex
+	applied   *nodev1.NodeConfig // LKG in effect; nil while on the bootstrap config
+	appliedAt time.Time
+	plan      *configir.Plan       // plan in effect (listeners and zones for tasks)
+	desired   *dataplane.SiteTable // table the data plane must serve
+	// desiredL4 is the layer-4 table the stream subsystem must serve (nil:
+	// the plan has no layer-4 applications, nginx.conf no stream block).
+	desiredL4    *dataplane.L4Table
 	creds        map[string]configir.Credential
 	certificates map[string]configir.Certificate
 	purge        *purgeState
@@ -498,6 +505,7 @@ func (a *Agent) prepareDirs() error {
 		{a.cfg.Render.CacheDir, 0o750},
 		{filepath.Dir(a.cfg.Render.ControlSocket), 0o750},
 		{filepath.Dir(a.cfg.Render.WithDefaults().EdgeSocket), 0o750},
+		{filepath.Dir(a.cfg.Render.WithDefaults().L4Socket), 0o750},
 		{filepath.Dir(a.cfg.Render.OriginSocket), 0o750},
 		{filepath.Dir(a.cfg.ConfPath), 0o750},
 	}

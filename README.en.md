@@ -213,6 +213,7 @@ edgeweir-node version
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket |
 | `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Origin layer socket without TLS verification |
 | `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches when every listener uses the PROXY protocol |
+| `--l4-socket` | `l4.sock` next to the control socket | Control relay of the stream subsystem; the control API forwards layer-4 requests to it |
 | `--trusted-ca` | system bundle | CA bundle for HTTPS origins (proxying and active health checks) |
 | `--resolv-conf` | `/etc/resolv.conf` | Source of the nginx resolvers |
 | `--resolver` | none | Comma-separated resolver addresses; overrides `--resolv-conf` |
@@ -238,6 +239,8 @@ edgeweir-node version
 | `--challenge-dict-mb` | `8` | Challenge store (`lua_shared_dict edgeweir_challenge`), MiB |
 | `--tag-dict-mb` | `64` | Cache-Tag index (`lua_shared_dict edgeweir_tags`: tags and key epoch of cached objects, for purges by tag), MiB |
 | `--rate-limit-dict-kb` | `256` | Rate-limit counter store of each published site (`lua_shared_dict edgeweir_rate_<hex site id>`), KiB, 64–65536; new counters pass when it is full |
+| `--l4-dict-mb` | `32` | Layer-4 table store (`lua_shared_dict edgeweir_l4`: the current and the previous table of layer-4 applications with their IP lists), MiB |
+| `--stream-shutdown-timeout` | `0` | After a reload, the old workers close the connections they still serve (long layer-4 connections, WebSockets) after this long (`worker_shutdown_timeout`); `0` serves them until they end |
 | `--kernel-bans` | `auto` | Write platform bans into nftables: `auto` (`nft` works and `CAP_NET_ADMIN` granted), `off` |
 | `--nft-bin` | `nft` | nftables binary |
 | `--modsecurity-module` | `auto` | ModSecurity-nginx dynamic module: `auto` (the `modules/` directory of the edgeweir-openresty that `--nginx-bin` belongs to), a file path, or `off`; loaded only while a site runs the OWASP CRS |

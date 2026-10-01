@@ -65,6 +65,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.mu.Lock()
 	current := a.conf
 	previousTable := a.desired
+	previousL4 := a.desiredL4
 	a.mu.Unlock()
 	touched := false
 	defer func() {
@@ -85,6 +86,9 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 		}
 		if previousTable != nil {
 			restoreErr = errors.Join(restoreErr, a.pushWithRetry(recovery, previousTable))
+		}
+		if previousL4 != nil {
+			restoreErr = errors.Join(restoreErr, a.pushL4WithRetry(recovery, previousL4))
 		}
 		if restoreErr != nil {
 			a.setDataPlaneHealthy(false)
@@ -138,9 +142,18 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	if err := a.pushWithRetry(ctx, table); err != nil {
 		return err
 	}
+	// Layer-4 applications go to the stream subsystem, which nginx.conf
+	// has only while there are some (the reload above created it).
+	l4 := dataplane.L4FromPlan(plan)
+	if l4 != nil {
+		if err := a.pushL4WithRetry(ctx, l4); err != nil {
+			return err
+		}
+	}
 	a.mu.Lock()
 	a.conf = conf
 	a.desired = table
+	a.desiredL4 = l4
 	a.plan = plan
 	a.mu.Unlock()
 	// Checks of the plan start (or stop); the marks' lifetime follows
@@ -247,6 +260,81 @@ func (a *Agent) pushWithRetry(ctx context.Context, table *dataplane.SiteTable) e
 	}
 }
 
+// pushL4 installs the layer-4 table (serialized with the site table).
+func (a *Agent) pushL4(ctx context.Context, t *dataplane.L4Table) error {
+	a.pushMu.Lock()
+	defer a.pushMu.Unlock()
+	st, err := a.dp.PutL4(ctx, t)
+	if err != nil {
+		return err
+	}
+	a.log.Info("layer-4 table pushed to data plane", "revision", t.Revision, "applications", st.Apps, "table_version", st.Version)
+	return nil
+}
+
+// pushL4WithRetry retries transient failures (the stream subsystem of a
+// starting nginx) within the push timeout.
+func (a *Agent) pushL4WithRetry(ctx context.Context, t *dataplane.L4Table) error {
+	deadline := time.Now().Add(a.cfg.PushTimeout)
+	delay := 100 * time.Millisecond
+	for {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := a.pushL4(cctx, t)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		var apiErr *dataplane.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == 400 {
+			return &permanentError{fmt.Errorf("data plane rejected the layer-4 table: %w", err)}
+		}
+		if time.Now().After(deadline) {
+			a.setDataPlaneHealthy(false)
+			return fmt.Errorf("push layer-4 table: %w", err)
+		}
+		if !sleepCtx(ctx, delay) {
+			return ctx.Err()
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
+// reconcileL4 pushes the desired layer-4 table again when the stream
+// subsystem lost it (nginx restarted); true when it is in sync.
+func (a *Agent) reconcileL4(ctx context.Context) bool {
+	a.mu.Lock()
+	desired := a.desiredL4
+	a.mu.Unlock()
+	if desired == nil {
+		return true
+	}
+	st, err := a.dp.L4Status(ctx)
+	if err != nil {
+		a.log.Debug("layer-4 status unavailable", "err", err)
+		return false
+	}
+	if st.InSync(desired) {
+		return true
+	}
+	a.log.Info("layer-4 table out of sync (nginx restarted?), pushing it", "data_plane_revision", st.Revision,
+		"data_plane_table_version", st.Version, "revision", desired.Revision)
+	// Under the activation lock: a concurrent apply is never overwritten
+	// by an older table.
+	a.activationMu.Lock()
+	defer a.activationMu.Unlock()
+	a.mu.Lock()
+	desired = a.desiredL4
+	a.mu.Unlock()
+	if desired == nil {
+		return true
+	}
+	if err := a.pushL4(ctx, desired); err != nil {
+		a.log.Warn("cannot push layer-4 table", "err", err)
+		return false
+	}
+	return true
+}
+
 func (a *Agent) setDataPlaneHealthy(ok bool) {
 	a.mu.Lock()
 	changed := a.dpHealthy != ok
@@ -313,7 +401,7 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 		}
 	}
 	if st.InSync(desired) {
-		return purgeOK
+		return a.reconcileL4(cctx) && purgeOK
 	}
 	a.log.Info("data plane out of sync (nginx restarted?), pushing site table",
 		"data_plane_revision", st.Revision, "data_plane_table_version", st.Version, "revision", desired.Revision)
@@ -326,13 +414,14 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 		a.log.Warn("cannot push site table", "err", err)
 		return false
 	}
+	l4OK := a.reconcileL4(cctx)
 	a.mu.Lock()
 	failed := a.state == nodev1.ApplyState_APPLY_STATE_FAILED
 	a.mu.Unlock()
 	if failed && a.connectedCh.Load() != nil {
 		a.triggerSync() // retry the apply that failed while the data plane was down
 	}
-	return purgeOK
+	return l4OK && purgeOK
 }
 
 // syncLoop serializes all fetch-and-apply cycles.

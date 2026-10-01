@@ -213,6 +213,7 @@ edgeweir-node version
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层 socket |
 | `--origin-socket-noverify` | 回源 socket 同目录的 `origin-noverify.sock` | 不校验 TLS 的回源层 socket |
 | `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 本地边缘监听，所有监听启用 PROXY protocol 时供预热使用 |
+| `--l4-socket` | 控制 socket 同目录的 `l4.sock` | stream 子系统的控制中继；控制 API 把四层应用的请求转给它 |
 | `--trusted-ca` | 系统 CA bundle | HTTPS 源站证书的校验 CA（回源与主动健康检查） |
 | `--resolv-conf` | `/etc/resolv.conf` | nginx resolver 来源 |
 | `--resolver` | 无 | resolver 地址，逗号分隔；优先于 `--resolv-conf` |
@@ -238,6 +239,8 @@ edgeweir-node version
 | `--challenge-dict-mb` | `8` | 挑战存储（`lua_shared_dict edgeweir_challenge`），MiB |
 | `--tag-dict-mb` | `64` | Cache-Tag 索引（`lua_shared_dict edgeweir_tags`：缓存对象的标签与键时间，按标签清缓存用），MiB |
 | `--rate-limit-dict-kb` | `256` | 每个已发布站点的限速计数存储（`lua_shared_dict edgeweir_rate_<站点 id 十六进制>`），KiB，64–65536；满时新计数放行 |
+| `--l4-dict-mb` | `32` | 四层应用表存储（`lua_shared_dict edgeweir_l4`：当前与上一版四层应用表，含所用 IP 名单），MiB |
+| `--stream-shutdown-timeout` | `0` | reload 后旧 worker 仍在服务的连接（四层长连接、WebSocket 等）在这段时间后关闭（`worker_shutdown_timeout`）；`0` 表示一直服务到连接结束 |
 | `--kernel-bans` | `auto` | 平台封禁写入 nftables：`auto`（`nft` 可用且有 `CAP_NET_ADMIN` 时）、`off` |
 | `--nft-bin` | `nft` | nftables 可执行文件 |
 | `--modsecurity-module` | `auto` | ModSecurity-nginx 动态模块：`auto`（`--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 目录）、文件路径、`off`；只在有站点启用 OWASP CRS 时加载 |
