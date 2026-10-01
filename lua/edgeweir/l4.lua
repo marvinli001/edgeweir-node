@@ -743,7 +743,7 @@ local balancer
 function _M.balance()
   local ctx = ngx.ctx.edgeweir_l4
   if not ctx or not ctx.peers then
-    return ngx.exit(ngx.ERROR)
+    error("edgeweir: layer-4 session without origins")
   end
   balancer = balancer or require("ngx.balancer")
   local app, i = ctx.app, ctx.try + 1
@@ -753,7 +753,7 @@ function _M.balance()
   end
   local peer = ctx.peers[i]
   if not peer then
-    return ngx.exit(ngx.ERROR)
+    error("edgeweir: layer-4 session out of origins")
   end
   ctx.try = i
   if i == 1 then
@@ -767,8 +767,7 @@ function _M.balance()
   end
   local ok, err = balancer.set_current_peer(peer.ip, peer.port)
   if not ok then
-    ngx.log(ngx.ERR, "edgeweir: layer-4 peer ", peer.ip, ":", peer.port, ": ", err)
-    return ngx.exit(ngx.ERROR)
+    error("edgeweir: layer-4 peer " .. peer.ip .. ":" .. peer.port .. ": " .. tostring(err))
   end
 end
 
@@ -845,9 +844,10 @@ function _M.relay()
   local t1 = ngx.thread.spawn(pipe, down, up, counters, "rx", state, idle)
   local t2 = ngx.thread.spawn(pipe, up, down, counters, "tx", state, idle)
   ngx.thread.wait(t1, t2)
-  up:close()
+  -- The other direction may still wait for data: stop it before closing.
   ngx.thread.kill(t1)
   ngx.thread.kill(t2)
+  up:close()
 end
 
 function _M.log()
