@@ -377,6 +377,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		banDictMB     = fs.Int("ban-dict-mb", render.DefaultBanDictMB, "size of the ban store (lua_shared_dict edgeweir_bans) in MiB")
 		ccDictMB      = fs.Int("cc-dict-mb", render.DefaultCCDictMB, "size of the CC mitigation store (lua_shared_dict edgeweir_cc: counters, levels, events) in MiB")
 		challengeMB   = fs.Int("challenge-dict-mb", render.DefaultChallengeDictMB, "size of the challenge store (lua_shared_dict edgeweir_challenge: keys, captcha pool, used challenge nonces) in MiB")
+		tagDictMB     = fs.Int("tag-dict-mb", render.DefaultTagDictMB, "size of the Cache-Tag index (lua_shared_dict edgeweir_tags: tags and key epoch of cached objects, for purges by tag) in MiB")
 		kernelBans    = fs.String("kernel-bans", "auto", "also drop platform bans in the kernel with nftables: auto (when nft works; needs CAP_NET_ADMIN) or off")
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		modsecModule  = fs.String("modsecurity-module", "auto", "ModSecurity-nginx dynamic module for sites that run the OWASP CRS: auto (the edgeweir-openresty-modsecurity package next to --nginx-bin), a path, or off")
@@ -424,6 +425,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *challengeMB < 1 || *challengeMB > 65536 {
 		fmt.Fprintln(stderr, "run: --challenge-dict-mb must be 1-65536")
+		return 2
+	}
+	if *tagDictMB < 1 || *tagDictMB > 65536 {
+		fmt.Fprintln(stderr, "run: --tag-dict-mb must be 1-65536")
 		return 2
 	}
 	if *kernelBans != "auto" && *kernelBans != "off" {
@@ -517,6 +522,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		BanCapacity:        *banCapacity,
 		CCDictMB:           *ccDictMB,
 		ChallengeDictMB:    *challengeMB,
+		TagDictMB:          *tagDictMB,
 	}
 	switch *modsecModule {
 	case "off":

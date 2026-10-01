@@ -173,6 +173,7 @@ edgeweir-node version
 | `--ban-dict-mb` | `32` | Ban store (`lua_shared_dict edgeweir_bans`), MiB |
 | `--cc-dict-mb` | `32` | CC mitigation store (`lua_shared_dict edgeweir_cc`), MiB |
 | `--challenge-dict-mb` | `8` | Challenge store (`lua_shared_dict edgeweir_challenge`), MiB |
+| `--tag-dict-mb` | `64` | Cache-Tag index (`lua_shared_dict edgeweir_tags`: tags and key epoch of cached objects, for purges by tag), MiB |
 | `--kernel-bans` | `auto` | Write platform bans into nftables: `auto` (`nft` works and `CAP_NET_ADMIN` granted), `off` |
 | `--nft-bin` | `nft` | nftables binary |
 | `--modsecurity-module` | `auto` | ModSecurity-nginx dynamic module: `auto` (the `modules/` directory of the edgeweir-openresty that `--nginx-bin` belongs to), a file path, or `off`; loaded only while a site runs the OWASP CRS |
