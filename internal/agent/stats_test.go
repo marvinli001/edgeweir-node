@@ -1,11 +1,14 @@
 package agent_test
 
 import (
-	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 )
 
 func TestStatsRetryAndRestartUseDurableSequences(t *testing.T) {
@@ -56,10 +59,16 @@ func TestStatsRecoverCursorAfterLocalStateLoss(t *testing.T) {
 }
 
 func TestStatsWatermarkFollowsAcknowledgedDrains(t *testing.T) {
-	e := startEnrolled(t, "stats-watermark", nil, demoSite("site-a", "site-a.test"))
+	// The bucket and the lost acknowledgement are in place before the
+	// agent starts, so its first drain returns the bucket. Queued later,
+	// the bucket could follow a drain that found nothing; that drain's
+	// watermark rightly covers the bucket's minute and would end the wait
+	// below before the batch exists.
 	minute := time.Now().Add(-time.Minute).Truncate(time.Minute)
-	e.console.FailStatsAcknowledgements(1)
-	e.dp.AddStats(dataplane.MinuteStats{Minute: minute.Unix(), SiteID: "site-a", Requests: 5})
+	e := startEnrolledPrepared(t, "stats-watermark", nil, func(c *fakeconsole.Console, dp *fakedataplane.Server) {
+		c.FailStatsAcknowledgements(1)
+		dp.AddStats(dataplane.MinuteStats{Minute: minute.Unix(), SiteID: "site-a", Requests: 5})
+	}, baseConfig(demoSite("site-a", "site-a.test")))
 	eventually(t, "watermark after the batch", func() bool {
 		for _, w := range e.console.Watermarks() {
 			if !w.CompleteUntil.After(minute) {

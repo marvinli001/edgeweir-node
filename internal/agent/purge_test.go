@@ -39,6 +39,14 @@ func startEnrolled(t *testing.T, name string, mutate func(*agent.Config), sites 
 
 func startEnrolledConfig(t *testing.T, name string, mutate func(*agent.Config), config *nodev1.NodeConfig) *enrolled {
 	t.Helper()
+	return startEnrolledPrepared(t, name, mutate, nil, config)
+}
+
+// startEnrolledPrepared is startEnrolledConfig with prepare called on the
+// console and the data plane before the agent starts.
+func startEnrolledPrepared(t *testing.T, name string, mutate func(*agent.Config),
+	prepare func(*fakeconsole.Console, *fakedataplane.Server), config *nodev1.NodeConfig) *enrolled {
+	t.Helper()
 	console, err := fakeconsole.New(fakeconsole.Options{
 		NodeID: "node-" + name, ClusterID: "cl-" + name, ReportInterval: 1, KeepaliveInterval: 200 * time.Millisecond,
 	})
@@ -50,6 +58,9 @@ func startEnrolledConfig(t *testing.T, name string, mutate func(*agent.Config), 
 	h := &harness{t: t, console: console, url: srv.URL, stateDir: filepath.Join(root, "state"), root: root}
 	rev := console.Publish(config)
 	dp := fakedataplane.Start(t)
+	if prepare != nil {
+		prepare(console, dp)
+	}
 	cfg := h.agentConfig(dp.Socket)
 	if mutate != nil {
 		mutate(&cfg)
