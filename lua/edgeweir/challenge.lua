@@ -212,6 +212,8 @@ local function mac(key, msg)
   end
   return assert(h:final(msg))
 end
+-- mac is HMAC-SHA256 with a key of keys() (edgeweir.affinity signs with it).
+_M.mac = mac
 
 local function sha256(s)
   local h = resty_sha256:new()

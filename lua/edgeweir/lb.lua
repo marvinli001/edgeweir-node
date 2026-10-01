@@ -15,6 +15,15 @@
 --                    worker and site table version
 --   consistent_hash  ketama-style ring (40 points per weight unit) keyed by
 --                    the request URI; a down origin only moves its own keys
+--
+-- "Down" combines the passive check and, for sites whose pool has active
+-- checks (site._active), the agent's active check (edgeweir.health).
+--
+-- Session affinity (edgeweir.affinity): a pinned origin that is eligible in
+-- the tier taking traffic (a healthy primary; a healthy backup while every
+-- primary is down) goes first and the policy orders the others behind it
+-- (round robin keeps its state for unpinned requests: the others follow
+-- in weighted order). When every origin is down there is no pin.
 local health = require("edgeweir.health")
 
 local _M = {}
@@ -30,8 +39,9 @@ local MAX_WEIGHT_POINTS = 100
 
 local function healthy(site, list, now)
   local out = {}
+  local active = site._active == true
   for i = 1, #list do
-    if not health.is_down(site.id, list[i].id, now) then
+    if not health.is_down(site.id, list[i].id, now, active) then
       out[#out + 1] = list[i]
     end
   end
@@ -172,17 +182,47 @@ local function policy_order(site, all, eligible, group, key)
   return _M.weighted_order(eligible)
 end
 
+-- pinned returns the order of a tier with the pinned origin first, or nil
+-- when the pin is not among the tier's eligible origins.
+local function pinned(site, all, eligible, group, key, pin)
+  local first, rest = nil, {}
+  for i = 1, #eligible do
+    if eligible[i].id == pin then
+      first = eligible[i]
+    else
+      rest[#rest + 1] = eligible[i]
+    end
+  end
+  if not first then
+    return nil
+  end
+  local others
+  if #rest == 0 then
+    others = rest
+  elseif site.load_balance == "consistent_hash" then
+    others = _M.chash_order(site, all, rest, group, key)
+  else
+    others = _M.weighted_order(rest)
+  end
+  local out = { first }
+  for i = 1, #others do
+    out[#out + 1] = others[i]
+  end
+  return out
+end
+
 -- order returns the origins to try for a request (see above). key is the
--- consistent-hash key (the request URI).
-function _M.order(site, key, now)
+-- consistent-hash key (the request URI), pin the origin id of a valid
+-- affinity cookie (or nil).
+function _M.order(site, key, now, pin)
   local prim, back = site._primaries or {}, site._backups or {}
   local hp = healthy(site, prim, now)
   local hb = #hp == 0 and healthy(site, back, now) or nil
   local out
   if #hp > 0 then
-    out = policy_order(site, prim, hp, "p", key)
+    out = pin and pinned(site, prim, hp, "p", key, pin) or policy_order(site, prim, hp, "p", key)
   elseif #hb > 0 then
-    out = policy_order(site, back, hb, "b", key)
+    out = pin and pinned(site, back, hb, "b", key, pin) or policy_order(site, back, hb, "b", key)
   else
     out = policy_order(site, prim, prim, "p", key)
     local rest = policy_order(site, back, back, "b", key)

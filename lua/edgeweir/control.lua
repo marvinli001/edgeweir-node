@@ -8,7 +8,9 @@
 --   POST /v1/stats/drain      return and delete completed per-minute counters
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
 --   POST /v1/purge            merge purge markers {id, markers}
---   GET  /v1/origins/health   origins with recorded failures
+--   GET  /v1/origins/health   origins with recorded failures (passive check)
+--   PUT  /v1/origins/active   replace the origins the agent's active check
+--                             marks down {ttl, down: [{site_id, origin_id}]}
 --   GET  /v1/bans             ban status (?list=1 adds up to 1000 bans)
 --   PUT  /v1/bans             replace the console bans {sequence, bans}
 --   POST /v1/bans             apply a delta {base, sequence, upsert, remove}
@@ -228,6 +230,28 @@ function _M.handle()
     ngx.header["Cache-Control"] = "no-store"
     ngx.print('{"events":', cc.drain(1000), "}")
     return ngx.exit(ngx.HTTP_OK)
+  end
+
+  if uri == "/v1/origins/active" then
+    if method ~= "PUT" then
+      return reply(405, { error = "method not allowed" })
+    end
+    local body, err = read_body()
+    if not body then
+      return reply(400, { error = "read body: " .. tostring(err) })
+    end
+    local doc, derr = cjson.decode(body)
+    if type(doc) ~= "table" then
+      return reply(400, { error = "invalid JSON: " .. tostring(derr) })
+    end
+    local res, perr, code = health.replace_active(doc)
+    if not res then
+      if code ~= 409 then
+        ngx.log(ngx.ERR, "edgeweir: active health marks rejected: ", perr)
+      end
+      return reply(code or 500, { error = perr })
+    end
+    return reply(200, res)
   end
 
   if uri == "/v1/origins/health" then
