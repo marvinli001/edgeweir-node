@@ -24,9 +24,16 @@
 #  10. OWASP CRS: detect logs without blocking, block answers 403 for the
 #      CRS test payloads (cache hits included), excluded rules stay quiet,
 #      sites without CRS are unaffected, matched rules reach the logs;
-#  11. a new site reserves its partition; later existing-site changes stay hot;
-#  12. restarting the container serves the last-known-good config.
-# Set E2E_KEEP=1 to keep the stack running afterwards.
+#  11. Cache-Tag: hidden unless the site keeps it (cache hits included), a
+#      tag purge through the control socket moves tagged objects only, also
+#      when only a slice subrequest or a background update saw the tag;
+#      request ids; error pages (built-in, site and platform pages, offline
+#      and unknown hosts, origin failures, intercepted origin errors, CRS
+#      blocks, bans); session affinity;
+#  12. a new site reserves its partition; later existing-site changes stay hot;
+#  13. restarting the container serves the last-known-good config.
+# Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
+# the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -72,6 +79,15 @@ x_cache_path() { # host path -> value of X-Cache
   curl -s -o /dev/null -D - -H "Host: $1" "$NODE$2" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-cache"{print $2}'
 }
 applied_is() { [ "$(curl -fsS "$HELPER/applied")" = "$1" ]; }
+# control METHOD PATH [BODY]: the node's control API (unix socket), through
+# perl in the node container (the image has no curl).
+control() {
+  compose exec -T node perl -MIO::Socket::UNIX -e '
+    my ($m, $p, $b) = @ARGV; $b = "" unless defined $b;
+    my $s = IO::Socket::UNIX->new(Peer => "/run/edgeweir-node/control.sock") or die "control socket: $!";
+    print $s "$m $p HTTP/1.0\r\nHost: control\r\nContent-Type: application/json\r\nContent-Length: " . length($b) . "\r\n\r\n$b";
+    local $/; my $r = <$s>; $r =~ s/^.*?\r\n\r\n//s; print $r;' "$@"
+}
 
 compose up -d --build --quiet-pull
 wait_for "fake console" curl -fsS "$HELPER/pin"
@@ -220,6 +236,19 @@ pp_allowed() { [ "$(pp_status "$1" "$2")" = 200 ]; }
 WAIT_SECS=10 wait_for "unbanned" pp_allowed demo.test 198.51.100.23
 pp_allowed keyed.test 198.51.100.24 || fail "the platform ban outlived its removal"
 pass "site ban 403 on its site only, platform ban on every site, unban restores access"
+
+# Bans answer with the site's error page (or the built-in one).
+resp=$(curl -fsS -X POST "$HELPER/ban?site=site-pages&cidr=198.51.100.77/32")
+page_ban=${resp% *}
+WAIT_SECS=10 wait_for "site ban $page_ban" pp_banned pages.test 198.51.100.77
+r=$(pp_request pages.test 198.51.100.77 /banned-page | tr -d '\r')
+grep -q '^Content-Type: text/html; charset=utf-8$' <<<"$r" && grep -q '^Cache-Control: no-store$' <<<"$r" ||
+  fail "ban page headers: $(head -12 <<<"$r")"
+rid=$(sed -n 's/^X-Request-Id: //p' <<<"$r")
+grep -q "<h1>pages.test 403 198.51.100.77 $rid</h1>" <<<"$r" || fail "ban without the site's page: $(tail -1 <<<"$r")"
+curl -fsS -X POST "$HELPER/unban?id=$page_ban" >/dev/null
+WAIT_SECS=10 wait_for "unbanned pages.test" pp_allowed pages.test 198.51.100.77
+pass "a ban answers with the site's 403 page (status, client address, request id)"
 
 # Challenges. The node fetched the cluster's keys with the configuration.
 hdrs() { curl -s -o /dev/null -D - "$@" | tr -d '\r'; }
@@ -402,6 +431,11 @@ XSS_REFERER='Referer: <script>alert(1)</script>'
 [ "$(crs crs-block.test -H "$XSS_REFERER" "$NODE/crs-page")" = "403 - waf-blocked" ] || fail "XSS on a cached object: $(crs crs-block.test -H "$XSS_REFERER" "$NODE/crs-page")"
 [ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "XSS in the query not blocked"
 [ "$(crs crs-block.test -X POST --data-urlencode 'comment=<script>alert(1)</script>' "$NODE/comments")" = "403 - waf-blocked" ] || fail "XSS in the body not blocked"
+curl -s -D "$TMPDIR_E2E/crs.h" -o "$TMPDIR_E2E/crs.b" -H 'Host: crs-block.test' -H 'Accept-Language: zh-CN' "$NODE/search?q=%3Cscript%3Ealert(5)%3C%2Fscript%3E"
+grep -q '<html lang="zh-CN">' "$TMPDIR_E2E/crs.b" && grep -q '<h1>访问被拒绝</h1>' "$TMPDIR_E2E/crs.b" &&
+  grep -qi '^content-type: text/html; charset=utf-8' "$TMPDIR_E2E/crs.h" || fail "CRS block without the built-in 403 page: $(cat "$TMPDIR_E2E/crs.b")"
+[ "$(tr -d '\r' <"$TMPDIR_E2E/crs.h" | header_of content-length)" = "$(wc -c <"$TMPDIR_E2E/crs.b" | tr -d ' ')" ] ||
+  fail "CRS page Content-Length $(tr -d '\r' <"$TMPDIR_E2E/crs.h" | header_of content-length) for $(wc -c <"$TMPDIR_E2E/crs.b") bytes"
 [ "$(crs crs-block.test "$NODE/item?id=1%27%20OR%20%271%27%3D%271")" = "200 MISS -" ] || fail "excluded rule 942100 still blocks: $(crs crs-block.test "$NODE/item?id=1%27%20OR%20%271%27%3D%271")"
 [ "$(crs crs-detect.test "$NODE/item?id=1%27%20OR%20%271%27%3D%271")" = "200 MISS -" ] || fail "detect mode blocked SQLi"
 [ "$(crs demo.test "$NODE/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")" = "200 MISS -" ] || fail "a site without CRS answered the payload with $(crs demo.test "$NODE/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")"
@@ -425,6 +459,132 @@ wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 conf_loads_modsecurity || fail "nginx.conf does not load ModSecurity for CRS sites"
 [ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(3)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "CRS not active again"
 pass "CRS off: ModSecurity not loaded; on again: blocking"
+
+# Cache-Tag never reaches clients unless the site keeps it, cache hits
+# included (the edge reads $upstream_http_cache_tag of cached objects).
+hv() { # host path [curl args...] -> response headers
+  local host=$1 path=$2
+  shift 2
+  curl -s -o /dev/null -D - -H "Host: $host" "$@" "$NODE$path" | tr -d '\r'
+}
+cache_is() { [ "$(hv "$@" | header_of x-cache)" = "$CACHE" ]; }
+r=$(hv tags.test '/tagged?tags=Product-42,All')
+[ "$(header_of x-cache <<<"$r")" = MISS ] && [ -z "$(header_of cache-tag <<<"$r")" ] || fail "tags.test MISS: $r"
+r=$(hv tags.test '/tagged?tags=Product-42,All')
+[ "$(header_of x-cache <<<"$r")" = HIT ] && [ -z "$(header_of cache-tag <<<"$r")" ] || fail "tags.test HIT: $r"
+r=$(hv keep.test '/tagged?tags=a,b')
+[ "$(header_of x-cache <<<"$r")" = MISS ] && [ "$(header_of cache-tag <<<"$r")" = "a,b" ] || fail "keep.test MISS: $r"
+r=$(hv keep.test '/tagged?tags=a,b')
+[ "$(header_of x-cache <<<"$r")" = HIT ] && [ "$(header_of cache-tag <<<"$r")" = "a,b" ] || fail "keep.test HIT without Cache-Tag: $r"
+pass "Cache-Tag hidden by default, forwarded for sites that keep it (cache hits too)"
+
+# Request ids: nginx's, or the client's when valid; the origin sees the
+# same one and its own never reaches the client.
+r=$(hv tags.test "/echo?u=$RANDOM")
+id=$(header_of x-request-id <<<"$r")
+[[ "$id" =~ ^[0-9a-f]{32}$ ]] && [ "$(grep -ci '^x-request-id:' <<<"$r")" = 1 ] || fail "request id: $r"
+body=$(curl -s -D "$TMPDIR_E2E/rid.h" -H 'Host: tags.test' -H 'X-Request-Id: e2e-request-0001' "$NODE/echo?u=$RANDOM")
+grep -q "rid e2e-request-0001" <<<"$body" && [ "$(tr -d '\r' <"$TMPDIR_E2E/rid.h" | header_of x-request-id)" = e2e-request-0001 ] ||
+  fail "client request id not reused: $body"
+[[ "$(hv tags.test "/echo?u=$RANDOM" -H 'X-Request-Id: bad id!' | header_of x-request-id)" =~ ^[0-9a-f]{32}$ ]] || fail "invalid client request id kept"
+pass "X-Request-Id: the client's when valid, else nginx's; the origin sees it, never its own"
+
+# Purge by tag through the control socket (POST /v1/purge, with the id of
+# the agent's marker set so that the agent keeps it).
+r=$(hv tags.test '/tagged?plain=1')
+[ "$(header_of x-cache <<<"$r")" = MISS ] || fail "untagged object: $r"
+CACHE=HIT cache_is tags.test '/tagged?plain=1' || fail "untagged object not cached"
+tag_purge() { # site tag
+  local set now
+  set=$(control GET /v1/purge | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  # Milliseconds after every epoch the agent assigned before (perl-base has
+  # no Time::HiRes).
+  now=$(compose exec -T node perl -e 'printf("%d", time() * 1000 + 999)')
+  control POST /v1/purge "{\"id\":\"$set\",\"markers\":[{\"site_id\":\"$1\",\"type\":\"tag\",\"tag\":\"$2\",\"epoch\":$now}]}" |
+    grep -q "\"id\":\"$set\"" || fail "tag purge of $2 on $1 rejected"
+}
+tag_purge site-tags product-42
+CACHE=MISS cache_is tags.test '/tagged?tags=Product-42,All' || fail "tagged object still cached after its tag was purged"
+CACHE=HIT cache_is tags.test '/tagged?tags=Product-42,All' || fail "refetched tagged object not cached"
+CACHE=HIT cache_is tags.test '/tagged?plain=1' || fail "a tag purge moved an untagged object"
+pass "tag purge: the tagged object misses once, an untagged one stays cached"
+
+# Slices: the tag of the last slice (a slice subrequest) moves every slice.
+r=$(hv slice.test '/big.bin')
+[ "$(header_of x-cache <<<"$r")" = MISS ] && [ "$(header_of content-length <<<"$r")" = 3145728 ] || fail "slice.test: $r"
+CACHE=HIT cache_is slice.test '/big.bin' -H 'Range: bytes=3000000-3000010' || fail "last slice not cached"
+tag_purge site-slice 'range-bytes=2097152-3145727'
+CACHE=MISS cache_is slice.test '/big.bin' -H 'Range: bytes=0-10' || fail "a tag only a slice subrequest saw did not move the object"
+CACHE=HIT cache_is slice.test '/big.bin' -H 'Range: bytes=0-10' || fail "first slice not cached again"
+pass "slice subrequests index their Cache-Tag"
+
+# Background updates (stale-while-revalidate): the refreshed object's tag
+# moves it although only the background subrequest saw it.
+# The origin numbers its responses: gen-1 for the first fetch, gen-2 for
+# the background update. Objects stay fresh for a second only, so cached
+# answers are HIT or STALE; a moved key is a MISS.
+CACHE=MISS cache_is swr.test /gen || fail "swr.test first request"
+sleep 2
+CACHE=STALE cache_is swr.test /gen || fail "swr.test not served stale while updating"
+sleep 1
+tag_purge site-swr gen-99
+[ "$(hv swr.test /gen | header_of x-cache)" != MISS ] || fail "an unrelated tag moved swr.test"
+tag_purge site-swr gen-2
+CACHE=MISS cache_is swr.test /gen || fail "a tag only the background update saw did not move the object"
+pass "background updates index their Cache-Tag"
+
+# Error pages: unknown and offline hosts (platform), origin failures
+# (built-in), intercepted origin errors (site), origin errors without a
+# page pass unchanged.
+page_of() { # host path [curl args...] -> "<status> <x-edgeweir-error> <content-type> <cache-control>" then the body
+  local host=$1 path=$2
+  shift 2
+  curl -s -D "$TMPDIR_E2E/page.h" -o "$TMPDIR_E2E/page.b" -H "Host: $host" "$@" "$NODE$path"
+  tr -d '\r' <"$TMPDIR_E2E/page.h" | awk -F': ' 'NR==1{split($0,a," ");s=a[2]} tolower($1)=="x-edgeweir-error"{e=$2} tolower($1)=="content-type"{t=$2} tolower($1)=="cache-control"{c=$2} END{print s, e, t, c}'
+  cat "$TMPDIR_E2E/page.b"
+}
+r=$(page_of nowhere.test / -H 'X-Request-Id: e2e-page-0001')
+[ "$(head -1 <<<"$r")" = "404 unknown-host text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site not found</h1>' <<<"$r" &&
+  grep -q 'Request ID e2e-page-0001' <<<"$r" || fail "unknown host page: $r"
+r=$(page_of nowhere.test / -H 'Accept-Language: zh-CN,zh;q=0.9')
+grep -q '<h1>站点不存在</h1>' <<<"$r" || fail "unknown host page in Chinese: $r"
+r=$(page_of old.test /)
+[ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site disabled</h1>' <<<"$r" ||
+  fail "disabled site page: $r"
+r=$(page_of www.gone.test / -H 'X-Request-Id: e2e-page-0002')
+[ "$(head -1 <<<"$r")" = "503 site-suspended text/html; charset=utf-8 no-store" ] &&
+  grep -q '<h1>suspended www.gone.test e2e-page-0002</h1>' <<<"$r" || fail "suspended site page (platform template): $r"
+r=$(page_of dead.test /x)
+[ "$(head -1 <<<"$r")" = "502 origin-unreachable text/html; charset=utf-8 no-store" ] && grep -q '<h1>Origin unreachable</h1>' <<<"$r" ||
+  fail "origin failure page: $r"
+r=$(page_of pages.test /status/503)
+[ "$(head -1 <<<"$r")" = "503 origin-error text/html; charset=utf-8 no-store" ] && grep -q '<h1>busy pages.test</h1>' <<<"$r" ||
+  fail "intercepted origin error: $r"
+! grep -qi '^etag:' "$TMPDIR_E2E/page.h" || fail "intercepted origin error kept its ETag"
+r=$(page_of pages.test /status/404)
+[ "$(head -1 <<<"$r" | cut -d' ' -f1)" = 404 ] && grep -q 'origin status 404' <<<"$r" || fail "origin 404 changed: $r"
+r=$(page_of tags.test /status/503)
+[ "$(head -1 <<<"$r" | cut -d' ' -f1)" = 503 ] && grep -q 'origin status 503' <<<"$r" || fail "origin 503 of a site without pages changed: $r"
+curl -s -o /dev/null -H 'Host: pages.test' -H 'X-Request-Id: e2e-log-0001' "$NODE/logged"
+logged() { curl -fsS "$HELPER/request-ids" | grep -q '^site-pages 200 /logged e2e-log-0001$'; }
+WAIT_SECS=30 wait_for "request id in the access logs" logged
+pass "error pages: platform, built-in and site pages, intercepted origin errors; request id in the access logs"
+
+# Session affinity: the first response pins the client, the pin holds.
+r=$(hv aff.test /echo)
+cookie=$(cookie_of <<<"$r")
+header_of set-cookie <<<"$r" | grep -Eq '^__ew_affinity=o[12]\.[0-9]+\.e2e-key-2\.[A-Za-z0-9_-]+; Path=/; Max-Age=120; HttpOnly; SameSite=Lax$' ||
+  fail "affinity cookie: $(header_of set-cookie <<<"$r")"
+! grep -qi '^x-edgeweir-affinity' <<<"$r" || fail "the internal affinity header reached the client"
+pinned=$(header_of x-origin <<<"$r")
+for _ in $(seq 1 8); do
+  r=$(hv aff.test /echo -H "Cookie: $cookie")
+  [ "$(header_of x-origin <<<"$r")" = "$pinned" ] || fail "the pin to port $pinned did not hold"
+  [ -z "$(header_of set-cookie <<<"$r")" ] || fail "a valid pin was issued again"
+done
+origins=$(for _ in $(seq 1 12); do hv aff.test /echo | header_of x-origin; done | sort -u | wc -l | tr -d ' ')
+[ "$origins" = 2 ] || fail "clients without a cookie all went to one origin"
+pass "session affinity: one cookie, the pinned origin answers"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

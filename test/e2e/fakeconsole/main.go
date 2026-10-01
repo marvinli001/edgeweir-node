@@ -20,6 +20,19 @@
 //	crs-detect.test OWASP CRS, detect only (every request logged)
 //	crs-block.test  OWASP CRS, blocking, rule 942100 excluded (every
 //	                   request logged)
+//	tags.test       origin console:8082 (Cache-Tag from the query, see
+//	                   serveTestOrigin)
+//	keep.test       like tags.test, keeps Cache-Tag for clients
+//	slice.test      like tags.test, Range slices
+//	swr.test        like tags.test, cached 1 s, stale-while-revalidate 60 s
+//	pages.test      error pages for 403 and 503 that intercept origin errors
+//	                   (every request logged)
+//	dead.test       origin console:9 (nothing listens: 502)
+//	aff.test        origins console:8082 and console:8083 with session
+//	                   affinity (120 s), nothing cached
+//
+// The configuration names offline hosts (old.test disabled, *.gone.test
+// suspended) and a platform page for suspended sites.
 //
 // Every revision carries three challenge keys (e2e-key-1..3, current
 // e2e-key-2) that GetChallengeKeys hands out.
@@ -58,9 +71,12 @@
 //	GET /logs     "<site> <status> <path> <waf_blocked> <rule ids>" per
 //	              uploaded access log ("-" when no rule matched)
 //	GET /waf-rules "<site> <rule id> <requests>" per uploaded minute
+//	GET /request-ids "<site> <status> <path> <request id>" per uploaded
+//	              access log
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -73,6 +89,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -117,6 +134,61 @@ func serveTLSOrigin(addr, caOut string) {
 	}
 	log.Printf("HTTPS origin on %s, CA in %s", addr, caOut)
 	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
+
+// serveTestOrigin serves the plain HTTP origin of the G4 sites on addr:
+//
+//	/tagged?tags=a,b  Cache-Tag: a,b (none without tags)
+//	/gen              Cache-Tag: gen-<n>, n counting the requests of the
+//	                  path, no validators (every refresh is new content)
+//	/big.bin          3 MiB with Range support, Cache-Tag: file,
+//	                  range-<the request's Range or none>
+//	/status/<code>    answers <code> with an ETag
+//	/echo             "port <port> rid <X-Request-Id>"
+//
+// Every response carries X-Origin: <port> and the origin's own
+// X-Request-Id (the edge never forwards it).
+func serveTestOrigin(addr string) {
+	_, port, _ := net.SplitHostPort(addr)
+	big := bytes.Repeat([]byte("0123456789abcdef"), 3<<20/16)
+	var mu sync.Mutex
+	gens := map[string]int{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Origin", port)
+		h.Set("X-Request-Id", "origin-"+port)
+		switch {
+		case r.URL.Path == "/gen":
+			mu.Lock()
+			gens[r.URL.Path]++
+			n := gens[r.URL.Path]
+			mu.Unlock()
+			h.Set("Cache-Tag", fmt.Sprintf("gen-%d", n))
+			fmt.Fprintf(w, "generation %d\n", n)
+		case r.URL.Path == "/big.bin":
+			h.Set("Cache-Tag", "file, range-"+cmpOr(r.Header.Get("Range"), "none"))
+			http.ServeContent(w, r, "big.bin", time.Time{}, bytes.NewReader(big))
+		case strings.HasPrefix(r.URL.Path, "/status/"):
+			code, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/status/"))
+			if err != nil || code < 200 || code > 599 {
+				code = 400
+			}
+			h.Set("ETag", `"e2e"`)
+			w.WriteHeader(code)
+			fmt.Fprintf(w, "origin status %d\n", code)
+		case r.URL.Path == "/echo":
+			fmt.Fprintf(w, "port %s rid %s\n", port, r.Header.Get("X-Request-Id"))
+		default:
+			if tags := r.URL.Query().Get("tags"); tags != "" {
+				h.Set("Cache-Tag", tags)
+			}
+			fmt.Fprintf(w, "%s from %s\n", r.URL.Path, port)
+		}
+	})
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	log.Printf("test origin on %s", addr)
+	log.Fatal(srv.ListenAndServe())
 }
 
 func cmpOr(v, def string) string {
@@ -175,7 +247,12 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1"},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1"},
+		OfflineHosts: []*nodev1.OfflineHost{
+			{Name: "gone.test", Wildcard: true, Reason: "suspended"},
+			{Name: "old.test", Reason: "disabled"},
+		},
+		PlatformErrorPages: &nodev1.PlatformErrorPages{SiteSuspended: "<h1>suspended {{host}} {{request_id}}</h1>"},
 		Listeners: []*nodev1.Listener{
 			{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
 			// Behind a load balancer that speaks the PROXY protocol.
@@ -206,7 +283,62 @@ func baseSites(origin string) []*nodev1.Site {
 		compressSite(origin),
 		crsSite("site-crs-detect", "crs-detect.test", origin, "detect"),
 		crsSite("site-crs-block", "crs-block.test", origin, "block", 942100),
+		site("site-tags", "tags.test", "console", 8082),
+		keepSite(),
+		sliceSite(),
+		swrSite(),
+		pagesSite(),
+		site("site-dead", "dead.test", "console", 9),
+		affinitySite(),
 	}
+}
+
+// keepSite forwards Cache-Tag to clients.
+func keepSite() *nodev1.Site {
+	s := site("site-keep", "keep.test", "console", 8082)
+	s.KeepCacheTag = true
+	return s
+}
+
+// sliceSite caches 1 MiB slices.
+func sliceSite() *nodev1.Site {
+	s := site("site-slice", "slice.test", "console", 8082)
+	s.RangeSlice = true
+	return s
+}
+
+// swrSite keeps objects fresh for a second and serves them stale for a
+// minute while a background update refreshes them.
+func swrSite() *nodev1.Site {
+	s := site("site-swr", "swr.test", "console", 8082)
+	s.CacheRules[0].EdgeTtlSeconds = 1
+	s.CacheRules[0].StaleWhileRevalidateSeconds = 60
+	return s
+}
+
+// pagesSite has its own 403 and 503 pages and intercepts origin errors.
+func pagesSite() *nodev1.Site {
+	s := site("site-pages", "pages.test", "console", 8082)
+	s.ErrorPages = &nodev1.SiteErrorPages{
+		Pages: []*nodev1.ErrorPage{
+			{Status: 403, Template: "<h1>pages.test {{status}} {{client_ip}} {{request_id}}</h1>"},
+			{Status: 503, Template: "<h1>busy {{host}}</h1>"},
+		},
+		InterceptOriginErrors: true,
+	}
+	s.LogSampleRate = 10000
+	return s
+}
+
+// affinitySite pins clients to one of two origins and caches nothing.
+func affinitySite() *nodev1.Site {
+	s := site("site-aff", "aff.test", "console", 8082)
+	s.OriginPool.Origins = append(s.OriginPool.Origins, &nodev1.Origin{
+		Id: "o2", Address: "console", Port: 8083, Scheme: nodev1.OriginScheme_ORIGIN_SCHEME_HTTP, Weight: 1,
+	})
+	s.OriginPool.SessionAffinity = &nodev1.SessionAffinity{TtlSeconds: 120}
+	s.CacheRules = nil
+	return s
 }
 
 // compressSite compresses text/plain with gzip, Brotli and Zstandard.
@@ -275,6 +407,8 @@ func main() {
 	caOut := flag.String("origin-ca-out", "/shared/origin-ca.pem", "where to write the HTTPS origin's CA certificate")
 	flag.Parse()
 	go serveTLSOrigin(*tlsOrigin, *caOut)
+	go serveTestOrigin(":8082")
+	go serveTestOrigin(":8083")
 	if *allowed != "" {
 		allowList = strings.Split(*allowed, ",")
 	} else {
@@ -427,6 +561,11 @@ func main() {
 				ids = append(ids, strconv.FormatUint(uint64(id), 10))
 			}
 			fmt.Fprintf(w, "%s %d %s %t %s\n", l.GetSiteId(), l.GetStatus(), l.GetPath(), l.GetWafBlocked(), cmpOr(strings.Join(ids, ","), "-"))
+		}
+	})
+	mux.HandleFunc("GET /request-ids", func(w http.ResponseWriter, _ *http.Request) {
+		for _, l := range c.Logs() {
+			fmt.Fprintf(w, "%s %d %s %s\n", l.GetSiteId(), l.GetStatus(), l.GetPath(), cmpOr(l.GetRequestId(), "-"))
 		}
 	})
 	mux.HandleFunc("GET /waf-rules", func(w http.ResponseWriter, _ *http.Request) {

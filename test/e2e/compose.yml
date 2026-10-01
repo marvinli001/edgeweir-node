@@ -44,7 +44,7 @@ services:
   node:
     build:
       context: ../..
-    image: edgeweir-node:e2e-smoke
+    image: ${E2E_NODE_IMAGE:-edgeweir-node:e2e-smoke}
     depends_on:
       console:
         condition: service_healthy
