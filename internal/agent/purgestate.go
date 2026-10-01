@@ -13,9 +13,13 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 )
 
-// DefaultPurgeMarkersPerSite bounds the URL and prefix markers of one site;
-// beyond it the site's markers collapse into one site-level marker.
-const DefaultPurgeMarkersPerSite = 1000
+// DefaultPurgeMarkersPerSite bounds the URL and prefix markers of one site,
+// DefaultPurgeTagsPerSite its tag markers; beyond either the site's markers
+// collapse into one site-level marker.
+const (
+	DefaultPurgeMarkersPerSite = 1000
+	DefaultPurgeTagsPerSite    = 5000
+)
 
 // maxPurgeTasks bounds the remembered task epochs.
 const maxPurgeTasks = 100_000
@@ -39,6 +43,7 @@ type purgeState struct {
 	seq     uint64
 	markers map[string]dataplane.PurgeMarker // by markerIdentity
 	perSite map[string]int                   // URL and prefix markers per site
+	tags    map[string]int                   // tag markers per site
 	tasks   map[string]int64                 // task id -> assigned epoch
 	last    int64                            // highest epoch assigned
 	// lost is set when stored markers could not be read: the first plan
@@ -51,6 +56,7 @@ func newPurgeState() *purgeState {
 		gen:     randomGen(),
 		markers: map[string]dataplane.PurgeMarker{},
 		perSite: map[string]int{},
+		tags:    map[string]int{},
 		tasks:   map[string]int64{},
 	}
 }
@@ -63,11 +69,28 @@ func randomGen() string {
 	return hex.EncodeToString(b[:])
 }
 
+// markerIdentity identifies a marker regardless of its epoch (tags are
+// stored in lowercase).
 func markerIdentity(m dataplane.PurgeMarker) string {
-	if m.Type == "site" {
+	switch m.Type {
+	case "site":
 		return m.SiteID + "\x00site"
+	case "tag":
+		return m.SiteID + "\x00tag\x00" + m.Tag
 	}
 	return m.SiteID + "\x00" + m.Type + "\x00" + m.Host + "\x00" + m.Path + "\x00" + m.Query
+}
+
+// counter returns the per-site count a marker of type typ counts in (nil
+// for site-level markers).
+func (s *purgeState) counter(typ string) map[string]int {
+	switch typ {
+	case "site":
+		return nil
+	case "tag":
+		return s.tags
+	}
+	return s.perSite
 }
 
 // id identifies the current set.
@@ -115,16 +138,17 @@ func (s *purgeState) put(m dataplane.PurgeMarker) bool {
 		return true
 	}
 	s.markers[k] = m
-	if m.Type != "site" {
-		s.perSite[m.SiteID]++
+	if c := s.counter(m.Type); c != nil {
+		c[m.SiteID]++
 	}
 	return true
 }
 
 // add merges markers (highest epoch per identity wins) and collapses every
-// site above perSiteCap. It returns the markers the data plane must merge
-// (as stored), the collapsed sites and whether the set changed.
-func (s *purgeState) add(markers []dataplane.PurgeMarker, perSiteCap int) (delta []dataplane.PurgeMarker, collapsed []string, changed bool) {
+// site with more than urlCap URL and prefix markers or more than tagCap
+// tag markers (0: no limit). It returns the markers the data plane must
+// merge (as stored), the collapsed sites and whether the set changed.
+func (s *purgeState) add(markers []dataplane.PurgeMarker, urlCap, tagCap int) (delta []dataplane.PurgeMarker, collapsed []string, changed bool) {
 	touched := map[string]bool{}
 	for _, m := range markers {
 		if s.put(m) {
@@ -133,7 +157,8 @@ func (s *purgeState) add(markers []dataplane.PurgeMarker, perSiteCap int) (delta
 		touched[m.SiteID] = true
 	}
 	for _, site := range slices.Sorted(maps.Keys(touched)) {
-		if perSiteCap > 0 && s.perSite[site] > perSiteCap && s.collapse(site) {
+		over := (urlCap > 0 && s.perSite[site] > urlCap) || (tagCap > 0 && s.tags[site] > tagCap)
+		if over && s.collapse(site) {
 			collapsed = append(collapsed, site)
 			changed = true
 		}
@@ -155,9 +180,9 @@ func (s *purgeState) add(markers []dataplane.PurgeMarker, perSiteCap int) (delta
 	return delta, collapsed, changed
 }
 
-// collapse replaces every URL and prefix marker of site by one site-level
-// marker at their highest epoch: over-purging is acceptable, an unbounded
-// marker set is not. It does not bump the sequence.
+// collapse replaces every URL, prefix and tag marker of site by one
+// site-level marker at their highest epoch: over-purging is acceptable, an
+// unbounded marker set is not. It does not bump the sequence.
 func (s *purgeState) collapse(site string) bool {
 	var top int64
 	found := false
@@ -172,6 +197,7 @@ func (s *purgeState) collapse(site string) bool {
 		}
 	}
 	delete(s.perSite, site)
+	delete(s.tags, site)
 	if !found {
 		return false
 	}
@@ -186,10 +212,10 @@ func (s *purgeState) prune(markerCutoff, taskCutoff int64) bool {
 	for k, m := range s.markers {
 		if m.Epoch < markerCutoff {
 			delete(s.markers, k)
-			if m.Type != "site" {
-				s.perSite[m.SiteID]--
-				if s.perSite[m.SiteID] <= 0 {
-					delete(s.perSite, m.SiteID)
+			if c := s.counter(m.Type); c != nil {
+				c[m.SiteID]--
+				if c[m.SiteID] <= 0 {
+					delete(c, m.SiteID)
 				}
 			}
 			changed = true
@@ -237,7 +263,8 @@ func (s *purgeState) compact() *dataplane.PurgeTable {
 }
 
 // storedPurge is the format of purge.json. Version 1 (M2) only had
-// "markers".
+// "markers"; tag markers (with "tag") need no new version: earlier agents
+// skip markers of types they do not know.
 type storedPurge struct {
 	Version   int                     `json:"version"`
 	Gen       string                  `json:"gen,omitempty"`
@@ -262,11 +289,20 @@ func unmarshalPurge(raw []byte) (*purgeState, error) {
 	}
 	s.seq, s.last = st.Seq, st.LastEpoch
 	for _, m := range st.Markers {
-		if m.SiteID == "" || (m.Type != "url" && m.Type != "prefix" && m.Type != "site") {
+		// New epochs stay above every stored one, also of markers that
+		// are dropped here.
+		s.last = max(s.last, m.Epoch)
+		if m.SiteID == "" || (m.Type != "url" && m.Type != "prefix" && m.Type != "site" && m.Type != "tag") {
 			continue
 		}
+		if m.Type == "tag" {
+			tag, ok := cacheTag(m.Tag)
+			if !ok {
+				continue
+			}
+			m.Tag = tag
+		}
 		s.put(m)
-		s.last = max(s.last, m.Epoch)
 	}
 	maps.Copy(s.tasks, st.Tasks)
 	return s, nil

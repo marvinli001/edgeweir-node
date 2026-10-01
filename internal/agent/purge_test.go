@@ -207,3 +207,59 @@ func TestAgentInstallsSiteLevelFallbackWhenTheFullSetFails(t *testing.T) {
 		t.Fatalf("purge.json lost the URL markers: %s", raw)
 	}
 }
+
+// TestAgentPurgesByHostAndTag: a HOST target purges every path of the host
+// (a prefix marker on "/"), a TAG target becomes a tag marker; an invalid
+// tag fails alone (purge_failed). Tag markers are persisted and installed
+// again after an nginx restart.
+func TestAgentPurgesByHostAndTag(t *testing.T) {
+	e := startEnrolled(t, "tag", nil, demoSite("site-a", "site-a.test"))
+	e.console.AddTask(purgeTask("t1", time.Now(),
+		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_HOST, Host: "Site-A.test"},
+		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: "Product-42"},
+		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: "a,b"},
+	), false)
+	res := waitResults(t, e.console, 1)[0]
+	if res.GetState() != nodev1.TaskState_TASK_STATE_FAILED || res.GetSucceeded() != 2 || res.GetFailed() != 1 ||
+		res.GetErrorCode() != "purge_failed" || !strings.Contains(res.GetMessage(), `invalid tag target "a,b"`) {
+		t.Fatalf("result = %v", res)
+	}
+	epoch := e.dp.Markers()[0].Epoch
+	want := []dataplane.PurgeMarker{
+		{SiteID: "site-a", Type: "prefix", Host: "site-a.test", Path: "/", Epoch: epoch},
+		{SiteID: "site-a", Type: "tag", Tag: "product-42", Epoch: epoch},
+	}
+	if !slices.Equal(e.dp.Markers(), want) {
+		t.Fatalf("markers = %+v\nwant %+v", e.dp.Markers(), want)
+	}
+	raw, err := os.ReadFile(filepath.Join(e.h.stateDir, "purge.json"))
+	if err != nil || !strings.Contains(string(raw), `"type":"tag","tag":"product-42"`) {
+		t.Fatalf("purge.json: %s %v", raw, err)
+	}
+	e.dp.Restart()
+	eventually(t, "tag marker installed again after a restart", func() bool {
+		return e.dp.Table() != nil && slices.Equal(e.dp.Markers(), want)
+	})
+}
+
+// TestAgentPurgeTagsPerSiteCap: beyond --purge-tags-per-site a site's
+// markers collapse into one site-level marker, in the data plane too.
+func TestAgentPurgeTagsPerSiteCap(t *testing.T) {
+	e := startEnrolled(t, "tagcap", func(c *agent.Config) { c.PurgeTagsPerSite = 2 }, demoSite("site-a", "site-a.test"))
+	tag := func(v string) *nodev1.PurgeTarget {
+		return &nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: v}
+	}
+	e.console.AddTask(purgeTask("t1", time.Now(), tag("one"), tag("two"), urlTarget("site-a", "/x")), false)
+	waitResults(t, e.console, 1)
+	if m := e.dp.Markers(); len(m) != 3 {
+		t.Fatalf("markers below the cap = %+v", m)
+	}
+	e.console.AddTask(purgeTask("t2", time.Now(), tag("three")), false)
+	if res := waitResults(t, e.console, 2)[1]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || res.GetSucceeded() != 1 {
+		t.Fatalf("result = %v", res)
+	}
+	eventually(t, "one site-level marker", func() bool {
+		m := e.dp.Markers()
+		return len(m) == 1 && m[0].Type == "site" && m[0].SiteID == "site-a"
+	})
+}

@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/version"
@@ -201,37 +202,79 @@ func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask, deadline
 	}
 }
 
-var purgeTypes = map[nodev1.PurgeType]string{
-	nodev1.PurgeType_PURGE_TYPE_URL:    "url",
-	nodev1.PurgeType_PURGE_TYPE_PREFIX: "prefix",
-	nodev1.PurgeType_PURGE_TYPE_SITE:   "site",
+// maxCacheTag bounds a Cache-Tag value (PurgeTarget.tag; the data plane
+// drops longer elements of Cache-Tag headers).
+const maxCacheTag = 128
+
+// cacheTag returns tag in lowercase if it is a valid PurgeTarget.tag: 1-128
+// bytes of printable ASCII (0x20-0x7e) without commas and without leading
+// or trailing spaces, as the console normalizes it. Tags compare in
+// lowercase everywhere.
+func cacheTag(tag string) (string, bool) {
+	if tag == "" || len(tag) > maxCacheTag || tag[0] == ' ' || tag[len(tag)-1] == ' ' {
+		return "", false
+	}
+	for i := 0; i < len(tag); i++ {
+		if c := tag[i]; c < 0x20 || c > 0x7e || c == ',' {
+			return "", false
+		}
+	}
+	return strings.ToLower(tag), true // ASCII only: checked above
 }
 
-// purgeMarkers converts purge targets into markers with the given epoch.
+// purgeMarkers converts purge targets into markers with the given epoch. A
+// HOST target is a prefix marker on "/" (every path of the host), a TAG
+// target a tag marker. Invalid targets are described in the second result.
 func purgeMarkers(p *nodev1.PurgeTask, epoch int64) ([]dataplane.PurgeMarker, []string) {
 	var markers []dataplane.PurgeMarker
 	var invalid []string
 	for _, t := range p.GetTargets() {
-		typ, ok := purgeTypes[t.GetType()]
-		host := strings.ToLower(t.GetHost())
-		switch {
-		case !ok || t.GetSiteId() == "":
-			invalid = append(invalid, fmt.Sprintf("invalid target %v", t.GetType()))
+		m, why := purgeMarker(t, epoch)
+		if why != "" {
+			invalid = append(invalid, why)
 			continue
-		case typ != "site" && (host == "" || !strings.HasPrefix(t.GetPath(), "/")):
-			invalid = append(invalid, fmt.Sprintf("invalid %s target %q%q", typ, host, t.GetPath()))
-			continue
-		}
-		m := dataplane.PurgeMarker{SiteID: t.GetSiteId(), Type: typ, Epoch: epoch}
-		if typ != "site" {
-			m.Host, m.Path = host, t.GetPath()
-		}
-		if typ == "url" {
-			m.Query = t.GetQuery()
 		}
 		markers = append(markers, m)
 	}
 	return markers, invalid
+}
+
+// purgeMarker converts one purge target; the reason is empty when it is
+// valid.
+func purgeMarker(t *nodev1.PurgeTarget, epoch int64) (dataplane.PurgeMarker, string) {
+	m := dataplane.PurgeMarker{SiteID: t.GetSiteId(), Epoch: epoch}
+	host := strings.ToLower(t.GetHost())
+	if !configir.ValidID(m.SiteID) {
+		return m, fmt.Sprintf("invalid %v target: site id %q", t.GetType(), m.SiteID)
+	}
+	switch t.GetType() {
+	case nodev1.PurgeType_PURGE_TYPE_URL, nodev1.PurgeType_PURGE_TYPE_PREFIX:
+		m.Type, m.Host, m.Path = "url", host, t.GetPath()
+		if t.GetType() == nodev1.PurgeType_PURGE_TYPE_PREFIX {
+			m.Type = "prefix"
+		} else {
+			m.Query = t.GetQuery()
+		}
+		if host == "" || !strings.HasPrefix(m.Path, "/") {
+			return m, fmt.Sprintf("invalid %s target %q%q", m.Type, host, m.Path)
+		}
+	case nodev1.PurgeType_PURGE_TYPE_HOST:
+		m.Type, m.Host, m.Path = "prefix", host, "/"
+		if host == "" {
+			return m, "invalid host target: no host"
+		}
+	case nodev1.PurgeType_PURGE_TYPE_SITE:
+		m.Type = "site"
+	case nodev1.PurgeType_PURGE_TYPE_TAG:
+		tag, ok := cacheTag(t.GetTag())
+		if !ok {
+			return m, fmt.Sprintf("invalid tag target %q", t.GetTag())
+		}
+		m.Type, m.Tag = "tag", tag
+	default:
+		return m, fmt.Sprintf("invalid target %v", t.GetType())
+	}
+	return m, ""
 }
 
 // executePurge applies a purge task. Its marker time is assigned by the
@@ -252,8 +295,8 @@ func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *node
 		a.log.Error("cannot persist purge markers", "err", err)
 	}
 	if len(collapsed) > 0 {
-		a.log.Info("purge markers of sites over the per-site limit collapsed into site-level markers",
-			"sites", collapsed, "limit", a.cfg.PurgeMarkersPerSite)
+		a.log.Info("purge markers of sites over a per-site limit collapsed into site-level markers",
+			"sites", collapsed, "limit", a.cfg.PurgeMarkersPerSite, "tag_limit", a.cfg.PurgeTagsPerSite)
 		cctx, cancel := context.WithTimeout(ctx, a.cfg.PushTimeout)
 		err = a.syncPurge(cctx)
 		cancel()

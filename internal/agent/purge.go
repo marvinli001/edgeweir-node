@@ -126,7 +126,7 @@ func (a *Agent) taskEpoch(taskID string) int64 {
 func (a *Agent) addMarkers(markers []dataplane.PurgeMarker) ([]dataplane.PurgeMarker, []string, string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delta, collapsed, changed := a.purge.add(markers, a.cfg.PurgeMarkersPerSite)
+	delta, collapsed, changed := a.purge.add(markers, a.cfg.PurgeMarkersPerSite, a.cfg.PurgeTagsPerSite)
 	var err error
 	if changed {
 		err = a.savePurgeLocked()
@@ -170,7 +170,7 @@ func (a *Agent) recoverLostPurge(plan *configir.Plan) {
 	for _, s := range plan.Sites {
 		markers = append(markers, dataplane.PurgeMarker{SiteID: s.ID, Type: "site", Epoch: epoch})
 	}
-	a.purge.add(markers, 0)
+	a.purge.add(markers, 0, 0)
 	a.purge.lost = false
 	if err := a.savePurgeLocked(); err != nil {
 		a.log.Warn("cannot persist purge markers", "err", err)

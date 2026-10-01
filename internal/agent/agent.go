@@ -103,9 +103,11 @@ type Config struct {
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
 
-	// PurgeMarkersPerSite bounds a site's URL and prefix purge markers;
-	// beyond it they collapse into one site-level marker (default 1000).
+	// PurgeMarkersPerSite bounds a site's URL and prefix purge markers,
+	// PurgeTagsPerSite its tag markers; beyond either the site's markers
+	// collapse into one site-level marker (defaults 1000 and 5000).
 	PurgeMarkersPerSite int
+	PurgeTagsPerSite    int
 
 	// Prefetch tasks request URLs from the node's own edge listener.
 	PrefetchHost        string        // default 127.0.0.1
@@ -179,6 +181,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.PurgeMarkersPerSite <= 0 {
 		c.PurgeMarkersPerSite = DefaultPurgeMarkersPerSite
+	}
+	if c.PurgeTagsPerSite <= 0 {
+		c.PurgeTagsPerSite = DefaultPurgeTagsPerSite
 	}
 	if c.DefaultPort == 0 {
 		c.DefaultPort = 80
