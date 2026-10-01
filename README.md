@@ -31,7 +31,7 @@
 | OpenResty 数据面 | 路由、缓存、回源、策略执行；经本地 unix socket 接收站点、源站、证书与规则的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.12.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.13.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
