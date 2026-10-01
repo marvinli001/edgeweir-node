@@ -67,9 +67,11 @@ func TestPolicyValidation(t *testing.T) {
 
 // TestSharedExpressionVectors reads the console's shared vectors (a copy of
 // packages/rule-engine/test/vectors.json that Lua also runs): configir accepts
-// every accepted IR and refuses every rejected pattern, and for `matches` RE2
-// over the value's bytes (one rune per byte, like PCRE2 without UTF) gives the
-// expected result, a third engine next to JavaScript and PCRE2.
+// every accepted condition and value expression with its action, refuses
+// every rejected pattern and IR, keeps the structured form of cache
+// conditions, and for `matches` RE2 over the value's bytes (one rune per
+// byte, like PCRE2 without UTF) gives the expected result, a third engine
+// next to JavaScript and PCRE2. Derivation vectors are Lua's alone.
 func TestSharedExpressionVectors(t *testing.T) {
 	data, err := os.ReadFile("../../test/lua/expression-vectors.json")
 	if err != nil {
@@ -82,18 +84,33 @@ func TestSharedExpressionVectors(t *testing.T) {
 		Reason   string          `json:"reason"`
 		Action   json.RawMessage `json:"action"`
 		// ActionRejected: nodes refuse the action in this phase.
-		ActionRejected bool                `json:"actionRejected"`
-		Request        map[string]any      `json:"request"`
-		Lists          map[string][]string `json:"lists"`
-		Expected       bool                `json:"expected"`
-		IR             json.RawMessage     `json:"ir"`
+		ActionRejected bool `json:"actionRejected"`
+		// IRRejected: the IR itself is refused (Value: as a value
+		// expression); otherwise a rejected vector's IR holds a pattern
+		// outside the subset.
+		IRRejected bool                `json:"irRejected"`
+		Value      bool                `json:"value"`
+		Request    map[string]any      `json:"request"`
+		Lists      map[string][]string `json:"lists"`
+		Expected   json.RawMessage     `json:"expected"`
+		IR         json.RawMessage     `json:"ir"`
+		Structured *struct {
+			PathPrefixes []string `json:"pathPrefixes"`
+			Paths        []string `json:"paths"`
+			Extensions   []string `json:"extensions"`
+		} `json:"structured"`
+		Derive string `json:"derive"`
 	}
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatal(err)
 	}
 	features := []string{"geoip-country-v1", "geoip-subdivision-v1", "geoip-asn-v1"}
-	accepted, rejected, actions := 0, 0, 0
+	counts := map[string]int{}
 	for i, v := range vectors {
+		if v.Derive != "" {
+			counts["derive"]++
+			continue
+		}
 		e := &nodev1.RuleExpression{}
 		if err := protojson.Unmarshal(v.IR, e); err != nil {
 			t.Fatalf("vector %d: %v", i, err)
@@ -102,22 +119,38 @@ func TestSharedExpressionVectors(t *testing.T) {
 		for id := range v.Lists {
 			lists[id] = true
 		}
-		budget := 256
-		err := validateExpression(e, v.Phase, lists, features, 0, &budget)
+		validate := func() error {
+			if v.Value {
+				return validateValueExpression(e, v.Phase, features)
+			}
+			return validateCondition(e, v.Phase, lists, features)
+		}
+		err := validate()
 		if v.Rejected {
-			rejected++
 			if err == nil {
 				t.Errorf("vector %d accepted %s (%s)", i, v.Source, v.Reason)
 			}
+			if v.IRRejected {
+				counts["irRejected"]++
+			} else {
+				counts["pattern"]++
+				if e.Op != "matches" || validPattern(e.Value) {
+					t.Errorf("vector %d: pattern %q of %s is not refused by validPattern", i, e.Value, v.Source)
+				}
+			}
 			continue
 		}
-		accepted++
 		if err != nil {
 			t.Errorf("vector %d refused %s: %v", i, v.Source, err)
 			continue
 		}
+		if v.Value {
+			counts["value"]++
+		} else {
+			counts["condition"]++
+		}
 		if len(v.Action) > 0 {
-			actions++
+			counts["action"]++
 			a := &nodev1.RuleAction{}
 			if err := protojson.Unmarshal(v.Action, a); err != nil {
 				t.Fatalf("vector %d action: %v", i, err)
@@ -125,24 +158,44 @@ func TestSharedExpressionVectors(t *testing.T) {
 			rule := &nodev1.EdgeRule{Id: "vector", Phase: v.Phase, Expression: e, Action: a}
 			err := validateRuleSet([]*nodev1.EdgeRule{rule}, lists, features, 64)
 			if v.ActionRejected && err == nil {
-				t.Errorf("vector %d accepted action %s in %s", i, v.Action, v.Phase)
+				t.Errorf("vector %d accepted action %s in %s (%s)", i, v.Action, v.Phase, v.Reason)
 			}
 			if !v.ActionRejected && err != nil {
 				t.Errorf("vector %d refused action %s in %s: %v", i, v.Action, v.Phase, err)
 			}
 		}
-		if e.Op == "matches" {
+		if st := v.Structured; st != nil {
+			// The structured form travels unchanged: buildRule keeps every
+			// entry, and the condition form is a valid cache rule too.
+			counts["structured"]++
+			r := &nodev1.CacheRule{Id: "vector", Action: nodev1.CacheAction_CACHE_ACTION_CACHE, Match: &nodev1.CacheRuleMatch{PathPrefixes: st.PathPrefixes, Paths: st.Paths, Extensions: st.Extensions}}
+			rule, ok, why := buildRule(r)
+			if !ok || len(rule.PathPrefixes) != len(st.PathPrefixes) || len(rule.Paths) != len(st.Paths) || len(rule.Extensions) != len(st.Extensions) {
+				t.Errorf("vector %d: structured form of %s not kept (%s): %+v", i, v.Source, why, rule)
+			}
+			site := &nodev1.Site{Id: "s", CacheRules: []*nodev1.CacheRule{{Id: "c", Match: &nodev1.CacheRuleMatch{Condition: e}}}}
+			if err := validateCacheRuleConditions(site, lists, features); err != nil {
+				t.Errorf("vector %d: condition %s: %v", i, v.Source, err)
+			}
+		}
+		if e.Op == "matches" && e.Field != "" { // a computed left side needs an evaluator
+			var expected bool
+			if err := json.Unmarshal(v.Expected, &expected); err != nil {
+				t.Fatalf("vector %d: %v", i, err)
+			}
 			subject, _ := v.Request[e.Field].(string)
 			runes := make([]rune, len(subject))
 			for j := range len(subject) {
 				runes[j] = rune(subject[j])
 			}
-			if got := regexp.MustCompile(e.Value).MatchString(string(runes)); got != v.Expected {
+			if got := regexp.MustCompile(e.Value).MatchString(string(runes)); got != expected {
 				t.Errorf("vector %d: RE2 gives %v for %s on %q", i, got, v.Source, subject)
 			}
 		}
 	}
-	if accepted == 0 || rejected == 0 || actions == 0 {
-		t.Fatalf("%d accepted and %d rejected vectors, %d actions", accepted, rejected, actions)
+	for _, kind := range []string{"condition", "value", "pattern", "irRejected", "action", "structured", "derive"} {
+		if counts[kind] == 0 {
+			t.Errorf("no %s vectors: %v", kind, counts)
+		}
 	}
 }

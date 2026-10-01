@@ -182,6 +182,18 @@ type Site struct {
 	ActiveHealth      bool               `json:"active_health,omitempty"`
 	// Affinity is the pool's cookie-based session affinity (nil: none).
 	Affinity *Affinity `json:"affinity,omitempty"`
+	// BulkRedirects is the site's exact-match redirect table, sorted by
+	// source (feature rules-v2).
+	BulkRedirects []BulkRedirect `json:"bulk_redirects,omitempty"`
+}
+
+// BulkRedirect is an entry of a site's exact-match redirect table: Source
+// is "/path" (every domain) or "host/path".
+type BulkRedirect struct {
+	Source        string `json:"source"`
+	Target        string `json:"target"`
+	Status        uint32 `json:"status"`
+	PreserveQuery bool   `json:"preserve_query,omitempty"`
 }
 
 type TLSOptions struct {
@@ -303,6 +315,9 @@ type Origin struct {
 	// address outside the origin allow list: the data plane never connects
 	// to it (requests that only have such origins fail with 502).
 	Forbidden bool `json:"forbidden,omitempty"`
+	// Group is the origin group inside the site ("" is the default group);
+	// origin rules send requests to the other groups (feature rules-v2).
+	Group string `json:"group,omitempty"`
 }
 
 // S3Auth is the signing configuration of an S3-compatible origin.
@@ -349,6 +364,13 @@ type CacheRule struct {
 	// CacheAuthorized lets the rule cache requests that carry
 	// Authorization; otherwise they bypass the cache (RFC 9111, 3.5).
 	CacheAuthorized bool `json:"cache_authorized,omitempty"`
+	// Condition is the request condition as a typed expression (phase
+	// cache), evaluated on the client's original request; rules with a
+	// condition have no path lists (feature rules-v2).
+	Condition *nodev1.RuleExpression `json:"condition,omitempty"`
+	// BrowserTTL replaces the client's Cache-Control with max-age=N on
+	// responses the rule caches; 0 keeps the origin's (feature rules-v2).
+	BrowserTTL uint32 `json:"browser_ttl,omitempty"`
 }
 
 // CredentialRefs returns the S3 credentials the plan needs, id -> version.
@@ -675,6 +697,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			continue
 		}
 
+		for _, b := range s.GetBulkRedirects() {
+			site.BulkRedirects = append(site.BulkRedirects, BulkRedirect{Source: b.GetSource(), Target: b.GetTarget(), Status: b.GetStatusCode(), PreserveQuery: b.GetPreserveQuery()})
+		}
 		for _, r := range s.GetCacheRules() {
 			rule, ok, why := buildRule(r)
 			if !ok {
@@ -874,6 +899,7 @@ func buildOrigin(o *nodev1.Origin) (Origin, error) {
 		HostHeader: host,
 		SNI:        sni,
 		S3:         s3,
+		Group:      o.GetGroup(),
 	}, nil
 }
 
@@ -887,6 +913,8 @@ func buildRule(r *nodev1.CacheRule) (CacheRule, bool, string) {
 		StaleWhileRevalidate: r.GetStaleWhileRevalidateSeconds(),
 		StaleIfError:         r.GetStaleIfErrorSeconds(),
 		CacheAuthorized:      r.GetCacheAuthorized(),
+		Condition:            r.GetMatch().GetCondition(),
+		BrowserTTL:           r.GetBrowserTtlSeconds(),
 	}
 	switch r.GetAction() {
 	case nodev1.CacheAction_CACHE_ACTION_CACHE:

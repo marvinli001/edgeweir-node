@@ -4,15 +4,30 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
-var rulePhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin", "response-transform"}
-var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number", "tls.ja4": "string"}
+// rulePhases in execution order. compression (proto v0.13.0, feature
+// rules-v2) runs in the edge layer's header filter after
+// response-transform.
+var rulePhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin", "response-transform", "compression"}
+
+// responsePhases may read http.response.* fields.
+var responsePhases = []string{"response-transform", "compression"}
+
+var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number", "tls.ja4": "string",
+	// rules-v2: scheme://host followed by the request URI as received; the
+	// lowercase extension of the last path segment; the lowercase media type
+	// of the response's Content-Type without parameters.
+	"http.request.full_uri": "string", "http.request.uri.path.extension": "string", "http.response.content_type.media_type": "string"}
 
 // geoFeatures is the local capability each GeoIP field needs (see
 // geoip.Features). The console sends geoip-city-v1 for subdivision rules too;
@@ -24,7 +39,12 @@ func ruleHeader(s string) bool {
 	return tokenRE.MatchString(s) && s == strings.ToLower(s) && !slices.Contains(protectedHeaders, s) && !strings.HasPrefix(s, "x-edgeweir-")
 }
 func ruleText(s string) bool {
-	return len(s) <= 16384 && !strings.ContainsFunc(s, func(r rune) bool { return r < 32 || r == 127 })
+	return len(s) <= 16384 && !hasControl(s)
+}
+
+// hasControl reports whether s contains a byte below 0x20 or 0x7f.
+func hasControl(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return r < 32 || r == 127 })
 }
 func ruleValue(s, typ string) bool {
 	switch typ {
@@ -42,65 +62,175 @@ func ruleValue(s, typ string) bool {
 	return false
 }
 
-func validateExpression(e *nodev1.RuleExpression, phase string, lists map[string]bool, features []string, depth int, budget *int) error {
-	*budget--
-	bad := func() error { return fmt.Errorf("%w: invalid rule expression", ErrRejected) }
-	if e == nil || depth > 64 || *budget < 0 {
-		return bad()
+// ruleFunction is the signature of a function of the expression language
+// (proto v0.13.0, feature rules-v2). Arguments are string value nodes;
+// valueOnly functions appear only in value expressions (RuleAction.target),
+// at most once each, and take constant pattern and replacement arguments.
+type ruleFunction struct {
+	result    string
+	min, max  int
+	valueOnly bool
+}
+
+var ruleFunctions = map[string]ruleFunction{
+	"lower":            {"string", 1, 1, false},
+	"upper":            {"string", 1, 1, false},
+	"len":              {"number", 1, 1, false},
+	"starts_with":      {"boolean", 2, 2, false},
+	"ends_with":        {"boolean", 2, 2, false},
+	"url_decode":       {"string", 1, 1, false},
+	"concat":           {"string", 2, 8, false},
+	"regex_replace":    {"string", 3, 3, true},
+	"wildcard_replace": {"string", 3, 4, true},
+}
+
+// Bounds of expressions: nodes per expression (conditions and value
+// expressions each), nesting of and/or/not and of function calls.
+const (
+	maxExpressionNodes = 256
+	maxExpressionDepth = 64
+	maxCallDepth       = 4
+	// Replacement templates of regex_replace and wildcard_replace.
+	maxReplacement     = 1024
+	maxWildcardPattern = 1024
+	maxWildcards       = 8
+	maxReplaceGroup    = 8
+)
+
+// exprCheck validates one expression: a condition (EdgeRule.expression,
+// CacheRuleMatch.condition) or a value expression (RuleAction.target).
+type exprCheck struct {
+	phase    string
+	lists    map[string]bool
+	features []string
+	budget   int
+	// value: a value expression, where regex_replace and wildcard_replace
+	// may appear once each (used records them).
+	value bool
+	used  map[string]bool
+}
+
+var errInvalidExpression = fmt.Errorf("%w: invalid rule expression", ErrRejected)
+
+// validateCondition checks a condition of phase. lists are the IP lists
+// in_list may name, features the node's local capabilities (GeoIP).
+func validateCondition(e *nodev1.RuleExpression, phase string, lists map[string]bool, features []string) error {
+	c := &exprCheck{phase: phase, lists: lists, features: features, budget: maxExpressionNodes}
+	return c.condition(e, 0)
+}
+
+// validateValueExpression checks a value expression of phase: a string
+// field, constant or function call.
+func validateValueExpression(e *nodev1.RuleExpression, phase string, features []string) error {
+	c := &exprCheck{phase: phase, features: features, budget: maxExpressionNodes, value: true, used: map[string]bool{}}
+	typ, err := c.valueNode(e, 0)
+	if err != nil {
+		return err
+	}
+	if typ != "string" {
+		return errInvalidExpression
+	}
+	return nil
+}
+
+// fieldType returns the type of field in this phase, "" when unknown or
+// unavailable.
+func (c *exprCheck) fieldType(field string) string {
+	typ := fieldTypes[field]
+	for _, prefix := range []string{"http.request.headers.", "http.response.headers."} {
+		if strings.HasPrefix(field, prefix) && tokenRE.MatchString(strings.TrimPrefix(field, prefix)) {
+			typ = "string"
+		}
+	}
+	if strings.HasPrefix(field, "http.response.") && !slices.Contains(responsePhases, c.phase) {
+		return ""
+	}
+	return typ
+}
+
+func (c *exprCheck) geo(field string) error {
+	if feature, ok := geoFeatures[field]; ok && !slices.Contains(c.features, feature) {
+		return fmt.Errorf("%w: GeoIP database unavailable", ErrRejected)
+	}
+	return nil
+}
+
+func (c *exprCheck) condition(e *nodev1.RuleExpression, depth int) error {
+	c.budget--
+	bad := errInvalidExpression
+	if e == nil || depth > maxExpressionDepth || c.budget < 0 {
+		return bad
 	}
 	switch e.Op {
 	case "and", "or", "not":
 		if len(e.Children) == 0 || (e.Op == "not" && len(e.Children) != 1) || e.Field != "" || e.Value != "" || e.ValueType != "" || len(e.Values) > 0 {
-			return bad()
+			return bad
 		}
-		for _, c := range e.Children {
-			if err := validateExpression(c, phase, lists, features, depth+1, budget); err != nil {
+		for _, child := range e.Children {
+			if err := c.condition(child, depth+1); err != nil {
 				return err
 			}
 		}
 		return nil
 	case "literal":
 		if e.ValueType != "boolean" || !ruleValue(e.Value, "boolean") || e.Field != "" || len(e.Children) > 0 || len(e.Values) > 0 {
-			return bad()
+			return bad
 		}
 		return nil
-	}
-	if len(e.Children) > 0 {
-		return bad()
-	}
-	typ := fieldTypes[e.Field]
-	for _, prefix := range []string{"http.request.headers.", "http.response.headers."} {
-		if strings.HasPrefix(e.Field, prefix) && tokenRE.MatchString(strings.TrimPrefix(e.Field, prefix)) {
-			typ = "string"
+	case "call":
+		// A boolean function stands alone as a condition.
+		typ, err := c.call(e, 1)
+		if err != nil {
+			return err
 		}
+		if typ != "boolean" {
+			return bad
+		}
+		return nil
+	case "field", "const":
+		return bad
 	}
-	if typ == "" || typ != e.ValueType || (strings.HasPrefix(e.Field, "http.response.") && phase != "response-transform") {
-		return bad()
-	}
-	if feature, ok := geoFeatures[e.Field]; ok {
-		if !slices.Contains(features, feature) {
-			return fmt.Errorf("%w: GeoIP database unavailable", ErrRejected)
+	var typ string
+	if len(e.Children) > 0 {
+		// The left side is computed: exactly one value node.
+		if e.Field != "" || len(e.Children) != 1 || e.Op == "in_list" {
+			return bad
+		}
+		var err error
+		if typ, err = c.valueNode(e.Children[0], 0); err != nil {
+			return err
+		}
+		if typ != e.ValueType {
+			return bad
+		}
+	} else {
+		typ = c.fieldType(e.Field)
+		if typ == "" || typ != e.ValueType {
+			return bad
+		}
+		if err := c.geo(e.Field); err != nil {
+			return err
 		}
 	}
 	if e.Op == "in_list" {
-		if typ != "ip" || !lists[e.Value] || len(e.Values) > 0 {
-			return bad()
+		if typ != "ip" || !c.lists[e.Value] || len(e.Values) > 0 {
+			return bad
 		}
 		return nil
 	}
 	if e.Op == "in" {
 		if e.Value != "" || len(e.Values) == 0 || len(e.Values) > 256 {
-			return bad()
+			return bad
 		}
 		for _, v := range e.Values {
 			if !ruleValue(v, typ) {
-				return bad()
+				return bad
 			}
 		}
 		return nil
 	}
 	if len(e.Values) > 0 || !ruleValue(e.Value, typ) {
-		return bad()
+		return bad
 	}
 	switch e.Op {
 	case "eq", "ne":
@@ -118,7 +248,133 @@ func validateExpression(e *nodev1.RuleExpression, phase string, lists map[string
 			return nil
 		}
 	}
-	return bad()
+	return bad
+}
+
+// valueNode checks a value node (field, const or call) and returns its
+// type. depth is the number of calls around it.
+func (c *exprCheck) valueNode(e *nodev1.RuleExpression, depth int) (string, error) {
+	c.budget--
+	bad := errInvalidExpression
+	if e == nil || c.budget < 0 {
+		return "", bad
+	}
+	switch e.Op {
+	case "field":
+		typ := c.fieldType(e.Field)
+		if typ == "" || typ != e.ValueType || e.Value != "" || len(e.Values) > 0 || len(e.Children) > 0 {
+			return "", bad
+		}
+		return typ, c.geo(e.Field)
+	case "const":
+		if e.ValueType != "string" || e.Field != "" || len(e.Values) > 0 || len(e.Children) > 0 || !ruleValue(e.Value, "string") {
+			return "", bad
+		}
+		return "string", nil
+	case "call":
+		return c.call(e, depth+1)
+	}
+	return "", bad
+}
+
+// call checks a function call at nesting depth (1: outermost).
+func (c *exprCheck) call(e *nodev1.RuleExpression, depth int) (string, error) {
+	bad := errInvalidExpression
+	f, ok := ruleFunctions[e.Field]
+	if !ok || depth > maxCallDepth || e.ValueType != f.result || e.Value != "" || len(e.Values) > 0 || len(e.Children) < f.min || len(e.Children) > f.max {
+		return "", bad
+	}
+	if f.valueOnly {
+		if !c.value || c.used[e.Field] {
+			return "", bad
+		}
+		c.used[e.Field] = true
+	}
+	for i, arg := range e.Children {
+		typ, err := c.valueNode(arg, depth)
+		if err != nil {
+			return "", err
+		}
+		// Patterns, replacements and the flag are constants.
+		if typ != "string" || (f.valueOnly && i > 0 && arg.Op != "const") {
+			return "", bad
+		}
+	}
+	switch e.Field {
+	case "regex_replace":
+		pattern := e.Children[1].Value
+		if !validPattern(pattern) || !validReplacement(e.Children[2].Value, patternGroups(pattern)) {
+			return "", bad
+		}
+	case "wildcard_replace":
+		stars := wildcardStars(e.Children[1].Value)
+		if stars < 0 || !validReplacement(e.Children[2].Value, stars) || (len(e.Children) == 4 && e.Children[3].Value != "s") {
+			return "", bad
+		}
+	}
+	return f.result, nil
+}
+
+// validReplacement checks a replacement template: literal text without
+// control characters, at most 1024 bytes, where ${1} to ${8} insert a
+// capture (at most groups); every other "$" is a literal.
+func validReplacement(r string, groups int) bool {
+	if len(r) > maxReplacement || hasControl(r) {
+		return false
+	}
+	for i := 0; i+3 < len(r); i++ {
+		if r[i] == '$' && r[i+1] == '{' && r[i+2] >= '1' && r[i+2] <= '0'+maxReplaceGroup && r[i+3] == '}' {
+			if int(r[i+2]-'0') > groups {
+				return false
+			}
+			i += 3
+		}
+	}
+	return true
+}
+
+// patternGroups counts the capturing groups of a valid pattern: unescaped
+// "(" outside classes (validPattern refuses "(?").
+func patternGroups(p string) int {
+	n, class := 0, false
+	for i := 0; i < len(p); i++ {
+		switch c := p[i]; {
+		case c == '\\':
+			i++
+		case class:
+			class = c != ']'
+		case c == '[':
+			class = true
+		case c == '(':
+			n++
+		}
+	}
+	return n
+}
+
+// wildcardStars returns the number of wildcards of a wildcard_replace
+// pattern, or -1 when it is invalid: at most 1024 bytes without control
+// characters, a backslash only in `\*` or `\\`, at most 8 unescaped "*".
+func wildcardStars(p string) int {
+	if len(p) > maxWildcardPattern || hasControl(p) {
+		return -1
+	}
+	n := 0
+	for i := 0; i < len(p); i++ {
+		switch p[i] {
+		case '\\':
+			if i+1 >= len(p) || (p[i+1] != '*' && p[i+1] != '\\') {
+				return -1
+			}
+			i++
+		case '*':
+			n++
+		}
+	}
+	if n > maxWildcards {
+		return -1
+	}
+	return n
 }
 
 // Regular expressions (`matches`) are the subset that the console's JavaScript
@@ -324,6 +580,195 @@ func validPattern(p string) bool {
 	return depth == 0
 }
 
+// actionFields are the RuleAction fields each kind may carry besides kind;
+// every other field must stay empty (unset, "", 0, false or no items).
+var actionFields = map[string][]protoreflect.Name{
+	"block":           {"status_code"},
+	"log":             {},
+	"allow":           {},
+	"challenge":       {"challenge"},
+	"redirect":        {"value", "status_code", "target", "preserve_query", "set_query", "remove_query"},
+	"rewrite":         {"value", "target", "preserve_query", "set_query", "remove_query"},
+	"request_header":  {"header", "value", "remove"},
+	"response_header": {"header", "value", "remove"},
+	"config": {"cache_bypass", "force_https", "gzip", "brotli", "zstd", "websocket", "under_attack", "cc_enabled",
+		"cc_max_level", "origin_connect_timeout_ms", "origin_send_timeout_ms", "origin_read_timeout_ms", "log_sample_rate"},
+	"rate_limit":  {"status_code", "limit", "window_seconds", "key"},
+	"origin":      {"origin_group", "host_header", "sni", "port"},
+	"compression": {"compression"},
+}
+
+// Codings of compression rules (RuleAction.compression).
+var compressionCodings = []string{"zstd", "br", "gzip"}
+
+var redirectStatuses = []uint32{301, 302, 307, 308}
+
+// queryNameRE matches the query parameter names redirects and rewrites set
+// or remove (RFC 3986 unreserved characters).
+var queryNameRE = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,64}$`)
+
+// originGroupRE matches origin groups (Origin.group, RuleAction.origin_group).
+var originGroupRE = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+
+// Bounds of the rules-v2 actions.
+const (
+	maxQueryEdits        = 16
+	maxQueryValue        = 256
+	maxConnectTimeoutMS  = 120_000
+	maxSendReadTimeoutMS = 3_600_000
+	minOriginTimeoutMS   = 100
+	maxLogSampleRate     = 10_000
+	maxBrowserTTLSeconds = 31_536_000
+	maxBulkRedirects     = 5000
+	maxBulkSource        = 512
+	maxBulkTarget        = 1024
+)
+
+// onlyFields reports whether a carries no field outside its kind's.
+func onlyFields(a *nodev1.RuleAction) bool {
+	allowed, ok := actionFields[a.Kind]
+	if !ok {
+		return false
+	}
+	only := true
+	a.ProtoReflect().Range(func(field protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		if name := field.Name(); name != "kind" && !slices.Contains(allowed, name) {
+			only = false
+		}
+		return only
+	})
+	return only
+}
+
+// validRedirectLocation reports whether v is a static redirect target: an
+// absolute http(s) URL with a host and no user information, or a local
+// path starting with a single "/" without a backslash.
+func validRedirectLocation(v string) bool {
+	if strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//") && !strings.Contains(v, "\\") {
+		return true
+	}
+	u, err := url.Parse(v)
+	return err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil
+}
+
+// validRewritePath reports whether v is a static rewrite path.
+func validRewritePath(v string) bool {
+	return strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//") && !strings.ContainsAny(v, "?\\#")
+}
+
+// validQueryEdits checks set_query and remove_query: at most 16 each,
+// sorted by name without duplicates, names never in both lists, values
+// printable ASCII of at most 256 bytes.
+func validQueryEdits(a *nodev1.RuleAction) bool {
+	if len(a.SetQuery) > maxQueryEdits || len(a.RemoveQuery) > maxQueryEdits {
+		return false
+	}
+	names := make([]string, 0, len(a.SetQuery))
+	for _, p := range a.SetQuery {
+		if p == nil || len(p.Value) > maxQueryValue || strings.ContainsFunc(p.Value, func(r rune) bool { return r < 0x20 || r > 0x7e }) {
+			return false
+		}
+		names = append(names, p.Name)
+	}
+	sortedNames := func(list []string) bool {
+		for i, name := range list {
+			if !queryNameRE.MatchString(name) || (i > 0 && list[i-1] >= name) {
+				return false
+			}
+		}
+		return true
+	}
+	if !sortedNames(names) || !sortedNames(a.RemoveQuery) {
+		return false
+	}
+	for _, name := range names {
+		if slices.Contains(a.RemoveQuery, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// validTarget checks the location of a redirect or rewrite: exactly one of
+// the static value (checked by static) and the value expression target.
+func validTarget(a *nodev1.RuleAction, phase string, features []string, static func(string) bool) bool {
+	if a.Target != nil {
+		return a.Value == "" && validateValueExpression(a.Target, phase, features) == nil
+	}
+	return static(a.Value)
+}
+
+func validOriginTimeout(ms, max uint32) bool {
+	return ms == 0 || (ms >= minOriginTimeoutMS && ms <= max)
+}
+
+// validConfigAction checks a config action. The rules-v2 fields are only
+// valid in phase config; at least one field is set.
+func validConfigAction(a *nodev1.RuleAction, phase string) bool {
+	v2 := a.Brotli != nil || a.Zstd != nil || a.Websocket != nil || a.UnderAttack != nil || a.CcEnabled != nil ||
+		a.CcMaxLevel != "" || a.OriginConnectTimeoutMs != 0 || a.OriginSendTimeoutMs != 0 || a.OriginReadTimeoutMs != 0 ||
+		a.LogSampleRate != nil
+	return (phase == "config" || (phase == "cache" && !v2)) &&
+		(a.CcMaxLevel == "" || slices.Contains(ChallengeTypes, a.CcMaxLevel)) &&
+		validOriginTimeout(a.OriginConnectTimeoutMs, maxConnectTimeoutMS) &&
+		validOriginTimeout(a.OriginSendTimeoutMs, maxSendReadTimeoutMS) &&
+		validOriginTimeout(a.OriginReadTimeoutMs, maxSendReadTimeoutMS) &&
+		(a.LogSampleRate == nil || *a.LogSampleRate <= maxLogSampleRate) &&
+		(a.CacheBypass != nil || a.ForceHttps != nil || a.Gzip != nil || v2)
+}
+
+// validOriginAction checks an origin action: an origin group, Host header,
+// SNI or port, at least one of them.
+func validOriginAction(a *nodev1.RuleAction) bool {
+	return (a.OriginGroup == "" || originGroupRE.MatchString(a.OriginGroup)) &&
+		(a.HostHeader == "" || validHostHeader(a.HostHeader)) &&
+		(a.Sni == "" || ValidHostname(a.Sni)) &&
+		a.Port <= 65535 &&
+		(a.OriginGroup != "" || a.HostHeader != "" || a.Sni != "" || a.Port != 0)
+}
+
+func validCompressionAction(a *nodev1.RuleAction) bool {
+	for i, coding := range a.Compression {
+		if !slices.Contains(compressionCodings, coding) || slices.Contains(a.Compression[:i], coding) {
+			return false
+		}
+	}
+	return true
+}
+
+// validAction checks the action of a rule of phase.
+func validAction(a *nodev1.RuleAction, phase string, features []string) bool {
+	if a == nil || !ruleText(a.Value) || !onlyFields(a) {
+		return false
+	}
+	switch a.Kind {
+	case "block":
+		return phase == "waf-custom" && (a.StatusCode == 403 || a.StatusCode == 451)
+	case "log", "allow":
+		return phase == "waf-custom"
+	case "challenge":
+		return phase == "waf-custom" && slices.Contains(ChallengeTypes, a.Challenge)
+	case "redirect":
+		return phase == "redirect" && slices.Contains(redirectStatuses, a.StatusCode) && validQueryEdits(a) &&
+			validTarget(a, phase, features, validRedirectLocation)
+	case "rewrite":
+		return phase == "request-transform" && validQueryEdits(a) && validTarget(a, phase, features, validRewritePath)
+	case "request_header":
+		return (phase == "request-transform" || phase == "origin") && ruleHeader(a.Header)
+	case "response_header":
+		return phase == "response-transform" && ruleHeader(a.Header)
+	case "config":
+		return validConfigAction(a, phase)
+	case "rate_limit":
+		return (a.StatusCode == 403 || a.StatusCode == 429) && phase == "ratelimit" && a.Limit >= 1 && a.Limit <= 100000 && a.WindowSeconds >= 1 && a.WindowSeconds <= 3600 && (a.Key == "ip.src" || a.Key == "http.host" || a.Key == "tls.ja4" || (strings.HasPrefix(a.Key, "http.request.headers.") && tokenRE.MatchString(strings.TrimPrefix(a.Key, "http.request.headers."))))
+	case "origin":
+		return phase == "origin" && validOriginAction(a)
+	case "compression":
+		return phase == "compression" && validCompressionAction(a)
+	}
+	return false
+}
+
 func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features []string, maxRules int) error {
 	if len(rules) > maxRules {
 		return fmt.Errorf("%w: too many rules", ErrRejected)
@@ -337,42 +782,11 @@ func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features [
 		}
 		ids[r.Id] = true
 		previous = phase
-		budget := 256
-		if err := validateExpression(r.Expression, r.Phase, lists, features, 0, &budget); err != nil {
+		if err := validateCondition(r.Expression, r.Phase, lists, features); err != nil {
 			return err
 		}
-		a := r.Action
-		if a == nil || !ruleText(a.Value) || (a.Challenge != "" && a.Kind != "challenge") {
-			return fmt.Errorf("%w: invalid rule action", ErrRejected)
-		}
-		valid := false
-		switch a.Kind {
-		case "block":
-			valid = r.Phase == "waf-custom" && (a.StatusCode == 403 || a.StatusCode == 451)
-		case "log", "allow":
-			valid = r.Phase == "waf-custom"
-		case "challenge":
-			valid = r.Phase == "waf-custom" && slices.Contains(ChallengeTypes, a.Challenge)
-		case "redirect":
-			u, err := url.Parse(a.Value)
-			location := strings.HasPrefix(a.Value, "/") && !strings.HasPrefix(a.Value, "//") && !strings.Contains(a.Value, "\\")
-			if err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil {
-				location = true
-			}
-			valid = r.Phase == "redirect" && location && slices.Contains([]uint32{301, 302, 307, 308}, a.StatusCode)
-		case "rewrite":
-			valid = r.Phase == "request-transform" && strings.HasPrefix(a.Value, "/") && !strings.HasPrefix(a.Value, "//") && !strings.ContainsAny(a.Value, "?\\#")
-		case "request_header":
-			valid = (r.Phase == "request-transform" || r.Phase == "origin") && ruleHeader(a.Header)
-		case "response_header":
-			valid = r.Phase == "response-transform" && ruleHeader(a.Header)
-		case "config":
-			valid = !a.GetGzip() && (r.Phase == "config" || r.Phase == "cache") && (a.CacheBypass != nil || a.ForceHttps != nil || a.Gzip != nil)
-		case "rate_limit":
-			valid = (a.StatusCode == 403 || a.StatusCode == 429) && r.Phase == "ratelimit" && a.Limit >= 1 && a.Limit <= 100000 && a.WindowSeconds >= 1 && a.WindowSeconds <= 3600 && (a.Key == "ip.src" || a.Key == "http.host" || a.Key == "tls.ja4" || (strings.HasPrefix(a.Key, "http.request.headers.") && tokenRE.MatchString(strings.TrimPrefix(a.Key, "http.request.headers."))))
-		}
-		if !valid {
-			return fmt.Errorf("%w: unsupported rule action %q in phase %q", ErrRejected, a.Kind, r.Phase)
+		if !validAction(r.Action, r.Phase, features) {
+			return fmt.Errorf("%w: unsupported rule action %q in phase %q", ErrRejected, r.GetAction().GetKind(), r.Phase)
 		}
 	}
 	return nil
@@ -402,6 +816,70 @@ func validateRules(c *nodev1.NodeConfig, features []string) error {
 	for _, site := range c.Sites {
 		if err := validateRuleSet(site.GetRules(), lists, features, 64); err != nil {
 			return err
+		}
+		if err := validateCacheRuleConditions(site, lists, features); err != nil {
+			return err
+		}
+		if err := validateBulkRedirects(site.GetBulkRedirects()); err != nil {
+			return fmt.Errorf("site %q: %w", site.GetId(), err)
+		}
+		for _, o := range site.GetOriginPool().GetOrigins() {
+			if g := o.GetGroup(); g != "" && !originGroupRE.MatchString(g) {
+				return fmt.Errorf("%w: site %q origin %q: invalid origin group", ErrRejected, site.GetId(), o.GetId())
+			}
+		}
+	}
+	return nil
+}
+
+// validateCacheRuleConditions checks the typed request conditions of a
+// site's cache rules (phase cache, IP lists like site rules) and their
+// browser TTLs. A rule with a condition has no structured request lists.
+func validateCacheRuleConditions(site *nodev1.Site, lists map[string]bool, features []string) error {
+	for _, r := range site.GetCacheRules() {
+		m := r.GetMatch()
+		if r.GetBrowserTtlSeconds() > maxBrowserTTLSeconds {
+			return fmt.Errorf("%w: site %q cache rule %q: browser TTL out of range", ErrRejected, site.GetId(), r.GetId())
+		}
+		if m.GetCondition() == nil {
+			continue
+		}
+		if len(m.GetPathPrefixes()) > 0 || len(m.GetPaths()) > 0 || len(m.GetExtensions()) > 0 {
+			return fmt.Errorf("%w: site %q cache rule %q: condition with path lists", ErrRejected, site.GetId(), r.GetId())
+		}
+		if err := validateCondition(m.GetCondition(), "cache", lists, features); err != nil {
+			return fmt.Errorf("site %q cache rule %q: %w", site.GetId(), r.GetId(), err)
+		}
+	}
+	return nil
+}
+
+// validBulkSource reports whether s is a bulk redirect source: "/path" or
+// "host/path" (lowercase host name), 2-512 bytes without control
+// characters, whitespace or "?".
+func validBulkSource(s string) bool {
+	if len(s) < 2 || len(s) > maxBulkSource || strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || r == 0x7f || r == 0xfeff || unicode.IsSpace(r) }) || strings.Contains(s, "?") {
+		return false
+	}
+	if s[0] == '/' {
+		return true
+	}
+	host, _, ok := strings.Cut(s, "/")
+	return ok && ValidHostname(host)
+}
+
+// validateBulkRedirects checks a site's exact-match redirect table: at most
+// 5000 entries sorted by source without duplicates.
+func validateBulkRedirects(list []*nodev1.BulkRedirect) error {
+	if len(list) > maxBulkRedirects {
+		return fmt.Errorf("%w: too many bulk redirects", ErrRejected)
+	}
+	for i, b := range list {
+		if !validBulkSource(b.GetSource()) || (i > 0 && list[i-1].GetSource() >= b.GetSource()) {
+			return fmt.Errorf("%w: invalid or unsorted bulk redirect source %q", ErrRejected, b.GetSource())
+		}
+		if len(b.GetTarget()) > maxBulkTarget || hasControl(b.GetTarget()) || !validRedirectLocation(b.GetTarget()) || !slices.Contains(redirectStatuses, b.GetStatusCode()) {
+			return fmt.Errorf("%w: invalid bulk redirect for %q", ErrRejected, b.GetSource())
 		}
 	}
 	return nil

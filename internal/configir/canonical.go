@@ -17,6 +17,9 @@
 //     (proto v0.11.0);
 //   - offline_hosts by (name, wildcard), inside a site error_pages.pages
 //     by status (proto v0.12.0);
+//   - inside a site bulk_redirects by source; inside the action of every
+//     platform and site rule set_query by name and remove_query ascending
+//     (proto v0.13.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -80,6 +83,7 @@ func Canonicalize(c *nodev1.NodeConfig) {
 		slices.Sort(l.Entries)
 		l.Entries = slices.Compact(l.Entries)
 	}
+	canonicalizeRules(c.PlatformRules)
 	for _, s := range c.Sites {
 		CanonicalizeSite(s)
 	}
@@ -121,6 +125,23 @@ func CanonicalizeSite(s *nodev1.Site) {
 			cmp.Compare(a.GetId(), b.GetId()),
 		)
 	})
+	slices.SortStableFunc(s.BulkRedirects, func(a, b *nodev1.BulkRedirect) int {
+		return cmp.Compare(a.GetSource(), b.GetSource())
+	})
+	canonicalizeRules(s.Rules)
+}
+
+// canonicalizeRules sorts the query edits of the rules' actions. The rules
+// themselves keep their order (execution order inside a phase).
+func canonicalizeRules(rules []*nodev1.EdgeRule) {
+	for _, r := range rules {
+		if a := r.GetAction(); a != nil {
+			slices.SortStableFunc(a.SetQuery, func(x, y *nodev1.QueryParam) int {
+				return cmp.Compare(x.GetName(), y.GetName())
+			})
+			slices.Sort(a.RemoveQuery)
+		}
+	}
 }
 
 // compareBool orders false before true.
