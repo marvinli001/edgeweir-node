@@ -277,8 +277,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: js.test' -A 'e2e-browser
 code=$(curl -s -L -o /dev/null -w '%{http_code}' -b '' -c /dev/null -A 'e2e-browser' --connect-to "ua.test:80:127.0.0.1:${E2E_NODE_PORT:-28080}" "http://ua.test/followed")
 [ "$code" = 200 ] || fail "a client with cookies following redirects got $code"
 resp=$(hdrs -X POST -H 'Host: ua.test' -d 'x=1' "$NODE/form")
-[ "$(status_of <<<"$resp")" = 403 ] && [ "$(header_of x-edgeweir-challenge <<<"$resp")" = required ] ||
-  fail "POST without a pass: $(status_of <<<"$resp") $(header_of x-edgeweir-challenge <<<"$resp")"
+[ "$(status_of <<<"$resp")" = 403 ] && [ "$(header_of x-edgeweir-challenge <<<"$resp")" = required ] &&
+  [ "$(header_of content-type <<<"$resp")" = "text/plain; charset=utf-8" ] && [ -z "$(header_of x-edgeweir-error <<<"$resp")" ] ||
+  fail "POST without a pass: $(status_of <<<"$resp") $(header_of x-edgeweir-challenge <<<"$resp") $(header_of content-type <<<"$resp")"
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Host: ua.test' -A 'e2e-browser' -H "Cookie: $pass_cookie" -d 'x=1' "$NODE/form")
 [ "$code" = 200 ] || fail "POST with a pass returned $code"
 pass "Under Attack cookie302: 302 with a pass bound to site and User-Agent, POST without a pass 403"

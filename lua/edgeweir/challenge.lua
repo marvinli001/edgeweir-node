@@ -732,16 +732,15 @@ function _M.kind_for(level, high_pow)
 end
 
 -- respond challenges the request at level with kind (cookie302, js, pow,
--- pow_high or captcha). Requests other than GET and HEAD get 403 with
--- X-Edgeweir-Challenge: required (the site's error page); without keys
--- 503.
+-- pow_high or captcha). Requests other than GET and HEAD get a plain-text
+-- 403 with X-Edgeweir-Challenge: required (no page: an API client cannot
+-- solve one); without keys 503 (the site's error page).
 function _M.respond(site, kind, level)
   local keys = _M.keys()
   if not keys or not keys.current then return unavailable(site) end
   local method = ngx.req.get_method()
   if method ~= "GET" and method ~= "HEAD" then
-    ngx.header["X-Edgeweir-Challenge"] = "required"
-    return require("edgeweir.errorpages").respond(403, "challenge-required", site)
+    return text(403, { ["X-Edgeweir-Challenge"] = "required" }, "challenge required")
   end
   local var = ngx.var
   local ret = _M.return_url(var.request_uri) or "/"

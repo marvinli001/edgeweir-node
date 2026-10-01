@@ -305,7 +305,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`site-suspended`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-required`、`challenge-unavailable`、`not-found`、`too-large`，以及 CRS 拦截的 `waf-blocked`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`site-suspended`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`，以及 CRS 拦截的 `waf-blocked`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -607,7 +607,7 @@ table inet edgeweir {
 ### 3.19 错误页与请求 ID
 
 - **请求 ID**：`map $http_x_request_id $edgeweir_request_id`：客户端的 `X-Request-Id` 符合 `^[A-Za-z0-9._:-]{8,128}$` 时沿用，否则取 nginx 的 `$request_id`（32 个十六进制字符）。边缘层的每个响应带 `X-Request-Id`（`add_header ... always`，错误响应同样），发往回源层的请求带同一个值（回源层原样转给源站），源站自己的 `X-Request-Id` 不转给客户端（`proxy_hide_header`）。错误页与采样访问日志使用同一个 ID。
-- **适用范围**：节点生成的 403（封禁、规则与名单拒绝、CRS 拦截、非 GET/HEAD 请求缺少通行凭证）、429（限速）、502、503、504（边缘层的 503、回源层的失败，包括 nginx 自己生成的回源失败）；站点开启 `intercept_origin_errors` 时，还有状态码有站点模板的源站响应。节点生成的其他状态码（405、421、508，未知域名以外的 404 等）保持纯文本。模板取站点该状态码的模板，没有时用内置页。
+- **适用范围**：节点生成的 403（封禁、规则与名单拒绝、CRS 拦截）、429（限速）、502、503、504（边缘层的 503、回源层的失败，包括 nginx 自己生成的回源失败）；站点开启 `intercept_origin_errors` 时，还有状态码有站点模板的源站响应。节点生成的其他响应（405、421、508，未知域名以外的 404，非 GET/HEAD 请求缺少通行凭证的 403 等）保持纯文本。模板取站点该状态码的模板，没有时用内置页。
 - **平台页**：查不到站点的 Host 先查离线 Host（精确域名，或上一级域名的泛域名，与站点域名规则相同）：停用站点 503 `site-disabled`、暂停站点 503 `site-suspended`，使用平台的 `site_disabled` / `site_suspended` 模板或内置页；其余 404 `unknown-host`，使用平台的 `unknown_host` 模板或内置页。离线 Host 在站点表里，按版本缓存为每个 worker 的查找表，伪造 Host 的洪泛不增加共享内存读取。
 - **模板**（纯函数）：每个站点表版本编译一次，`{{status}}`、`{{request_id}}`、`{{client_ip}}`、`{{host}}` 替换为 HTML 转义（`&<>"'`）后的值，其余内容（包括其他 `{{...}}`）原样发送，不解释模板内容。值：边缘层为 `$edgeweir_request_id`、`$remote_addr`、去掉端口的 Host；回源层为请求头 `X-Request-Id`、`X-Real-IP` 与 Host。
 - **内置页**：自包含的 HTML（内联 CSS，无外部 URL 与脚本，按 `prefers-color-scheme` 切换浅色 / 深色），按 `Accept-Language` 选中文或英文（与挑战页相同），显示状态码、简短标题和请求 ID。
