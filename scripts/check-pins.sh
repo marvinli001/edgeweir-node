@@ -19,10 +19,12 @@ while IFS= read -r line; do
     unpinned "$line"
 done < <(grep -HnE '^[[:space:]]*(-[[:space:]]*)?uses:' .github/workflows/*.yml)
 
-# Compose files.
+# Compose files. An image built here may be named by a variable whose
+# default is an edgeweir-node tag (${E2E_NODE_IMAGE:-edgeweir-node:...}).
+built='^(edgeweir-node:|[$][{][A-Z][A-Z0-9_]*:-edgeweir-node:[^}]+[}]$)'
 while IFS= read -r line; do
   image="$(sed -E 's/^[^:]+:[0-9]+:[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+$//' <<<"$line")"
-  [[ "$image" =~ ^edgeweir-node: || "$image" =~ $digest ]] || unpinned "$line"
+  [[ "$image" =~ $built || "$image" =~ $digest ]] || unpinned "$line"
 done < <(git ls-files -z '*compose*.yml' | xargs -0 grep -HnE '^[[:space:]]*image:')
 
 # Dockerfiles: the syntax frontend, *_IMAGE defaults and every FROM that is
