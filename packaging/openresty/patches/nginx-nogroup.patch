@@ -1,0 +1,25 @@
+Fall back to the group "nogroup" when "nobody" does not exist.
+
+Without a user directive, nginx started as root runs its workers as
+NGX_USER and NGX_GROUP. configure picks the group from the build host's
+/etc/group: "nobody" on the Red Hat family (where edgeweir-openresty is
+built), "nogroup" on Debian and Ubuntu, which have no "nobody" group. One
+edgeweir-openresty build serves both families, so the choice is made at
+run time instead, as nginx built on each distribution behaves.
+
+--- a/src/core/nginx.c
++++ b/src/core/nginx.c
+@@ -1209,6 +1209,13 @@
+ 
+         ngx_set_errno(0);
+         grp = getgrnam(NGX_GROUP);
++
++        if (grp == NULL && ngx_strcmp(NGX_GROUP, "nobody") == 0) {
++            /* Debian and Ubuntu name the group of "nobody" "nogroup" */
++            ngx_set_errno(0);
++            grp = getgrnam("nogroup");
++        }
++
+         if (grp == NULL) {
+             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                           "getgrnam(\"" NGX_GROUP "\") failed");

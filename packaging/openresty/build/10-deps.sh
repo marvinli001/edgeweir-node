@@ -9,6 +9,7 @@ for f in "$dl"/*.tar.gz "$dl"/*.tar.xz; do tar -xf "$f" -C "$src" --no-same-owne
 mv "$src/ngx_brotli-$(ver ngx_brotli)" "$ngx_brotli"
 rm -rf "$ngx_brotli/deps/brotli"
 mv "$src/brotli-$(ver brotli)" "$ngx_brotli/deps/brotli"
+patch -d "$nginx_src" -p1 --no-backup-if-mismatch </build/patches/nginx-nogroup.patch
 for p in /build/patches/yajl-*.patch; do patch -d "$yajl" -p1 --no-backup-if-mismatch <"$p"; done
 patch -d "$modsecurity_nginx" -p1 --no-backup-if-mismatch </build/patches/modsecurity-nginx-log-vars.patch
 patch -d "$zstd_module" -p1 --no-backup-if-mismatch </build/patches/zstd-nginx-module-libs.patch
