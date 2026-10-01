@@ -9,6 +9,10 @@
 // identity.json is written last and is the "enrolled" marker; the other
 // files are always complete when it exists. Every file is replaced
 // atomically (temp file, fsync, rename, fsync dir).
+//
+// A probe (`edgeweir-node probe`) keeps its identity in its own state
+// directory with the same rules: probe.key (0600), probe.crt, ca.crt and
+// probe.json (probe id, name, region and console address).
 package identity
 
 import (
@@ -36,16 +40,29 @@ const (
 	IdentityFile = "identity.json"
 	// ConfigDir holds the last-known-good configuration (see configstore).
 	ConfigDir = "config"
+
+	// The probe layout (Store.Probe).
+	ProbeKeyFile      = "probe.key"
+	ProbeCertFile     = "probe.crt"
+	ProbeIdentityFile = "probe.json"
 )
 
 // ErrNotEnrolled is returned by Load when identity.json does not exist.
 var ErrNotEnrolled = errors.New("node is not enrolled")
 
-// Identity is the non-secret enrollment metadata.
+// ErrProbeNotEnrolled is returned by Load when probe.json does not exist.
+var ErrProbeNotEnrolled = errors.New("probe is not enrolled")
+
+// Identity is the non-secret enrollment metadata: the node fields for a
+// node, the probe fields for a probe.
 type Identity struct {
-	NodeID     string    `json:"node_id"`
-	ClusterID  string    `json:"cluster_id"`
-	NodeName   string    `json:"node_name"`
+	NodeID    string `json:"node_id,omitempty"`
+	ClusterID string `json:"cluster_id,omitempty"`
+	NodeName  string `json:"node_name,omitempty"`
+	ProbeID   string `json:"probe_id,omitempty"`
+	ProbeName string `json:"probe_name,omitempty"`
+	// RegionID is the region a probe measures from.
+	RegionID   string    `json:"region_id,omitempty"`
 	ServerURL  string    `json:"server_url"`
 	ServerName string    `json:"server_name"`
 	CASHA256   string    `json:"ca_sha256"`
@@ -65,10 +82,34 @@ type Loaded struct {
 // Store reads and writes identity files in a state directory.
 type Store struct {
 	Dir string
+	// Probe selects the probe layout (probe.key, probe.crt, probe.json).
+	Probe bool
 }
 
 // Path returns the absolute path of a file in the state directory.
 func (s Store) Path(name string) string { return filepath.Join(s.Dir, name) }
+
+// KeyFile, CertFile and IdentityFile are the names of the store's layout.
+func (s Store) KeyFile() string {
+	if s.Probe {
+		return ProbeKeyFile
+	}
+	return KeyFile
+}
+
+func (s Store) CertFile() string {
+	if s.Probe {
+		return ProbeCertFile
+	}
+	return CertFile
+}
+
+func (s Store) IdentityFile() string {
+	if s.Probe {
+		return ProbeIdentityFile
+	}
+	return IdentityFile
+}
 
 // EnsureDir creates the state directory with mode 0700 if missing.
 func (s Store) EnsureDir() error {
@@ -78,8 +119,8 @@ func (s Store) EnsureDir() error {
 	return nil
 }
 
-// Enrolled reports whether identity.json exists.
-func (s Store) Enrolled() bool { return fsutil.Exists(s.Path(IdentityFile)) }
+// Enrolled reports whether identity.json (probe.json) exists.
+func (s Store) Enrolled() bool { return fsutil.Exists(s.Path(s.IdentityFile())) }
 
 // Save writes key, certificate, CA and identity (in that order, identity
 // last) atomically.
@@ -97,23 +138,24 @@ func (s Store) Save(id Identity, keyPEM, certPEM, caPEM []byte) error {
 		data []byte
 		perm os.FileMode
 	}{
-		{KeyFile, keyPEM, 0o600},
-		{CertFile, certPEM, 0o644},
+		{s.KeyFile(), keyPEM, 0o600},
+		{s.CertFile(), certPEM, 0o644},
 		{CAFile, caPEM, 0o644},
-		{IdentityFile, meta, 0o644},
+		{s.IdentityFile(), meta, 0o644},
 	}
 	for _, f := range files {
 		if err := fsutil.WriteFileAtomic(s.Path(f.name), f.data, f.perm); err != nil {
 			return err
 		}
 	}
-	return matchDirOwner(s.Dir, KeyFile, CertFile, CAFile, IdentityFile)
+	return matchDirOwner(s.Dir, s.KeyFile(), s.CertFile(), CAFile, s.IdentityFile())
 }
 
 // Remove deletes the identity and the cached configuration (used by
 // `enroll --force`). The identity marker is removed first.
 func (s Store) Remove() error {
-	for _, name := range []string{IdentityFile, CertFile, CAFile, KeyFile, CertFile + ".new", KeyFile + ".new"} {
+	key, cert := s.KeyFile(), s.CertFile()
+	for _, name := range []string{s.IdentityFile(), cert, CAFile, key, cert + ".new", key + ".new"} {
 		if err := os.Remove(s.Path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -124,10 +166,15 @@ func (s Store) Remove() error {
 	return fsutil.SyncDir(s.Dir)
 }
 
-// ReadIdentity reads only identity.json (no keys or certificates).
+// ReadIdentity reads only identity.json (probe.json) without keys or
+// certificates.
 func (s Store) ReadIdentity() (*Identity, error) {
-	raw, err := os.ReadFile(s.Path(IdentityFile))
+	name := s.IdentityFile()
+	raw, err := os.ReadFile(s.Path(name))
 	if errors.Is(err, os.ErrNotExist) {
+		if s.Probe {
+			return nil, ErrProbeNotEnrolled
+		}
 		return nil, ErrNotEnrolled
 	}
 	if err != nil {
@@ -135,10 +182,13 @@ func (s Store) ReadIdentity() (*Identity, error) {
 	}
 	var id Identity
 	if err := json.Unmarshal(raw, &id); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", IdentityFile, err)
+		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
-	if id.NodeID == "" || id.ServerURL == "" {
-		return nil, fmt.Errorf("%s is incomplete (node_id/server_url missing)", IdentityFile)
+	if s.Probe && (id.ProbeID == "" || id.ServerURL == "") {
+		return nil, fmt.Errorf("%s is incomplete (probe_id/server_url missing)", name)
+	}
+	if !s.Probe && (id.NodeID == "" || id.ServerURL == "") {
+		return nil, fmt.Errorf("%s is incomplete (node_id/server_url missing)", name)
 	}
 	return &id, nil
 }
@@ -204,14 +254,15 @@ func (s Store) readPair(keyName, certName string) (crypto.Signer, *x509.Certific
 }
 
 func (s Store) loadPair() (crypto.Signer, *x509.Certificate, error) {
-	key, cert, err := s.readPair(KeyFile, CertFile)
+	keyFile, certFile := s.KeyFile(), s.CertFile()
+	key, cert, err := s.readPair(keyFile, certFile)
 	if err == nil {
 		return key, cert, nil
 	}
 	// A crash between the two renames of SwapCertificate leaves the new key
 	// in place with node.crt.new still pending: finish the swap.
-	if k2, c2, err2 := s.readPair(KeyFile, CertFile+".new"); err2 == nil {
-		if err := fsutil.Rename(s.Path(CertFile+".new"), s.Path(CertFile)); err != nil {
+	if k2, c2, err2 := s.readPair(keyFile, certFile+".new"); err2 == nil {
+		if err := fsutil.Rename(s.Path(certFile+".new"), s.Path(certFile)); err != nil {
 			return nil, nil, err
 		}
 		return k2, c2, nil
@@ -222,19 +273,20 @@ func (s Store) loadPair() (crypto.Signer, *x509.Certificate, error) {
 // SwapCertificate installs a renewed key pair. Both files are staged as
 // *.new first, then renamed key-first; Load repairs an interrupted swap.
 func (s Store) SwapCertificate(keyPEM, certPEM []byte) error {
-	if err := fsutil.WriteFileAtomic(s.Path(KeyFile+".new"), keyPEM, 0o600); err != nil {
+	keyFile, certFile := s.KeyFile(), s.CertFile()
+	if err := fsutil.WriteFileAtomic(s.Path(keyFile+".new"), keyPEM, 0o600); err != nil {
 		return err
 	}
-	if err := fsutil.WriteFileAtomic(s.Path(CertFile+".new"), certPEM, 0o644); err != nil {
+	if err := fsutil.WriteFileAtomic(s.Path(certFile+".new"), certPEM, 0o644); err != nil {
 		return err
 	}
-	if err := fsutil.Rename(s.Path(KeyFile+".new"), s.Path(KeyFile)); err != nil {
+	if err := fsutil.Rename(s.Path(keyFile+".new"), s.Path(keyFile)); err != nil {
 		return err
 	}
-	if err := fsutil.Rename(s.Path(CertFile+".new"), s.Path(CertFile)); err != nil {
+	if err := fsutil.Rename(s.Path(certFile+".new"), s.Path(certFile)); err != nil {
 		return err
 	}
-	return matchDirOwner(s.Dir, KeyFile, CertFile)
+	return matchDirOwner(s.Dir, keyFile, certFile)
 }
 
 // WaitForEnrollment blocks until identity.json appears or ctx is done.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +139,67 @@ func TestWaitForEnrollment(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("enrollment not detected")
+	}
+}
+
+// The probe layout keeps its own file names and requires a probe id; a node
+// store in the same directory sees nothing.
+func TestProbeLayout(t *testing.T) {
+	ca, _ := pkitest.NewCA("test")
+	dir := t.TempDir()
+	s := Store{Dir: dir, Probe: true}
+	keyPEM, certPEM := issue(t, ca)
+	if err := s.Save(Identity{NodeID: "n"}, keyPEM, certPEM, ca.PEM); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Load(); err == nil || !strings.Contains(err.Error(), "probe_id") {
+		t.Fatalf("probe.json without probe id: %v", err)
+	}
+	id := Identity{ProbeID: "probe-1", ProbeName: "east", RegionID: "r1", ServerURL: "https://console:8443", CASHA256: ca.Pin()}
+	if err := s.Save(id, keyPEM, certPEM, ca.PEM); err != nil {
+		t.Fatal(err)
+	}
+	l, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.ProbeID != "probe-1" || l.RegionID != "r1" || l.TLS.Leaf == nil {
+		t.Fatalf("loaded %+v", l.Identity)
+	}
+	for _, name := range []string{ProbeKeyFile, ProbeCertFile, CAFile, ProbeIdentityFile} {
+		if _, err := os.Stat(s.Path(name)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if st, _ := os.Stat(s.Path(ProbeKeyFile)); st.Mode().Perm() != 0o600 {
+		t.Fatalf("probe.key mode %v", st.Mode().Perm())
+	}
+	node := Store{Dir: dir}
+	if node.Enrolled() {
+		t.Fatal("node store sees the probe identity")
+	}
+	if _, err := node.Load(); !errors.Is(err, ErrNotEnrolled) {
+		t.Fatalf("node Load: %v", err)
+	}
+	if _, err := (Store{Dir: t.TempDir(), Probe: true}).Load(); !errors.Is(err, ErrProbeNotEnrolled) {
+		t.Fatalf("empty probe dir: %v", err)
+	}
+
+	keyPEM2, certPEM2 := issue(t, ca)
+	if err := s.SwapCertificate(keyPEM2, certPEM2); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Certificate.SerialNumber.Cmp(l.Certificate.SerialNumber) == 0 {
+		t.Fatal("probe certificate not swapped")
+	}
+	if st, _ := os.Stat(s.Path(ProbeKeyFile)); st.Mode().Perm() != 0o600 {
+		t.Fatalf("renewed probe.key mode %v", st.Mode().Perm())
+	}
+	if _, err := os.Stat(s.Path(KeyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("renewal wrote node.key into the probe directory")
 	}
 }

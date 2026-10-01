@@ -1,6 +1,6 @@
 // Package controlplane builds Connect clients for the console's node
-// channel (NodeService): a CA-pinned client for enrollment and an mTLS
-// channel with hot-swappable credentials for everything else.
+// channel (NodeService and ProbeService): CA-pinned clients for enrollment
+// and an mTLS channel with hot-swappable credentials for everything else.
 package controlplane
 
 import (
@@ -71,16 +71,33 @@ func clientOptions() []connect.ClientOption {
 // NewPinnedClient returns a NodeService client for Enroll that trusts only
 // the CA matching pin. close releases idle connections.
 func NewPinnedClient(serverURL, serverName, pin string) (client nodev1connect.NodeServiceClient, closeFn func(), err error) {
-	u, err := ParseServerURL(serverURL)
+	hc, base, closeFn, err := pinnedHTTPClient(serverURL, serverName, pin)
 	if err != nil {
 		return nil, nil, err
+	}
+	return nodev1connect.NewNodeServiceClient(hc, base, clientOptions()...), closeFn, nil
+}
+
+// NewPinnedProbeClient returns a ProbeService client for EnrollProbe that
+// trusts only the CA matching pin. close releases idle connections.
+func NewPinnedProbeClient(serverURL, serverName, pin string) (client nodev1connect.ProbeServiceClient, closeFn func(), err error) {
+	hc, base, closeFn, err := pinnedHTTPClient(serverURL, serverName, pin)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nodev1connect.NewProbeServiceClient(hc, base, clientOptions()...), closeFn, nil
+}
+
+func pinnedHTTPClient(serverURL, serverName, pin string) (*http.Client, string, func(), error) {
+	u, err := ParseServerURL(serverURL)
+	if err != nil {
+		return nil, "", nil, err
 	}
 	if serverName == "" {
 		serverName = u.Hostname()
 	}
 	tr := NewTransport(pki.PinnedTLSConfig(pin, serverName))
-	hc := &http.Client{Transport: tr}
-	return nodev1connect.NewNodeServiceClient(hc, u.String(), clientOptions()...), tr.CloseIdleConnections, nil
+	return &http.Client{Transport: tr}, u.String(), tr.CloseIdleConnections, nil
 }
 
 // Channel is the authenticated (mTLS) node channel. Credentials can be
@@ -93,6 +110,7 @@ type Channel struct {
 	cert      *tls.Certificate
 	transport *http.Transport
 	client    nodev1connect.NodeServiceClient
+	probe     nodev1connect.ProbeServiceClient
 	changed   chan struct{}
 }
 
@@ -124,11 +142,13 @@ func (c *Channel) Reload() error {
 	}
 	cert := id.TLS
 	tr := NewTransport(pki.MTLSConfig(id.CAPool, serverName, c.currentCert))
-	client := nodev1connect.NewNodeServiceClient(&http.Client{Transport: tr}, u.String(), clientOptions()...)
+	hc := &http.Client{Transport: tr}
+	client := nodev1connect.NewNodeServiceClient(hc, u.String(), clientOptions()...)
+	probe := nodev1connect.NewProbeServiceClient(hc, u.String(), clientOptions()...)
 
 	c.mu.Lock()
 	old := c.transport
-	c.id, c.cert, c.transport, c.client = id, &cert, tr, client
+	c.id, c.cert, c.transport, c.client, c.probe = id, &cert, tr, client, probe
 	oldChanged := c.changed
 	c.changed = make(chan struct{})
 	c.mu.Unlock()
@@ -151,6 +171,14 @@ func (c *Channel) Client() nodev1connect.NodeServiceClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.client
+}
+
+// ProbeClient returns the current ProbeService client (same connection and
+// certificate as Client).
+func (c *Channel) ProbeClient() nodev1connect.ProbeServiceClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.probe
 }
 
 // Identity returns the currently loaded identity.

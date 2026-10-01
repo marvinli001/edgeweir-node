@@ -100,6 +100,15 @@ func (ca *CA) IssueServer(dnsNames []string, ips []net.IP) (tls.Certificate, err
 // SignCSR issues a client-auth certificate for a PEM CSR, overriding the
 // subject CN with commonName (the node id), valid for lifetime.
 func (ca *CA) SignCSR(csrPEM []byte, commonName string, lifetime time.Duration) ([]byte, *x509.Certificate, error) {
+	return ca.SignCSRSubject(csrPEM, pkix.Name{CommonName: commonName}, lifetime)
+}
+
+// ProbeOrganization is the subject organization of probe certificates.
+const ProbeOrganization = "Edgeweir Probe"
+
+// SignCSRSubject is SignCSR with a whole subject (probe certificates carry
+// O=Edgeweir Probe).
+func (ca *CA) SignCSRSubject(csrPEM []byte, subject pkix.Name, lifetime time.Duration) ([]byte, *x509.Certificate, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, nil, errors.New("invalid CSR PEM")
@@ -114,7 +123,7 @@ func (ca *CA) SignCSR(csrPEM []byte, commonName string, lifetime time.Duration) 
 	now := time.Now()
 	tpl := &x509.Certificate{
 		SerialNumber: serial(),
-		Subject:      pkix.Name{CommonName: commonName},
+		Subject:      subject,
 		NotBefore:    now.Add(-time.Minute),
 		NotAfter:     now.Add(lifetime),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

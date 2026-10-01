@@ -1,9 +1,11 @@
 // Package fakeconsole is a minimal in-memory implementation of the
-// console's NodeService (connect-go) used by the integration tests and the
-// container smoke test. It enforces the same authentication rules as the
-// real console: Enroll is authorised by a single-use token, every other RPC
-// requires an mTLS client certificate issued by the internal CA whose CN is
-// the node id.
+// console's NodeService and ProbeService (connect-go) used by the
+// integration tests and the container smoke test. It enforces the same
+// authentication rules as the real console: Enroll and EnrollProbe are
+// authorised by single-use tokens, every other RPC requires an mTLS client
+// certificate issued by the internal CA whose CN is the node id (NodeService,
+// and ProbeService while the node may probe) or the probe id with
+// O=Edgeweir Probe (ProbeService only).
 package fakeconsole
 
 import (
@@ -36,6 +38,11 @@ type Options struct {
 	CertLifetime      time.Duration
 	KeepaliveInterval time.Duration
 	ReportInterval    uint32
+	// The probe that EnrollProbe registers (defaults probe-1, probe-east,
+	// region-1).
+	ProbeID   string
+	ProbeName string
+	RegionID  string
 }
 
 // GetConfigCall records one GetConfig exchange.
@@ -98,6 +105,8 @@ type Console struct {
 	securityCalls      []int
 	reportSecurityFail int
 
+	probe probeState
+
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -122,6 +131,15 @@ func New(opts Options) (*Console, error) {
 	if opts.ReportInterval == 0 {
 		opts.ReportInterval = 15
 	}
+	if opts.ProbeID == "" {
+		opts.ProbeID = "probe-1"
+	}
+	if opts.ProbeName == "" {
+		opts.ProbeName = "probe-east"
+	}
+	if opts.RegionID == "" {
+		opts.RegionID = "region-1"
+	}
 	ca, err := pkitest.NewCA("Edgeweir Fake Internal CA")
 	if err != nil {
 		return nil, err
@@ -138,6 +156,7 @@ func New(opts Options) (*Console, error) {
 		challengeKeys: map[string][]byte{},
 		securitySeen:  map[string]bool{},
 		mtlsCalls:     map[string]int{},
+		probe:         probeState{tokens: map[string]bool{}},
 		done:          make(chan struct{}),
 	}, nil
 }
@@ -166,11 +185,13 @@ func (c *Console) TLSConfig(dnsNames []string, ips []net.IP) (*tls.Config, error
 	}, nil
 }
 
-// Handler returns the HTTP handler serving NodeService.
+// Handler returns the HTTP handler serving NodeService and ProbeService.
 func (c *Console) Handler() http.Handler {
 	path, h := nodev1connect.NewNodeServiceHandler(c)
 	mux := http.NewServeMux()
 	mux.Handle(path, c.authenticate(h))
+	path, h = nodev1connect.NewProbeServiceHandler(c)
+	mux.Handle(path, c.authenticateProbe(h))
 	return mux
 }
 
@@ -187,7 +208,7 @@ func (c *Console) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		cn := r.TLS.PeerCertificates[0].Subject.CommonName
-		if cn != c.opts.NodeID {
+		if cn != c.opts.NodeID || isProbeCertificate(r.TLS.PeerCertificates[0]) {
 			_ = errWriter.Write(w, r, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("unknown node %q", cn)))
 			return
 		}
@@ -496,6 +517,7 @@ func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.Re
 		RenewCertificate:      renew,
 		ReportIntervalSeconds: c.opts.ReportInterval,
 		TasksPending:          len(c.pendingTasks) > 0,
+		Probe:                 c.probe.nodeProbe,
 	}), nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -184,5 +185,107 @@ func TestEnrollValidatesInput(t *testing.T) {
 		if _, err := enroll.Run(context.Background(), o); err == nil {
 			t.Errorf("case %d: invalid options accepted", i)
 		}
+	}
+}
+
+func probeOpts(url, token, pin, dir string) enroll.ProbeOptions {
+	return enroll.ProbeOptions{
+		ServerURL: url,
+		Token:     token,
+		CASHA256:  pin,
+		StateDir:  dir,
+		Info:      &nodev1.ProbeInfo{Hostname: "probe-host", AgentVersion: "test"},
+		Logger:    quietLogger(),
+	}
+}
+
+// A probe enrolls with EnrollProbe into the probe layout of its own state
+// directory: key 0600, certificate CN = probe id, no node files.
+func TestEnrollProbe(t *testing.T) {
+	c, err := fakeconsole.New(fakeconsole.Options{ProbeID: "probe-9", ProbeName: "east-1", RegionID: "region-east"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := c.StartTLS(t).URL
+	c.AddProbeToken("ptok")
+	c.AddToken("ptok-node") // a node token is not a probe token
+	dir := filepath.Join(t.TempDir(), "probe-state")
+	if _, err := enroll.Probe(context.Background(), probeOpts(url, "ptok-node", c.CA.Pin(), dir)); err == nil {
+		t.Fatal("probe enrolled with a node token")
+	}
+
+	id, err := enroll.Probe(context.Background(), probeOpts(url, "ptok", c.CA.Pin(), dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.ProbeID != "probe-9" || id.ProbeName != "east-1" || id.RegionID != "region-east" || id.NodeID != "" {
+		t.Fatalf("identity = %+v", id)
+	}
+	for name, perm := range map[string]os.FileMode{
+		identity.ProbeKeyFile: 0o600, identity.ProbeCertFile: 0o644, identity.CAFile: 0o644, identity.ProbeIdentityFile: 0o644,
+	} {
+		st, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if st.Mode().Perm() != perm {
+			t.Errorf("%s mode = %v, want %v", name, st.Mode().Perm(), perm)
+		}
+	}
+	for _, name := range []string{identity.KeyFile, identity.CertFile, identity.IdentityFile} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("node file %s written for a probe (%v)", name, err)
+		}
+	}
+	if (identity.Store{Dir: dir}).Enrolled() {
+		t.Fatal("probe state directory looks like an enrolled node")
+	}
+	loaded, err := identity.Store{Dir: dir, Probe: true}.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Certificate.Subject.CommonName != "probe-9" || loaded.ProbeID != "probe-9" || loaded.ServerURL != url ||
+		loaded.CASHA256 != c.CA.Pin() || pki.Fingerprint(loaded.CA) != c.CA.Pin() {
+		t.Fatalf("loaded probe identity: CN %q %+v", loaded.Certificate.Subject.CommonName, loaded.Identity)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, identity.ProbeIdentityFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "node_id") {
+		t.Fatalf("probe.json has node fields: %s", raw)
+	}
+
+	// Enrolled: a second token is refused before anything is sent.
+	c.AddProbeToken("ptok-2")
+	if _, err := enroll.Probe(context.Background(), probeOpts(url, "ptok-2", c.CA.Pin(), dir)); !errors.Is(err, enroll.ErrProbeAlreadyEnrolled) {
+		t.Fatalf("second enrollment: %v", err)
+	}
+	if n, _ := c.ProbeCounters(); n != 1 {
+		t.Fatalf("probe enrollments = %d, want 1", n)
+	}
+	// The token was single use.
+	if _, err := enroll.Probe(context.Background(), probeOpts(url, "ptok", c.CA.Pin(), t.TempDir())); err == nil {
+		t.Fatal("probe token reused")
+	}
+}
+
+// The CA pin is checked before the token leaves the probe.
+func TestEnrollProbeRejectsWrongPin(t *testing.T) {
+	c, url := setup(t)
+	c.AddProbeToken("ptok")
+	other, err := fakeconsole.New(fakeconsole.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := enroll.Probe(context.Background(), probeOpts(url, "ptok", other.CA.Pin(), dir)); !errors.Is(err, pki.ErrPinMismatch) {
+		t.Fatalf("err = %v, want ErrPinMismatch", err)
+	}
+	if (identity.Store{Dir: dir, Probe: true}).Enrolled() {
+		t.Fatal("identity written despite pin mismatch")
+	}
+	if _, err := enroll.Probe(context.Background(), probeOpts(url, "ptok", c.CA.Pin(), dir)); err != nil {
+		t.Fatalf("token was consumed by the rejected attempt: %v", err)
 	}
 }
