@@ -15,8 +15,9 @@
 # .sha256sum GNOME publishes.
 #
 # epoch is SOURCE_DATE_EPOCH for every timestamp of the build and the
-# packages (2026-10-01T00:00:00Z). Bump the package release (packaging
-# revision) in build.sh when anything here changes.
+# packages (2026-10-01T00:00:00Z). The package release is in
+# nfpm/edgeweir-openresty.yaml: back to 1 with a new OpenResty version,
+# raised when anything else here changes.
 epoch 1790812800
 
 openresty 1.31.1.1 65b78baadd3f0984055de89bf13f4a1932e5bfe9c31932037a134ea2b1a0ce42 https://openresty.org/download/openresty-1.31.1.1.tar.gz https://openresty.org/download/openresty-1.31.1.1.tar.gz.asc openresty.asc 25451EB088460026195BD62CB550E09EA0E98066

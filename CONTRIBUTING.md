@@ -83,7 +83,7 @@ feat(proto): bump contract to proto/v0.1.1
 源码版本都在 `packaging/openresty/sources.lock`（格式见文件头）。升级一个组件：
 
 1. 从上游的发布页确认新版本，下载源码包与签名，改 `sources.lock` 里的版本、URL 与 SHA-256；签名密钥变化时把新公钥导出到 `keys/`（`gpg --armor --export-options export-minimal --export <指纹>`）并改指纹，指纹要能在上游的官方文档里核对。
-2. 把 `epoch` 改成当天 0 点（UTC）的时间戳；源码不变、只有打包变化时改 `nfpm/*.yaml` 的 `release`。OpenResty 版本变化时同时改 `.goreleaser.yaml` 里 edgeweir-node 包依赖的最低版本。
+2. 把 `epoch` 改成当天 0 点（UTC）的时间戳。包版本是 OpenResty 的版本加 `nfpm/edgeweir-openresty.yaml` 的 `release`（两个包共用）：OpenResty 升级时 `release` 回到 1，并改 `.goreleaser.yaml` 里 edgeweir-node 包依赖的最低版本；OpenResty 不变而包内容变化（其他组件升级、补丁、构建参数、打包）时 `release` 加一。
 3. `make openresty-packages ARCH=arm64`（或 amd64）：构建会校验签名与许可证、检查链接与导出的符号，并用 `nginx -t` 加载 ModSecurity 与 CRS。再跑 `make e2e`。
 4. 可复现检查：`docker buildx build --no-cache` 重新构建一次 `packaging/openresty/Dockerfile` 的 `packages` 目标，`tree.sha256` 与包的 SHA-256 应当不变。
 

@@ -59,11 +59,14 @@ COPY packaging/openresty/sources.lock /nfpm/
 RUN set -eu; \
     epoch=$(awk '$1 == "epoch" { print $2 }' /nfpm/sources.lock); \
     version=$(awk '$1 == "openresty" { print $2 }' /nfpm/sources.lock); \
+    release=$(awk '$1 == "release:" { print $2 }' /nfpm/edgeweir-openresty.yaml); \
+    case "$release" in ''|*[!0-9]*) echo "release of edgeweir-openresty.yaml: '$release'" >&2; exit 1 ;; esac; \
     mtime=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ); \
     export SOURCE_DATE_EPOCH="$epoch"; \
     mkdir -p /out; \
     for pkg in edgeweir-openresty edgeweir-openresty-modsecurity; do \
-      sed -e "s/\${ARCH}/$TARGETARCH/g" -e "s/\${VERSION}/$version/g" -e "s/\${MTIME}/$mtime/g" \
+      sed -e "s/\${ARCH}/$TARGETARCH/g" -e "s/\${VERSION}/$version/g" -e "s/\${RELEASE}/$release/g" \
+        -e "s/\${MTIME}/$mtime/g" \
         "/nfpm/$pkg.yaml" >"/tmp/$pkg.yaml"; \
       for format in deb rpm; do \
         nfpm package --config "/tmp/$pkg.yaml" --packager "$format" --target /out/; \

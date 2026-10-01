@@ -1,7 +1,8 @@
 # nfpm configuration of edgeweir-openresty (built by ../Dockerfile, stage
-# packager, which fills in ${ARCH}, ${VERSION} and ${MTIME}). The release number
-# is the packaging revision: bump it when the package changes without a new
-# OpenResty version.
+# packager, which fills in ${ARCH}, ${VERSION}, ${RELEASE} and ${MTIME}). The
+# release number is the packaging revision of both packages (the packager
+# and the Makefile read it here): back to 1 with a new OpenResty version,
+# raised when the packages change without one.
 name: edgeweir-openresty
 arch: ${ARCH}
 platform: linux

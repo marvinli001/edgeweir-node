@@ -638,7 +638,7 @@ table inet edgeweir {
 - **可复现**：`SOURCE_DATE_EPOCH` 取自 `sources.lock`，固定构建路径，`-ffile-prefix-map`，二进制去掉符号，文件时间、属主与权限统一，nfpm 使用同一时间戳。在 arm64 上不使用缓存重新构建，树（`tree.sha256`）与四个包的 SHA-256 与前一次完全相同。
 - **许可证**：构建前逐个检查源码中的许可证文件（文件存在、仍含预期的许可证文字），全部允许商业使用；`NOTICE` 列出每个组件、版本与 SPDX 标识并附许可证全文（OpenResty 及其捆绑模块 BSD-2-Clause / BSD-3-Clause / MIT，nginx BSD-2-Clause，LuaJIT MIT，OpenSSL Apache-2.0，PCRE2 BSD-3-Clause WITH PCRE2-exception，zlib Zlib，Brotli MIT，ngx_brotli BSD-2-Clause，Zstandard 按 BSD-3-Clause，zstd-nginx-module BSD-2-Clause，ModSecurity 与 ModSecurity-nginx Apache-2.0，ModSecurity 捆绑的 libinjection BSD-3-Clause 与 Mbed TLS（按 Apache-2.0），YAJL ISC，libxml2 MIT，OWASP CRS Apache-2.0）。
 - **SBOM**：构建写入 CycloneDX 组件清单（`sources.lock` 的每个源码及其 SHA-256、OpenResty 捆绑并编译的组件、ModSecurity 捆绑的库），syft 扫描安装树时并入，生成 SPDX SBOM。
-- **更新**：改 `sources.lock` 的版本、URL、SHA-256（签名密钥轮换时连同 `keys/` 与指纹），并把 `epoch` 改为新的日期；包的 release 号在 `nfpm/*.yaml`，源码不变而包变化时加一。edgeweir-node 包依赖的最低版本在 `.goreleaser.yaml`。
+- **更新**：改 `sources.lock` 的版本、URL、SHA-256（签名密钥轮换时连同 `keys/` 与指纹），并把 `epoch` 改为新的日期；包版本是 OpenResty 的版本加 `nfpm/edgeweir-openresty.yaml` 里的 release 号（两个包共用）：OpenResty 升级时 release 回到 1，OpenResty 不变而包内容变化（其他组件升级、补丁、构建参数、打包）时加一。edgeweir-node 包依赖的最低版本在 `.goreleaser.yaml`。
 
 ## 6. 已知限制
 

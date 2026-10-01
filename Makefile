@@ -25,6 +25,7 @@ ARCH              ?= $(if $(filter arm64 aarch64,$(shell uname -m)),arm64,amd64)
 OPENRESTY_OUT     ?= out/openresty
 OPENRESTY_JOBS    ?= 2
 OPENRESTY_VERSION := $(shell awk '$$1 == "openresty" { print $$2 }' packaging/openresty/sources.lock)
+OPENRESTY_RELEASE := $(shell awk '$$1 == "release:" { print $$2 }' packaging/openresty/nfpm/edgeweir-openresty.yaml)
 OPENRESTY_BUILD   := docker buildx build --platform linux/$(ARCH) --build-arg OPENRESTY_JOBS=$(OPENRESTY_JOBS) \
 	-f packaging/openresty/Dockerfile
 
@@ -91,7 +92,8 @@ openresty-packages: ## Build the edgeweir-openresty(-modsecurity) deb/rpm packag
 	$(OPENRESTY_BUILD) --target tree --output type=local,dest=$(OPENRESTY_OUT)/.$(ARCH)/tree .
 	mv $(OPENRESTY_OUT)/.$(ARCH)/packages/*.deb $(OPENRESTY_OUT)/.$(ARCH)/packages/*.rpm $(OPENRESTY_OUT)/
 	syft scan dir:$(OPENRESTY_OUT)/.$(ARCH)/tree/tree --select-catalogers +sbom-cataloger --source-name edgeweir-openresty \
-		--source-version $(OPENRESTY_VERSION)-1 -o spdx-json=$(OPENRESTY_OUT)/edgeweir-openresty_$(OPENRESTY_VERSION)-1_$(ARCH).sbom.json
+		--source-version $(OPENRESTY_VERSION)-$(OPENRESTY_RELEASE) \
+		-o spdx-json=$(OPENRESTY_OUT)/edgeweir-openresty_$(OPENRESTY_VERSION)-$(OPENRESTY_RELEASE)_$(ARCH).sbom.json
 	cd $(OPENRESTY_OUT) && ls -1 *_$(ARCH).* *.$(if $(filter arm64,$(ARCH)),aarch64,x86_64).rpm
 
 .PHONY: e2e
