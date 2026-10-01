@@ -24,6 +24,11 @@
 -- primary is down) goes first and the policy orders the others behind it
 -- (round robin keeps its state for unpinned requests: the others follow
 -- in weighted order). When every origin is down there is no pin.
+--
+-- Origin groups (proto v0.13.0): a site's origins form groups (site._pools,
+-- "" the default group); origin rules choose the group of a request and
+-- order() works on that group's origins alone, with round-robin and ring
+-- state of its own.
 local health = require("edgeweir.health")
 
 local _M = {}
@@ -213,19 +218,27 @@ end
 
 -- order returns the origins to try for a request (see above). key is the
 -- consistent-hash key (the request URI), pin the origin id of a valid
--- affinity cookie (or nil).
-function _M.order(site, key, now, pin)
-  local prim, back = site._primaries or {}, site._backups or {}
+-- affinity cookie (or nil), group the origin group (nil or "": the default
+-- group; a group without origins gives none).
+function _M.order(site, key, now, pin, group)
+  local prim, back, p, b = site._primaries or {}, site._backups or {}, "p", "b"
+  if group and group ~= "" then
+    local pool = site._pools and site._pools[group]
+    if not pool then
+      return {}
+    end
+    prim, back, p, b = pool.primaries, pool.backups, group .. "|p", group .. "|b"
+  end
   local hp = healthy(site, prim, now)
   local hb = #hp == 0 and healthy(site, back, now) or nil
   local out
   if #hp > 0 then
-    out = pin and pinned(site, prim, hp, "p", key, pin) or policy_order(site, prim, hp, "p", key)
+    out = pin and pinned(site, prim, hp, p, key, pin) or policy_order(site, prim, hp, p, key)
   elseif #hb > 0 then
-    out = pin and pinned(site, back, hb, "b", key, pin) or policy_order(site, back, hb, "b", key)
+    out = pin and pinned(site, back, hb, b, key, pin) or policy_order(site, back, hb, b, key)
   else
-    out = policy_order(site, prim, prim, "p", key)
-    local rest = policy_order(site, back, back, "b", key)
+    out = policy_order(site, prim, prim, p, key)
+    local rest = policy_order(site, back, back, b, key)
     for i = 1, #rest do
       out[#out + 1] = rest[i]
     end

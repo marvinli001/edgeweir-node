@@ -1,4 +1,6 @@
 -- Sampled request diagnostics. Never collect query strings, headers or bodies.
+-- The site's log_sample_rate (basis points) applies unless a config rule set
+-- one for the request.
 local json = require("cjson.safe")
 local M = {}
 local MAX_PENDING = 2000
@@ -10,7 +12,10 @@ end
 function M.log(waf_ids, waf_blocked)
   if ngx.is_subrequest then return end
   local site = ngx.ctx.edgeweir_site
-  local rate = site and tonumber(site.log_sample_rate) or 0
+  if not site then return end
+  -- Config rules may set the rate for a request (basis points).
+  local policy = ngx.ctx.edgeweir_policy
+  local rate = policy and policy.log_sample_rate or tonumber(site.log_sample_rate) or 0
   if not rate or rate <= 0 then return end
   local id = ngx.var.request_id or tostring(ngx.now()) .. tostring(ngx.worker.pid())
   if ngx.crc32_short(id) % 10000 >= rate then return end

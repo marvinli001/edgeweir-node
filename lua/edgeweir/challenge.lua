@@ -832,23 +832,25 @@ end
 
 -- required returns the level and challenge the site asks of requests
 -- without a sufficient pass (platform and site Under Attack, CC levels
--- from cc_level(site)); 0 when none.
-function _M.required(site, cc_level)
+-- from cc_level(site)); 0 when none. under_attack, when not nil, turns the
+-- site's Under Attack on or off for this request (config rules); the
+-- platform's is not affected.
+function _M.required(site, cc_level, under_attack)
   local level, kind = 0, nil
   local cfg = site._config
   local pp = cfg and cfg.platform_protection
   if type(pp) == "table" and pp.under_attack == true then
     level, kind = _M.LEVELS[pp.challenge] or 2, _M.LEVELS[pp.challenge] and pp.challenge or "js"
   end
-  local p = site.protection
-  if type(p) == "table" then
-    if p.under_attack == true then
-      local l = _M.LEVELS[p.under_attack_challenge] or 2
-      if l > level then level, kind = l, _M.TYPES[l] end
-    end
-    if p.cc and cc_level and cc_level > level then
-      level, kind = cc_level, _M.kind_for(cc_level, p.cc.high_pow == true)
-    end
+  local p = type(site.protection) == "table" and site.protection or nil
+  local ua = p ~= nil and p.under_attack == true
+  if under_attack ~= nil then ua = under_attack end
+  if ua then
+    local l = _M.LEVELS[p and p.under_attack_challenge] or 2
+    if l > level then level, kind = l, _M.TYPES[l] end
+  end
+  if p and p.cc and cc_level and cc_level > level then
+    level, kind = cc_level, _M.kind_for(cc_level, p.cc.high_pow == true)
   end
   return level, kind
 end

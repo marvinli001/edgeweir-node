@@ -1,8 +1,12 @@
 -- edgeweir.origin: origin layer (unix sockets behind the edge cache).
 --
--- access():        orders the site's origins (edgeweir.lb), resolves their
---                  names (edgeweir.dns), signs S3 requests (edgeweir.sigv4)
---                  and sets the variables used by proxy_pass.
+-- access():        orders the origins of the request's origin group
+--                  (edgeweir.lb), applies the origin rules' overrides
+--                  (X-Edgeweir-Origin from the edge layer, see
+--                  edgeweir.policy.origin_header: group, Host, SNI, port,
+--                  timeouts), resolves their names (edgeweir.dns), signs
+--                  S3 requests (edgeweir.sigv4) and sets the variables
+--                  used by proxy_pass.
 -- balance():       balancer_by_lua: one call per attempt; sets the peer,
 --                  retries, timeouts and the keep-alive pool, and rebuilds
 --                  the request when a retry goes to an origin with another
@@ -34,6 +38,7 @@ local compress = require("edgeweir.compress")
 local errorpages = require("edgeweir.errorpages")
 local affinity = require("edgeweir.affinity")
 local challenge = require("edgeweir.challenge")
+local policy = require("edgeweir.policy")
 
 local _M = {}
 
@@ -99,6 +104,31 @@ function _M.amz_headers(headers)
   return out
 end
 
+-- effective returns origin o with the overrides of an origin rule (ov from
+-- policy.parse_origin_header): the port of every origin, the Host of
+-- origins that are not S3 (their signing host keeps its own logic) and the
+-- SNI. A copy with the derived fields recomputed; o itself when nothing
+-- changes.
+function _M.effective(o, ov)
+  if not ov or (not ov.port and not ov.sni and (not ov.host or o.s3)) then
+    return o
+  end
+  local c = {}
+  for k, v in pairs(o) do
+    c[k] = v
+  end
+  if ov.port then
+    c.port = ov.port
+  end
+  if ov.host and not o.s3 then
+    c.host_header = ov.host
+  end
+  if ov.sni then
+    c.sni = ov.sni
+  end
+  return store.derive_origin(c)
+end
+
 local function raw_path(request_uri)
   local q = find(request_uri, "?", 1, true)
   return q and sub(request_uri, 1, q - 1) or request_uri
@@ -155,6 +185,10 @@ function _M.access()
   local ctx = ngx.ctx
   ctx.site = site
   ctx.chain = chain_from_header(site, var.http_x_edgeweir_rules)
+  -- Only the edge layer sets it (proxy_set_header; clients' X-Edgeweir-*
+  -- headers never get past the edge).
+  local ov = policy.parse_origin_header(var.http_x_edgeweir_origin)
+  ctx.override = ov
   -- The edge forwards the client's Authorization unchanged.
   ctx.authorized = var.http_authorization ~= nil
   ctx.upgrade = var.http_upgrade ~= nil and var.http_upgrade ~= ""
@@ -174,7 +208,8 @@ function _M.access()
   local method = ngx.req.get_method()
   local allowed = store.config().allowed
   local cands, scheme, s3_refused = {}, nil, false
-  for _, o in ipairs(lb.order(site, var.request_uri, now, pin)) do
+  for _, listed in ipairs(lb.order(site, var.request_uri, now, pin, ov and ov.group)) do
+    local o = _M.effective(listed, ov)
     local usable = true
     if o.forbidden then
       -- Refused by the agent already (special-purpose IP literal).
@@ -269,8 +304,9 @@ function _M.balance()
     ngx_balancer.set_more_tries(#ctx.cands - 1)
   end
   local conn = ctx.site.conn
-  ngx_balancer.set_timeouts(conn.connect_timeout_ms / 1000, conn.send_timeout_ms / 1000,
-    conn.read_timeout_ms / 1000)
+  local ov = ctx.override or {}
+  ngx_balancer.set_timeouts((ov.connect or conn.connect_timeout_ms) / 1000, (ov.send or conn.send_timeout_ms) / 1000,
+    (ov.read or conn.read_timeout_ms) / 1000)
   -- Unverified TLS connections are never pooled: a site that verifies must
   -- not reuse a connection another site opened without verification.
   if conn.keepalive and not ctx.upgrade and (o.scheme ~= "https" or ctx.site.tls_verify) then

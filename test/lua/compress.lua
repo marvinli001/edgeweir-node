@@ -118,10 +118,11 @@ end)
 
 -- header_filter with a fake ngx: the request's Accept-Encoding after the
 -- edge layer chose (nil: removed).
-local function edge(site, accept_encoding, status, headers, method, subrequest)
+local function edge(site, accept_encoding, status, headers, method, subrequest, policy)
   local runtime = ngx
   local req_headers = { ["Accept-Encoding"] = accept_encoding }
   _G.ngx = {
+    ctx = { edgeweir_policy = policy },
     is_subrequest = subrequest or false,
     status = status,
     header = headers,
@@ -164,6 +165,41 @@ end)
 test("sites without edge compression keep the client's Accept-Encoding", function()
   eq(edge({ tls = { http2 = true } }, "gzip, br", 200, { ["Content-Type"] = "text/plain" }), "gzip, br")
   eq(edge({}, "gzip", 200, { ["Content-Type"] = "text/plain" }), "gzip")
+end)
+
+test("restrict applies config switches and compression rules", function()
+  local all = { "zstd", "br", "gzip" }
+  local function list(t) return table.concat(t, ",") end
+  local c, pref = compress.restrict(all, nil)
+  eq(list(c), "zstd,br,gzip"); eq(pref, nil)
+  c, pref = compress.restrict(all, { gzip = false })
+  eq(list(c), "zstd,br"); eq(pref, nil)
+  c = compress.restrict(all, { gzip = true, br = false, zstd = false })
+  eq(list(c), "gzip", "true only keeps what the site applies")
+  c, pref = compress.restrict({ "gzip" }, { compression = { "br", "gzip" } })
+  eq(list(c), "gzip"); eq(list(pref), "br,gzip")
+  c = compress.restrict(all, { compression = {} })
+  eq(#c, 0, "an empty list is identity")
+  c = compress.restrict(all, { br = false, compression = { "br", "gzip" } })
+  eq(list(c), "gzip", "a coding switched off stays off")
+end)
+
+test("choose takes the rule's order at equal q-values", function()
+  eq(compress.choose("zstd, br, gzip", { "zstd", "br", "gzip" }, { "gzip", "br", "zstd" }), "gzip")
+  eq(compress.choose("zstd, br", { "zstd", "br" }, { "br", "zstd" }), "br")
+  eq(compress.choose("br;q=1, gzip;q=0.5", { "br", "gzip" }, { "gzip", "br" }), "br", "q-values first")
+  eq(compress.choose("gzip", { "gzip" }, {}), nil, "nothing allowed")
+end)
+
+test("rules choose the coding of a response", function()
+  local cached = function() return { ["Content-Type"] = "text/plain", ["Content-Length"] = "4096" } end
+  eq(edge(site, "zstd, br, gzip", 200, cached(), nil, nil, { compression = { "gzip" } }), "gzip")
+  eq(edge(site, "zstd, br, gzip", 200, cached(), nil, nil, { compression = {} }), nil)
+  eq(edge(site, "zstd, br, gzip", 200, cached(), nil, nil, { compression = { "br", "zstd" } }), "br")
+  eq(edge(site, "gzip", 200, cached(), nil, nil, { gzip = false }), nil, "config gzip=false: identity")
+  eq(edge(site, "gzip, br", 200, cached(), nil, nil, { gzip = false }), "br")
+  eq(edge(site, "zstd, br, gzip", 200, cached(), nil, nil, { zstd = false, compression = { "zstd", "br" } }), "br")
+  eq(edge(site, "zstd, br, gzip", 200, cached(), nil, nil, {}), "zstd", "no rule: the default preference")
 end)
 
 -- origin_header_filter with a fake ngx: the Vary the edge layer caches.
