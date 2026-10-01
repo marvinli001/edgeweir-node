@@ -46,6 +46,9 @@ type SiteTable struct {
 	// hosts; OfflineHosts the domains of disabled and suspended sites.
 	PlatformErrorPages *configir.PlatformErrorPages `json:"platform_error_pages,omitempty"`
 	OfflineHosts       []configir.OfflineHost       `json:"offline_hosts,omitempty"`
+	// HealthCertificate is the node's self-signed certificate for SNI
+	// health.edgeweir.invalid and handshakes without SNI (probe-health-v1).
+	HealthCertificate *configir.Certificate `json:"health_certificate,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.

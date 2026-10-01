@@ -10,7 +10,8 @@
 --                     cdn_id, HTTP-01 answers, IP lists, platform rules,
 --                     platform protection, ids of the sites with CC, the
 --                     lifetime of Cache-Tag index entries, the platform's
---                     error pages and the offline hosts)
+--                     error pages, the offline hosts and the node's health
+--                     certificate)
 --
 -- A replacement writes table N+1 next to table N, then flips
 -- edgeweir_meta["version"]; requests never observe a half-written table.
@@ -35,6 +36,7 @@ local ratelimit = require("edgeweir.ratelimit")
 local cc = require("edgeweir.cc")
 local errorpages = require("edgeweir.errorpages")
 local expressions = require("edgeweir.expressions")
+local probehealth = require("edgeweir.probehealth")
 
 local _M = {}
 
@@ -339,6 +341,12 @@ function _M.replace(doc)
   cfg.tag_ttl = tonumber(doc.tag_ttl)
   if type(doc.platform_error_pages) == "table" then cfg.platform_error_pages = doc.platform_error_pages end
   if type(doc.offline_hosts) == "table" and #doc.offline_hosts > 0 then cfg.offline_hosts = doc.offline_hosts end
+  if doc.health_certificate ~= nil and doc.health_certificate ~= cjson.null then
+    cfg.health_certificate = probehealth.material(doc)
+    if not cfg.health_certificate then
+      ngx.log(ngx.WARN, "edgeweir: invalid health_certificate in the site table; ignored")
+    end
+  end
   if cjson.empty_array_mt and #allowed == 0 then
     setmetatable(allowed, cjson.empty_array_mt)
   end
@@ -444,7 +452,8 @@ end
 -- { allowed = parsed origin allow list (edgeweir.ipaddr.prefixes),
 --   cdn_id = CDN-Loop identifier or "", tag_ttl = lifetime of Cache-Tag
 --   index entries, platform_pages = compiled platform error pages,
---   offline = offline hosts (nil without any) }.
+--   offline = offline hosts (nil without any), health_certificate = the
+--   node's health certificate (nil without one) }.
 local EMPTY_CONFIG = { allowed = {}, cdn_id = "", tag_ttl = _M.DEFAULT_TAG_TTL, platform_pages = {} }
 
 function _M.config(version)
@@ -471,6 +480,7 @@ function _M.config(version)
       cc_sites = type(doc.cc_sites) == "table" and doc.cc_sites or {},
       platform_pages = errorpages.compile_platform(doc.platform_error_pages),
       offline = offline_hosts(doc.offline_hosts),
+      health_certificate = probehealth.material(doc),
     }
     local tag_ttl = tonumber(doc.tag_ttl)
     cfg.tag_ttl = (tag_ttl and tag_ttl >= 1) and tag_ttl or _M.DEFAULT_TAG_TTL

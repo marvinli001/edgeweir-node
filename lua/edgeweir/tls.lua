@@ -1,13 +1,22 @@
+-- edgeweir.tls: certificates of the TLS listeners. A site's certificate
+-- for its domains; the node's health certificate for SNI
+-- health.edgeweir.invalid and handshakes without SNI
+-- (edgeweir.probehealth); any other name aborts the handshake.
 local ssl = require("ngx.ssl")
 local hello = require("ngx.ssl.clienthello")
 local store = require("edgeweir.store")
 local ja4 = require("edgeweir.ja4")
+local probehealth = require("edgeweir.probehealth")
 local cache = require("resty.lrucache").new(1000)
 local _M = {}
 
 function _M.client_hello()
   local name = hello.get_client_hello_server_name()
-  local site = name and store.lookup_host(string.lower(name))
+  if probehealth.is_health_sni(name) then
+    if not probehealth.material(store.config()) then return ngx.exit(ngx.ERROR) end
+    return
+  end
+  local site = store.lookup_host(string.lower(name))
   if not site or not site.certificate then return ngx.exit(ngx.ERROR) end
   -- JA4 only for sites that read it; never fails the handshake.
   if site._ja4 then
@@ -22,8 +31,13 @@ end
 
 function _M.certificate()
   local name = ssl.server_name()
-  local site = name and store.lookup_host(string.lower(name))
-  local material = site and site.certificate
+  local site, material
+  if probehealth.is_health_sni(name) then
+    material = probehealth.material(store.config())
+  else
+    site = store.lookup_host(string.lower(name))
+    material = site and site.certificate
+  end
   if not material then return ngx.exit(ngx.ERROR) end
   local parsed = cache:get(material.fingerprint)
   if not parsed then
@@ -36,7 +50,7 @@ function _M.certificate()
   if not ssl.clear_certs() or not ssl.set_cert(parsed[1]) or not ssl.set_priv_key(parsed[2]) then
     return ngx.exit(ngx.ERROR)
   end
-  if site.tls and site.tls.ocsp_stapling and material.ocsp and material.ocsp ~= "" and (material.ocsp_until or 0) > ngx.time() then
+  if site and site.tls and site.tls.ocsp_stapling and material.ocsp and material.ocsp ~= "" and (material.ocsp_until or 0) > ngx.time() then
     require("ngx.ocsp").set_ocsp_status_resp(ngx.decode_base64(material.ocsp))
   end
 end

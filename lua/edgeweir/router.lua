@@ -1,6 +1,8 @@
 -- edgeweir.router: edge layer (public listeners).
 --
--- access(): rejects requests that already passed this node (CDN-Loop,
+-- access(): answers the probes' health endpoint before anything else and
+-- keeps connections with the health SNI to it (edgeweir.probehealth),
+-- rejects requests that already passed this node (CDN-Loop,
 -- 508), resolves the site by Host (404 for unknown hosts), rejects banned
 -- client addresses (403 ip-banned, edgeweir.bans), handles
 -- WebSocket upgrades, evaluates the request conditions of the cache rules
@@ -51,6 +53,7 @@ local compress = require("edgeweir.compress")
 local waf = require("edgeweir.waf")
 local errorpages = require("edgeweir.errorpages")
 local affinity = require("edgeweir.affinity")
+local probehealth = require("edgeweir.probehealth")
 
 local _M = {}
 
@@ -351,6 +354,16 @@ local function access()
 end
 
 function _M.access()
+  local var = ngx.var
+  -- The probes' health endpoint, for any Host, before CDN-Loop, HTTP-01,
+  -- the site lookup, bans, rules and CC: never cached, counted or logged.
+  if probehealth.is_request(ngx.req.get_method(), var.uri) then
+    return probehealth.respond()
+  end
+  -- A connection with the health SNI (or none) serves only that path.
+  if var.scheme == "https" and probehealth.is_health_sni(var.ssl_server_name) then
+    return deny(421, "sni-host-mismatch", "SNI and Host must match")
+  end
   if access() then
     local site = ngx.ctx.edgeweir_site
     if site and site.waf then

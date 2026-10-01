@@ -294,6 +294,10 @@ type Agent struct {
 	activeMarks bool
 	activeDown  map[healthcheck.Key]bool
 
+	// healthCert is the self-signed certificate of SNI
+	// health.edgeweir.invalid (healthcert.go), loaded at startup.
+	healthCert *configir.Certificate
+
 	// Probing the other nodes (probe.go) while the console asks for it.
 	probeMu     sync.Mutex
 	probeCancel context.CancelFunc
@@ -347,6 +351,9 @@ func kernelManager(exec nft.Executor, log *slog.Logger) *nft.Manager {
 // Run runs the agent until ctx is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
 	if err := a.prepareDirs(); err != nil {
+		return err
+	}
+	if err := a.loadHealthCertificate(); err != nil {
 		return err
 	}
 	databases, err := geoip.Open(a.cfg.GeoIP)

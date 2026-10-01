@@ -6,12 +6,16 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/marvinli001/edgeweir-node/internal/agent"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
@@ -88,4 +92,48 @@ func TestNodeProbesWhileAllowed(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	eventually(t, "second round reported", func() bool { return len(console.ProbeReports()) == 2 })
+}
+
+// Every site table carries the node's health certificate (the bootstrap
+// table before enrollment too), the same one across restarts, and the
+// node announces probe-health-v1.
+func TestSiteTablesCarryTheHealthCertificate(t *testing.T) {
+	console, err := fakeconsole.New(fakeconsole.Options{NodeID: "node-h", ReportInterval: 1, KeepaliveInterval: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := console.StartTLS(t)
+	root := t.TempDir()
+	h := &harness{t: t, console: console, url: srv.URL, stateDir: filepath.Join(root, "state"), root: root}
+	rev := console.Publish(baseConfig(demoSite("site-a", "a.test")))
+	dp := fakedataplane.Start(t)
+	stop := startAgent(t, h.agentConfig(dp.Socket), newFakeEngine(), dataplane.NewClient(dp.Socket))
+	eventually(t, "bootstrap table", func() bool { return dp.Table() != nil })
+	boot := dp.Table().HealthCertificate
+	if boot == nil || boot.ChainPEM == "" || boot.PrivateKeyPEM == "" || boot.Fingerprint == "" {
+		t.Fatalf("bootstrap table without the health certificate: %+v", boot)
+	}
+	stored, err := os.ReadFile(filepath.Join(h.stateDir, agent.HealthCertFile))
+	if err != nil || string(stored) != boot.ChainPEM {
+		t.Fatalf("pushed certificate is not the stored one: %v", err)
+	}
+	console.AddToken("tok")
+	if _, err := enroll.Run(context.Background(), enroll.Options{ServerURL: srv.URL, Token: "tok", CASHA256: console.CA.Pin(), StateDir: h.stateDir, Logger: testLogger(t)}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "revision applied", statusWith(console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
+	if got := dp.Table().HealthCertificate; got == nil || got.Fingerprint != boot.Fingerprint {
+		t.Fatalf("applied table health certificate %+v", got)
+	}
+	if !slices.Contains(console.LastStatus().GetInfo().GetSupportedFeatures(), configir.FeatureProbeHealth) {
+		t.Fatalf("probe-health-v1 not announced: %v", console.LastStatus().GetInfo().GetSupportedFeatures())
+	}
+	stop()
+
+	startAgent(t, h.agentConfig(dp.Socket), newFakeEngine(), dataplane.NewClient(dp.Socket))
+	pushes := len(dp.Pushes())
+	eventually(t, "table pushed after a restart", func() bool { return len(dp.Pushes()) > pushes })
+	if got := dp.Table().HealthCertificate; got == nil || got.Fingerprint != boot.Fingerprint {
+		t.Fatalf("restart changed the health certificate: %+v", got)
+	}
 }

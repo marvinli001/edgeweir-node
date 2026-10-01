@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/configir"
-	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	"golang.org/x/crypto/ocsp"
 )
@@ -189,8 +188,7 @@ func (a *Agent) ocspLoop(ctx context.Context) {
 					copyPlan := *plan
 					copyPlan.Sites = slices.Clone(plan.Sites)
 					if a.attachCertificates(&copyPlan) == nil {
-						table := dataplane.FromPlan(&copyPlan)
-						table.CDNID = a.cdnID()
+						table := a.siteTable(&copyPlan)
 						if a.pushWithRetry(ctx, table) == nil {
 							a.mu.Lock()
 							a.plan = &copyPlan

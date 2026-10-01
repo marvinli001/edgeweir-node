@@ -133,8 +133,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	// Keys go in before the sites that need them; the data plane check
 	// retries a failure.
 	a.pushChallengeKeysWithRetry(ctx, plan)
-	table := dataplane.FromPlan(plan)
-	table.CDNID = a.cdnID()
+	table := a.siteTable(plan)
 	touched = true
 	if err := a.pushWithRetry(ctx, table); err != nil {
 		return err

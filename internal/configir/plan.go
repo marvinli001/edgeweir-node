@@ -238,7 +238,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -264,6 +264,17 @@ const (
 // browser TTLs, bulk redirects and origin groups. The console requires it
 // when a configuration uses any of them.
 const FeatureRulesV2 = "rules-v2"
+
+// Features of proto v0.14.0. FeatureProbeHealth: every edge listener
+// answers GET /.edgeweir/health before any site logic, TLS listeners with
+// the node's health certificate for SNI health.edgeweir.invalid (the
+// console probes nodes over HTTP(S) only when all of a cluster's nodes
+// have it, TCP otherwise). FeatureMetrics: ReportStatus carries host
+// metrics (Linux builds; announced at runtime).
+const (
+	FeatureProbeHealth = "probe-health-v1"
+	FeatureMetrics     = "metrics-v1"
+)
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
