@@ -254,7 +254,7 @@ local function access()
     if result.challenge then return run_challenge(site, result.challenge, result.level) end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
-    return deny(result.status, "policy-denied", "request denied")
+    return deny(result.status, result.code or "policy-denied", result.message or "request denied")
   end
   if site._guard and not exempt then
     local level, kind = challenge.required(site, site._cc and cc.level(site, original_path) or 0)

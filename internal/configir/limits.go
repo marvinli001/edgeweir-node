@@ -7,9 +7,7 @@ import (
 
 const (
 	RateLimitDictPrefix = "edgeweir_rate_"
-	RateLimitSiteKB     = 256
 	MaxPublishedSites   = 512
-	RateLimitBudgetKB   = RateLimitSiteKB * MaxPublishedSites
 )
 
 // RateLimitDictName is also implemented by edgeweir.ratelimit.dict_name.

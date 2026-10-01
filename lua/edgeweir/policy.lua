@@ -85,7 +85,7 @@ local function run_group(group, values, site, ctx, phase, namespace)
         if a.force_https ~= nil then ctx.force_https = a.force_https end
         if a.gzip == false then ctx.gzip = false end
       elseif a.kind == "rate_limit" then
-        local result = ratelimit.check(site._rate_limit_dict, namespace, rule.id, a, values[a.key])
+        local result = ratelimit.check(site._rate_limit_dict, site.id, namespace, rule.id, a, values[a.key])
         if result then return result end
       end
     end
