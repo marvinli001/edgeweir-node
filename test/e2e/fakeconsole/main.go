@@ -35,6 +35,16 @@
 //	active.test     origins console:8082 and console:8083 with an active
 //	                   health check of /health every 5 s (one result
 //	                   changes the state), nothing cached
+//	rules.test      rules-v2: origin console:8082, group "api" whoami:80;
+//	                   a dynamic redirect with query edits (/old/), a
+//	                   rewrite to the api group with its own Host
+//	                   (/api/), a port override (/port/), config rules
+//	                   (/slow read timeout 1 s, /sampled logged, /ws
+//	                   without WebSocket, /guarded Under Attack), bulk
+//	                   redirects and a cache rule condition with a browser
+//	                   TTL (/img/); compress.test has compression rules
+//	                   (/gz-only gzip, /no-compress none, /no-gzip config
+//	                   gzip=false)
 //
 // The configuration names offline hosts (old.test disabled, *.gone.test
 // suspended) and a platform page for suspended sites.
@@ -207,6 +217,9 @@ func serveTestOrigin(addr string) {
 			fmt.Fprintf(w, "origin status %d\n", code)
 		case r.URL.Path == "/echo":
 			fmt.Fprintf(w, "port %s rid %s\n", port, r.Header.Get("X-Request-Id"))
+		case r.URL.Path == "/slow":
+			time.Sleep(2500 * time.Millisecond)
+			fmt.Fprintf(w, "slow from %s\n", port)
 		default:
 			if tags := r.URL.Query().Get("tags"); tags != "" {
 				h.Set("Cache-Tag", tags)
@@ -312,7 +325,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1"},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "suspended"},
 			{Name: "old.test", Reason: "disabled"},
@@ -357,7 +370,67 @@ func baseSites(origin string) []*nodev1.Site {
 		affinitySite(),
 		sitemapSite(),
 		activeSite(),
+		rulesSite(origin),
 	}
+}
+
+// Expression IR helpers for the rules-v2 sites.
+var (
+	irTrue = &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"}
+	irPath = &nodev1.RuleExpression{Op: "field", Field: "http.request.uri.path", ValueType: "string"}
+)
+
+func irConst(v string) *nodev1.RuleExpression {
+	return &nodev1.RuleExpression{Op: "const", ValueType: "string", Value: v}
+}
+
+func irCall(name, typ string, args ...*nodev1.RuleExpression) *nodev1.RuleExpression {
+	return &nodev1.RuleExpression{Op: "call", Field: name, ValueType: typ, Children: args}
+}
+
+// pathStarts is starts_with(http.request.uri.path, prefix).
+func pathStarts(prefix string) *nodev1.RuleExpression {
+	return irCall("starts_with", "boolean", irPath, irConst(prefix))
+}
+
+// rulesSite exercises the rules-v2 actions (see the package comment).
+func rulesSite(origin string) *nodev1.Site {
+	s := site("site-rules", "rules.test", "console", 8082)
+	s.OriginPool.Origins = append(s.OriginPool.Origins, &nodev1.Origin{
+		Id: "o-api", Address: origin, Port: 80, Scheme: nodev1.OriginScheme_ORIGIN_SCHEME_HTTP, Weight: 1, Group: "api",
+	})
+	s.Protection = &nodev1.SiteProtection{UnderAttackChallenge: "js", PassTtlSeconds: 300}
+	yes, no, rate := true, false, uint32(10000)
+	s.Rules = []*nodev1.EdgeRule{
+		{Id: "rw-api", Phase: "request-transform", Expression: pathStarts("/api/"), Action: &nodev1.RuleAction{
+			Kind: "rewrite", PreserveQuery: &no, SetQuery: []*nodev1.QueryParam{{Name: "v", Value: "2"}},
+			Target: irCall("wildcard_replace", "string", irPath, irConst("/API/*"), irConst("/internal/${1}")),
+		}},
+		{Id: "old", Phase: "redirect", Expression: pathStarts("/old/"), Action: &nodev1.RuleAction{
+			Kind: "redirect", StatusCode: 301, PreserveQuery: &yes,
+			Target:      irCall("regex_replace", "string", irPath, irConst("^/old/(.*)$"), irConst("/new/${1}")),
+			SetQuery:    []*nodev1.QueryParam{{Name: "lang", Value: "zh CN"}},
+			RemoveQuery: []string{"utm_source"},
+		}},
+		{Id: "slow", Phase: "config", Expression: pathStarts("/slow"), Action: &nodev1.RuleAction{Kind: "config", OriginReadTimeoutMs: 1000, CacheBypass: &yes}},
+		{Id: "sampled", Phase: "config", Expression: pathStarts("/sampled"), Action: &nodev1.RuleAction{Kind: "config", LogSampleRate: &rate}},
+		{Id: "ws", Phase: "config", Expression: pathStarts("/ws"), Action: &nodev1.RuleAction{Kind: "config", Websocket: &no}},
+		{Id: "guarded", Phase: "config", Expression: pathStarts("/guarded"), Action: &nodev1.RuleAction{Kind: "config", UnderAttack: &yes}},
+		{Id: "api", Phase: "origin", Expression: pathStarts("/internal/"), Action: &nodev1.RuleAction{Kind: "origin", OriginGroup: "api", HostHeader: "api.internal"}},
+		{Id: "port", Phase: "origin", Expression: pathStarts("/port/"), Action: &nodev1.RuleAction{Kind: "origin", Port: 8083}},
+	}
+	s.BulkRedirects = []*nodev1.BulkRedirect{
+		{Source: "/bulk-old", Target: "/bulk-new?from=bulk", StatusCode: 308, PreserveQuery: true},
+		{Source: "rules.test/bulk-host", Target: "https://example.test/host", StatusCode: 302},
+	}
+	s.CacheRules = append([]*nodev1.CacheRule{{
+		Id: "img", Priority: 10, Action: nodev1.CacheAction_CACHE_ACTION_CACHE, EdgeTtlSeconds: 60, BrowserTtlSeconds: 600,
+		OriginCacheControl: nodev1.OriginCacheControl_ORIGIN_CACHE_CONTROL_OVERRIDE,
+		Match: &nodev1.CacheRuleMatch{Condition: &nodev1.RuleExpression{Op: "and", Children: []*nodev1.RuleExpression{
+			pathStarts("/img/"), {Op: "in", Field: "http.request.uri.path.extension", ValueType: "string", Values: []string{"png"}},
+		}}},
+	}}, s.CacheRules...)
+	return s
 }
 
 // sitemapSite caches one object per device class.
@@ -432,6 +505,12 @@ func affinitySite() *nodev1.Site {
 // compressSite compresses text/plain with gzip, Brotli and Zstandard.
 func compressSite(origin string) *nodev1.Site {
 	s := site("site-compress", "compress.test", origin, 80)
+	no := false
+	s.Rules = []*nodev1.EdgeRule{
+		{Id: "no-gzip", Phase: "config", Expression: pathStarts("/no-gzip"), Action: &nodev1.RuleAction{Kind: "config", Gzip: &no}},
+		{Id: "gz-only", Phase: "compression", Expression: pathStarts("/gz-only"), Action: &nodev1.RuleAction{Kind: "compression", Compression: []string{"gzip"}}},
+		{Id: "none", Phase: "compression", Expression: pathStarts("/no-compress"), Action: &nodev1.RuleAction{Kind: "compression"}},
+	}
 	types := []string{"text/plain"}
 	s.Tls = &nodev1.TlsOptions{
 		MinimumVersion: "1.2", CipherProfile: "modern",

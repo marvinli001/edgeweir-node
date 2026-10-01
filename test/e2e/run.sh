@@ -33,8 +33,13 @@
 #  12. tasks from the console: purges by Cache-Tag and by host, a sitemap
 #      prefetch (gzipped index, both device variants); an active health
 #      check takes a failing origin out of rotation and brings it back;
-#  13. a new site reserves its partition; later existing-site changes stay hot;
-#  14. restarting the container serves the last-known-good config.
+#  13. rules-v2: a dynamic redirect with query edits, bulk redirects, a
+#      rewrite to another origin group with its own Host, a port override,
+#      config rules (read timeout, sampled log, WebSocket, Under Attack),
+#      a cache rule condition with a browser TTL, compression rules and
+#      config gzip=false on a cached object;
+#  14. a new site reserves its partition; later existing-site changes stay hot;
+#  15. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -419,6 +424,16 @@ hdr=$(client -s -o /dev/null -D - --compressed -H 'Host: compress.test' http://n
 [ "$hdr" = "content-encoding: zstd" ] || [ "$hdr" = "Content-Encoding: zstd" ] || fail "curl --compressed got '$hdr', want zstd"
 pass "compression: zstd, br, gzip and identity from one cached object, by q-value, curl --compressed decodes"
 
+# Compression rules: a rule's codings win over the default preference, an
+# empty list sends identity; config gzip=false leaves the cache alone.
+coded() { encoding "$1" "$2" | cut -d' ' -f1,2; }
+[ "$(coded 'zstd, br, gzip' /gz-only)" = "MISS gzip" ] || fail "compression rule [gzip]: $(encoding 'zstd, br, gzip' /gz-only)"
+[ "$(coded 'zstd, br, gzip' /no-compress)" = "MISS -" ] || fail "compression rule []: $(encoding 'zstd, br, gzip' /no-compress)"
+[ "$(coded 'gzip' /no-gzip)" = "MISS -" ] || fail "config gzip=false (MISS): $(encoding gzip /no-gzip)"
+[ "$(coded 'gzip' /no-gzip)" = "HIT -" ] || fail "config gzip=false on the cached object: $(encoding gzip /no-gzip)"
+[ "$(coded 'gzip, br' /no-gzip)" = "HIT br" ] || fail "config gzip=false keeps br: $(encoding 'gzip, br' /no-gzip)"
+pass "compression rules and config gzip=false without a cache bypass"
+
 # OWASP CRS: the detect site logs, the block site answers 403, both on
 # cache hits too; demo.test has no CRS.
 crs() { # host [curl args...] -> "<status> <x-cache> <x-edgeweir-error>"
@@ -636,6 +651,48 @@ curl -fsS -X POST "$HELPER/health?port=8083&status=200" >/dev/null
 WAIT_SECS=30 wait_for "o2 healthy again" active_is ""
 WAIT_SECS=10 wait_for "o2 back in rotation" both_origins
 pass "active health check: a failing origin takes no traffic until its check passes again"
+
+# rules-v2 (rules.test): functions in conditions and values, dynamic
+# redirects and rewrites, bulk redirects, origin rules, config overrides,
+# cache rule conditions and browser TTLs.
+grep -qx rules-v2 <<<"$(curl -fsS "$HELPER/features")" || fail "rules-v2 not reported"
+r=$(hv rules.test '/old/a/b?x=1&utm_source=z')
+loc=$(header_of location <<<"$r")
+[ "$(status_of <<<"$r")" = 301 ] && case "$loc" in */new/a/b\?x=1\&lang=zh%20CN) true ;; *) false ;; esac ||
+  fail "dynamic redirect: $(status_of <<<"$r") $loc"
+r=$(hv rules.test '/bulk-old?q=1')
+loc=$(header_of location <<<"$r")
+[ "$(status_of <<<"$r")" = 308 ] && case "$loc" in */bulk-new\?from=bulk\&q=1) true ;; *) false ;; esac ||
+  fail "bulk redirect: $(status_of <<<"$r") $loc"
+r=$(hv rules.test /bulk-host)
+[ "$(status_of <<<"$r")" = 302 ] && [ "$(header_of location <<<"$r")" = https://example.test/host ] ||
+  fail "host bulk redirect: $(status_of <<<"$r") $(header_of location <<<"$r")"
+echoed=$(curl -fsS -H 'Host: rules.test' "$NODE/api/Item?drop=1")
+grep -q '^GET /internal/Item?v=2 HTTP/1.1' <<<"$echoed" && grep -q '^Host: api.internal' <<<"$echoed" ||
+  fail "rewrite to the api group with its Host: $echoed"
+if grep -qi '^x-edgeweir' <<<"$echoed"; then fail "internal headers reached the api origin: $echoed"; fi
+[ "$(curl -fsS -H 'Host: rules.test' "$NODE/port/x")" = "/port/x from 8083" ] || fail "port override"
+[ "$(curl -fsS -H 'Host: rules.test' "$NODE/plain")" = "/plain from 8082" ] || fail "default group"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: rules.test' "$NODE/slow")
+[ "$code" = 504 ] || fail "read timeout of 1 s against a 2.5 s origin: $code"
+r=$(hv rules.test /ws -H 'Connection: Upgrade' -H 'Upgrade: websocket')
+[ "$(status_of <<<"$r")" = 403 ] && [ "$(header_of x-edgeweir-error <<<"$r")" = websocket-disabled ] ||
+  fail "config websocket=false: $(status_of <<<"$r") $(header_of x-edgeweir-error <<<"$r")"
+r=$(hv rules.test /guarded -A e2e-browser)
+[ "$(status_of <<<"$r")" = 403 ] && [ "$(header_of x-edgeweir-challenge <<<"$r")" = js ] ||
+  fail "config under_attack=true: $(status_of <<<"$r") $(header_of x-edgeweir-challenge <<<"$r")"
+[ "$(status_code rules.test)" = 200 ] || fail "rules.test without Under Attack"
+r=$(hv rules.test /img/a.png)
+[ "$(header_of x-cache <<<"$r")" = MISS ] && [ "$(header_of cache-control <<<"$r")" = max-age=600 ] || fail "browser TTL (MISS): $r"
+r=$(hv rules.test /img/a.png)
+[ "$(header_of x-cache <<<"$r")" = HIT ] && [ "$(header_of cache-control <<<"$r")" = max-age=600 ] || fail "browser TTL (HIT): $r"
+r=$(hv rules.test /img/a.gif)
+[ -z "$(header_of cache-control <<<"$r")" ] || fail "a rule without browser TTL set Cache-Control: $r"
+curl -s -o /dev/null -H 'Host: rules.test' "$NODE/unsampled"
+curl -s -o /dev/null -H 'Host: rules.test' "$NODE/sampled"
+WAIT_SECS=30 wait_for "the sampled request in the access logs" sh -c "curl -fsS $HELPER/logs | grep -q '^site-rules 200 /sampled '"
+if curl -fsS "$HELPER/logs" | grep -q '^site-rules .* /unsampled '; then fail "a request of a site sampling nothing was logged"; fi
+pass "rules-v2: dynamic and bulk redirects, rewrite, origin group, Host, port and timeout, WebSocket, Under Attack, sampling, browser TTL"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
