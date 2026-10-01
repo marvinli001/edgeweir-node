@@ -19,6 +19,7 @@
 | 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
 | 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用、暂停站点的平台页；`X-Request-Id` |
 | 统计与日志 | 按站点按分钟流量统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
+| 探针与主机指标 | 区域探针 `edgeweir-node probe`（不带 OpenResty）与节点兼任探针：按控制台给出的目标做 TCP、HTTP、HTTPS 探测，上报延迟与丢包；边缘监听的健康端点 `/.edgeweir/health`；心跳携带 CPU、负载、内存、出口带宽与活动连接数 |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |
 | 配置可靠性 | 校验后应用、激活失败回退、last-known-good（LKG）持久化；控制台不可达时按 LKG 服务 |
 | 签名升级 | `supervise` 监督进程、本机固定发布源与信任锚、节点组试运行、失败自动回滚 |
@@ -27,11 +28,12 @@
 
 | 组件 | 职责 |
 | --- | --- |
-| `edgeweir-node` agent | 注册、mTLS 通道（`WatchConfig` 推送，`GetConfig` 约 30 秒轮询兜底）、配置校验与应用、任务、心跳与统计上报、签名升级 |
+| `edgeweir-node` agent | 注册、mTLS 通道（`WatchConfig` 推送，`GetConfig` 约 30 秒轮询兜底）、配置校验与应用、任务、心跳（含主机指标）与统计上报、签名升级；控制台要求时兼任探针 |
+| `edgeweir-node probe` | 区域探针：探测各节点的调度地址，经 mTLS 上报（`ProbeService`） |
 | OpenResty 数据面 | 路由、缓存、回源、策略执行；经本地 unix socket 接收站点、源站、证书与规则的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.14.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.14.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
@@ -45,6 +47,7 @@
 | 源站地址 | 拒绝特殊地址段（回环、链路本地 / 云元数据、私网等），平台放行的除外 |
 | CRS 拦截 | `403` 错误页，`X-Edgeweir-Error: waf-blocked` |
 | 压缩 | `Content-Encoding: zstd` / `br` / `gzip`，`Vary: Accept-Encoding` |
+| 健康端点 | 任意 Host 的 `GET /.edgeweir/health` 在站点逻辑之前返回 `200 ok`（不缓存、不计入统计与日志）；TLS 对 SNI `health.edgeweir.invalid` 或无 SNI 使用节点自签名的健康证书，这样的连接只能访问健康端点（其他请求 `421`） |
 
 详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
@@ -86,6 +89,45 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
 
 容器以 uid 10001 运行；注册前所有域名返回 `404 unknown-host`。身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷。
 
+### 区域探针
+
+探针从所在区域探测各节点，不带 OpenResty，不监听端口。在控制台创建探针得到一次性 token，首次启动时注册（私钥在本机生成，0600），之后只用保存的身份。
+
+容器（节点镜像，入口改为 `probe`）：
+
+```yaml
+services:
+  probe:
+    image: ghcr.io/marvinli001/edgeweir-node:<版本>
+    entrypoint: ["/usr/local/bin/edgeweir-node", "probe"]
+    environment:
+      EDGEWEIR_STATE_DIR: /var/lib/edgeweir-probe
+      EDGEWEIR_SERVER: https://console.example.com:8443
+      EDGEWEIR_CA_SHA256: <sha256>
+      EDGEWEIR_TOKEN: <探针 token>   # 只在首次启动时使用
+    volumes:
+      - probe-state:/var/lib/edgeweir-probe
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+volumes:
+  probe-state:
+```
+
+systemd（deb / rpm 已包含 `edgeweir-probe.service`，默认不启用）：
+
+```sh
+sudo tee /etc/default/edgeweir-probe >/dev/null <<'CONF'
+EDGEWEIR_SERVER=https://console.example.com:8443
+EDGEWEIR_CA_SHA256=<sha256>
+EDGEWEIR_TOKEN=<探针 token>
+CONF
+sudo chmod 600 /etc/default/edgeweir-probe
+sudo systemctl enable --now edgeweir-probe
+```
+
+节点也可以兼任探针：控制台为节点开启后，agent 以节点身份运行同样的探测，不探测自己。
+
 ### 内核封禁
 
 平台封禁经 nftables 丢包，需要 `nftables` 与 `CAP_NET_ADMIN`；默认不授予，封禁在 L7 执行（`403`）。
@@ -120,6 +162,8 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
                   [--trusted-ca FILE] [--purge-dict-mb 32] [--purge-markers-per-site 1000]
                   [--prefetch-budget 4m] [--edge-socket PATH] [--ban-capacity 100000] [--kernel-bans auto] ...
 edgeweir-node supervise --manage-nginx ...            # 参数同 run；systemd unit 与容器镜像入口
+EDGEWEIR_TOKEN=TOKEN edgeweir-node probe --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR]
+edgeweir-node probe [--state-dir DIR]                 # 已注册的探针
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # 封禁状态（JSON）；--list 列出最多 1000 条
 edgeweir-node security [--control-socket PATH]        # 挑战密钥、验证码池、各站点 CC 级别（JSON）
@@ -129,6 +173,7 @@ edgeweir-node version
 - 参数均可由环境变量 `EDGEWEIR_<参数名>` 设置（如 `--state-dir` → `EDGEWEIR_STATE_DIR`），命令行优先。
 - `run` 在注册完成前每 2 秒检查状态目录，可先于 `enroll` 启动。
 - `supervise` 在 `run` 之上提供签名升级、试运行与回滚。
+- `probe` 运行区域探针：首次运行用一次性探针 token 注册（控制台不可达时退避重试），已注册后忽略 token；缺少注册参数时退出码 2。
 
 | `enroll` 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -140,6 +185,18 @@ edgeweir-node version
 | `--state-dir` | `/var/lib/edgeweir-node` | 状态目录 |
 | `--force` | 关 | 替换已有身份（重新注册） |
 | `--timeout` | `30s` | 注册 RPC 超时 |
+| `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
+| `--log-format` | `text` | `text`、`json` |
+
+| `probe` 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--server` | 无（首次运行必填） | 控制台节点通道地址 |
+| `--ca-sha256` | 无（首次运行必填） | 控制台内部 CA 证书（DER）的 SHA-256，十六进制 |
+| `--token-file` | 无 | 一次性探针 token 文件（首次运行） |
+| `--token` | 无 | 一次性探针 token（首次运行）；出现在进程列表中，优先用 `EDGEWEIR_TOKEN` 或 `--token-file` |
+| `--server-name` | `--server` 的主机名 | 校验的 TLS 服务器名 |
+| `--state-dir` | `/var/lib/edgeweir-probe` | 探针身份目录，与节点的分开 |
+| `--timeout` | `30s` | 每个控制台 RPC 的超时 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
 
@@ -190,7 +247,8 @@ edgeweir-node version
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`nginx/`（prefix 与 `nginx.conf`） |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`health.crt` / `health.key`（健康证书，0600）、`nginx/`（prefix 与 `nginx.conf`） |
+| `/var/lib/edgeweir-probe` | 探针状态目录（0700）：`probe.key`（0600）、`probe.crt`、`ca.crt`、`probe.json` |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | 数据面控制 API（仅 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |
@@ -251,7 +309,8 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 - 节点私钥（ECDSA P-256）在本机生成，不离开节点；注册时按 `--ca-sha256` 固定控制台 CA。
 - 注册后所有 RPC 使用 mTLS；数据面控制 API 仅监听 unix socket。
 - 配置回执在应用前持久化；控制台恢复数据库后，仅经其认证的更高 revision 可推进发布序号。
-- 出站连接：控制通道仅连接注册时的控制台；数据面连接已配置源站，agent 探测开启主动健康检查的源站（同一地址策略），启用 OCSP 检查时连接 OCSP 响应方。
+- 出站连接：控制通道仅连接注册时的控制台；数据面连接已配置源站，agent 探测开启主动健康检查的源站（同一地址策略），启用 OCSP 检查时连接 OCSP 响应方；探针（含兼任探针的节点）连接控制台给出的节点地址。
+- 探针私钥同样在本机生成（0600），首次注册前按 `--ca-sha256` 固定 CA；HTTPS 探测不校验节点的自签名健康证书，只判断可达。
 - 控制台不保存 SSH 凭据。
 - 无厂商回连，无许可证校验，无遥测。
 

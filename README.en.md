@@ -19,6 +19,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Cache and origins | `Host` routing, `proxy_cache`, cache rules with expression conditions and browser TTLs, origin-pool load balancing, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
 | Error pages | 403 / 429 / 502 / 503 / 504 from site templates or built-in pages (Chinese and English), optionally replacing origin errors; platform pages for unknown, disabled and suspended sites; `X-Request-Id` |
 | Statistics and logs | Per-site per-minute traffic statistics (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
+| Probes and host metrics | Regional probes `edgeweir-node probe` (no OpenResty) and nodes that also probe: TCP, HTTP and HTTPS checks of the targets the console names, reporting latency and loss; the edge listeners' health endpoint `/.edgeweir/health`; heartbeats carry CPU, load, memory, egress bandwidth and active connections |
 | GeoIP | Local MMDB lookups; release images bundle IPinfo Lite (country, ASN) |
 | Configuration reliability | Validated apply, rollback on activation failure, persisted last-known-good (LKG) configuration; serves LKG while the console is unreachable |
 | Signed upgrades | `supervise` parent process, locally pinned release source and trust anchor, node-group trials, automatic rollback |
@@ -27,11 +28,12 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 
 | Component | Role |
 | --- | --- |
-| `edgeweir-node` agent | Enrollment, mTLS channel (`WatchConfig` push, `GetConfig` fallback poll about every 30 s), configuration validation and apply, tasks, heartbeats and statistics, signed upgrades |
+| `edgeweir-node` agent | Enrollment, mTLS channel (`WatchConfig` push, `GetConfig` fallback poll about every 30 s), configuration validation and apply, tasks, heartbeats (with host metrics) and statistics, signed upgrades; probes the other nodes when the console asks |
+| `edgeweir-node probe` | Regional probe: checks the nodes' scheduling addresses and reports over mTLS (`ProbeService`) |
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement; hot updates for sites, origins, certificates and rules over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `NodeConfig`), generated with buf from git tag `proto/v0.14.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.14.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules) re-render `nginx.conf` and reload after `openresty -t`; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
@@ -45,6 +47,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Origin addresses | Special-purpose ranges (loopback, link-local / cloud metadata, private networks, ...) rejected unless allowed by the platform |
 | CRS block | `403` error page, `X-Edgeweir-Error: waf-blocked` |
 | Compression | `Content-Encoding: zstd` / `br` / `gzip`, `Vary: Accept-Encoding` |
+| Health endpoint | `GET /.edgeweir/health` for any host answers `200 ok` before any site logic (not cached, counted or logged); TLS answers SNI `health.edgeweir.invalid` or no SNI with the node's self-signed health certificate, and such connections reach only the health endpoint (`421` otherwise) |
 
 Details: [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese).
 
@@ -86,6 +89,45 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
 
 The container runs as uid 10001; before enrollment every host answers `404 unknown-host`. Identity and LKG configuration live in the `/var/lib/edgeweir-node` volume.
 
+### Regional probes
+
+A probe checks the nodes from where it runs; it starts no OpenResty and listens on no port. Create the probe in the console for a one-time token; the first start enrolls (the private key is generated locally, 0600), later starts use the stored identity.
+
+Container (the node image with the `probe` entry point):
+
+```yaml
+services:
+  probe:
+    image: ghcr.io/marvinli001/edgeweir-node:<version>
+    entrypoint: ["/usr/local/bin/edgeweir-node", "probe"]
+    environment:
+      EDGEWEIR_STATE_DIR: /var/lib/edgeweir-probe
+      EDGEWEIR_SERVER: https://console.example.com:8443
+      EDGEWEIR_CA_SHA256: <sha256>
+      EDGEWEIR_TOKEN: <probe token>   # used on the first start only
+    volumes:
+      - probe-state:/var/lib/edgeweir-probe
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+volumes:
+  probe-state:
+```
+
+systemd (the deb / rpm packages include `edgeweir-probe.service`, disabled by default):
+
+```sh
+sudo tee /etc/default/edgeweir-probe >/dev/null <<'CONF'
+EDGEWEIR_SERVER=https://console.example.com:8443
+EDGEWEIR_CA_SHA256=<sha256>
+EDGEWEIR_TOKEN=<probe token>
+CONF
+sudo chmod 600 /etc/default/edgeweir-probe
+sudo systemctl enable --now edgeweir-probe
+```
+
+A node can probe as well: once the console turns it on for the node, the agent runs the same checks with the node's identity and never checks itself.
+
 ### Kernel bans
 
 Platform bans dropped by nftables require `nftables` and `CAP_NET_ADMIN`. Neither is granted by default; bans are then enforced at L7 (`403`).
@@ -120,6 +162,8 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
                   [--trusted-ca FILE] [--purge-dict-mb 32] [--purge-markers-per-site 1000]
                   [--prefetch-budget 4m] [--edge-socket PATH] [--ban-capacity 100000] [--kernel-bans auto] ...
 edgeweir-node supervise --manage-nginx ...            # same flags as run; systemd unit and image entry point
+EDGEWEIR_TOKEN=TOKEN edgeweir-node probe --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR]
+edgeweir-node probe [--state-dir DIR]                 # an enrolled probe
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # ban status (JSON); --list adds up to 1000 bans
 edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool, per-site CC levels (JSON)
@@ -129,6 +173,7 @@ edgeweir-node version
 - Every flag can be set as `EDGEWEIR_<FLAG>` (e.g. `--state-dir` → `EDGEWEIR_STATE_DIR`); command-line flags take precedence.
 - `run` polls the state directory every 2 s until enrolled and may start before `enroll`.
 - `supervise` adds signed upgrades, trials and rollback on top of `run`.
+- `probe` runs a regional probe: the first run enrolls with a one-time probe token (retrying while the console is unreachable), an enrolled probe ignores the token; missing enrollment settings exit with status 2.
 
 | `enroll` flag | Default | Description |
 | --- | --- | --- |
@@ -140,6 +185,18 @@ edgeweir-node version
 | `--state-dir` | `/var/lib/edgeweir-node` | State directory |
 | `--force` | off | Replace an existing identity (re-enroll) |
 | `--timeout` | `30s` | Enrollment RPC timeout |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format` | `text` | `text`, `json` |
+
+| `probe` flag | Default | Description |
+| --- | --- | --- |
+| `--server` | none (required on the first run) | Console node-channel URL |
+| `--ca-sha256` | none (required on the first run) | SHA-256 of the console's internal CA certificate (DER, hex) |
+| `--token-file` | none | One-time probe token file (first run) |
+| `--token` | none | One-time probe token (first run); visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
+| `--server-name` | host of `--server` | TLS server name to verify |
+| `--state-dir` | `/var/lib/edgeweir-probe` | Probe identity directory, separate from the node's |
+| `--timeout` | `30s` | Timeout of each console RPC |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
 
@@ -190,7 +247,8 @@ edgeweir-node version
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `nginx/` (prefix, `nginx.conf`) |
+| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `health.crt` / `health.key` (health certificate, 0600), `nginx/` (prefix, `nginx.conf`) |
+| `/var/lib/edgeweir-probe` | Probe state (0700): `probe.key` (0600), `probe.crt`, `ca.crt`, `probe.json` |
 | `/var/cache/edgeweir-node` | Cache zones |
 | `/run/edgeweir-node/control.sock` | Data-plane control API (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |
@@ -251,7 +309,8 @@ gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli
 - The node key (ECDSA P-256) is generated locally and never leaves the node; enrollment pins the console CA by `--ca-sha256`.
 - All RPCs after enrollment use mTLS; the data-plane control API listens on a unix socket only.
 - Configuration receipts are persisted before apply; after a console database restore, only console-authenticated higher revisions advance the publication counter.
-- Outbound connections: the control channel reaches only the enrolling console; the data plane reaches configured origins, the agent probes origins with active health checks (same address policy) and, with OCSP checks enabled, reaches OCSP responders.
+- Outbound connections: the control channel reaches only the enrolling console; the data plane reaches configured origins, the agent probes origins with active health checks (same address policy) and, with OCSP checks enabled, reaches OCSP responders; probes (and nodes that probe) reach the node addresses the console names.
+- Probe keys are generated locally too (0600) and the CA is pinned with `--ca-sha256` before the first enrollment; HTTPS checks do not verify the nodes' self-signed health certificates, they only test reachability.
 - The console never stores SSH credentials.
 - No vendor phone-home, no license checks, no telemetry.
 

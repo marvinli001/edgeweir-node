@@ -53,6 +53,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - token 通过 `EDGEWEIR_TOKEN` 环境变量（`install.sh` 的做法）或 `--token-file` 传给 `edgeweir-node enroll`，不出现在进程列表里；`--token` 仍可用，但同机其他用户能在 `ps` 里看到它，使用时会打印警告。读取后环境变量被删除，不传给子进程。
 - `Enroll` 返回的 CA 证书也必须与同一个 sha256 匹配，否则注册失败。
 - 注册之后每个 RPC 都走 mTLS，客户端证书 CN 为节点 ID。证书自动续期。
+- 区域探针（`edgeweir-node probe`）以同样的方式注册：一次性探针 token，私钥在本机生成并保存为 `probe.key`（`0600`，默认目录 `/var/lib/edgeweir-probe`，与节点的分开），先确认 CA 与 `--ca-sha256` 一致再发送 token；之后全程 mTLS，探针证书（`O=Edgeweir Probe`）不能调用节点 RPC。探针不启动 OpenResty、不监听端口，systemd unit 不授予任何 capability。探针的 HTTPS 探测不校验节点的自签名健康证书，只判断可达，不发送任何机密。
 - 控制面绝不保存 SSH 凭据（没有保存的选项），也没有 SSH 远程安装：节点只通过控制台生成的一次性安装命令（或手动安装）接入，由节点主动注册。
 
 **本机保存的敏感文件**
@@ -64,6 +65,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - `purge.json`（0600）：清缓存标记和任务时间，不含敏感数据。文件存在但无法读取或解析时，节点在下一次应用配置时给每个站点加一个全站标记（宁可多刷）；文件缺失则视为没有标记，已清除的内容会重新可见，所以不要删除它。
 - `config/`（目录 0700，`current.binpb`、`previous.binpb` 为 0600）：last-known-good 配置及其备份，不含凭据。
 - `bans.json`（0600）：控制台下发的动态封禁（被封禁的地址、范围、到期时间）和已应用的序号。文件无法读取时节点从空集合开始，等控制台重新下发。
+- `health.crt`、`health.key`（0600）：节点为探针健康端点生成的自签名证书与私钥，只用于 SNI `health.edgeweir.invalid` 与无 SNI 的 TLS 握手，与站点证书无关；这样的连接只能访问 `/.edgeweir/health`。
 - `challenge-keys.json`（0600）：当前与前一份同集群配置引用的挑战凭证密钥（HMAC-SHA256，集群内共用）。密钥只经 mTLS 的 `GetChallengeKeys` 获取，不进入配置和 LKG；两份配置均不再引用时从文件中删除。能读取该文件的人可以为该集群的站点伪造通行凭证，直到控制台轮换掉这把密钥（每天一次，最长 48 小时后失效）。
 
 **挑战与通行凭证**

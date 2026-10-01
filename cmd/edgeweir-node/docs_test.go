@@ -81,10 +81,10 @@ func flagTable(text, command string) []string {
 	return names
 }
 
-// N-M11: every flag of enroll and run has a row in the README flag tables,
+// N-M11: every flag of enroll, run and probe has a row in the README flag tables,
 // and every row there is a flag the command still has.
 func TestReadmeFlagTablesMatchFlagSets(t *testing.T) {
-	for _, command := range []string{"enroll", "run"} {
+	for _, command := range []string{"enroll", "run", "probe"} {
 		flags := commandFlags(t, command)
 		for _, file := range readmes(t) {
 			documented := flagTable(readDoc(t, file), command)

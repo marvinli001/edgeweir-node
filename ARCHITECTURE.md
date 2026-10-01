@@ -9,20 +9,21 @@
 ```text
                         控制台 (edgeweir, :8443, 应用自终结 TLS)
                                ▲  Connect 协议 (二进制 protobuf, HTTP/2)
-         Enroll: CA pin + token│  其余 RPC: mTLS (证书 CN = node id)
+         Enroll: CA pin + token│  其余 RPC: mTLS (证书 CN = node id 或 probe id)
 ┌──────────────────────────────┴───────────────────────────────────────────────┐
 │ edgeweir-node (Go, 静态二进制)                                               │
 │  enroll ─ pki ─ identity    controlplane (Connect 客户端, 证书热替换)        │
 │  agent: watch / poll / sync / report / renew / stats / logs / tasks /        │
 │         dataplane / activehealth / ocsp / bans / autobans / kernel /         │
-│         captchas / security；任务类型: purge / prefetch / sitemap /          │
-│         upgrade                                                              │
+│         captchas / security / probe；任务类型: purge / prefetch /            │
+│         sitemap / upgrade                                                    │
 │  configir (规范排序, content_hash, diff, 校验 → Plan)   configstore (LKG)    │
 │  render (nginx.conf 模板)   engine (openresty -t / reload / 子进程托管)      │
 │  dataplane (unix socket JSON 客户端)   geoip (MMDB, unix socket)             │
 │  upgrade (supervise 监督进程: 验签 / 试运行 / 回滚)                          │
 │  bans (封禁状态、bans.json)   nft (table inet edgeweir，`nft -f -`)          │
 │  captcha (验证码图片，标准库)   healthcheck (主动健康检查)                   │
+│  probe (探测轮次, ProbeService)   metrics (/proc 主机指标)                   │
 └───────────────┬──────────────────────────────────┬───────────────────────────┘
      nginx.conf │ -t / HUP / 子进程                │ /v1/health /v1/status /v1/sites
                 │                                  │ /v1/purge /v1/origins/health /v1/origins/active
@@ -44,17 +45,19 @@
 
 | 包 | 职责 |
 | --- | --- |
-| `cmd/edgeweir-node` | CLI：`enroll`、`run`、`supervise`、`healthcheck`、`bans`、`security`、`version`；参数可由 `EDGEWEIR_*` 环境变量提供 |
+| `cmd/edgeweir-node` | CLI：`enroll`、`run`、`supervise`、`probe`、`healthcheck`、`bans`、`security`、`version`；参数可由 `EDGEWEIR_*` 环境变量提供 |
 | `internal/pki` | ECDSA P-256 密钥、CSR、PEM、CA pin 校验、mTLS 配置、续期判断 |
-| `internal/identity` | 状态目录里的身份文件，原子写入，续期时的密钥对原子替换与崩溃恢复 |
-| `internal/enroll` | 注册流程 |
-| `internal/controlplane` | Connect 客户端：pin 通道（注册）和 mTLS 通道（可热替换证书） |
+| `internal/identity` | 状态目录里的身份文件（节点布局与探针布局），原子写入，续期时的密钥对原子替换与崩溃恢复 |
+| `internal/enroll` | 注册流程（节点 `Enroll`、探针 `EnrollProbe`） |
+| `internal/controlplane` | Connect 客户端：pin 通道（注册）和 mTLS 通道（可热替换证书，NodeService 与 ProbeService 共用连接） |
 | `internal/configir` | 规范排序、content_hash、diff 应用、校验并生成与引擎无关的 `Plan`；源站地址策略（`address.go`） |
 | `internal/configstore` | LKG 持久化（current + previous），加载时校验哈希 |
 | `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id、每个已发布站点的限速分区、设置了 `Site.tls` 的站点的 `server` 块、OWASP CRS 的位置）与 ModSecurity 配置，解析 resolv.conf |
 | `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督；从 `nginx -V` 读出静态模块（Brotli、Zstandard），汇总 ModSecurity 的拦截日志 |
 | `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态与主动检查标记 / 统计 / 采样访问日志 / 封禁 / 挑战密钥与验证码池 / CC 状态与事件的 JSON 结构 |
 | `internal/agent` | 运行时主循环、源站凭据、网站证书与 OCSP、清缓存标记集合、统计与访问日志上报、类型化任务（清缓存、预热、sitemap 预热、升级）、挑战密钥与验证码池、CC 事件上报、主动健康检查标记的推送与上报；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
+| `internal/probe` | 区域探针（§2.11）：TCP / HTTP / HTTPS 探测、PROXY protocol v1 头、中位延迟与丢失统计、探测轮次（`edgeweir-node probe` 与节点兼任探针共用）、探针的注册重试与证书续期 |
+| `internal/metrics` | 心跳的主机指标（§2.4）：`/proc/stat`、`/proc/loadavg`、`/proc/meminfo`、`/proc/net/dev` 的纯函数解析与两次心跳之间的速率；只在 Linux 上测量 |
 | `internal/healthcheck` | 主动健康检查（§2.10）：按应用的 Plan 调度探测，地址策略、请求与 TLS 校验、状态阈值；resolver、dialer 与时钟可替换 |
 | `internal/captcha` | 验证码图片：内置 5×7 点阵字体，随机位置、缩放、旋转、倾斜、波浪基线、干扰线与噪点，160×60 调色板 PNG；答案取自 crypto/rand |
 | `internal/geoip` | 读取本地 MMDB（内置 IPinfo Lite、运维提供的 City / ASN），经 0600 unix socket（默认 `control.sock.geo`）为 Lua 提供查询；`internal/geoip/check` 在镜像构建时校验下载的 IPinfo Lite |
@@ -68,7 +71,7 @@
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
-Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查与主动检查标记）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`cachetags`（Cache-Tag 解析与索引，§3.4）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式与值表达式编译为闭包，函数与派生字段，§3.21）、`policy`（规则阶段与动作、批量重定向、源站覆盖，§3.21）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`affinity`（会话保持，§3.20）、`errorpages`（错误页，§3.19）、`cc`（分级 CC）、`compress`（压缩编码协商）、`waf`（OWASP CRS 的位置与请求上下文）、`control`（控制 API）、`init`。
+Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查与主动检查标记）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`cachetags`（Cache-Tag 解析与索引，§3.4）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling；健康 SNI 与无 SNI 用健康证书）、`probehealth`（探针健康端点，§3.22）、`expressions`（规则表达式与值表达式编译为闭包，函数与派生字段，§3.21）、`policy`（规则阶段与动作、批量重定向、源站覆盖，§3.21）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`affinity`（会话保持，§3.20）、`errorpages`（错误页，§3.19）、`cc`（分级 CC）、`compress`（压缩编码协商）、`waf`（OWASP CRS 的位置与请求上下文）、`control`（控制 API）、`init`。
 
 数据面是 edgeweir-openresty：从固定版本源码构建的 OpenResty 1.31.1.1，带 Brotli、Zstandard 与可选的 ModSecurity 动态模块和 OWASP CRS（§5.1）。
 
@@ -89,7 +92,8 @@ Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb
 ```text
 run 启动
   │
-  ├─ 准备目录，读取 credentials.json、certificates.json、purge.json、challenge-keys.json
+  ├─ 准备目录，读取（缺失或将到期时生成）健康证书 health.crt / health.key（§3.22），
+  │  读取 credentials.json、certificates.json、purge.json、challenge-keys.json
   ├─ 有 LKG 且仍合法 → 按 LKG 渲染并启动 OpenResty、推送标记和站点表
   │            否则 → bootstrap 配置（:80，所有 Host 返回 404 unknown-host）
   ├─ 读取 bans.json，试建 nftables 表，把封禁装入数据面和内核（§2.7）
@@ -117,6 +121,7 @@ run 启动
         kernel : 封禁或配置变化、被覆盖的封禁需要写入、每 5 分钟刷新受保护地址时同步 nftables（注册前已运行）
         captchas: 配置使用挑战时每 10 分钟生成 256 张验证码装入数据面（注册前已运行）
         security: 每 5s 取出 CC 事件，ReportSecurityEvents 上报
+        probe  : 心跳响应 probe=true 时以节点身份运行探测轮次，变为 false 时停止（§2.11）
 ```
 
 ### 2.1 注册（`enroll`）
@@ -186,7 +191,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 1. **S3 凭据与挑战密钥**：Plan 的 `challenge_keys` 引用了本地没有的密钥时，经 mTLS 调用 `GetChallengeKeys` 获取（密钥 16–256 字节），写入 `challenge-keys.json`（0600）；控制台没有给出的密钥保持缺失，数据面检查每 30 秒再要一次。当前与上一份同集群配置都不再引用的密钥从文件中删除。S3 凭据：Plan 引用了本地没有（或版本过旧）的凭据时，先经 mTLS 调用 `GetOriginCredentials` 补齐，写入 `credentials.json`，不再引用的凭据从文件中删除；再把密钥填进 Plan 的 S3 源站。这一步在渲染和 `nginx -t` 之前：RPC 失败算暂时性错误，本次应用失败，下一次同步重试（不计入 5 分钟的拒绝窗口），仍在服务的配置不受影响。
 2. **网站证书**：Plan 引用了本地没有的证书（按证书 id 与 SHA-256 指纹）时，经 mTLS 调用 `GetCertificates` 获取，校验私钥与证书匹配、指纹一致后写入 `certificates.json`（0600）。开启 OCSP stapling 的证书，OCSP 响应在 1 小时内到期时先刷新（最多 30 秒，失败只告警）。证书必须覆盖站点的每个域名，随后附到站点表。获取或校验失败的处理同第 1 步。
-3. **渲染** `nginx.conf`，并为每个 cache zone 创建缓存目录；有 HTTPS 监听时先生成 nginx 前缀下的自签名占位证书 `conf/bootstrap.crt`（nginx 加载 TLS 监听需要；握手时 Lua 换成站点证书，未知 SNI 直接拒绝）。有站点运行 OWASP CRS 时，ModSecurity 配置写到 `conf/modsecurity-<内容哈希前 16 位>.conf`（文件名随内容变化，正在运行的 nginx 继续用它自己的那份），`nginx.conf` 引用它。渲染结果与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload，之后删除不再引用的 `modsecurity-*.conf`；内容相同则不 reload。
+3. **渲染** `nginx.conf`，并为每个 cache zone 创建缓存目录；有 HTTPS 监听时先生成 nginx 前缀下的自签名占位证书 `conf/bootstrap.crt`（nginx 加载 TLS 监听需要；握手时 Lua 换成站点证书或健康证书，其他 SNI 直接拒绝）。有站点运行 OWASP CRS 时，ModSecurity 配置写到 `conf/modsecurity-<内容哈希前 16 位>.conf`（文件名随内容变化，正在运行的 nginx 继续用它自己的那份），`nginx.conf` 引用它。渲染结果与当前已安装的内容不同（或引擎未运行）时，写到 `nginx.conf.next`，执行 `openresty -p PREFIX -c nginx.conf.next -e stderr -t -q`，通过后原子改名为 `nginx.conf` 并 reload，之后删除不再引用的 `modsecurity-*.conf`；内容相同则不 reload。
 4. **确认 reload 生效**：每个渲染出的 `nginx.conf` 带一个配置 id（不含 id 时渲染结果的 SHA-256 前 16 位），`init_by_lua` 记下它，`GET /v1/status` 返回 `conf_id`。SIGHUP 只是请求 reload：新文件无法应用（例如端口被占用）时 nginx 记录错误并保留旧 worker。agent 在 reload 后最多等 15 秒，直到 worker 报告新的 id；否则该 revision 记为失败，把旧的 `nginx.conf` 写回（之后重启 nginx 时用的仍是正在运行的配置），LKG 继续服务。
 5. **清缓存标记、挑战密钥与站点表**：装入清缓存标记（§3.4；`purge.json` 无法读取时先给每个站点加全站标记），配置使用挑战时装入密钥（`PUT /v1/challenge/keys`，失败只告警，数据面检查重试），再把 Plan 转成站点表 JSON，`PUT /v1/sites` 推给 Lua（数据面刚启动时带退避重试，最长 15s）。标记装不进去不会阻止站点表推送。
 6. 原子写入 LKG（current → previous 备份），更新状态并触发 `ReportStatus`。
@@ -195,7 +200,8 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.4 状态回报、续期、统计
 
-- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（被动检查 `source=PASSIVE` 与主动检查 `source=ACTIVE` 的条目，合计最多 2000 条，超出时先保留不健康的，§3.7、§2.10）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 或有升级路径的站点及其升级路径数，最多 2000 个，§3.15）。能力列表总是带 `challenge-v1`、`ja4-v1`、`active-health-v1`（主动健康检查）、`purge-tag-v1`（按 Host 与 Cache-Tag 清缓存）与 `prefetch-v2`（设备变体、https URL 与 sitemap 预热）；`brotli-v1`、`zstd-v1` 取自 `nginx -V` 的 configure 参数（`--add-module` 的 ngx_brotli 与 zstd-nginx-module），`modsecurity-v1` 只在 ModSecurity 模块（`--modsecurity-module`，默认在 `--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 下找）与 CRS（`--crs-dir`）都在、并且加载它们的 `nginx -t` 探测通过时上报。这三项在 agent 启动时检测一次，也是站点可以使用的能力（§2.3）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（被动检查 `source=PASSIVE` 与主动检查 `source=ACTIVE` 的条目，合计最多 2000 条，超出时先保留不健康的，§3.7、§2.10）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 或有升级路径的站点及其升级路径数，最多 2000 个，§3.15）、`metrics`（主机指标，见下）。能力列表总是带 `challenge-v1`、`ja4-v1`、`active-health-v1`（主动健康检查）、`purge-tag-v1`（按 Host 与 Cache-Tag 清缓存）、`prefetch-v2`（设备变体、https URL 与 sitemap 预热）与 `probe-health-v1`（探针健康端点，§3.22），Linux 上另带 `metrics-v1`；`brotli-v1`、`zstd-v1` 取自 `nginx -V` 的 configure 参数（`--add-module` 的 ngx_brotli 与 zstd-nginx-module），`modsecurity-v1` 只在 ModSecurity 模块（`--modsecurity-module`，默认在 `--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 下找）与 CRS（`--crs-dir`）都在、并且加载它们的 `nginx -t` 探测通过时上报。这三项在 agent 启动时检测一次，也是站点可以使用的能力（§2.3）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- 主机指标（`metrics`，能力 `metrics-v1`，`internal/metrics`）：每次心跳都带。`cpu_percent` 为整机 CPU 使用率，取 `/proc/stat` 汇总行在两次心跳之间的差（忙碌 = 全部时间减 idle 与 iowait；guest 时间已含在 user / nice 中，不重复计）；`load1` / `load5` / `load15` 取自 `/proc/loadavg`；`memory_total_bytes` 为 `MemTotal`，`memory_used_bytes` 为 `MemTotal − MemAvailable`（没有 `MemAvailable` 的旧内核用 `MemFree + Buffers + Cached`）；`egress_bps` 为非回环网卡（名称 `lo` 或带 loopback 标志）在两次心跳之间发送字节数之差 × 8 / 间隔，取自 agent 所在网络命名空间的 `/proc/net/dev`，计数回退（网卡重建）的网卡计 0；`active_connections` 为数据面 `GET /v1/status` 的 `connections_active`（nginx stub_status 的 `$connections_active` 减去这次查询本身）。第一次心跳的两个速率为 0；两次心跳间隔不足 1 秒时沿用上一次的速率。读不到的文件对应的指标为 0（debug 日志）。非 Linux 构建不带 `metrics`，也不上报 `metrics-v1`。容器内 CPU、负载与内存是宿主机的值，出口带宽是容器网卡的值。
 - 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；节点被停用时控制台以 `permission_denied` 拒绝心跳，剩余有效期不足 1/3 时同样续期（控制台允许停用节点续期，重新启用时证书仍有效）；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
 - 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码，CRS 站点还有命中的规则 id），另按分钟汇总 Top URL / Top IP。命中的 CRS 规则按次数取每站点每分钟最多的 20 条，上报为 `MinuteStats.waf_rules`（值为规则 id）。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
 - 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按 nginx 的请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时、缓存状态、响应的 `X-Request-Id`（§3.19，`AccessLog.request_id`），站点开启 JA4 日志时还有 JA4（§3.16），CRS 站点还有命中的规则 id（最多 16 个，`waf_rule_ids`）与是否被 CRS 拦截（`waf_blocked`），放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
@@ -263,6 +269,36 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 - **推送**：判定变化时、每次应用配置后、至少每 30 秒，以及 nginx 重启后（站点表之前），以 `PUT /v1/origins/active` 整体替换不健康源站的集合（最多 10000 个），ttl 为 max(90 秒, 3 × 最长间隔)，agent 停止推送后标记自行过期。没有检查时只在数据面可能还有标记时推送一次空集合。
 - **上报**：`ReportStatus.origin_health` 中数据面的条目带 `source=PASSIVE`；主动检查不健康或有连续失败的源站另有一条 `source=ACTIVE`（`healthy`、`consecutive_failures`、`last_failure_at`、`last_error`、`last_error_code` / `last_error_params`，没有 `down_until`）。合计最多 2000 条，超出时先保留不健康的。判定变化时立即上报。
 - **合并**：任一检查判为下线的源站不接流量（§3.2）；被动检查的下线持续到它的恢复时间；没有开启主动检查的站点只看被动检查。
+
+### 2.11 区域探针
+
+控制台按区域探测各节点的调度地址（`ProbeService`，proto v0.14.0），用延迟与丢包驱动 DNS 调度。探测由两种进程完成，共用 `internal/probe` 的探测轮次：
+
+- **探针模式**（`edgeweir-node probe`）：不启动 OpenResty，不监听端口。状态目录与节点分开（默认 `/var/lib/edgeweir-probe`，探针布局：`probe.key` 0600、`probe.crt`、`ca.crt`、`probe.json`）。首次运行时没有身份，需要 `--server`、`--ca-sha256` 与一次性探针 token（`EDGEWEIR_TOKEN`、`--token-file` 或 `--token`）：本地生成 ECDSA P-256 私钥与 CSR，以与节点注册相同的 pin 通道调用 `EnrollProbe`（先校验 CA pin 再发送 token；响应的 CA 必须等于 pin，证书须由它签发、用于 ClientAuth、与本地私钥匹配），原子写入身份。控制台不可达或繁忙（`unavailable`、`deadline_exceeded`、`resource_exhausted`、`aborted`）时以 1s → 30s 退避重试同一个 token；token 被拒、pin 不符等其他错误直接退出（状态码 1），缺少注册参数时退出码 2。已有身份时忽略 token，之后全程 mTLS（证书 `CN=<探针 id>`、`O=Edgeweir Probe`，控制台不允许它调用 NodeService）。控制台在 `GetProbeTargets` 中要求续期（`renew_certificate`）或剩余有效期不足 1/3 时，以新密钥调用 `RenewProbeCertificate`（每分钟最多一次），按与节点相同的方式替换 `probe.key` / `probe.crt` 并重建通道。重新注册：删除 `probe.json`（或整个状态目录）后用新 token 启动。
+- **节点兼任探针**：`ReportStatus` 响应的 `probe` 为 true 时，agent 以节点自己的 mTLS 身份运行同样的探测轮次，变为 false 时停止（心跳失败时保持现状），agent 退出时一并停止。节点证书照常经 NodeService 续期，`GetProbeTargets` 的 `renew_certificate` 对节点忽略。`node_id` 等于本节点的目标不探测。
+
+**一轮**：`GetProbeTargets`（带 `ProbeInfo`：主机名、版本、os、arch）→ 探测 → `ReportProbeResults`（`started_at` 为开始探测的时间，结果与目标同序；没有目标时也上报空的一轮）。下一轮在本轮开始 `interval_seconds` 之后开始，本轮更久时立即开始。`interval_seconds`、`timeout_ms`、`attempts` 为 0 时取默认值 10 秒、3000 毫秒、3 次，否则限制在 5–60 秒、500–10000 毫秒、1–10 次。RPC 失败（含上报失败，这一轮的结果丢弃）以 1s → 60s 抖动退避重试；凭据被拒时记录错误日志并按最大退避继续。地址不是 IP 字面量（不做 DNS 解析）、端口为 0 或方法未知的目标不探测，记录告警。
+
+**探测**：同时最多 32 个目标，每个目标的 `attempts` 次尝试依次进行，每次尝试从连接开始整体受 `timeout_ms` 限制：
+
+| 方法 | 一次尝试 | 成功 | RTT |
+| --- | --- | --- | --- |
+| `TCP` | 建立连接后关闭 | 连接建立 | 连接时间 |
+| `HTTP` | 连接，`GET /.edgeweir/health`，`Host: health.edgeweir.invalid`，`Connection: close`，User-Agent `edgeweir-probe/<版本>` | 状态码 200 | 发出请求到读到状态行 |
+| `HTTPS` | 连接，TLS（SNI `health.edgeweir.invalid`，ALPN `http/1.1`，TLS ≥ 1.2，不校验证书），然后同 HTTP | 状态码 200 | 发出请求到读到状态行 |
+
+`proxy_protocol` 的目标先发送 PROXY protocol v1 头 `PROXY TCP4|TCP6 <本端地址> <对端地址> <本端端口> <对端端口>\r\n`（取自套接字本身的地址，IPv4 映射地址按 IPv4；地址族不一致时 `PROXY UNKNOWN`），TCP 方法也发送后再关闭。HTTP(S) 的 RTT 是已建立连接上的一个往返，与 TCP 的连接时间可比，也反映 nginx 自身的处理延迟。HTTPS 不校验证书：节点用各自生成的自签名健康证书应答（§3.22），探针无从校验；探测只判断可达，不发送机密，只使用响应的状态行。
+
+**结果**：`sent`（实际尝试次数）、`lost`（失败次数：超时、拒绝、重置、TLS 失败、非 200）、`rtt_ms`（成功尝试 RTT 的中位数，偶数个时取中间两个的平均，四舍五入到毫秒且至少为 1；全部失败时为 0）、`error`（最后一次失败的错误码）：
+
+| 错误码 | 含义 |
+| --- | --- |
+| `timeout` | 连接、TLS 握手、发送或读取在时限内未完成 |
+| `refused` | 连接被拒绝 |
+| `reset` | 连接被重置或在响应前关闭 |
+| `tls` | TLS 握手失败（超时除外），如节点不认识健康 SNI 而中止握手 |
+| `status` | 状态码不是 200，或响应不是 HTTP |
+| `unreachable` | 其他连接错误（网络或主机不可达等） |
 
 ## 3. 数据面
 
@@ -416,7 +452,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 | 方法与路径 | 作用 |
 | --- | --- |
 | `GET /v1/health` | 存活检查（不检查方法） |
-| `GET /v1/status` | `{version, revision, content_hash, site_count, pushed_at, cdn_id, conf_id, purge: {id, entries, markers}, nginx_version, ngx_lua_version, worker_pid}`；`version=0` 表示 nginx 启动后还没收到站点表 |
+| `GET /v1/status` | `{version, revision, content_hash, site_count, pushed_at, cdn_id, conf_id, purge: {id, entries, markers}, nginx_version, ngx_lua_version, worker_pid, connections_active}`；`version=0` 表示 nginx 启动后还没收到站点表；`connections_active` 为 `$connections_active` 减去这次请求 |
 | `PUT /v1/sites` | 原子替换整张站点表；内容非法 400，另一次替换进行中 409，共享内存不足 507 |
 | `POST /v1/stats/drain` | 返回并删除所有已结束分钟的统计（含 Top URL / Top IP） |
 | `POST /v1/logs/drain` | 返回并删除最多 1000 条采样访问日志 |
@@ -463,7 +499,8 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
   "tag_ttl": 86400,
   "platform_error_pages": {"unknown_host": "…", "site_disabled": "…", "site_suspended": "…"},
   "offline_hosts": [{"name": "old.example.com", "reason": "disabled"},
-                    {"name": "example.org", "wildcard": true, "reason": "suspended"}]
+                    {"name": "example.org", "wildcard": true, "reason": "suspended"}],
+  "health_certificate": {"chain_pem": "…", "private_key_pem": "…", "fingerprint": "…"}
 }
 ```
 
@@ -664,6 +701,14 @@ proto v0.13.0 的规则扩展由能力 `rules-v2` 标明，用到其中任何一
 - **compression 阶段**：在边缘层 header filter 中，response-transform 之后运行平台与站点的 `compression` 规则，可读响应字段；动作 `compression` 给出有序的算法列表（`zstd`、`br`、`gzip` 的子集，可为空），后命中的覆盖前面的（§3.17）。
 - **GeoIP 与 JA4**：缓存规则条件、值表达式和函数参数读取 GeoIP 字段或 `tls.ja4` 的站点同样查 GeoIP、计算 JA4。
 
+### 3.22 探针健康端点（`probe-health-v1`）
+
+区域探针（§2.11）用它判断节点的监听是否可用，与站点配置无关：
+
+- **HTTP**：边缘层 access 阶段最开始（CDN-Loop、HTTP-01 应答、站点查找、封禁、规则、CC、挑战之前），对任意 Host 的 `GET`（或 `HEAD`）`/.edgeweir/health`（规范化后的 `$uri`，查询串不影响）返回 `200`，正文 `ok`，`Content-Type: text/plain`、`Cache-Control: no-store`。它不经过缓存与回源，不计入站点统计，不进入采样访问日志（这两者都需要站点），不受封禁与规则影响。其他方法与路径照常处理（`/.edgeweir/` 仍是挑战的保留前缀）。所有监听都提供它，包括 PROXY protocol 监听（nginx 先解析 PROXY 头）与本地 `edge.sock`。
+- **HTTPS**：`ssl_client_hello` 与 `ssl_certificate` 阶段（`edgeweir.tls`）对 SNI `health.edgeweir.invalid`（不区分大小写）或没有 SNI 的握手使用节点的健康证书；站点表里没有健康证书时与其他未知 SNI 一样中止握手。`.invalid` 是保留顶级域，不会与站点域名冲突。这样建立的连接只能访问健康端点：其他请求（含其他方法）在 access 阶段一开始返回 `421`，`X-Edgeweir-Error: sni-host-mismatch`，不进入站点逻辑。
+- **健康证书**：agent 启动时读取状态目录中的 `health.crt` / `health.key`（均为 0600）；缺失、损坏、不是健康证书或 30 天内到期时生成新的：ECDSA P-256 自签名，`CN` 与唯一 SAN 为 `health.edgeweir.invalid`，有效期 10 年，ServerAuth。它与站点证书一样经控制 socket 随每张站点表下发（`health_certificate`，存在站点表配置项 `v<N>:cfg` 中），不写进 `nginx.conf`；nginx 加载 TLS 监听所需的静态证书仍是占位证书 `conf/bootstrap.crt`。证书不由任何 CA 签发，探针不校验它。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -677,9 +722,11 @@ proto v0.13.0 的规则扩展由能力 `rules-v2` 标明，用到其中任何一
 | `/var/lib/edgeweir-node/certificates.json` | 当前与上一份 LKG 引用的网站证书链、私钥与 OCSP 响应（0600） |
 | `/var/lib/edgeweir-node/bans.json` | 已应用的控制台动态封禁、序号与集群 id（0600） |
 | `/var/lib/edgeweir-node/challenge-keys.json` | 当前与上一份同集群配置引用的挑战凭证密钥（0600） |
+| `/var/lib/edgeweir-node/health.crt`、`health.key` | 健康证书与私钥（0600，§3.22） |
 | `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json` | 控制台尚未确认的统计批次与采样访问日志批次（0600） |
 | `/var/lib/edgeweir-node/upgrade.sock`、`upgrades/` | `supervise` 监督进程的本机 socket（0600）；升级状态 `upgrades/state.json` 与各版本目录 `upgrades/releases/<任务 id>/`（0700） |
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`；有站点运行 OWASP CRS 时还有 `conf/modsecurity-<哈希>.conf`）、`logs/nginx.pid`、`tmp/` |
+| `/var/lib/edgeweir-probe/probe.key`、`probe.crt`、`ca.crt`、`probe.json` | 探针模式的身份（私钥 0600；`probe.json`：probe_id、probe_name、region_id、server_url、server_name、ca_sha256、enrolled_at），目录 0700 |
 | `/var/cache/edgeweir-node/<zone>/` | proxy_cache 数据 |
 | `/run/edgeweir-node/control.sock`、`control.sock.geo`、`edge.sock`、`origin.sock`、`origin-noverify.sock` | 控制 API、GeoIP 查询（agent 提供）、本地边缘监听、回源层（校验 / 不校验证书） |
 | `/usr/share/edgeweir-node/lua/edgeweir/` | Lua 模块 |
@@ -693,6 +740,9 @@ proto v0.13.0 的规则扩展由能力 `rules-v2` 标明，用到其中任何一
 
 - **容器**：`debian:bookworm-slim` 为基础，带与 edgeweir-openresty、edgeweir-openresty-modsecurity 两个包相同的 OpenResty 树（§5.1，在同一个 Dockerfile 里构建，compose 只需本仓库即可构建镜像）；agent、nginx master 和 worker 都以 uid 10001 运行（容器网络命名空间内非特权进程可以绑定 80 端口）；`ENTRYPOINT edgeweir-node supervise --manage-nginx`，`STOPSIGNAL SIGTERM`，健康检查为 `edgeweir-node healthcheck`。镜像带 Debian 的 `ca-certificates` 与 `nftables` 包。内核封禁需要两项：镜像以 `--build-arg NFT_CAPABILITY=true` 构建（给 `/usr/sbin/nft` 加文件能力 `cap_net_admin+ep`），容器以 `--cap-add NET_ADMIN` 启动（compose 中为 `cap_add: [NET_ADMIN]`）。默认镜像不加任何能力；只加了文件能力而容器没有 `NET_ADMIN` 时 `nft` 无法执行，agent 退回边缘层封禁。nftables 规则作用于容器自己的网络命名空间。
 - **systemd**：`packaging/systemd/edgeweir-node.service`，服务用户 `edgeweir`，只保留 `CAP_NET_BIND_SERVICE`，`ProtectSystem=strict` 等加固选项；OpenResty（`EDGEWEIR_NGINX_BIN=/usr/lib/edgeweir-openresty/nginx/sbin/nginx`）作为 agent 的子进程运行，与 OpenResty 官方包的 `openresty.service` 互斥。deb/rpm 包含二进制、Lua 模块、unit 和 `/etc/default/edgeweir-node`，依赖 `edgeweir-openresty (>= 1.31.1.1-2)`，推荐安装 `edgeweir-openresty-modsecurity`（没有它时站点不能在该节点运行 OWASP CRS）与 `nftables`；preinstall 创建 `edgeweir` 用户，postinstall 创建 `/var/lib/edgeweir-node`（0700）和 `/var/cache/edgeweir-node`（0750）。
+- **探针模式**（§2.11）：
+  - 容器：同一个节点镜像，入口改为 `edgeweir-node probe`（compose 中 `entrypoint: ["/usr/local/bin/edgeweir-node", "probe"]`，或 `docker run --entrypoint /usr/local/bin/edgeweir-node <镜像> probe`），状态目录 `EDGEWEIR_STATE_DIR=/var/lib/edgeweir-probe` 挂载卷（镜像中已建好，属 uid 10001，0700）；首次启动由 `EDGEWEIR_SERVER`、`EDGEWEIR_CA_SHA256`、`EDGEWEIR_TOKEN` 注册。镜像的健康检查查询数据面控制 socket，探针容器应关闭它（compose `healthcheck: {disable: true}`）。
+  - systemd：`packaging/systemd/edgeweir-probe.service`（随 deb/rpm 安装，默认不启用），服务用户 `edgeweir`，不授予任何 capability，`MemoryDenyWriteExecute=yes`、`ProcSubset=pid`，只允许 IP 与 unix 套接字，`StateDirectory=edgeweir-probe`（0700）；首次启动的参数写在 `/etc/default/edgeweir-probe`（0600，由 systemd 读取）。缺少注册参数时退出码 2，不自动重启（`RestartPreventExitStatus=2`）。
 - **systemd 下的内核封禁**：默认 unit 不授予 `CAP_NET_ADMIN`。需要时安装 `nftables`，加一个 drop-in `/etc/systemd/system/edgeweir-node.service.d/kernel-ban.conf`：
 
   ```ini
@@ -759,6 +809,9 @@ proto v0.13.0 的规则扩展由能力 `rules-v2` 标明，用到其中任何一
 - JA4 看不到 OpenSSL 不认识的 ClientHello 扩展，没有 `supported_versions` 时版本取协商结果（§3.16）。
 - 运行 OWASP CRS 的站点：ModSecurity-nginx 在回源前读完整个请求体（最多 `client_max_body_size` 100m，超过缓冲区时写入临时文件）再检查，上传不再流式转发；超过请求体检查上限的部分不检查（`ProcessPartial`）。响应体不检查（`SecResponseBodyAccess Off`），CRS 的响应规则只看响应头；ModSecurity-nginx 仍要求响应体在内存中经过它，这些站点的响应（含缓存命中）不使用 sendfile。WebSocket 升级请求只检查握手。
 - CRS 在节点上按 paranoia level 与规则运行，误报需要按规则 id 排除；每个请求约 0.5 ms CPU（§3.18）。
+- `connections_active`（心跳的活动连接数）是 nginx 的 `$connections_active`：除客户端连接外，还包括边缘层到回源层 unix socket 的连接（进行中的回源与空闲 keepalive 连接）。
+- 主机指标只在 Linux 上测量；容器内的 CPU、负载与内存是宿主机的值。
+- 没有 SNI 的 TLS 握手会得到自签名的健康证书（`CN=health.edgeweir.invalid`），随后只能访问健康端点（§3.22）。
 - 内核按 TCP 连接的源地址丢包。节点在要求 PROXY protocol 的负载均衡器之后时，内核只看到负载均衡器的地址：平台封禁对客户端只在边缘层生效，负载均衡器的地址需要放进平台 `allow` 名单，否则封禁它会丢弃经它转发的全部流量。
 
 ## HTTPS 与证书
