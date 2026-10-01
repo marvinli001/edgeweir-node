@@ -16,7 +16,8 @@
 | 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
 | OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
-| 缓存与回源 | `Host` 路由、`proxy_cache`、源站池负载均衡、被动健康检查、清缓存、预热 |
+| 缓存与回源 | `Host` 路由、`proxy_cache`、源站池负载均衡、被动健康检查、会话保持（签名 cookie）、清缓存、预热 |
+| 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用、暂停站点的平台页；`X-Request-Id` |
 | 统计与日志 | 按站点按分钟流量统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |
 | 配置可靠性 | 校验后应用、激活失败回退、last-known-good（LKG）持久化；控制台不可达时按 LKG 服务 |
@@ -36,10 +37,13 @@
 | 数据面行为 | 响应 |
 | --- | --- |
 | 缓存状态 | `X-Cache: MISS` / `HIT` / `BYPASS` |
-| 未知域名 | `404`，`X-Edgeweir-Error: unknown-host` |
+| 未知域名 | `404` 平台页或内置页，`X-Edgeweir-Error: unknown-host` |
+| 停用 / 暂停站点的域名 | `503` 平台页或内置页，`X-Edgeweir-Error: site-disabled` / `site-suspended` |
+| 请求 ID | `X-Request-Id`：客户端的合法值或节点生成，错误页与采样日志使用同一个 |
+| `Cache-Tag` | 默认不转发给客户端（站点可保留），节点按它索引缓存对象 |
 | 回源环路 | 回源请求携带 `CDN-Loop`，环路返回 `508` |
 | 源站地址 | 拒绝特殊地址段（回环、链路本地 / 云元数据、私网等），平台放行的除外 |
-| CRS 拦截 | `403`，`X-Edgeweir-Error: waf-blocked` |
+| CRS 拦截 | `403` 错误页，`X-Edgeweir-Error: waf-blocked` |
 | 压缩 | `Content-Encoding: zstd` / `br` / `gzip`，`Vary: Accept-Encoding` |
 
 详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
