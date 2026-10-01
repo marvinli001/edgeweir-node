@@ -103,25 +103,24 @@ func TestStateThresholds(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	fail := failure(CodeUpstreamStatus, map[string]string{"status": "503"}, "HTTP 503")
 	ok := result{ok: true}
+	// Both thresholds are 2.
 	steps := []struct {
-		r            result
-		changed      bool
-		healthy      bool
-		failures     uint32
-		wantFailedAt bool
+		r        result
+		changed  bool
+		healthy  bool
+		failures uint32
 	}{
-		{fail, false, true, 1, true},
-		{ok, false, true, 0, true}, // a success resets the failures
-		{fail, false, true, 1, true},
-		{fail, false, false, 2, true}, // threshold 3? no: 2 in a row
-		{fail, false, false, 3, true},
-		{ok, false, false, 0, true}, // 1 of 2 successes
-		{fail, false, false, 1, true},
-		{ok, false, false, 0, true},
-		{ok, true, true, 0, true},
-		{ok, false, true, 0, true},
+		{fail, false, true, 1},
+		{ok, false, true, 0}, // a success resets the failures
+		{fail, false, true, 1},
+		{fail, true, false, 2}, // the second failure in a row
+		{fail, false, false, 3},
+		{ok, false, false, 0}, // 1 of 2 successes
+		{fail, false, false, 1},
+		{ok, false, false, 0},
+		{ok, true, true, 0}, // the second success in a row
+		{ok, false, true, 0},
 	}
-	steps[3].changed = true
 	for i, st := range steps {
 		now = now.Add(time.Second)
 		changed := s.record(st.r, now, 2, 2)
