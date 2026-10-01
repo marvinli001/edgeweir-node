@@ -717,7 +717,8 @@ local function render(site, keys, kind, level, ret, failed)
   if ngx.req.get_method() ~= "HEAD" then
     ngx.print(_M.page({
       lang = _M.language(var.http_accept_language), kind = f.type, token = _M.sign_token(keys.current, f),
-      ret = ret, difficulty = f.difficulty, image = image, nonce = nonce, error = failed, id = var.request_id,
+      ret = ret, difficulty = f.difficulty, image = image, nonce = nonce, error = failed,
+      id = var.edgeweir_request_id or var.request_id,
     }))
   end
   return ngx.exit(ngx.HTTP_OK)
