@@ -17,8 +17,9 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OWASP CRS | Per-site managed rules (ModSecurity v3 + CRS 4.29.0): detect only / block, paranoia level, anomaly threshold, excluded rules, request body inspection limit; cache hits are inspected too, sites without CRS never pass through ModSecurity |
 | Challenges and CC mitigation | Four challenge levels (cookie redirect, JS, proof of work, image captcha), signed passes, node-local tiered CC mitigation, JA4 fingerprints |
 | Cache and origins | `Host` routing, `proxy_cache`, cache rules with expression conditions and browser TTLs, origin-pool load balancing, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
+| Layer-4 forwarding | TCP / UDP ports forwarded to origins: weights, backup origins, passive health checks and retries on connect failures, connect and idle timeouts, allow / block lists, per-node concurrent and new-per-second limits; PROXY protocol v1 / v2 towards origins, listeners that accept the PROXY protocol; adding or removing ports reloads without dropping open connections, everything else is hot-updated; per-minute connections, refusals, peak concurrency and bytes |
 | Error pages | 403 / 429 / 502 / 503 / 504 from site templates or built-in pages (Chinese and English), optionally replacing origin errors; platform pages for unknown, disabled and suspended sites; `X-Request-Id` |
-| Statistics and logs | Per-site per-minute traffic statistics (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
+| Statistics and logs | Per-minute statistics of sites and layer-4 applications (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
 | Probes and host metrics | Regional probes `edgeweir-node probe` (no OpenResty) and nodes that also probe: TCP, HTTP and HTTPS checks of the targets the console names, reporting latency and loss; the edge listeners' health endpoint `/.edgeweir/health`; heartbeats carry CPU, load, memory, egress bandwidth and active connections |
 | GeoIP | Local MMDB lookups; release images bundle IPinfo Lite (country, ASN) |
 | Configuration reliability | Validated apply, rollback on activation failure, persisted last-known-good (LKG) configuration; serves LKG while the console is unreachable |
@@ -30,11 +31,11 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | --- | --- |
 | `edgeweir-node` agent | Enrollment, mTLS channel (`WatchConfig` push, `GetConfig` fallback poll about every 30 s), configuration validation and apply, tasks, heartbeats (with host metrics) and statistics, signed upgrades; probes the other nodes when the console asks |
 | `edgeweir-node probe` | Regional probe: checks the nodes' scheduling addresses and reports over mTLS (`ProbeService`) |
-| OpenResty data plane | Routing, caching, origin requests, policy enforcement; hot updates for sites, origins, certificates and rules over a local unix socket |
+| OpenResty data plane | Routing, caching, origin requests, policy enforcement, layer-4 forwarding (stream); hot updates for sites, origins, certificates, rules and layer-4 applications over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
 - Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.15.0`.
-- Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules) re-render `nginx.conf` and reload after `openresty -t`; all other changes are hot-updated without a reload.
+- Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules, ports, protocols and PROXY protocol settings of layer-4 applications) re-render `nginx.conf` and reload after `openresty -t`, the old workers serving open connections until they end; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
 | --- | --- |
@@ -47,6 +48,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Origin addresses | Special-purpose ranges (loopback, link-local / cloud metadata, private networks, ...) rejected unless allowed by the platform |
 | CRS block | `403` error page, `X-Edgeweir-Error: waf-blocked` |
 | Compression | `Content-Encoding: zstd` / `br` / `gzip`, `Vary: Accept-Encoding` |
+| Refused layer-4 connection | Lists or connection limits forward nothing: the TCP connection is closed, the UDP datagram dropped |
 | Health endpoint | `GET /.edgeweir/health` for any host answers `200 ok` before any site logic (not cached, counted or logged); TLS answers SNI `health.edgeweir.invalid` or no SNI with the node's self-signed health certificate, and such connections reach only the health endpoint (`421` otherwise) |
 
 Details: [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese).
@@ -87,7 +89,7 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
-The container runs as uid 10001; before enrollment every host answers `404 unknown-host`. Identity and LKG configuration live in the `/var/lib/edgeweir-node` volume.
+The container runs as uid 10001; before enrollment every host answers `404 unknown-host`. Identity and LKG configuration live in the `/var/lib/edgeweir-node` volume. Layer-4 applications use ports of the cluster's port pools: publish them (e.g. `-p 9000:9000 -p 9000:9000/udp`) or use host networking, and open the pools in the host's firewall.
 
 ### Regional probes
 
@@ -255,6 +257,7 @@ edgeweir-node version
 | `/var/cache/edgeweir-node` | Cache zones |
 | `/run/edgeweir-node/control.sock` | Data-plane control API (unix socket only) |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |
+| `/run/edgeweir-node/l4.sock` | Control relay of the stream subsystem (with layer-4 applications) |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
 | `/usr/share/edgeweir-node/geoip` | IPinfo Lite database and `NOTICE` (container image) |
 | `/usr/lib/edgeweir-openresty` | OpenResty (`nginx/sbin/nginx`), the ModSecurity module in `modules/` |

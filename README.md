@@ -17,8 +17,9 @@
 | OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
 | 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
+| 四层转发 | TCP / UDP 端口转发到源站：权重、备用源站、被动健康检查与连接失败重试，连接与空闲超时，放行 / 拦截名单，每节点并发与每秒新建上限；向源站发送 PROXY protocol v1 / v2，监听可接受 PROXY protocol；增删端口 reload 时已有连接不断开，其余变更热更新；按分钟统计连接、拒绝、并发峰值与字节数 |
 | 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用、暂停站点的平台页；`X-Request-Id` |
-| 统计与日志 | 按站点按分钟流量统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
+| 统计与日志 | 按站点与四层应用按分钟统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
 | 探针与主机指标 | 区域探针 `edgeweir-node probe`（不带 OpenResty）与节点兼任探针：按控制台给出的目标做 TCP、HTTP、HTTPS 探测，上报延迟与丢包；边缘监听的健康端点 `/.edgeweir/health`；心跳携带 CPU、负载、内存、出口带宽与活动连接数 |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |
 | 配置可靠性 | 校验后应用、激活失败回退、last-known-good（LKG）持久化；控制台不可达时按 LKG 服务 |
@@ -30,11 +31,11 @@
 | --- | --- |
 | `edgeweir-node` agent | 注册、mTLS 通道（`WatchConfig` 推送，`GetConfig` 约 30 秒轮询兜底）、配置校验与应用、任务、心跳（含主机指标）与统计上报、签名升级；控制台要求时兼任探针 |
 | `edgeweir-node probe` | 区域探针：探测各节点的调度地址，经 mTLS 上报（`ProbeService`） |
-| OpenResty 数据面 | 路由、缓存、回源、策略执行；经本地 unix socket 接收站点、源站、证书与规则的热更新 |
+| OpenResty 数据面 | 路由、缓存、回源、策略执行、四层转发（stream）；经本地 unix socket 接收站点、源站、证书、规则与四层应用的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
 - 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.15.0` 生成。
-- 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload；其余变更热更新，不 reload。
+- 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则、四层应用的端口、协议与 PROXY protocol 设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload，已有连接由旧 worker 服务到结束；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
 | --- | --- |
@@ -47,6 +48,7 @@
 | 源站地址 | 拒绝特殊地址段（回环、链路本地 / 云元数据、私网等），平台放行的除外 |
 | CRS 拦截 | `403` 错误页，`X-Edgeweir-Error: waf-blocked` |
 | 压缩 | `Content-Encoding: zstd` / `br` / `gzip`，`Vary: Accept-Encoding` |
+| 四层连接被拒绝 | 名单或连接上限拒绝时不转发任何数据：TCP 连接被关闭，UDP 数据报被丢弃 |
 | 健康端点 | 任意 Host 的 `GET /.edgeweir/health` 在站点逻辑之前返回 `200 ok`（不缓存、不计入统计与日志）；TLS 对 SNI `health.edgeweir.invalid` 或无 SNI 使用节点自签名的健康证书，这样的连接只能访问健康端点（其他请求 `421`） |
 
 详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
@@ -87,7 +89,7 @@ docker exec -e EDGEWEIR_TOKEN edgeweir-node edgeweir-node enroll \
   --server https://console.example.com:8443 --ca-sha256 <sha256>
 ```
 
-容器以 uid 10001 运行；注册前所有域名返回 `404 unknown-host`。身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷。
+容器以 uid 10001 运行；注册前所有域名返回 `404 unknown-host`。身份与 LKG 配置保存在 `/var/lib/edgeweir-node` 卷。四层应用使用集群端口池里的端口：容器需发布这些端口（如 `-p 9000:9000 -p 9000:9000/udp`）或使用 host 网络，主机防火墙同样放行端口池。
 
 ### 区域探针
 
@@ -255,6 +257,7 @@ edgeweir-node version
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | 数据面控制 API（仅 unix socket） |
 | `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |
+| `/run/edgeweir-node/l4.sock` | stream 子系统的控制中继（有四层应用时） |
 | `/usr/share/edgeweir-node/lua` | Lua 模块 |
 | `/usr/share/edgeweir-node/geoip` | IPinfo Lite 数据库与 `NOTICE`（容器镜像） |
 | `/usr/lib/edgeweir-openresty` | OpenResty（`nginx/sbin/nginx`），ModSecurity 模块在 `modules/` |
