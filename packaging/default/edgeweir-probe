@@ -1,0 +1,14 @@
+# Environment for edgeweir-probe.service (`edgeweir-node probe`). Every
+# flag can be set as EDGEWEIR_<FLAG> (flags on the command line win).
+# Keep this file 0600: the first start reads the one-time probe token here.
+#
+# First start only (enrollment):
+# EDGEWEIR_SERVER=https://console.example.com:8443
+# EDGEWEIR_CA_SHA256=
+# EDGEWEIR_TOKEN=
+# EDGEWEIR_SERVER_NAME=
+#
+# EDGEWEIR_STATE_DIR=/var/lib/edgeweir-probe
+# EDGEWEIR_TIMEOUT=30s
+# EDGEWEIR_LOG_LEVEL=info
+# EDGEWEIR_LOG_FORMAT=text

@@ -6,8 +6,9 @@ install -d -o edgeweir -g edgeweir -m 0700 /var/lib/edgeweir-node
 install -d -o edgeweir -g edgeweir -m 0750 /var/cache/edgeweir-node
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
   systemctl daemon-reload || true
-  # Upgrades: restart a running node with the new binary.
+  # Upgrades: restart a running node (or probe) with the new binary.
   systemctl try-restart edgeweir-node.service || true
+  systemctl try-restart edgeweir-probe.service || true
 fi
 cat <<'MSG'
 edgeweir-node is installed. Next steps (the console's install.sh does this for you):

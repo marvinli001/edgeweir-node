@@ -79,6 +79,11 @@ archives:
         strip_parent: true
         info:
           mtime: "{{ .CommitDate }}"
+      - src: packaging/systemd/edgeweir-probe.service
+        dst: systemd
+        strip_parent: true
+        info:
+          mtime: "{{ .CommitDate }}"
 
 nfpms:
   - id: packages
@@ -133,6 +138,20 @@ nfpms:
         type: config|noreplace
         file_info:
           mode: 0644
+          mtime: "{{ .CommitDate }}"
+      # Regional probe mode (`edgeweir-node probe`, no OpenResty): the unit
+      # stays disabled until the operator enables it. Its environment file
+      # takes the one-time probe token, hence 0600.
+      - src: packaging/systemd/edgeweir-probe.service
+        dst: /usr/lib/systemd/system/edgeweir-probe.service
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: packaging/default/edgeweir-probe
+        dst: /etc/default/edgeweir-probe
+        type: config|noreplace
+        file_info:
+          mode: 0600
           mtime: "{{ .CommitDate }}"
       - src: LICENSE
         dst: /usr/share/doc/edgeweir-node/LICENSE

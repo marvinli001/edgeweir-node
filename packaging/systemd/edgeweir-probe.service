@@ -1,0 +1,71 @@
+# systemd unit for an Edgeweir regional probe (`edgeweir-node probe`).
+#
+# A probe measures, from where it runs, whether the cluster nodes' addresses
+# answer, and reports to the console over mTLS. It starts no OpenResty,
+# listens on no port and needs no capability.
+#
+# First start: put the console URL, the CA pin and the one-time probe token
+# from the console into /etc/default/edgeweir-probe (0600, read by systemd
+# only), then enable the unit:
+#   EDGEWEIR_SERVER=https://console.example.com:8443
+#   EDGEWEIR_CA_SHA256=<sha256>
+#   EDGEWEIR_TOKEN=<probe token>
+#   sudo systemctl enable --now edgeweir-probe
+# The probe enrolls into /var/lib/edgeweir-probe (probe.key 0600) and later
+# starts ignore the token (it is single-use; the line can be removed).
+#
+# Hardening: the unprivileged user "edgeweir" with no capabilities, a
+# read-only file system except the state directory, no writable+executable
+# memory (no LuaJIT here), only IP and unix sockets.
+
+[Unit]
+Description=Edgeweir regional probe
+Documentation=https://edgeweir.dev https://github.com/marvinli001/edgeweir-node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=edgeweir
+Group=edgeweir
+Environment=EDGEWEIR_STATE_DIR=/var/lib/edgeweir-probe
+EnvironmentFile=-/etc/default/edgeweir-probe
+ExecStart=/usr/bin/edgeweir-node probe
+Restart=always
+RestartSec=5s
+# Exit status 2: settings are missing (not enrolled and no token): wait for
+# the operator instead of restarting.
+RestartPreventExitStatus=2
+TimeoutStopSec=15s
+
+StateDirectory=edgeweir-probe
+StateDirectoryMode=0700
+UMask=0077
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

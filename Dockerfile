@@ -160,7 +160,7 @@ RUN set -eu; \
 RUN groupadd --system --gid 10001 edgeweir \
  && useradd --system --uid 10001 --gid edgeweir --home-dir /var/lib/edgeweir-node \
       --no-create-home --shell /usr/sbin/nologin edgeweir \
- && install -d -o edgeweir -g edgeweir -m 0700 /var/lib/edgeweir-node \
+ && install -d -o edgeweir -g edgeweir -m 0700 /var/lib/edgeweir-node /var/lib/edgeweir-probe \
  && install -d -o edgeweir -g edgeweir -m 0750 /run/edgeweir-node /var/cache/edgeweir-node
 
 # The same tree as the edgeweir-openresty and edgeweir-openresty-modsecurity
