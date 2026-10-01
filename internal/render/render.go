@@ -86,6 +86,9 @@ type Params struct {
 	// used challenge nonces).
 	CCDictMB        int
 	ChallengeDictMB int
+	// RateLimitDictKB sizes the rate-limit partition (lua_shared_dict
+	// edgeweir_rate_<hex site id>) of every published site, in KiB.
+	RateLimitDictKB int
 	// ModSecurityModule is the ModSecurity-nginx dynamic module; nginx.conf
 	// loads it only while a site runs the OWASP CRS. Empty: the node has
 	// none (such configurations are rejected earlier, see configir).
@@ -111,6 +114,11 @@ const (
 	// CC and challenge store defaults (--cc-dict-mb, --challenge-dict-mb).
 	DefaultCCDictMB        = 32
 	DefaultChallengeDictMB = 8
+	// Rate-limit partition size of each published site (--rate-limit-dict-kb)
+	// and its bounds.
+	DefaultRateLimitDictKB = 256
+	MinRateLimitDictKB     = 64
+	MaxRateLimitDictKB     = 65536
 )
 
 // WithDefaults fills zero values with production defaults.
@@ -144,6 +152,9 @@ func (p Params) WithDefaults() Params {
 	}
 	if p.ChallengeDictMB == 0 {
 		p.ChallengeDictMB = DefaultChallengeDictMB
+	}
+	if p.RateLimitDictKB == 0 {
+		p.RateLimitDictKB = DefaultRateLimitDictKB
 	}
 	if p.GeoIPSocket == "" && p.ControlSocket != "" {
 		p.GeoIPSocket = p.ControlSocket + ".geo"
@@ -277,7 +288,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 	// Fixed names and sizes let nginx reuse existing counters when another
 	// site is added or removed. The admission limit bounds total allocation.
 	for _, name := range names {
-		out = append(out, sharedDict{Name: name, SizeKB: configir.RateLimitSiteKB})
+		out = append(out, sharedDict{Name: name, SizeKB: p.RateLimitDictKB})
 	}
 	return out, nil
 }

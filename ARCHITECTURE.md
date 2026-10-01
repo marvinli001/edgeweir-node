@@ -416,7 +416,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | --- | --- |
 | 监听（增删、端口、HTTPS、HTTP/2、HTTP/3、PROXY protocol） | 重新渲染 → `openresty -t` → reload（HUP）→ 确认新配置 id |
 | cache zone（增删、大小、inactive） | 同上 |
-| 已发布站点集合：新增、删除、启用、停用站点，或站点因没有有效源站或域名被跳过（增删它的固定 256 KiB 限速分区 `edgeweir_rate_<站点 id 的十六进制>`；其他站点的分区名称和大小不变，计数保留） | 同上 |
+| 已发布站点集合：新增、删除、启用、停用站点，或站点因没有有效源站或域名被跳过（增删它的固定大小限速分区 `edgeweir_rate_<站点 id 的十六进制>`，`--rate-limit-dict-kb`，默认 256 KiB；其他站点的分区名称和大小不变，计数保留） | 同上 |
 | 设置了 `Site.tls` 的站点：`Site.tls` 的有无、域名、HTTP/2、HTTP/3、gzip、Brotli、Zstandard（开关、级别、最小长度、类型）、密码套件档位，以及有没有证书（这些值写在站点自己的 `server` 块里；HTTPS 监听上的块只在站点有证书时生成） | 同上 |
 | OWASP CRS：第一个站点开启（加载 ModSecurity 与 CRS）、最后一个站点关闭（卸载）、出现或不再使用某个请求体上限（CRS 位置）、站点排除的规则（ModSecurity 配置） | 同上 |
 | agent 启动参数：resolver（`--resolver`，或启动时读取的 `--resolv-conf`）、回源 CA bundle（`--trusted-ca` 或系统 bundle）、`--purge-dict-mb`、IPv6 探测、worker 与 nginx 用户设置、socket 与目录 | agent 重启后生效：启动后的第一次应用总会写入、检查并 reload（托管模式下是启动 OpenResty） |
@@ -664,7 +664,7 @@ table inet edgeweir {
 ## 规则与 GeoIP
 
 - `Site.rules`、`NodeConfig.ip_lists/platform_rules` 进入热更新表，Go 验证后 Lua 编译为固定闭包。禁止运行用户 Lua。每阶段平台规则先执行，平台 IP 白名单仅覆盖平台 IP 黑名单；站点放行不能绕过平台 WAF。
-- IP 前缀树、有限 PCRE 工作量、不会淘汰现有键的固定窗口限速；规则或依赖数据执行错误时拒绝请求。
+- IP 前缀树、有限 PCRE 工作量、不会淘汰现有键的固定窗口限速（分区满时新计数放行并每分钟记录一次日志，见 docs/rate-limit-storage.md）；规则或依赖数据执行错误时拒绝请求。
 - `internal/geoip` 读取本地 MMDB，经 0600 Unix socket 服务同机 worker：发布镜像构建时下载并内置的 IPinfo Lite（国家、ASN，`--geoip-ipinfo auto`），以及运维提供的 City/ASN MMDB。国家和 ASN 优先取 IPinfo，查不到时回落到 City/ASN；一级行政区只来自 City，且仅当其国家与结果一致。数据库通过完整性与类型检查才上报能力；GeoIP 请求不离开节点，运行时不下载数据。
 - 缓存和刷新使用改写前路径；配置与列表更新不 reload。`rules-v1`、`geoip-city-v1`（国家；沿用旧名以兼容控制台，来自 IPinfo 或 City）、`geoip-subdivision-v1`（City，一级行政区）、`geoip-asn-v1`（IPinfo 或 ASN）分开上报；`geoip-country-v1` 告知控制台一级行政区已单独上报。控制台对国家和一级行政区规则仍只下发 `geoip-city-v1` 要求，节点逐条表达式校验时一级行政区需要 `geoip-subdivision-v1`，没有 City MMDB 的节点拒绝这类配置。
 - 持久化失败在恢复旧配置后退避五分钟或等下一版本，避免每次轮询重新激活未持久化内容。

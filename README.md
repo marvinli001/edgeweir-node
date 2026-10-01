@@ -173,6 +173,7 @@ edgeweir-node version
 | `--ban-dict-mb` | `32` | 封禁存储（`lua_shared_dict edgeweir_bans`），MiB |
 | `--cc-dict-mb` | `32` | CC 防护存储（`lua_shared_dict edgeweir_cc`），MiB |
 | `--challenge-dict-mb` | `8` | 挑战存储（`lua_shared_dict edgeweir_challenge`），MiB |
+| `--rate-limit-dict-kb` | `256` | 每个已发布站点的限速计数存储（`lua_shared_dict edgeweir_rate_<站点 id 十六进制>`），KiB，64–65536；满时新计数放行 |
 | `--kernel-bans` | `auto` | 平台封禁写入 nftables：`auto`（`nft` 可用且有 `CAP_NET_ADMIN` 时）、`off` |
 | `--nft-bin` | `nft` | nftables 可执行文件 |
 | `--modsecurity-module` | `auto` | ModSecurity-nginx 动态模块：`auto`（`--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 目录）、文件路径、`off`；只在有站点启用 OWASP CRS 时加载 |

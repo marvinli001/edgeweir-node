@@ -11,30 +11,38 @@ import (
 )
 
 func TestRateLimitPartitionBudget(t *testing.T) {
-	for _, count := range []int{0, 1, 2, 3, configir.MaxPublishedSites} {
-		sites := make([]configir.Site, count)
-		for i := range sites {
-			sites[i].ID = fmt.Sprintf("site-%d", i)
+	for _, size := range []int{0, 1024} {
+		p := params()
+		p.RateLimitDictKB = size
+		p = p.WithDefaults()
+		if size == 0 && p.RateLimitDictKB != DefaultRateLimitDictKB {
+			t.Fatalf("default partition size %d KiB", p.RateLimitDictKB)
 		}
-		dicts, err := sharedDicts(params().WithDefaults(), sites)
-		if err != nil {
-			t.Fatal(err)
-		}
-		total, partitions := 0, 0
-		seen := map[string]bool{}
-		for _, dict := range dicts {
-			if !strings.HasPrefix(dict.Name, configir.RateLimitDictPrefix) {
-				continue
+		for _, count := range []int{0, 1, 2, 3, configir.MaxPublishedSites} {
+			sites := make([]configir.Site, count)
+			for i := range sites {
+				sites[i].ID = fmt.Sprintf("site-%d", i)
 			}
-			if seen[dict.Name] || dict.SizeKB != configir.RateLimitSiteKB {
-				t.Fatalf("invalid partition: %+v", dict)
+			dicts, err := sharedDicts(p, sites)
+			if err != nil {
+				t.Fatal(err)
 			}
-			seen[dict.Name] = true
-			partitions++
-			total += dict.SizeKB
-		}
-		if partitions != count || total != count*configir.RateLimitSiteKB || total > configir.RateLimitBudgetKB {
-			t.Fatalf("%d sites: %d partitions, %d KiB", count, partitions, total)
+			total, partitions := 0, 0
+			seen := map[string]bool{}
+			for _, dict := range dicts {
+				if !strings.HasPrefix(dict.Name, configir.RateLimitDictPrefix) {
+					continue
+				}
+				if seen[dict.Name] || dict.SizeKB != p.RateLimitDictKB {
+					t.Fatalf("invalid partition: %+v", dict)
+				}
+				seen[dict.Name] = true
+				partitions++
+				total += dict.SizeKB
+			}
+			if partitions != count || total != count*p.RateLimitDictKB || total > configir.MaxPublishedSites*p.RateLimitDictKB {
+				t.Fatalf("%d sites: %d partitions, %d KiB", count, partitions, total)
+			}
 		}
 	}
 }
