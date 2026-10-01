@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 )
@@ -100,6 +101,17 @@ type Params struct {
 	CRSDir string
 	// ModSecurityUnicodeMap is ModSecurity's unicode.mapping (optional).
 	ModSecurityUnicodeMap string
+	// L4Socket is the unix socket of the stream subsystem's control relay
+	// (default: l4.sock next to ControlSocket); the control API forwards
+	// /v1/l4 requests to it. L4DictMB sizes lua_shared_dict edgeweir_l4
+	// (layer-4 table, passive health, connection counters).
+	L4Socket string
+	L4DictMB int
+	// WorkerShutdownTimeout bounds the graceful shutdown of the workers a
+	// reload replaces (worker_shutdown_timeout, every connection they still
+	// serve); 0 leaves it unset: old workers serve their connections until
+	// these end.
+	WorkerShutdownTimeout time.Duration
 }
 
 // Default locations of the edgeweir-openresty packages.
@@ -122,6 +134,10 @@ const (
 	// DefaultSitesDictMB sizes the site table store (--sites-dict-mb): the
 	// current and the previous table, error page templates included.
 	DefaultSitesDictMB = 64
+	// DefaultL4DictMB sizes the layer-4 store (--l4-dict-mb): the current
+	// and the previous layer-4 table with their IP lists, passive health
+	// and connection counters.
+	DefaultL4DictMB = 32
 	// Rate-limit partition size of each published site (--rate-limit-dict-kb)
 	// and its bounds.
 	DefaultRateLimitDictKB = 256
@@ -173,6 +189,12 @@ func (p Params) WithDefaults() Params {
 	if p.EdgeSocket == "" && p.ControlSocket != "" {
 		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
 	}
+	if p.L4Socket == "" && p.ControlSocket != "" {
+		p.L4Socket = filepath.Join(filepath.Dir(p.ControlSocket), "l4.sock")
+	}
+	if p.L4DictMB == 0 {
+		p.L4DictMB = DefaultL4DictMB
+	}
 	if p.OriginSocketNoVerify == "" && p.OriginSocket != "" {
 		p.OriginSocketNoVerify = filepath.Join(filepath.Dir(p.OriginSocket), "origin-noverify.sock")
 	}
@@ -195,6 +217,7 @@ func (p Params) validate() error {
 		"origin socket without verification": p.OriginSocketNoVerify,
 		"edge socket":                        p.EdgeSocket,
 		"GeoIP socket":                       p.GeoIPSocket,
+		"layer-4 control socket":             p.L4Socket,
 	} {
 		if !safePath.MatchString(v) {
 			return fmt.Errorf("%s %q must be an absolute path without spaces or special characters", name, v)
@@ -217,7 +240,10 @@ func (p Params) validate() error {
 	if p.BanCapacity < 1 || p.BanCapacity > MaxBanCapacity {
 		return fmt.Errorf("ban capacity %d out of range (1-%d)", p.BanCapacity, MaxBanCapacity)
 	}
-	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB, "ban dict": p.BanDictMB, "CC dict": p.CCDictMB, "challenge dict": p.ChallengeDictMB, "tag dict": p.TagDictMB} {
+	if p.WorkerShutdownTimeout < 0 {
+		return fmt.Errorf("negative worker shutdown timeout %s", p.WorkerShutdownTimeout)
+	}
+	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB, "ban dict": p.BanDictMB, "CC dict": p.CCDictMB, "challenge dict": p.ChallengeDictMB, "tag dict": p.TagDictMB, "layer-4 dict": p.L4DictMB} {
 		if v < 1 || v > 65536 {
 			return fmt.Errorf("%s size %d MiB out of range (1-65536)", name, v)
 		}
@@ -244,6 +270,11 @@ type data struct {
 	ModSecurityConf string
 	WAFBodyLimits   []uint32
 	WAFHeader       string
+	// L4Servers are the stream servers of the layer-4 applications (none:
+	// no stream block); ShutdownTimeoutMS is worker_shutdown_timeout (0:
+	// unset).
+	L4Servers         []l4Server
+	ShutdownTimeoutMS int64
 }
 
 // sharedDict is one lua_shared_dict of the data plane.
@@ -425,12 +456,19 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	l4, err := l4Servers(p, plan)
+	if err != nil {
+		return nil, err
+	}
 	d := data{
-		Params:      p,
-		SharedDicts: dicts,
-		EdgeServers: edgeServers(p, plan),
-		CacheZones:  plan.CacheZones,
-		DefaultZone: plan.CacheZones[0].Name,
+		Params:    p,
+		L4Servers: l4,
+		// Whole milliseconds, at least one (nginx's time syntax).
+		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
+		SharedDicts:       dicts,
+		EdgeServers:       edgeServers(p, plan),
+		CacheZones:        plan.CacheZones,
+		DefaultZone:       plan.CacheZones[0].Name,
 		OriginLayers: []originLayer{
 			{Socket: p.OriginSocket, Verify: true},
 			{Socket: p.OriginSocketNoVerify, Verify: false},

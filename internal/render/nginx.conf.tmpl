@@ -21,6 +21,11 @@ user {{ .User }};
 pid {{ .Prefix }}/logs/nginx.pid;
 error_log stderr {{ .ErrorLogLevel }};
 pcre_jit on;
+{{- if .ShutdownTimeoutMS }}
+# Workers a reload replaces close the connections they still serve after
+# this long (--stream-shutdown-timeout).
+worker_shutdown_timeout {{ .ShutdownTimeoutMS }}ms;
+{{- end }}
 
 events {
     worker_connections {{ .WorkerConnections }};
@@ -59,6 +64,11 @@ http {
             geoip_socket = "{{ .GeoIPSocket }}",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = {{ .BanCapacity }},
+{{- if .L4Servers }}
+            -- The stream subsystem's control relay (edgeweir.l4control):
+            -- the control API forwards /v1/l4 requests to it.
+            l4_socket = "unix:{{ .L4Socket }}",
+{{- end }}
 {{- if .ModSecurityConf }}
             -- Request body limits of the edge layer's CRS locations
             -- (@edgeweir_waf_<limit>, edgeweir.waf).
@@ -334,6 +344,67 @@ http {
     }
 {{- end }}
 }
+{{- if .L4Servers }}
+
+# Layer-4 (TCP / UDP) applications: one server per port and protocol. Only
+# the listen sockets and how a connection reaches its origin live here;
+# which application a port belongs to, its origins, timeouts, IP lists and
+# limits are hot-updated through the control socket into lua_shared_dict
+# edgeweir_l4 (the stream subsystem's dictionaries are its own: the http
+# block cannot see them, hence the relay socket below).
+stream {
+    lua_package_path "{{ .LuaDir }}/?.lua;;";
+    lua_shared_dict edgeweir_l4 {{ .L4DictMB }}m;
+    lua_shared_dict edgeweir_l4_stats 4m;
+    # The relay's idle checks time out reads on purpose.
+    lua_socket_log_errors off;
+    init_by_lua_block {
+        require("edgeweir.l4").init({
+            resolvers = { {{- range $i, $r := .Resolvers }}{{ if $i }}, {{ end }}"{{ $r }}"{{ end -}} },
+            ipv6 = {{ .ResolverIPv6 }},
+            conf_id = "{{ .ConfID }}",
+        })
+    }
+    init_worker_by_lua_block { require("edgeweir.l4").init_worker() }
+
+    # Every attempt's origin, connect timeout and idle timeout (the
+    # proxy_timeout of the session) are set in Lua.
+    upstream edgeweir_l4 {
+        server 0.0.0.1:1;
+        balancer_by_lua_block { require("edgeweir.l4").balance() }
+    }
+
+    # Control relay: reachable only through its unix socket from the
+    # control API (/v1/l4).
+    server {
+        listen unix:{{ .L4Socket }};
+        content_by_lua_block { require("edgeweir.l4control").handle() }
+    }
+{{- range .L4Servers }}
+
+    # {{ if eq .Protocol "udp" }}UDP {{ .Port }}: every datagram an origin answers goes back to the
+    # client (no proxy_responses); a session ends after its idle timeout.
+    {{- else }}TCP {{ .Port }}{{ if .Accept }}, PROXY protocol from clients{{ end }}{{ if .Relay }}, relayed with a PROXY protocol header{{ else if .ProxyProtocol }}, PROXY protocol {{ if eq .ProxyProtocol "on" }}v1{{ else }}v2{{ end }} to origins{{ end }}.{{ end }}
+    server {
+{{- range .Listen }}
+        listen {{ . }};
+{{- end }}
+        preread_by_lua_block { require("edgeweir.l4").preread() }
+{{- if .Relay }}
+        # nginx would send the load balancer's address: the relay passes on
+        # the client's from the header it received.
+        content_by_lua_block { require("edgeweir.l4").relay() }
+{{- else }}
+        proxy_pass edgeweir_l4;
+{{- if .ProxyProtocol }}
+        proxy_protocol {{ .ProxyProtocol }};
+{{- end }}
+{{- end }}
+        log_by_lua_block { require("edgeweir.l4").log() }
+    }
+{{- end }}
+}
+{{- end }}
 {{- define "edge_proxy" }}
             slice 1m;
             proxy_pass http://$edgeweir_origin_layer;
