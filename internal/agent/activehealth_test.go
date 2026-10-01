@@ -135,6 +135,7 @@ func TestAgentActiveHealthChecks(t *testing.T) {
 	})
 
 	// o2 recovers, o1 fails.
+	eventually(t, "both next probes scheduled", func() bool { return clock.Armed() == 2 })
 	one.Store(500)
 	two.Store(204)
 	clock.Advance(5 * time.Second)
