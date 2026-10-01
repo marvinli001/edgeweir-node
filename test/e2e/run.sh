@@ -46,7 +46,14 @@
 #      probes its peer (never itself) while the console lets it, and
 #      `edgeweir-node probe` enrolls and reports; heartbeats carry host
 #      metrics;
-#  16. restarting the container serves the last-known-good config.
+#  16. layer-4 applications: TCP and UDP echo through the node's stream
+#      servers, PROXY protocol v1 and v2 headers seen by the origin
+#      (nginx's own, and the relay passing on the client's address from
+#      the header it received), a block list and a connection limit
+#      refuse, a dead origin is retried past and held down, a long TCP
+#      connection survives the reload that adds a port, an origin change
+#      applies without a reload (E2E_STATS=1: their minute statistics);
+#  17. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -782,6 +789,59 @@ key_mode=$(compose exec -T node stat -c '%a' /tmp/edgeweir-probe-e2e/probe.key)
 [ "$key_mode" = 600 ] || fail "probe.key mode $key_mode"
 pass "edgeweir-node probe: enrolled (probe.key 0600) and reported a round"
 
+# Layer-4 applications (l4-v1). The helper in the console container
+# connects to the node's stream ports inside the compose network.
+grep -qx l4-v1 <<<"$(curl -fsS "$HELPER/features")" || fail "l4-v1 not reported"
+l4() { local what=$1; shift; local args=(-G); for a in "$@"; do args+=(--data-urlencode "$a"); done; curl -fsS "${args[@]}" "$HELPER/l4/$what"; }
+reloads() { compose logs node | grep -c "nginx configuration installed and reloaded" || true; }
+conf_id() { control GET /v1/status | sed -n 's/.*"conf_id":"\([0-9a-f]*\)".*/\1/p'; }
+compose exec -T node grep -q '^stream {' /var/lib/edgeweir-node/nginx/conf/nginx.conf || fail "nginx.conf has no stream block"
+r=$(l4 tcp port=9100 send=hello-l4)
+[ "$r" = hello-l4 ] || fail "TCP echo through the node: '$r'"
+[ "$(l4 tcp port=9100 send=NAME)" = a ] || fail "TCP 9100 not served by the echo origin a"
+r=$(control GET /v1/l4)
+grep -q '"app_id":"l4-echo"[^}]*"origin_id":"dead"\|"origin_id":"dead"[^}]*"app_id":"l4-echo"' <<<"$r" ||
+  fail "the dead origin (weight 100) was not tried and held down: $r"
+r=$(l4 udp port=9100 send=dgram-1)
+[ "$r" = dgram-1 ] || fail "UDP echo through the node: '$r'"
+r=$(l4 pp port=9101 version=1)
+case "$r" in "ok "*) ;; *) fail "PROXY protocol v1 (nginx): $r" ;; esac
+r=$(l4 pp port=9102 version=2)
+case "$r" in "ok "*) ;; *) fail "PROXY protocol v2 (nginx): $r" ;; esac
+r=$(l4 pp port=9103 version=2 pp=203.0.113.5)
+[ "$r" = "ok 203.0.113.5:40000 192.0.2.9:443" ] || fail "PROXY protocol v2 relay with the client's address from the PROXY header: $r"
+pass "layer 4: TCP and UDP echo, dead origin retried past and held down, PROXY v1 and v2 (nginx and relay) at the origin"
+r=$(l4 tcp port=9103 pp=198.51.100.66 send=x)
+[ "$r" = closed ] || fail "a blocked client address (from the PROXY header) got '$r'"
+r=$(l4 tcp port=9103 pp=198.51.100.67 send=x lines=2)
+grep -q '"source":"198.51.100.67"' <<<"$r" || fail "a neighbouring address was refused: $r"
+r=$(l4 limit)
+[ "$r" = ok ] || fail "connection limit: $r"
+pass "layer 4: block list and connection limit close the connection"
+
+r=$(curl -fsS -X POST "$HELPER/l4/long?op=open")
+[ "$r" = ok ] || fail "long connection: $r"
+reloads_before=$(reloads)
+conf_before=$(conf_id)
+rev=$(curl -fsS -X POST "$HELPER/l4/add-port")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(reloads)" -eq "$((reloads_before + 1))" ] && [ "$(conf_id)" != "$conf_before" ] || fail "a new layer-4 port did not reload nginx once"
+r=$(l4 tcp port=9105 send=extra)
+[ "$r" = extra ] || fail "the new port 9105: '$r'"
+r=$(curl -fsS -X POST "$HELPER/l4/long?op=check")
+[ "$r" = ok ] || fail "the long connection did not survive the reload: $r"
+pass "layer 4: a new port reloads nginx, the long connection opened before keeps working"
+reloads_before=$(reloads)
+conf_before=$(conf_id)
+rev=$(curl -fsS -X POST "$HELPER/l4/hot")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+r=$(l4 tcp port=9100 send=NAME)
+[ "$r" = b ] || fail "the changed origin of TCP 9100 does not answer: '$r'"
+[ "$(reloads)" = "$reloads_before" ] && [ "$(conf_id)" = "$conf_before" ] || fail "an origin change reloaded nginx"
+r=$(curl -fsS -X POST "$HELPER/l4/long?op=check")
+[ "$r" = ok ] || fail "the long connection did not survive the hot update: $r"
+pass "layer 4: an origin change applies to new connections without a reload"
+
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
@@ -812,6 +872,12 @@ if [ "${E2E_STATS:-0}" = "1" ]; then
   [ "$(crs crs-block.test "$NODE/search?q=%3Cscript%3Ealert(4)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "CRS not active after the restart"
   WAIT_SECS=180 wait_for "CRS rule counts uploaded" sh -c "curl -fsS $HELPER/waf-rules | grep -q '^site-crs-block 949110 '"
   pass "CRS rules counted per minute ($(curl -fsS "$HELPER/waf-rules" | tr '\n' ';'))"
+  # Layer 4 after the restart: a refused and an accepted connection.
+  [ "$(l4 tcp port=9103 pp=198.51.100.66 send=x)" = closed ] || fail "block list after the restart"
+  [ "$(l4 tcp port=9100 send=counted)" = counted ] || fail "TCP 9100 after the restart"
+  l4_counted() { curl -fsS "$HELPER/l4-stats" | awk '$1=="l4-echo" && $2>0 && $5>0 && $6>0 {e=1} $1=="l4-relay" && $3>0 {r=1} END {exit !(e && r)}'; }
+  WAIT_SECS=180 wait_for "layer-4 statistics uploaded" l4_counted
+  pass "layer-4 statistics per minute ($(curl -fsS "$HELPER/l4-stats" | tr '\n' ';'))"
 fi
 
 echo "e2e smoke test passed"

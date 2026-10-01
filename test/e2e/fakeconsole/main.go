@@ -46,6 +46,9 @@
 //	                   (/gz-only gzip, /no-compress none, /no-gzip config
 //	                   gzip=false)
 //
+// Every revision also carries the layer-4 applications of l4.go (their
+// origins run in this container too).
+//
 // The configuration names offline hosts (old.test disabled, *.gone.test
 // suspended) and a platform page for suspended sites. The listeners are
 // :80, :8081 (PROXY protocol) and :8443 (HTTPS, reached from this
@@ -342,7 +345,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "suspended"},
 			{Name: "old.test", Reason: "disabled"},
@@ -358,6 +361,8 @@ func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 		CacheZones:         []*nodev1.CacheZone{{Name: "default", MaxSizeMb: 256, KeysZoneMb: 8, InactiveSeconds: 600}},
 		Sites:              sites,
 		OriginAllowedCidrs: allowList,
+		IpLists:            l4Lists,
+		L4Apps:             currentL4(),
 	}
 }
 
@@ -662,6 +667,7 @@ func main() {
 	go serveTLSOrigin(*tlsOrigin, *caOut)
 	go serveTestOrigin(":8082")
 	go serveTestOrigin(":8083")
+	serveL4Origins()
 	if *allowed != "" {
 		allowList = strings.Split(*allowed, ",")
 	} else {
@@ -886,6 +892,7 @@ func main() {
 		}
 	})
 	mux.HandleFunc("GET /tls-health", tlsHealth)
+	registerL4(mux, c, func() uint64 { return c.Publish(config(baseSites(*origin)...)) })
 	mux.HandleFunc("GET /probe-token", func(w http.ResponseWriter, _ *http.Request) {
 		token := fmt.Sprintf("probe-token-%d", time.Now().UnixNano())
 		c.AddProbeToken(token)
