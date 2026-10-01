@@ -176,11 +176,16 @@ function _M.build(site, req, epoch)
     local v = req.cookie and req.cookie(name)
     parts[#parts + 1] = "|c:" .. escape(name, ESC_VALUE) .. "=" .. (v and escape(v, ESC_VALUE) or "")
   end
+  return _M.with_epoch(concat(parts), epoch)
+end
+
+-- with_epoch appends a purge epoch to a key built without one ("#" never
+-- appears elsewhere in a key: edgeweir.cachetags splits keys on it).
+function _M.with_epoch(base, epoch)
   if epoch and epoch > 0 then
-    parts[#parts + 1] = "#"
-    parts[#parts + 1] = format("%.0f", epoch) -- integer milliseconds
+    return base .. "#" .. format("%.0f", epoch) -- integer milliseconds
   end
-  return concat(parts)
+  return base
 end
 
 return _M

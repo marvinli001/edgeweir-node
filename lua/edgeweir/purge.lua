@@ -14,21 +14,28 @@
 --   u|<site>|<path>  JSON [[host, query, epoch], ...]   URL markers
 --   p|<site>         JSON [[host, prefix, epoch], ...]  prefix markers
 --   s|<site>         epoch                              whole-site marker
+--   t|<site>|<tag>   epoch                              tag marker
+--   T|<site>         epoch                              highest tag epoch of the site
 --   #id              id of the marker set (for resync checks)
 --   #ver             bumped on every change (invalidates worker caches)
 --   #entries         number of marker entries (keys above)
---   #markers         number of markers
+--   #markers         number of markers (T| is an entry, not a marker)
 --   #lock            held while a change is written
+--
+-- Tag markers do not change the key by themselves: edgeweir.cachetags
+-- looks up the tags an object was cached with and moves its key epoch
+-- past the markers of those tags. T| tells the edge layer whether a site
+-- has tag markers at all (one shared dict read per request).
 --
 -- The status is read from these counters; nothing walks the dict except a
 -- full replacement (after an nginx restart or when markers expire).
 --
--- Bounds: the agent caps the markers per site (collapsing a site's URL and
--- prefix markers into one site-level marker beyond the cap). When a full
--- replacement still does not fit, the markers of each site that does not
--- fit are replaced by one site-level marker at their highest epoch
--- (over-purging instead of failing) and the site is reported in
--- "collapsed".
+-- Bounds: the agent caps the markers per site (collapsing a site's URL,
+-- prefix and tag markers into one site-level marker beyond the cap). When
+-- a full replacement still does not fit, the markers of each site that
+-- does not fit, tag markers included, are replaced by one site-level
+-- marker at their highest epoch (over-purging instead of failing) and the
+-- site is reported in "collapsed".
 --
 -- Matching uses the site's current cache key policy: the host is ignored
 -- when the key excludes it, and query strings are compared after the same
@@ -46,16 +53,39 @@ local cachekey = require("edgeweir.cachekey")
 
 local _M = {}
 
-local find, sub = string.find, string.sub
+local byte, find, lower, sub = string.byte, string.find, string.lower, string.sub
 local dict = ngx.shared.edgeweir_purge
 
-local cache
+local cache, tag_cache
 
 local function lru()
   if not cache then
     cache = assert(lrucache.new(4096))
   end
   return cache
+end
+
+-- tag_lru caches the epochs of tag markers per worker (per #ver).
+local function tag_lru()
+  if not tag_cache then
+    tag_cache = assert(lrucache.new(16384))
+  end
+  return tag_cache
+end
+
+_M.MAX_TAG = 128
+
+-- valid_tag reports whether tag is a valid Cache-Tag element: 1-128 bytes
+-- of printable ASCII (0x20-0x7e) without commas and without leading or
+-- trailing spaces.
+function _M.valid_tag(tag)
+  if type(tag) ~= "string" or tag == "" or #tag > _M.MAX_TAG then
+    return false
+  end
+  if find(tag, "[^\32-\126]") or find(tag, ",", 1, true) then
+    return false
+  end
+  return byte(tag, 1) ~= 32 and byte(tag, -1) ~= 32
 end
 
 local function decode_list(raw)
@@ -94,8 +124,15 @@ end
 
 local function valid(m)
   return type(m) == "table" and type(m.site_id) == "string" and m.site_id ~= ""
-    and (m.type == "url" or m.type == "prefix" or m.type == "site")
+    and (m.type == "url" or m.type == "prefix" or m.type == "site" or (m.type == "tag" and _M.valid_tag(m.tag)))
     and tonumber(m.epoch) and tonumber(m.epoch) > 0
+end
+
+-- raise sets entries[k] to epoch unless it holds a higher one.
+local function raise(entries, k, epoch)
+  if not entries[k] or entries[k] < epoch then
+    entries[k] = epoch
+  end
 end
 
 -- build groups markers into dict entries: key -> list | epoch. An index
@@ -124,10 +161,11 @@ local function build(markers)
     local m = markers[i]
     local epoch = tonumber(m.epoch)
     if m.type == "site" then
-      local k = "s|" .. m.site_id
-      if not entries[k] or entries[k] < epoch then
-        entries[k] = epoch
-      end
+      raise(entries, "s|" .. m.site_id, epoch)
+    elseif m.type == "tag" then
+      -- Tags compare in lowercase, like the Cache-Tag parser keeps them.
+      raise(entries, "t|" .. m.site_id .. "|" .. lower(m.tag), epoch)
+      raise(entries, "T|" .. m.site_id, epoch)
     elseif m.type == "prefix" then
       add("p|" .. m.site_id, m.host or "", cachekey.normalize_path(m.path or "/"), epoch)
     else
@@ -161,17 +199,23 @@ local function validate(doc)
   return true
 end
 
--- site_of returns the site id of a marker entry key.
+-- site_of returns the site id of a marker entry key (site ids never
+-- contain "|"; paths and tags after it may).
 local function site_of(k)
   local kind = sub(k, 1, 2)
-  if kind == "s|" or kind == "p|" then
+  if kind == "s|" or kind == "p|" or kind == "T|" then
     return sub(k, 3)
   end
   local bar = find(k, "|", 3, true)
   return bar and sub(k, 3, bar - 1) or sub(k, 3)
 end
 
-local function size_of(v)
+-- size_of returns the number of markers entry k holds (T| only indexes
+-- the site's tag markers).
+local function size_of(k, v)
+  if sub(k, 1, 2) == "T|" then
+    return 0
+  end
   return type(v) == "table" and #v or 1
 end
 
@@ -264,8 +308,8 @@ function _M.replace(doc)
     end
   end
   local n, markers = 0, 0
-  for _, v in pairs(entries) do
-    n, markers = n + 1, markers + size_of(v)
+  for k, v in pairs(entries) do
+    n, markers = n + 1, markers + size_of(k, v)
   end
   dict:set("#entries", n)
   dict:set("#markers", markers)
@@ -302,7 +346,7 @@ function _M.add(doc)
       end
       value = current
     elseif raw then
-      before = 1
+      before = size_of(k, raw)
       if raw > v then
         value = raw
       end
@@ -316,7 +360,7 @@ function _M.add(doc)
     if not raw then
       dict:incr("#entries", 1, 0)
     end
-    dict:incr("#markers", size_of(value) - before, 0)
+    dict:incr("#markers", size_of(k, value) - before, 0)
   end
   dict:set("#id", doc.id)
   dict:incr("#ver", 1, 0)
@@ -356,6 +400,39 @@ function _M.epoch(site_id, key, host, path, args)
       if m[3] > epoch and (any_host or m[1] == host) and cachekey.normalize_query(m[2], key) == q then
         epoch = m[3]
       end
+    end
+  end
+  return epoch
+end
+
+-- tag_max returns the highest tag marker epoch of a site, or nil when it
+-- has no tag marker: one shared dict read, the only per-request cost of
+-- tag purges for sites that have none.
+function _M.tag_max(site_id)
+  return dict:get("T|" .. site_id)
+end
+
+-- tag_epoch returns the highest epoch of the tag markers of site_id among
+-- tags (a list of parsed, lowercase tags), or 0.
+function _M.tag_epoch(site_id, tags)
+  local ver = dict:get("#ver")
+  if not ver or #tags == 0 then
+    return 0
+  end
+  local c = tag_lru()
+  local epoch = 0
+  for i = 1, #tags do
+    local k = "t|" .. site_id .. "|" .. tags[i]
+    local hit = c:get(k)
+    local e
+    if hit and hit[1] == ver then
+      e = hit[2]
+    else
+      e = dict:get(k) or 0
+      c:set(k, { ver, e })
+    end
+    if e > epoch then
+      epoch = e
     end
   end
   return epoch
