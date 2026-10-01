@@ -458,11 +458,12 @@ function _M.site_current(id)
 end
 
 -- lookup_host resolves a lowercase host name: exact match first, then a
--- wildcard on the parent domain (single left-most label).
+-- wildcard on the parent domain (single left-most label). Without a site
+-- it also returns the table version it looked in (for config(ver)).
 function _M.lookup_host(host)
   local ver = meta:get("version")
   if not ver or not host or host == "" then
-    return nil
+    return nil, ver
   end
   local hc = hosts()
   local hit = hc:get(host)
@@ -471,7 +472,7 @@ function _M.lookup_host(host)
   end
   local mc = misses()
   if mc:get(host) == ver then
-    return nil
+    return nil, ver
   end
   local id = sites:get("v" .. ver .. ":host:" .. host)
   if id then
@@ -493,7 +494,7 @@ function _M.lookup_host(host)
     end
   end
   mc:set(host, ver)
-  return nil
+  return nil, ver
 end
 
 return _M

@@ -1010,6 +1010,11 @@ test("store keeps the error page, affinity, active health and offline host setti
   eq(errorpages.offline_reason(cfg, "both.test"), "suspended")
   eq(errorpages.offline_reason(cfg, "bad.test"), nil, "unknown reasons are ignored")
   eq(errorpages.offline_reason(cfg, "new.test"), nil)
+  -- A miss hands back the table version it looked in: the router reads
+  -- the offline hosts and platform pages without another dict read.
+  local none, ver = store.lookup_host("old.test")
+  eq(none, nil)
+  eq(store.config(ver), cfg)
   -- A table without these settings: defaults.
   st, err = store.replace({ revision = "51", sites = {} })
   assert(st, err)
