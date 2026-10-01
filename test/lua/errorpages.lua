@@ -1,9 +1,11 @@
 -- Error pages (edgeweir.errorpages): template rendering, escaping,
--- placeholders and built-in pages.
+-- placeholders, built-in pages and the origin layer's replacement rules.
 --
 --   resty -I lua --shdict 'edgeweir_sites 1m' --shdict 'edgeweir_meta 1m' test/lua/errorpages.lua
 local errorpages = require("edgeweir.errorpages")
 local challenge = require("edgeweir.challenge")
+local origin = require("edgeweir.origin")
+local store = require("edgeweir.store")
 
 local passed, failed = 0, 0
 
@@ -102,6 +104,33 @@ test("nginx's own upstream failures are told apart from origin responses", funct
   eq(errorpages.origin_code(502), "origin-unreachable")
   eq(errorpages.origin_code(504), "origin-timeout")
   eq(errorpages.origin_code(503), "origin-unreachable")
+end)
+
+test("origin layer: which responses become pages", function()
+  local plain = store.prepare({ id = "p", cache_zone = "z", domains = { { name = "p.test" } },
+    origins = { { id = "o1", scheme = "http", address = "o.test", port = 80 } } })
+  local intercept = store.prepare({ id = "i", cache_zone = "z", domains = { { name = "i.test" } },
+    origins = { { id = "o1", scheme = "http", address = "o.test", port = 80 } },
+    error_pages = { pages = { ["503"] = "busy {{request_id}}", ["403"] = "no" }, intercept = true } })
+  local keep = store.prepare({ id = "k", cache_zone = "z", domains = { { name = "k.test" } },
+    origins = { { id = "o1", scheme = "http", address = "o.test", port = 80 } },
+    error_pages = { pages = { ["503"] = "busy" } } })
+  eq(intercept._intercept, true)
+  eq(keep._intercept, false)
+  eq(plain._error_pages, nil)
+  -- nginx's own failures: a page for every site (built-in or the site's).
+  eq(origin.page_code(plain, 502, "-"), "origin-unreachable")
+  eq(origin.page_code(plain, 504, "0.1, -"), "origin-timeout")
+  eq(origin.page_code(keep, 502, "-"), "origin-unreachable")
+  -- Origin responses: only intercepted, only with a page for the status.
+  eq(origin.page_code(plain, 503, "0.010"), nil)
+  eq(origin.page_code(keep, 503, "0.010"), nil, "pages without intercept leave origin errors alone")
+  eq(origin.page_code(intercept, 503, "0.010"), "origin-error")
+  eq(origin.page_code(intercept, 403, "0.010"), "origin-error")
+  eq(origin.page_code(intercept, 502, "0.010"), nil, "no page for 502")
+  eq(origin.page_code(intercept, 500, "-"), nil, "500 keeps nginx's page")
+  eq(origin.page_code(intercept, 404, "0.010"), nil)
+  eq(origin.page_code(intercept, 200, "0.010"), nil)
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

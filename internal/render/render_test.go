@@ -472,7 +472,9 @@ func locations(conf string) map[string][]string {
 
 // TestRenderEdgeRequestIDsAndHiddenHeaders: every edge location answers
 // with the request id (also on errors), passes it to the origin layer and
-// never forwards the origin's id, Cache-Tag or the affinity announcement.
+// never forwards the origin's id, Cache-Tag or the affinity announcement;
+// body filters exist only where error pages replace bodies (the origin
+// layer and the CRS locations), never in the edge layer's location /.
 func TestRenderEdgeRequestIDsAndHiddenHeaders(t *testing.T) {
 	p := params()
 	p.ModSecurityModule = "/usr/lib/edgeweir-openresty/modules/ngx_http_modsecurity_module.so"
@@ -512,7 +514,20 @@ func TestRenderEdgeRequestIDsAndHiddenHeaders(t *testing.T) {
 			}
 		}
 	}
+	for _, body := range edge {
+		if strings.Contains(body, "body_filter") {
+			t.Error("the edge layer's location / has a body filter")
+		}
+	}
+	for _, body := range waf {
+		if !strings.Contains(body, `body_filter_by_lua_block { require("edgeweir.router").body_filter() }`) {
+			t.Error("a CRS location lacks the error page body filter")
+		}
+	}
 	for _, body := range origin {
+		if !strings.Contains(body, `body_filter_by_lua_block { require("edgeweir.origin").body_filter() }`) {
+			t.Error("an origin layer location lacks the error page body filter")
+		}
 		if strings.Contains(body, "X-Request-Id") {
 			t.Error("the origin layer touches X-Request-Id (it forwards the edge's)")
 		}

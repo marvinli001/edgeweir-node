@@ -28,6 +28,8 @@ function M.log(waf_ids, waf_blocked)
     ja4 = site.protection and site.protection.log_ja4 and clean(require("edgeweir.ja4").value(), 64) or nil,
     waf_rule_ids = waf_ids and #waf_ids > 0 and setmetatable(waf_ids, json.array_mt) or nil,
     waf_blocked = waf_blocked or nil,
+    -- The X-Request-Id the node answered with (also on error pages).
+    request_id = clean(var.edgeweir_request_id, 128),
   })
   if not raw or not dict:rpush("pending", raw) then dict:incr("dropped", 1, 0) end
 end

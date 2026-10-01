@@ -8,7 +8,9 @@
 --   v<N>:wild:<name>  site id for a wildcard suffix ("*.<name>")
 --   v<N>:cfg          JSON of the table settings (origin allow list,
 --                     cdn_id, HTTP-01 answers, IP lists, platform rules,
---                     platform protection, ids of the sites with CC)
+--                     platform protection, ids of the sites with CC, the
+--                     lifetime of Cache-Tag index entries, the platform's
+--                     error pages and the offline hosts)
 --
 -- A replacement writes table N+1 next to table N, then flips
 -- edgeweir_meta["version"]; requests never observe a half-written table.
@@ -31,6 +33,7 @@ local ipaddr = require("edgeweir.ipaddr")
 local policy = require("edgeweir.policy")
 local ratelimit = require("edgeweir.ratelimit")
 local cc = require("edgeweir.cc")
+local errorpages = require("edgeweir.errorpages")
 
 local _M = {}
 
@@ -157,6 +160,15 @@ function _M.prepare(s, cfg)
   s.tls_verify = s.tls_verify ~= false
   s.websocket = s.websocket ~= false
   s.slice = s.slice == true
+  s.keep_cache_tag = s.keep_cache_tag == true
+  -- Active health checks (the agent's marks count for this site), session
+  -- affinity (cookie lifetime) and error pages (compiled templates).
+  s._active = s.active_health == true
+  local ttl = type(s.affinity) == "table" and tonumber(s.affinity.ttl)
+  s._affinity_ttl = (ttl and ttl >= 1) and ttl or nil
+  local pages = type(s.error_pages) == "table" and s.error_pages or nil
+  s._error_pages = pages and errorpages.compile_pages(pages.pages)
+  s._intercept = s._error_pages ~= nil and pages.intercept == true
   s.health = with_defaults(s.health, DEFAULT_HEALTH)
   s.conn = with_defaults(s.conn, DEFAULT_CONN)
   s.cache_key = cachekey.prepare(s.cache_key)
@@ -262,6 +274,9 @@ function _M.replace(doc)
   local pp = doc.platform_protection
   if type(pp) ~= "table" then pp = nil end
   local cfg = { origin_allowed_cidrs = allowed, cdn_id = type(doc.cdn_id) == "string" and doc.cdn_id or "", http_challenges = doc.http_challenges or {}, ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {}, platform_protection = pp, cc_sites = cc_sites }
+  cfg.tag_ttl = tonumber(doc.tag_ttl)
+  if type(doc.platform_error_pages) == "table" then cfg.platform_error_pages = doc.platform_error_pages end
+  if type(doc.offline_hosts) == "table" and #doc.offline_hosts > 0 then cfg.offline_hosts = doc.offline_hosts end
   if cjson.empty_array_mt and #allowed == 0 then
     setmetatable(allowed, cjson.empty_array_mt)
   end
@@ -341,10 +356,34 @@ function _M.status()
   return st
 end
 
+-- DEFAULT_TAG_TTL is the lifetime of Cache-Tag index entries when the
+-- site table does not set it (the default inactive time of cache zones).
+_M.DEFAULT_TAG_TTL = 3600
+
+-- offline_hosts indexes the offline hosts of a table: exact names and
+-- wildcard suffixes to their reason (disabled or suspended).
+local function offline_hosts(list)
+  if type(list) ~= "table" or #list == 0 then
+    return nil
+  end
+  local out = { exact = {}, wild = {} }
+  for _, h in ipairs(list) do
+    if type(h) == "table" and type(h.name) == "string" and (h.reason == "disabled" or h.reason == "suspended") then
+      local t = h.wildcard == true and out.wild or out.exact
+      if not t[h.name] then
+        t[h.name] = h.reason
+      end
+    end
+  end
+  return out
+end
+
 -- config returns the table-wide settings of the current table:
 -- { allowed = parsed origin allow list (edgeweir.ipaddr.prefixes),
---   cdn_id = CDN-Loop identifier or "" }.
-local EMPTY_CONFIG = { allowed = {}, cdn_id = "" }
+--   cdn_id = CDN-Loop identifier or "", tag_ttl = lifetime of Cache-Tag
+--   index entries, platform_pages = compiled platform error pages,
+--   offline = offline hosts (nil without any) }.
+local EMPTY_CONFIG = { allowed = {}, cdn_id = "", tag_ttl = _M.DEFAULT_TAG_TTL, platform_pages = {} }
 
 function _M.config(version)
   local ver = version or meta:get("version")
@@ -368,7 +407,11 @@ function _M.config(version)
       ip_lists = doc.ip_lists or {}, platform_rules = doc.platform_rules or {},
       platform_protection = type(doc.platform_protection) == "table" and doc.platform_protection or nil,
       cc_sites = type(doc.cc_sites) == "table" and doc.cc_sites or {},
+      platform_pages = errorpages.compile_platform(doc.platform_error_pages),
+      offline = offline_hosts(doc.offline_hosts),
     }
+    local tag_ttl = tonumber(doc.tag_ttl)
+    cfg.tag_ttl = (tag_ttl and tag_ttl >= 1) and tag_ttl or _M.DEFAULT_TAG_TTL
     policy.prepare_config(cfg)
   end
   c:set(ck, cfg)

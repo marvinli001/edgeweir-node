@@ -54,7 +54,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "c154c946b583f40a",
+            conf_id = "4bf67ca88c0f7f32",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -183,6 +183,9 @@ http {
             proxy_next_upstream_tries 3;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
             log_by_lua_block { require("edgeweir.origin").log() }
         }
     }
@@ -228,6 +231,9 @@ http {
             proxy_next_upstream_tries 3;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
             log_by_lua_block { require("edgeweir.origin").log() }
         }
     }
@@ -292,8 +298,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -373,8 +379,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -447,8 +453,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -516,8 +522,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -594,8 +600,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -684,8 +690,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -766,8 +772,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -843,8 +849,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
@@ -914,8 +920,8 @@ http {
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag and the origin layer's affinity
-            # announcement.
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;

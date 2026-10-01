@@ -19,13 +19,24 @@
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
 -- origin for uncompressed responses (edgeweir.compress).
 --
+-- Purged objects: the key epoch combines the URL, prefix and site markers
+-- (edgeweir.purge) with the tag markers of the object's Cache-Tag
+-- (edgeweir.cachetags) for sites that have tag markers. Denials with a
+-- status error pages apply to (403, 429, 503 here) and hosts no site
+-- serves are answered with error pages (edgeweir.errorpages).
+--
 -- header_filter(): restores the origin's Cache-Control header that the
--- origin layer replaced to carry stale-* extensions for nginx's cache, and
--- chooses the response's content coding (edgeweir.compress).
+-- origin layer replaced to carry stale-* extensions for nginx's cache,
+-- indexes the Cache-Tag of responses fetched for the cache (also in slice
+-- and background-update subrequests), forwards Cache-Tag only for sites
+-- that keep it, issues session affinity cookies (edgeweir.affinity),
+-- replaces CRS blocks with error pages and chooses the response's content
+-- coding (edgeweir.compress).
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local purge = require("edgeweir.purge")
+local cachetags = require("edgeweir.cachetags")
 local policy = require("edgeweir.policy")
 local ipaddr = require("edgeweir.ipaddr")
 local bans = require("edgeweir.bans")
@@ -33,13 +44,21 @@ local cc = require("edgeweir.cc")
 local challenge = require("edgeweir.challenge")
 local compress = require("edgeweir.compress")
 local waf = require("edgeweir.waf")
+local errorpages = require("edgeweir.errorpages")
+local affinity = require("edgeweir.affinity")
 
 local _M = {}
 
 local concat = table.concat
 local lower, sub = string.lower, string.sub
 
+-- deny answers with status and X-Edgeweir-Error code: the site's error
+-- page (or the built-in one) for the statuses pages apply to, plain text
+-- otherwise.
 local function deny(status, code, message)
+  if errorpages.STATUSES[status] then
+    return errorpages.respond(status, code, ngx.ctx.edgeweir_site)
+  end
   ngx.status = status
   ngx.header["Content-Type"] = "text/plain; charset=utf-8"
   ngx.header["Cache-Control"] = "no-store"
@@ -184,7 +203,9 @@ local function access()
   end
   local site = store.lookup_host(host)
   if not site then
-    return deny(ngx.HTTP_NOT_FOUND, "unknown-host", "unknown host")
+    -- Offline hosts (disabled and suspended sites) and unknown hosts get
+    -- the platform's pages.
+    return errorpages.unknown_host(store.config(), host)
   end
 
   ngx.ctx.edgeweir_site = site
@@ -292,7 +313,15 @@ local function access()
   -- path, so an encoded variant of a URL can never escape a purge.
   local path = original_path
   local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
-  var.edgeweir_cache_key = cachekey.build(site, key_request(site, var, path, headers), epoch)
+  local req = key_request(site, var, path, headers)
+  local tmax = purge.tag_max(site.id)
+  if tmax then
+    -- The site has tag markers: the object's tags may move its key.
+    local base = cachekey.build(site, req, 0)
+    var.edgeweir_cache_key = cachekey.with_epoch(base, cachetags.key_epoch(site.id, base, epoch, tmax))
+  else
+    var.edgeweir_cache_key = cachekey.build(site, req, epoch)
+  end
   return true
 end
 
@@ -330,19 +359,48 @@ function _M.http3_port(authority, listener_port)
   if host then return port_number(port) end
 end
 
+-- FROM_CACHE are the cache statuses of responses the edge cache served:
+-- they get no affinity cookie (a cached object may hold the internal
+-- X-Edgeweir-Affinity header of another client's response).
+local FROM_CACHE = { HIT = true, STALE = true, UPDATING = true, REVALIDATED = true }
+
 -- header_filter(waf_location): waf_location in the CRS locations, where the
 -- request context must come back first (a request ModSecurity blocks never
 -- reaches their access phase).
 function _M.header_filter(waf_location)
   local h = ngx.header
+  local var = ngx.var
+  -- The Cache-Tag index learns the tags of every response fetched for the
+  -- cache, slices and background updates included (subrequests share the
+  -- main request's variables but not its ngx.ctx).
+  local cs = var.upstream_cache_status
+  if (cs == "MISS" or cs == "EXPIRED") and var.edgeweir_no_cache == "0" then
+    cachetags.record(var.edgeweir_site, var.edgeweir_cache_key, var.upstream_http_cache_tag, store.config().tag_ttl)
+  end
   if waf_location then
     waf.restore()
-    if ngx.var.modsecurity_intervention == "1" then
-      h["X-Edgeweir-Error"] = "waf-blocked"
-      h["Cache-Control"] = "no-store"
+    if var.modsecurity_intervention == "1" then
+      local status = ngx.status
+      if errorpages.STATUSES[status] and not ngx.is_subrequest then
+        errorpages.replace(status, "waf-blocked", ngx.ctx.edgeweir_site, false)
+      else
+        h["X-Edgeweir-Error"] = "waf-blocked"
+        h["Cache-Control"] = "no-store"
+      end
     end
   end
   local site = ngx.ctx.edgeweir_site
+  if site and site.keep_cache_tag then
+    -- proxy_hide_header removes Cache-Tag for every other site, cache hits
+    -- included.
+    h["Cache-Tag"] = var.upstream_http_cache_tag
+  end
+  if site and site._affinity_ttl and not FROM_CACHE[cs or ""] then
+    local value = var.upstream_http_x_edgeweir_affinity
+    if value and value ~= "" and affinity.valid_value(value) then
+      affinity.append_cookie(h, affinity.cookie(value, site._affinity_ttl, var.scheme == "https"))
+    end
+  end
   if ngx.var.scheme == "https" and site and site.tls and site.tls.hsts_max_age > 0 then
     local value = "max-age=" .. tostring(site.tls.hsts_max_age)
     if site.tls.hsts_include_subdomains then value = value .. "; includeSubDomains" end
@@ -367,6 +425,12 @@ function _M.header_filter(waf_location)
     if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
     compress.header_filter(site)
   end
+end
+
+-- body_filter sends the error page header_filter prepared (CRS locations
+-- only: the edge layer's location / has no body filter).
+function _M.body_filter()
+  return errorpages.body_filter()
 end
 
 return _M

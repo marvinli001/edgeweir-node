@@ -7,12 +7,18 @@
 --                  retries, timeouts and the keep-alive pool, and rebuilds
 --                  the request when a retry goes to an origin with another
 --                  Host or S3 signature.
--- header_filter(): decides caching for the edge layer: X-Accel-Expires from
---                  the matching cache rule, stale-while-revalidate and
---                  stale-if-error as Cache-Control extensions (the original
---                  header travels in X-Edgeweir-CC and the edge restores it),
---                  and hands origin failures back as transport errors when
---                  the edge holds an expired copy it may serve instead.
+-- header_filter(): hands origin failures back as transport errors when
+--                  the edge holds an expired copy it may serve instead
+--                  (first: a stale copy wins over any error page), replaces
+--                  nginx's own upstream failures and, for sites that
+--                  intercept origin errors, origin responses whose status
+--                  has a page with error pages (edgeweir.errorpages, sent
+--                  by body_filter()), announces session affinity cookies
+--                  (edgeweir.affinity) and decides caching for the edge
+--                  layer: X-Accel-Expires from the matching cache rule,
+--                  stale-while-revalidate and stale-if-error as
+--                  Cache-Control extensions (the original header travels in
+--                  X-Edgeweir-CC and the edge restores it).
 -- log():           passive health accounting from $upstream_status.
 --
 -- nginx never forwards X-Accel-* headers to clients.
@@ -25,6 +31,9 @@ local health = require("edgeweir.health")
 local sigv4 = require("edgeweir.sigv4")
 local upstreamerr = require("edgeweir.upstreamerr")
 local compress = require("edgeweir.compress")
+local errorpages = require("edgeweir.errorpages")
+local affinity = require("edgeweir.affinity")
+local challenge = require("edgeweir.challenge")
 
 local _M = {}
 
@@ -32,7 +41,14 @@ local concat = table.concat
 local find, gmatch, gsub, sub = string.find, string.gmatch, string.gsub, string.sub
 local tonumber = tonumber
 
-local function fail(status, code)
+-- fail answers with the origin layer's own failure: an error page (never
+-- cached by the edge) for the statuses pages apply to, plain text
+-- otherwise.
+local function fail(status, code, site)
+  ngx.ctx.edgeweir_failed = true
+  if errorpages.STATUSES[status] then
+    return errorpages.origin_fail(status, code, site)
+  end
   ngx.status = status
   ngx.header["Content-Type"] = "text/plain; charset=utf-8"
   ngx.header["Cache-Control"] = "no-store"
@@ -144,10 +160,21 @@ function _M.access()
   ctx.upgrade = var.http_upgrade ~= nil and var.http_upgrade ~= ""
 
   local now = ngx.now()
+  -- Session affinity: a valid cookie pins the origin that served the
+  -- client (no keys yet: no pin, no cookie).
+  local pin
+  if site._affinity_ttl then
+    local keys = challenge.keys()
+    if keys and keys.current then
+      local exp
+      pin, exp = affinity.verify(keys, site.id, var["cookie_" .. affinity.COOKIE], ngx.time())
+      ctx.affinity = { key = keys.current, pin = pin, exp = exp }
+    end
+  end
   local method = ngx.req.get_method()
   local allowed = store.config().allowed
   local cands, scheme, s3_refused = {}, nil, false
-  for _, o in ipairs(lb.order(site, var.request_uri, now)) do
+  for _, o in ipairs(lb.order(site, var.request_uri, now, pin)) do
     local usable = true
     if o.forbidden then
       -- Refused by the agent already (special-purpose IP literal).
@@ -182,9 +209,9 @@ function _M.access()
   if #cands == 0 then
     if s3_refused then
       ngx.header["Allow"] = "GET, HEAD"
-      return fail(ngx.HTTP_NOT_ALLOWED, "method-not-allowed")
+      return fail(ngx.HTTP_NOT_ALLOWED, "method-not-allowed", site)
     end
-    return fail(ngx.HTTP_BAD_GATEWAY, "no-origin")
+    return fail(ngx.HTTP_BAD_GATEWAY, "no-origin", site)
   end
   for i = 1, #cands do
     if cands[i].origin.s3 then
@@ -199,7 +226,7 @@ function _M.access()
   local ok, err = apply(cands[1])
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: cannot sign origin request: ", err)
-    return fail(ngx.HTTP_BAD_GATEWAY, "origin-signing")
+    return fail(ngx.HTTP_BAD_GATEWAY, "origin-signing", site)
   end
 end
 
@@ -343,24 +370,58 @@ function _M.decide(chain, status, size, cc, expires, authorized)
   return out
 end
 
+-- page_code returns the X-Edgeweir-Error code when the response must be
+-- replaced with an error page: nginx's own failure of the last attempt
+-- (no response header), or an origin error the site intercepts.
+function _M.page_code(site, status, upstream_header_time)
+  if not errorpages.STATUSES[status] then
+    return nil
+  end
+  if errorpages.generated(upstream_header_time) then
+    return errorpages.origin_code(status)
+  end
+  if site._intercept and site._error_pages[status] then
+    return "origin-error"
+  end
+  return nil
+end
+
 function _M.header_filter()
   local ctx = ngx.ctx
   local h = ngx.header
   -- Only this layer may set the stash header the edge restores.
   h["X-Edgeweir-CC"] = nil
   local site = ctx.site
-  if not site then
+  if not site or ctx.edgeweir_failed then
     return
+  end
+  if site._affinity_ttl then
+    -- Only this layer announces affinity cookies.
+    h[affinity.HEADER] = nil
   end
   -- Sites the edge compresses asked for identity: the cached object does
   -- not vary by Accept-Encoding.
   compress.origin_header_filter(site)
   local status = ngx.status
   local chain = ctx.chain
-  if status >= 500 and ngx.var.http_x_edgeweir_cache_status == "EXPIRED" and stale_capable(chain, ctx.authorized) then
+  local var = ngx.var
+  if status >= 500 and var.http_x_edgeweir_cache_status == "EXPIRED" and stale_capable(chain, ctx.authorized) then
     -- Close without a response: the edge sees a transport error and serves
     -- its stale copy if stale-if-error allows it.
     return ngx.exit(ngx.ERROR)
+  end
+  local code = _M.page_code(site, status, var.upstream_header_time)
+  if code then
+    return errorpages.replace(status, code, site, true)
+  end
+  local a = ctx.affinity
+  local tried = ctx.tried
+  local chosen = a and tried and tried[#tried]
+  if chosen then
+    local now = ngx.time()
+    if affinity.renew(a.pin, a.exp, chosen.origin.id, site._affinity_ttl, now) then
+      h[affinity.HEADER] = affinity.sign(a.key, site.id, chosen.origin.id, now + site._affinity_ttl)
+    end
   end
   if not chain then
     return -- the edge does not cache this request
@@ -373,6 +434,11 @@ function _M.header_filter()
     h["X-Edgeweir-CC"] = d.stash
     h["Cache-Control"] = d.cache_control
   end
+end
+
+-- body_filter sends the error page header_filter prepared.
+function _M.body_filter()
+  return errorpages.body_filter()
 end
 
 -- classify returns the error code, its parameters and a text for a failed

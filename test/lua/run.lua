@@ -966,6 +966,60 @@ test("store.prepare marks sites with challenges, CC and JA4", function()
   eq(store.config().platform_protection.challenge, "cookie302")
 end)
 
+test("store keeps the error page, affinity, active health and offline host settings", function()
+  local st, err = store.replace({
+    revision = "50",
+    tag_ttl = 86400,
+    platform_error_pages = { unknown_host = "<p>{{host}} unknown</p>", site_suspended = "" },
+    offline_hosts = {
+      { name = "old.test", reason = "disabled" },
+      { name = "gone.test", wildcard = true, reason = "suspended" },
+      { name = "both.test", reason = "suspended" },
+      { name = "bad.test", reason = "whatever" },
+    },
+    sites = {
+      site("g4", { { name = "g4.test" } }, {
+        keep_cache_tag = true, active_health = true, affinity = { ttl = 7200 },
+        error_pages = { pages = { ["403"] = "<b>{{status}}</b>", ["404"] = "ignored" }, intercept = true },
+      }),
+      site("g4-plain", { { name = "plain-g4.test" } }),
+    },
+  })
+  assert(st, err)
+  local s = store.lookup_host("g4.test")
+  eq(s.keep_cache_tag, true)
+  eq(s._active, true)
+  eq(s._affinity_ttl, 7200)
+  eq(s._intercept, true)
+  assert(s._error_pages[403] and not s._error_pages[404], "only page statuses compile")
+  local p = store.lookup_host("plain-g4.test")
+  eq(p.keep_cache_tag, false)
+  eq(p._active, false)
+  eq(p._affinity_ttl, nil)
+  eq(p._error_pages, nil)
+  eq(p._intercept, false)
+  local cfg = store.config()
+  eq(cfg.tag_ttl, 86400)
+  local errorpages = require("edgeweir.errorpages")
+  eq(errorpages.render(cfg.platform_pages.unknown_host, { host = "x.test" }), "<p>x.test unknown</p>")
+  eq(cfg.platform_pages.site_suspended, nil, "empty: built-in page")
+  eq(errorpages.offline_reason(cfg, "old.test"), "disabled")
+  eq(errorpages.offline_reason(cfg, "a.gone.test"), "suspended", "wildcard on the parent domain")
+  eq(errorpages.offline_reason(cfg, "gone.test"), nil, "a wildcard does not cover its own name")
+  eq(errorpages.offline_reason(cfg, "a.b.gone.test"), nil, "single label only")
+  eq(errorpages.offline_reason(cfg, "both.test"), "suspended")
+  eq(errorpages.offline_reason(cfg, "bad.test"), nil, "unknown reasons are ignored")
+  eq(errorpages.offline_reason(cfg, "new.test"), nil)
+  -- A table without these settings: defaults.
+  st, err = store.replace({ revision = "51", sites = {} })
+  assert(st, err)
+  cfg = store.config()
+  eq(cfg.tag_ttl, store.DEFAULT_TAG_TTL)
+  eq(next(cfg.platform_pages), nil)
+  eq(cfg.offline, nil)
+  eq(errorpages.offline_reason(cfg, "old.test"), nil)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

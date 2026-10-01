@@ -651,8 +651,9 @@ local function text(status, headers, body)
   return ngx.exit(ngx.HTTP_OK)
 end
 
-local function unavailable()
-  return text(503, { ["X-Edgeweir-Error"] = "challenge-unavailable" }, "challenge unavailable")
+-- unavailable answers without keys (503, the site's error page).
+local function unavailable(site)
+  return require("edgeweir.errorpages").respond(503, "challenge-unavailable", site)
 end
 
 -- location returns an absolute Location on the host the client asked
@@ -731,13 +732,15 @@ end
 
 -- respond challenges the request at level with kind (cookie302, js, pow,
 -- pow_high or captcha). Requests other than GET and HEAD get 403 with
--- X-Edgeweir-Challenge: required; without keys 503.
+-- X-Edgeweir-Challenge: required (the site's error page); without keys
+-- 503.
 function _M.respond(site, kind, level)
   local keys = _M.keys()
-  if not keys or not keys.current then return unavailable() end
+  if not keys or not keys.current then return unavailable(site) end
   local method = ngx.req.get_method()
   if method ~= "GET" and method ~= "HEAD" then
-    return text(403, { ["X-Edgeweir-Challenge"] = "required" }, "challenge required")
+    ngx.header["X-Edgeweir-Challenge"] = "required"
+    return require("edgeweir.errorpages").respond(403, "challenge-required", site)
   end
   local var = ngx.var
   local ret = _M.return_url(var.request_uri) or "/"
@@ -774,7 +777,7 @@ local function verify(site)
   local token, answer = field(args, "t"), field(args, "a")
   local ret = _M.return_url(field(args, "r")) or "/"
   local keys = _M.keys()
-  if not keys or not keys.current then return unavailable() end
+  if not keys or not keys.current then return unavailable(site) end
   local now = _M.clock()
   local prefix, uah = prefix_of(var.remote_addr), ua_of(var.http_user_agent)
   local f = _M.parse_token(keys, token)
