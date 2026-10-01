@@ -17,7 +17,8 @@ var ErrBaseMismatch = errors.New("diff base revision mismatch")
 // revision described by d:
 //
 //   - listeners, cache zones, certificates, the origin allow list, the
-//     platform protection and the challenge keys are replaced wholesale;
+//     platform protection, the challenge keys, the platform error pages and
+//     the offline hosts are replaced wholesale;
 //   - sites listed in removed_site_ids are dropped;
 //   - upserted sites replace sites with the same id or are added;
 //   - the result is canonicalized and its content hash must equal
@@ -55,9 +56,13 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 		IpLists:            cloneAll(d.GetIpLists()),
 		PlatformRules:      cloneAll(d.GetPlatformRules()),
 		ChallengeKeys:      cloneAll(d.GetChallengeKeys()),
+		OfflineHosts:       cloneAll(d.GetOfflineHosts()),
 	}
 	if p := d.GetPlatformProtection(); p != nil {
 		out.PlatformProtection = proto.CloneOf(p)
+	}
+	if p := d.GetPlatformErrorPages(); p != nil {
+		out.PlatformErrorPages = proto.CloneOf(p)
 	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
@@ -111,9 +116,13 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 		IpLists:            cloneAll(target.GetIpLists()),
 		PlatformRules:      cloneAll(target.GetPlatformRules()),
 		ChallengeKeys:      cloneAll(target.GetChallengeKeys()),
+		OfflineHosts:       cloneAll(target.GetOfflineHosts()),
 	}
 	if p := target.GetPlatformProtection(); p != nil {
 		d.PlatformProtection = proto.CloneOf(p)
+	}
+	if p := target.GetPlatformErrorPages(); p != nil {
+		d.PlatformErrorPages = proto.CloneOf(p)
 	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {

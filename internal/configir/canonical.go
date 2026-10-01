@@ -15,6 +15,8 @@
 //   - inside a site: tls.gzip_types ascending without duplicates, and
 //     likewise tls.brotli_types, tls.zstd_types and waf.excluded_rule_ids
 //     (proto v0.11.0);
+//   - offline_hosts by (name, wildcard), inside a site error_pages.pages
+//     by status (proto v0.12.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -69,6 +71,11 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	})
 	slices.SortStableFunc(c.IpLists, func(a, b *nodev1.IpList) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	slices.SortStableFunc(c.ChallengeKeys, func(a, b *nodev1.ChallengeKeyRef) int { return cmp.Compare(a.GetId(), b.GetId()) })
+	// The console sorts by `${name}\0${wildcard ? 1 : 0}`: name first, then
+	// exact before wildcard.
+	slices.SortStableFunc(c.OfflineHosts, func(a, b *nodev1.OfflineHost) int {
+		return cmp.Or(cmp.Compare(a.GetName(), b.GetName()), compareBool(a.GetWildcard(), b.GetWildcard()))
+	})
 	for _, l := range c.IpLists {
 		slices.Sort(l.Entries)
 		l.Entries = slices.Compact(l.Entries)
@@ -95,6 +102,11 @@ func CanonicalizeSite(s *nodev1.Site) {
 		slices.Sort(s.Waf.ExcludedRuleIds)
 		s.Waf.ExcludedRuleIds = slices.Compact(s.Waf.ExcludedRuleIds)
 	}
+	if s.ErrorPages != nil {
+		slices.SortStableFunc(s.ErrorPages.Pages, func(a, b *nodev1.ErrorPage) int {
+			return cmp.Compare(a.GetStatus(), b.GetStatus())
+		})
+	}
 	slices.SortStableFunc(s.Domains, func(a, b *nodev1.Domain) int {
 		return cmp.Compare(a.GetName(), b.GetName())
 	})
@@ -109,6 +121,17 @@ func CanonicalizeSite(s *nodev1.Site) {
 			cmp.Compare(a.GetId(), b.GetId()),
 		)
 	})
+}
+
+// compareBool orders false before true.
+func compareBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case !a:
+		return -1
+	}
+	return 1
 }
 
 // CanonicalBytes returns the deterministic binary encoding of the canonical
