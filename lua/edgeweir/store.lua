@@ -170,6 +170,10 @@ end
 
 local function is_geo(field) return field:sub(1, 9) == "ip.geoip." end
 local function is_ja4(field) return field == "tls.ja4" end
+local function is_field(name) return function(field) return field == name end end
+local is_full_uri = is_field("http.request.full_uri")
+local is_extension = is_field("http.request.uri.path.extension")
+local is_media_type = is_field("http.response.content_type.media_type")
 
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
@@ -188,6 +192,14 @@ function _M.prepare(s, cfg)
   if type(s.tls) ~= "table" then s.tls = nil end
   s._ja4 = s.protection ~= nil and s.protection.log_ja4 == true
   if reads_field(rule_lists, s.cache_rules, is_ja4) then s._ja4 = true end
+  -- Derived fields are computed per request only for sites whose rules
+  -- read them; the response phases run only when some rule is in them.
+  s._full_uri = reads_field(rule_lists, s.cache_rules, is_full_uri) or nil
+  s._extension = reads_field(rule_lists, s.cache_rules, is_extension) or nil
+  s._media_type = reads_field(rule_lists, s.cache_rules, is_media_type) or nil
+  local platform_groups = s._config.groups or {}
+  s._response_rules = (platform_groups["response-transform"] or platform_groups.compression
+    or s._rule_groups["response-transform"] or s._rule_groups.compression) ~= nil
   for _, list in ipairs(rule_lists) do
     for _, r in ipairs(list or {}) do
       if type(r) == "table" and type(r.action) == "table" and r.action.key == "tls.ja4" then s._ja4 = true end
@@ -241,9 +253,12 @@ function _M.prepare(s, cfg)
   local default = pools[""] or { primaries = {}, backups = {}, pw = 0, bw = 0 }
   s._pools = pools
   s._primaries, s._backups, s._pw, s._bw = default.primaries, default.backups, default.pw, default.bw
+  s._browser_ttl = nil
   if type(s.cache_rules) == "table" then
     for i = 1, #s.cache_rules do
       rules.prepare(s.cache_rules[i], s._config.lists)
+      -- The edge header filter looks for a browser TTL only on such sites.
+      if s.cache_rules[i].browser_ttl > 0 then s._browser_ttl = true end
     end
   else
     s.cache_rules = nil

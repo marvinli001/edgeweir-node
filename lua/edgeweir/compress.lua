@@ -135,8 +135,12 @@ end
 -- only its codings remain, its order becoming the preference. Returns the
 -- candidates and the preference (nil: PREFERENCE).
 function _M.restrict(candidates, ctx)
+  -- Without a rule for this response the candidates stay as they are.
   if not ctx then return candidates, nil end
   local list = ctx.compression
+  if list == nil and ctx.gzip ~= false and ctx.br ~= false and ctx.zstd ~= false then
+    return candidates, nil
+  end
   local out = {}
   for i = 1, #candidates do
     local coding = candidates[i]

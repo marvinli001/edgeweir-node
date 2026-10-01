@@ -169,17 +169,25 @@ function _M.parse_origin_header(value)
   return any and out or nil
 end
 
+-- request builds the request values of a request. The derived fields
+-- http.request.full_uri and http.request.uri.path.extension are computed
+-- only for sites whose rules read them (site._full_uri, site._extension,
+-- see edgeweir.store).
 function _M.request(site, headers)
   local var = ngx.var
-  local path, host, request_uri = var.uri, var.host, var.request_uri
+  local scheme = var.scheme
   local values = {
-    ["http.host"] = host, ["http.request.method"] = ngx.req.get_method(),
-    ["http.request.uri.path"] = path, ["http.request.uri.query"] = var.args or "",
-    ["http.request.uri"] = request_uri, ["ip.src"] = var.remote_addr,
-    ssl = var.scheme == "https",
-    ["http.request.full_uri"] = expressions.full_uri(var.scheme, host, request_uri),
-    ["http.request.uri.path.extension"] = expressions.path_extension(path or ""),
+    ["http.host"] = var.host, ["http.request.method"] = ngx.req.get_method(),
+    ["http.request.uri.path"] = var.uri, ["http.request.uri.query"] = var.args or "",
+    ["http.request.uri"] = var.request_uri, ["ip.src"] = var.remote_addr,
+    ssl = scheme == "https",
   }
+  if site._full_uri then
+    values["http.request.full_uri"] = expressions.full_uri(scheme, values["http.host"], values["http.request.uri"])
+  end
+  if site._extension then
+    values["http.request.uri.path.extension"] = expressions.path_extension(values["http.request.uri.path"] or "")
+  end
   for name, value in pairs(headers) do
     values["http.request.headers." .. name:lower()] = type(value) == "table" and table.concat(value, ", ") or value
   end
@@ -271,7 +279,8 @@ local function origin(a, ctx)
 end
 
 local function run_group(group, site, ctx, phase, namespace)
-  for _, rule in ipairs(group or {}) do
+  if not group then return end
+  for _, rule in ipairs(group) do
     if rule.match(ctx.values) then
       local a = rule.action
       if a.kind == "block" then return { status = a.status_code } end
@@ -302,7 +311,7 @@ local function run_group(group, site, ctx, phase, namespace)
         ngx.header[a.header] = not a.remove and (a.value or "") or nil
         local values = writable(ctx)
         values["http.response.headers." .. a.header] = a.remove and "" or (a.value or "")
-        if a.header == "content-type" then
+        if a.header == "content-type" and site._media_type then
           values["http.response.content_type.media_type"] = expressions.media_type(not a.remove and a.value or nil)
         end
       elseif a.kind == "config" then config(a, ctx)
@@ -355,19 +364,27 @@ function _M.access(site, headers)
   end
 end
 
--- response runs the response phases in the edge header filter.
+-- response runs the response phases in the edge header filter, only for
+-- sites with rules in them (site._response_rules, platform rules
+-- included). The client's original request is no longer needed then (the
+-- cache decision was made in the access phase): response values go into
+-- the request values without a copy.
 function _M.response(site)
+  if not site._response_rules then return end
   local ctx = ngx.ctx.edgeweir_policy
   if not ctx then return end
-  local values = writable(ctx)
+  ctx.original = nil
+  local values = ctx.values
   values["http.response.code"] = ngx.status
   local headers = ngx.resp.get_headers(0)
   for name, value in pairs(headers) do
     values["http.response.headers." .. name:lower()] = type(value) == "table" and table.concat(value, ", ") or value
   end
-  local content_type = headers["content-type"]
-  if type(content_type) == "table" then content_type = content_type[1] end
-  values["http.response.content_type.media_type"] = expressions.media_type(content_type)
+  if site._media_type then
+    local content_type = headers["content-type"]
+    if type(content_type) == "table" then content_type = content_type[1] end
+    values["http.response.content_type.media_type"] = expressions.media_type(content_type)
+  end
   local groups = site._config.groups
   for _, phase in ipairs({ "response-transform", "compression" }) do
     run_group(groups and groups[phase], site, ctx, phase, "platform")

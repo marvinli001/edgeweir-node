@@ -272,7 +272,11 @@ local function access()
     end
   end
   headers = ngx.req.get_headers(0)
-  var.edgeweir_origin_override = policy.origin_header(pctx)
+  -- The variable's default is "": only origin and timeout overrides set it.
+  local override = policy.origin_header(pctx)
+  if override ~= "" then
+    var.edgeweir_origin_override = override
+  end
 
   var.edgeweir_site = site.id
   var.edgeweir_cache_zone = site.cache_zone
@@ -316,9 +320,12 @@ local function access()
     var.edgeweir_range_mode = "pass"
     return true
   end
-  -- For the browser TTL of the rule that decides the response.
-  ngx.ctx.edgeweir_chain = chain
-  ngx.ctx.edgeweir_authorized = authorized
+  if site._browser_ttl then
+    -- For the browser TTL of the rule that decides the response.
+    local ctx = ngx.ctx
+    ctx.edgeweir_chain = chain
+    ctx.edgeweir_authorized = authorized
+  end
 
   var.edgeweir_cache_bypass = "0"
   var.edgeweir_no_cache = "0"
@@ -458,17 +465,22 @@ function _M.header_filter(waf_location)
   -- The browser TTL replaces the origin's Cache-Control (restored above)
   -- on responses the deciding cache rule caches; response rules may still
   -- change it.
-  local chain = ngx.ctx.edgeweir_chain
-  if chain and not ngx.is_subrequest then
-    local status = ngx.status
-    local value = rules.browser_cache_control(chain, status, _M.response_size(h, status), ngx.ctx.edgeweir_authorized, h["Cache-Control"])
-    if value then
-      h["Cache-Control"] = value
+  if site and site._browser_ttl and not ngx.is_subrequest then
+    local ctx = ngx.ctx
+    local chain = ctx.edgeweir_chain
+    if chain then
+      local status = ngx.status
+      local value = rules.browser_cache_control(chain, status, _M.response_size(h, status), ctx.edgeweir_authorized, h["Cache-Control"])
+      if value then
+        h["Cache-Control"] = value
+      end
     end
   end
   if site then
-    local ok = pcall(policy.response, site)
-    if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
+    if site._response_rules then
+      local ok = pcall(policy.response, site)
+      if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
+    end
     compress.header_filter(site)
   end
 end

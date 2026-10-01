@@ -169,6 +169,10 @@ end)
 
 test("restrict applies config switches and compression rules", function()
   local all = { "zstd", "br", "gzip" }
+  -- Without a rule the candidates come back as they are, without a copy.
+  assert(rawequal(compress.restrict(all, nil), all), "no policy context")
+  assert(rawequal(compress.restrict(all, {}), all), "no rule")
+  assert(rawequal(compress.restrict(all, { gzip = true, br = true, cache_bypass = true }), all), "nothing switched off")
   local function list(t) return table.concat(t, ",") end
   local c, pref = compress.restrict(all, nil)
   eq(list(c), "zstd,br,gzip"); eq(pref, nil)

@@ -11,10 +11,11 @@ end
 -- whether CRS blocked the request, for requests of CRS sites.
 function M.log(waf_ids, waf_blocked)
   if ngx.is_subrequest then return end
-  local site = ngx.ctx.edgeweir_site
+  local ctx = ngx.ctx
+  local site = ctx.edgeweir_site
   if not site then return end
   -- Config rules may set the rate for a request (basis points).
-  local policy = ngx.ctx.edgeweir_policy
+  local policy = ctx.edgeweir_policy
   local rate = policy and policy.log_sample_rate or tonumber(site.log_sample_rate) or 0
   if not rate or rate <= 0 then return end
   local id = ngx.var.request_id or tostring(ngx.now()) .. tostring(ngx.worker.pid())

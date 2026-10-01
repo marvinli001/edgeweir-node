@@ -42,6 +42,9 @@ local policy = require("edgeweir.policy")
 
 local _M = {}
 
+-- NO_OVERRIDE stands for a request without origin rule overrides.
+local NO_OVERRIDE = {}
+
 local concat = table.concat
 local find, gmatch, gsub, sub = string.find, string.gmatch, string.gsub, string.sub
 local tonumber = tonumber
@@ -304,7 +307,7 @@ function _M.balance()
     ngx_balancer.set_more_tries(#ctx.cands - 1)
   end
   local conn = ctx.site.conn
-  local ov = ctx.override or {}
+  local ov = ctx.override or NO_OVERRIDE
   ngx_balancer.set_timeouts((ov.connect or conn.connect_timeout_ms) / 1000, (ov.send or conn.send_timeout_ms) / 1000,
     (ov.read or conn.read_timeout_ms) / 1000)
   -- Unverified TLS connections are never pooled: a site that verifies must
