@@ -495,3 +495,13 @@ func TestCanonicalizeV0130(t *testing.T) {
 		t.Fatalf("bulk redirects %v", sources)
 	}
 }
+
+func TestSupportedFeaturesRulesV2(t *testing.T) {
+	if !slices.Contains(SupportedFeatures, FeatureRulesV2) {
+		t.Fatalf("SupportedFeatures lacks %s", FeatureRulesV2)
+	}
+	c := &nodev1.NodeConfig{Sites: []*nodev1.Site{site("site-a", "a.test")}, RequiredFeatures: []string{FeatureRulesV2}}
+	if _, err := Build(c, Options{}); err != nil {
+		t.Fatal(err)
+	}
+}

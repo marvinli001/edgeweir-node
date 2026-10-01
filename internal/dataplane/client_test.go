@@ -9,6 +9,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 )
 
@@ -320,6 +321,61 @@ func TestSiteTableG4Fields(t *testing.T) {
 		if strings.Contains(string(b), field) {
 			t.Errorf("plain site JSON %s has %s", b, field)
 		}
+	}
+}
+
+// TestSiteTableG5Fields pins the site table fields of proto v0.13.0
+// (rules-v2) that edgeweir.store, edgeweir.policy and edgeweir.rules read:
+// bulk redirects, origin groups, cache rule conditions and browser TTLs,
+// and rule actions in their protobuf field names. Explicitly set false and
+// zero values of optional fields stay in the JSON.
+func TestSiteTableG5Fields(t *testing.T) {
+	no, zero := false, uint32(0)
+	path := &nodev1.RuleExpression{Op: "field", Field: "http.request.uri.path", ValueType: "string"}
+	yes := &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"}
+	c := &nodev1.NodeConfig{Sites: []*nodev1.Site{{
+		Id: "s1", Enabled: true, Domains: []*nodev1.Domain{{Name: "a.test"}},
+		OriginPool: &nodev1.OriginPool{Origins: []*nodev1.Origin{
+			{Id: "o1", Address: "origin.test", Port: 80}, {Id: "o2", Address: "api.test", Port: 80, Group: "api"},
+		}},
+		BulkRedirects: []*nodev1.BulkRedirect{{Source: "/old", Target: "/new", StatusCode: 301, PreserveQuery: true}},
+		CacheRules: []*nodev1.CacheRule{{Id: "c1", Action: nodev1.CacheAction_CACHE_ACTION_CACHE, EdgeTtlSeconds: 60, BrowserTtlSeconds: 600,
+			Match: &nodev1.CacheRuleMatch{Condition: &nodev1.RuleExpression{Op: "call", Field: "starts_with", ValueType: "boolean",
+				Children: []*nodev1.RuleExpression{path, {Op: "const", ValueType: "string", Value: "/img/"}}}}}},
+		Rules: []*nodev1.EdgeRule{
+			{Id: "r1", Phase: "redirect", Expression: yes, Action: &nodev1.RuleAction{Kind: "redirect", StatusCode: 308, Target: path,
+				SetQuery: []*nodev1.QueryParam{{Name: "a", Value: "1"}}, RemoveQuery: []string{"b"}}},
+			{Id: "r2", Phase: "config", Expression: yes, Action: &nodev1.RuleAction{Kind: "config", CcEnabled: &no, LogSampleRate: &zero, OriginReadTimeoutMs: 5000}},
+			{Id: "r3", Phase: "origin", Expression: yes, Action: &nodev1.RuleAction{Kind: "origin", OriginGroup: "api", Port: 8080}},
+			{Id: "r4", Phase: "compression", Expression: yes, Action: &nodev1.RuleAction{Kind: "compression", Compression: []string{"br"}}},
+		},
+	}}}
+	plan, err := configir.Build(c, configir.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(dataplane.FromPlan(plan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{
+		`"bulk_redirects":[{"source":"/old","target":"/new","status":301,"preserve_query":true}]`,
+		`"id":"o2","scheme":"http","address":"api.test","port":80,"weight":1,"group":"api"`,
+		`"browser_ttl":600`,
+		`"condition":{"op":"call","field":"starts_with","value_type":"boolean","children":[{"op":"field","field":"http.request.uri.path","value_type":"string"},{"op":"const","value_type":"string","value":"/img/"}]}`,
+		`"target":{"op":"field","field":"http.request.uri.path","value_type":"string"}`,
+		`"set_query":[{"name":"a","value":"1"}],"remove_query":["b"]`,
+		`"cc_enabled":false`, `"origin_read_timeout_ms":5000`, `"log_sample_rate":0`,
+		`"origin_group":"api"`, `"port":8080`, `"compression":["br"]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("site table %s\nmissing %s", got, want)
+		}
+	}
+	// The default group's origins and plain cache rules carry none of the fields.
+	if strings.Count(got, `"group"`) != 1 || strings.Contains(got, `"browser_ttl":0`) {
+		t.Errorf("site table %s", got)
 	}
 }
 
