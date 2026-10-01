@@ -54,12 +54,12 @@
 
 系统要求：glibc 2.34 及以上（RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新版本），amd64 或 arm64。OpenResty 由 agent 以子进程运行；若装有 OpenResty 官方包，停用其服务（`sudo systemctl disable --now openresty`）。
 
-发布物：`edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）、`edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）、`edgeweir-openresty_1.31.1.1-1_<架构>.deb` / `edgeweir-openresty-1.31.1.1-1.<架构>.rpm`、同名的 `edgeweir-openresty-modsecurity` 包、`checksums.txt*`。安装前[验证发布物](#验证发布物)。
+发布物：`edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）、`edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）、`edgeweir-openresty_1.31.1.1-2_<架构>.deb` / `edgeweir-openresty-1.31.1.1-2.<架构>.rpm`、同名的 `edgeweir-openresty-modsecurity` 包、`checksums.txt*`。安装前[验证发布物](#验证发布物)。
 
 ```sh
-sudo apt install ./edgeweir-openresty_1.31.1.1-1_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-1_amd64.deb \
+sudo apt install ./edgeweir-openresty_1.31.1.1-2_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-2_amd64.deb \
   ./edgeweir-node_<版本>_amd64.deb
-# 或 sudo dnf install ./edgeweir-openresty-1.31.1.1-1.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-1.x86_64.rpm \
+# 或 sudo dnf install ./edgeweir-openresty-1.31.1.1-2.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-2.x86_64.rpm \
 #      ./edgeweir-node-<版本>-1.x86_64.rpm
 sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
 sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>

@@ -7,7 +7,7 @@ name: edgeweir-openresty
 arch: ${ARCH}
 platform: linux
 version: ${VERSION}
-release: 1
+release: 2
 section: net
 priority: optional
 maintainer: Edgeweir maintainers <maintainers@edgeweir.dev>

@@ -1,0 +1,80 @@
+Run the phase 2 rules when the request body is not inspected.
+
+With SecRequestBodyAccess Off (or ctl:requestBodyAccess=Off), libmodsecurity
+v3 returns from Transaction::processRequestBody() before it evaluates the
+phase 2 rules, after it has parsed the body all the same. Most of the OWASP
+CRS runs in phase 2, including the rules on the request line, the query
+string and the headers and the inbound anomaly evaluation (949110), so a
+site that inspects no request body was left almost unprotected (upstream
+issue owasp-modsecurity/ModSecurity#2465; CRS advisory of 2021-03-02,
+"Disabling Request Body Access in ModSecurity 3 Leads to Complete Bypass").
+
+Decide on body access first: without it the body is neither parsed nor
+exposed to the rules (no ARGS_POST, FILES, REQUEST_BODY or FULL_REQUEST;
+REQBODY_ERROR is 0), and the phase 2 rules run as in ModSecurity v2.
+
+--- a/src/transaction.cc
++++ b/src/transaction.cc
+@@ -684,6 +684,37 @@
+     }
+ 
+     /*
++     * Without request body access the body is neither parsed nor exposed to
++     * the rules, but the phase 2 rules still run, as in ModSecurity v2: they
++     * also inspect the request line, the query string and the headers
++     * (upstream issue #2465: returning here skipped them all).
++     */
++    bool requestBodyAccess = true;
++    if (m_rules->m_secRequestBodyAccess == RulesSetProperties::FalseConfigBoolean) {
++        if (m_requestBodyAccess != RulesSetProperties::TrueConfigBoolean) {
++            ms_dbg(4, "Request body processing is disabled");
++            requestBodyAccess = false;
++        } else {
++            ms_dbg(4, "Request body processing is disabled, but " \
++                "enabled to this transaction due to ctl:requestBodyAccess " \
++                "action");
++        }
++    } else {
++        if (m_requestBodyAccess == RulesSetProperties::FalseConfigBoolean) {
++            ms_dbg(4, "Request body processing is enabled, but " \
++                "disabled to this transaction due to ctl:requestBodyAccess " \
++                "action");
++            requestBodyAccess = false;
++        }
++    }
++    if (!requestBodyAccess) {
++        m_variableReqbodyError.set("0", m_variableOffset);
++        m_variableReqbodyProcessorError.set("0", m_variableOffset);
++        this->m_rules->evaluate(modsecurity::RequestBodyPhase, this);
++        return true;
++    }
++
++    /*
+      * Process the request body even if there is nothing to be done.
+      *
+      * if (m_requestBody.tellp() <= 0) {
+@@ -822,24 +853,6 @@
+     } else {
+         m_variableReqbodyError.set("0", m_variableOffset);
+         m_variableReqbodyProcessorError.set("0", m_variableOffset);
+-    }
+-
+-    if (m_rules->m_secRequestBodyAccess == RulesSetProperties::FalseConfigBoolean) {
+-        if (m_requestBodyAccess != RulesSetProperties::TrueConfigBoolean) {
+-            ms_dbg(4, "Request body processing is disabled");
+-            return true;
+-        } else {
+-            ms_dbg(4, "Request body processing is disabled, but " \
+-                "enabled to this transaction due to ctl:requestBodyAccess " \
+-                "action");
+-        }
+-    } else {
+-        if (m_requestBodyAccess == RulesSetProperties::FalseConfigBoolean) {
+-            ms_dbg(4, "Request body processing is enabled, but " \
+-                "disabled to this transaction due to ctl:requestBodyAccess " \
+-                "action");
+-            return true;
+-        }
+     }
+ 
+     /**

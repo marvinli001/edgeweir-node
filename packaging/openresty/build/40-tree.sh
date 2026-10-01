@@ -92,10 +92,32 @@ http {
         zstd on;
         zstd_comp_level 3;
         location / { modsecurity on; return 200 "\$modsecurity_intervention \$modsecurity_triggered_rules\n"; }
+        # The CRS blocks in the request body phase, with and without access to
+        # the body (patches/modsecurity-request-body-phase.patch).
+        location /body { modsecurity on; content_by_lua_block { ngx.say("served") } }
+        location /no-body {
+            modsecurity on;
+            modsecurity_rules 'SecRequestBodyAccess Off';
+            content_by_lua_block { ngx.say("served") }
+        }
     }
 }
 CONF
 "$nginx" -p "$t" -c "$t/nginx.conf" -e stderr -t
+"$nginx" -p "$t" -c "$t/nginx.conf" -e stderr
+crs_status() { curl -sS -o /dev/null -w '%{http_code}' --retry 10 --retry-connrefused --retry-delay 1 "$@"; }
+xss='<script>alert(1)</script>'
+crs_got="$(crs_status "http://127.0.0.1:18080/body?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")"
+crs_got="$crs_got $(crs_status --data-urlencode "comment=$xss" http://127.0.0.1:18080/body)"
+crs_got="$crs_got $(crs_status "http://127.0.0.1:18080/no-body?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")"
+crs_got="$crs_got $(crs_status --data-urlencode "comment=$xss" http://127.0.0.1:18080/no-body)"
+crs_got="$crs_got $(crs_status http://127.0.0.1:18080/no-body)"
+"$nginx" -p "$t" -c "$t/nginx.conf" -e stderr -s stop
+for _ in $(seq 50); do [ -e "$t/logs/nginx.pid" ] || break; sleep 0.1; done
+# Query and body payload blocked with body access; without it the query
+# payload is still blocked and the body is not inspected.
+[ "$crs_got" = "403 403 403 200 200" ] || { echo "CRS answers: $crs_got, want 403 403 403 200 200" >&2; exit 1; }
+echo "CRS blocks the query payload with and without request body access: $crs_got"
 "$prefix/bin/resty" -e '
   local version = require("resty.openssl.version")
   assert(version.version_text:find("'"$(ver openssl)"'", 1, true), version.version_text)
@@ -115,9 +137,11 @@ rm -rf "$t"
   echo "These packages contain software built from the third-party sources below."
   echo "Every component is under a license that permits commercial use; the full"
   echo "license texts follow. Local changes: security fixes for YAJL taken from"
-  echo "Fedora (CVE-2017-16516, CVE-2022-24795, CVE-2023-33460 and memory leaks)"
-  echo "and a backport of ModSecurity-nginx pull request #374"
-  echo "(\$modsecurity_intervention, \$modsecurity_triggered_rules)."
+  echo "Fedora (CVE-2017-16516, CVE-2022-24795, CVE-2023-33460 and memory leaks),"
+  echo "a backport of ModSecurity-nginx pull request #374"
+  echo "(\$modsecurity_intervention, \$modsecurity_triggered_rules) and a change to"
+  echo "libmodsecurity that runs the phase 2 rules when the request body is not"
+  echo "inspected (ModSecurity issue #2465)."
   echo
   while IFS='|' read -r name version spdx file phrase; do
     printf '  %-50s %-42s %s\n' "$name" "$version" "$spdx"

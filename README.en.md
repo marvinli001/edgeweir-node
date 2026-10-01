@@ -54,12 +54,12 @@ The console generates an install command per node. `install.sh` verifies the SHA
 
 Requirements: glibc 2.34 or later (RHEL / Rocky / AlmaLinux 9, Debian 12, Ubuntu 22.04 and newer), amd64 or arm64. The agent runs OpenResty as a child process; if OpenResty's own packages are installed, disable their service (`sudo systemctl disable --now openresty`).
 
-Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `edgeweir-openresty_1.31.1.1-1_<arch>.deb` / `edgeweir-openresty-1.31.1.1-1.<arch>.rpm`, the `edgeweir-openresty-modsecurity` packages named alike, `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
+Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `edgeweir-openresty_1.31.1.1-2_<arch>.deb` / `edgeweir-openresty-1.31.1.1-2.<arch>.rpm`, the `edgeweir-openresty-modsecurity` packages named alike, `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
 
 ```sh
-sudo apt install ./edgeweir-openresty_1.31.1.1-1_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-1_amd64.deb \
+sudo apt install ./edgeweir-openresty_1.31.1.1-2_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-2_amd64.deb \
   ./edgeweir-node_<version>_amd64.deb
-# or sudo dnf install ./edgeweir-openresty-1.31.1.1-1.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-1.x86_64.rpm \
+# or sudo dnf install ./edgeweir-openresty-1.31.1.1-2.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-2.x86_64.rpm \
 #      ./edgeweir-node-<version>-1.x86_64.rpm
 sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
 sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>
