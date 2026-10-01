@@ -14,10 +14,11 @@
 -- Requests that carry Authorization (RFC 9111, section 3.5): a caching rule
 -- without cache_authorized acts as a bypass rule for them, so they are
 -- neither looked up nor stored unless the rule that applies allows it.
+local expressions = require("edgeweir.expressions")
+
 local _M = {}
 
 local sub = string.sub
-local lower = string.lower
 
 -- Statuses a rule without explicit status codes may cache. Error responses
 -- are only cached when a rule lists them (or the origin asks for it and the
@@ -25,17 +26,14 @@ local lower = string.lower
 local DEFAULT_CACHEABLE = { [200] = true, [203] = true, [206] = true, [300] = true, [301] = true, [308] = true }
 
 -- extension returns the lowercase extension of the last path segment of
--- uri ("/a/b.PNG" -> "png"), or nil.
+-- uri ("/a/b.PNG" -> "png"), or nil: http.request.uri.path.extension
+-- (edgeweir.expressions.path_extension) without the empty string.
 function _M.extension(uri)
-  local last = uri:match("([^/]*)$")
-  if not last then
+  local ext = expressions.path_extension(uri)
+  if ext == "" then
     return nil
   end
-  local ext = last:match("%.([^.]+)$")
-  if not ext then
-    return nil
-  end
-  return lower(ext)
+  return ext
 end
 
 local function set_of(list)

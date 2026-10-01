@@ -146,6 +146,10 @@ func TestSharedExpressionVectors(t *testing.T) {
 		}
 		if v.Value {
 			counts["value"]++
+			// A string is never a condition.
+			if validateCondition(e, v.Phase, lists, features) == nil {
+				t.Errorf("vector %d: value %s accepted as a condition", i, v.Source)
+			}
 		} else {
 			counts["condition"]++
 		}
