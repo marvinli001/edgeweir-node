@@ -37,6 +37,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/healthcheck"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
+	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 )
 
@@ -150,6 +151,10 @@ type Config struct {
 	// ActiveHealthRefresh: the active health marks are pushed again this
 	// often (default 30s).
 	ActiveHealthRefresh time.Duration
+
+	// Prober probes the other nodes while the console lets this node probe
+	// (nil: the defaults; tests replace the dialer).
+	Prober *probe.Prober
 }
 
 func (c *Config) setDefaults() {
@@ -288,6 +293,11 @@ type Agent struct {
 	activeMu    sync.Mutex
 	activeMarks bool
 	activeDown  map[healthcheck.Key]bool
+
+	// Probing the other nodes (probe.go) while the console asks for it.
+	probeMu     sync.Mutex
+	probeCancel context.CancelFunc
+	probeDone   chan struct{}
 }
 
 // New creates an agent.
@@ -433,6 +443,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("bans", a.bansLoop)
 	spawn("autobans", a.autoBansLoop)
 	spawn("security", a.securityLoop)
+	// Runs before the loops are waited for: the probe loop is not one of
+	// them (it follows the heartbeat answers).
+	defer a.stopProbing()
 	a.triggerSync()
 	a.triggerBans()
 

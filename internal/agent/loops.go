@@ -215,6 +215,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	if resp.Msg.GetTasksPending() {
 		a.triggerTasks()
 	}
+	a.setProbing(ctx, resp.Msg.GetProbe())
 	id := a.channel.Identity()
 	if resp.Msg.GetRenewCertificate() || pki.NeedsRenewal(id.Certificate, time.Now()) {
 		reason := "less than 1/3 of the certificate lifetime left"
