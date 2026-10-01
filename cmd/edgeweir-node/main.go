@@ -4,6 +4,8 @@
 //	edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...  (--token T also works but shows in ps)
 //	edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
 //	                  [--lua-dir DIR] [--control-socket PATH] [--kernel-bans auto|off] ...
+//	EDGEWEIR_TOKEN=T edgeweir-node probe --server URL --ca-sha256 HEX [--server-name N] [--state-dir DIR]
+//	edgeweir-node probe [--state-dir DIR]   (once enrolled)
 //	edgeweir-node healthcheck [--control-socket PATH]
 //	edgeweir-node bans [--control-socket PATH] [--list]
 //	edgeweir-node security [--control-socket PATH]
@@ -36,6 +38,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
+	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 	"github.com/marvinli001/edgeweir-node/internal/version"
@@ -43,6 +46,7 @@ import (
 
 const (
 	defaultStateDir      = "/var/lib/edgeweir-node"
+	defaultProbeStateDir = "/var/lib/edgeweir-probe"
 	defaultLuaDir        = "/usr/share/edgeweir-node/lua"
 	defaultCacheDir      = "/var/cache/edgeweir-node"
 	defaultControlSocket = "/run/edgeweir-node/control.sock"
@@ -77,6 +81,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdRun(args[1:], stderr)
 	case "supervise":
 		return cmdRunMode(args[1:], stderr, true)
+	case "probe":
+		return cmdProbe(args[1:], stderr)
 	case "healthcheck":
 		return cmdHealthcheck(args[1:], stderr)
 	case "bans":
@@ -104,6 +110,8 @@ Usage:
   edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX [flags]
   edgeweir-node run [--manage-nginx] [flags]
   edgeweir-node supervise --manage-nginx [flags]
+  EDGEWEIR_TOKEN=TOKEN edgeweir-node probe --server URL --ca-sha256 HEX [flags]
+  edgeweir-node probe [--state-dir DIR]
   edgeweir-node healthcheck [--control-socket PATH]
   edgeweir-node bans [--control-socket PATH] [--list]
   edgeweir-node security [--control-socket PATH]
@@ -261,6 +269,68 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 		Logger:     log,
 	}); err != nil {
 		log.Error("enrollment failed", "err", err)
+		return 1
+	}
+	return 0
+}
+
+// cmdProbe runs a regional probe: it enrolls with a one-time probe token on
+// the first run, then measures the nodes the console names over mTLS. It
+// never starts OpenResty.
+func cmdProbe(args []string, stderr io.Writer) int {
+	fs := newFlagSet("probe", stderr)
+	var (
+		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443 (first run)")
+		token      = fs.String("token", "", "single-use probe token (first run); visible in the process list, prefer the EDGEWEIR_TOKEN environment variable or --token-file")
+		tokenFile  = fs.String("token-file", "", "read the single-use probe token from this file (first run)")
+		caSHA256   = fs.String("ca-sha256", "", "SHA-256 of the console's internal CA certificate (DER, hex) (first run)")
+		serverName = fs.String("server-name", "", "TLS server name to verify (default: host of --server)")
+		stateDir   = fs.String("state-dir", defaultProbeStateDir, "state directory for the probe identity (not the node's)")
+		timeout    = fs.Duration("timeout", 30*time.Second, "timeout of each console RPC")
+		lf         logFlags
+	)
+	lf.register(fs)
+	if ok, code := parse(fs, args); !ok {
+		return code
+	}
+	log, err := lf.logger(stderr)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	cli := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { cli[f.Name] = true })
+	tok, err := enrollToken(*token, *tokenFile, cli["token"], cli["token-file"])
+	if err != nil {
+		fmt.Fprintln(stderr, "probe:", err)
+		return 2
+	}
+	_ = os.Unsetenv(envName("token"))
+	if cli["token"] {
+		log.Warn("--token is visible to other users in the process list; prefer EDGEWEIR_TOKEN or --token-file")
+	}
+	if *timeout <= 0 {
+		fmt.Fprintln(stderr, "probe: --timeout must be positive")
+		return 2
+	}
+	dir, err := filepath.Abs(*stateDir)
+	if err != nil {
+		log.Error("invalid --state-dir", "err", err)
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = probe.Main(ctx, probe.Options{
+		ServerURL: *server, Token: tok, CASHA256: *caSHA256, ServerName: *serverName,
+		StateDir: dir, Timeout: *timeout, Log: log,
+	})
+	switch {
+	case errors.Is(err, probe.ErrNotEnrolled):
+		fmt.Fprintln(stderr, "probe:", err)
+		fs.Usage()
+		return 2
+	case err != nil && ctx.Err() == nil:
+		log.Error("probe stopped with an error", "err", err)
 		return 1
 	}
 	return 0

@@ -266,3 +266,41 @@ func TestSecurityCommand(t *testing.T) {
 		t.Fatal("unreachable data plane must exit 1")
 	}
 }
+
+// `probe` needs the enrollment settings only on the first run; they come
+// from flags or EDGEWEIR_* variables, and the token never reaches child
+// processes.
+func TestProbeCommand(t *testing.T) {
+	var errOut bytes.Buffer
+	dir := filepath.Join(t.TempDir(), "probe")
+	if code := realMain([]string{"probe", "--state-dir", dir}, io.Discard, &errOut); code != 2 || !strings.Contains(errOut.String(), "not enrolled") {
+		t.Fatalf("probe without identity or token: code=%d stderr=%q", code, errOut.String())
+	}
+	if code := realMain([]string{"probe", "--timeout", "0s"}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("probe --timeout 0: code=%d", code)
+	}
+	console, err := fakeconsole.New(fakeconsole.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := console.StartTLS(t)
+	other, err := fakeconsole.New(fakeconsole.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	console.AddProbeToken("probe-token")
+	t.Setenv("EDGEWEIR_SERVER", srv.URL)
+	t.Setenv("EDGEWEIR_CA_SHA256", other.CA.Pin())
+	t.Setenv("EDGEWEIR_TOKEN", "probe-token")
+	t.Setenv("EDGEWEIR_STATE_DIR", dir)
+	errOut.Reset()
+	if code := realMain([]string{"probe"}, io.Discard, &errOut); code != 1 || !strings.Contains(errOut.String(), "CA pin mismatch") {
+		t.Fatalf("probe against a console with another CA: code=%d stderr=%q", code, errOut.String())
+	}
+	if _, set := os.LookupEnv("EDGEWEIR_TOKEN"); set {
+		t.Fatal("EDGEWEIR_TOKEN is still set for child processes")
+	}
+	if n, _ := console.ProbeCounters(); n != 0 {
+		t.Fatal("probe token sent despite the pin mismatch")
+	}
+}
