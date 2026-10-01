@@ -287,14 +287,19 @@ func failedOutcome(ctx context.Context, err error) prefetchOutcome {
 	if ctx.Err() != nil {
 		return prefetchOutcome{err: err.Error()}
 	}
+	return prefetchOutcome{done: true, err: err.Error(), reason: transportReason(err)}
+}
+
+// transportReason classifies a transport error: connect_failed, timeout
+// or other.
+func transportReason(err error) string {
 	var netErr net.Error
 	var opErr *net.OpError
 	switch {
 	case errors.As(err, &opErr) && opErr.Op == "dial":
-		return prefetchOutcome{done: true, err: err.Error(), reason: "connect_failed"}
+		return "connect_failed"
 	case errors.As(err, &netErr) && netErr.Timeout():
-		return prefetchOutcome{done: true, err: err.Error(), reason: "timeout"}
-	default:
-		return prefetchOutcome{done: true, err: err.Error(), reason: "other"}
+		return "timeout"
 	}
+	return "other"
 }

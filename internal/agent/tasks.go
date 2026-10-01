@@ -18,15 +18,17 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
-// Typed tasks (ADR-0014): the console can ask for purges and prefetches,
-// nothing else. Tasks are idempotent; a task whose result does not reach
-// the console is handed out again and simply runs again.
+// Typed tasks (ADR-0014): the console can ask for purges, prefetches (of
+// URLs or of the URLs a sitemap lists) and upgrades, nothing else. Tasks
+// are idempotent; a task whose result does not reach the console is handed
+// out again and simply runs again.
 //
 // Order and time (N-M7): the purges of a pulled batch run first (they are
-// quick and must never wait behind a slow origin), then its prefetches,
-// which share a time budget counted from the pull (PrefetchBudget, below
-// the console's five minutes before it hands a task out again). URLs not
-// done when the budget runs out are reported as failed.
+// quick and must never wait behind a slow origin), then its prefetches and
+// sitemaps, which share a time budget counted from the pull
+// (PrefetchBudget, below the console's five minutes before it hands a task
+// out again). URLs not done when the budget runs out are reported as
+// failed.
 
 const (
 	maxTasksPerPull  = 10
@@ -124,6 +126,8 @@ const (
 	codePrefetchTimeout = "prefetch_timeout" // done, total
 	codeTaskUnsupported = "task_unsupported" // type
 	codePurgeFailed     = "purge_failed"
+	codeSitemapFailed   = "sitemap_failed" // url, reason, status
+	codeSitemapEmpty    = "sitemap_empty"  // url
 )
 
 // withCode sets the error code of a failed result.
@@ -167,12 +171,13 @@ func result(task *nodev1.NodeTask, ok, failed uint32, state nodev1.TaskState, ms
 	}
 }
 
-// taskRank orders a batch: purges, then anything else, then prefetches.
+// taskRank orders a batch: purges, then anything else, then prefetches
+// and sitemaps.
 func taskRank(t *nodev1.NodeTask) int {
 	switch t.GetKind().(type) {
 	case *nodev1.NodeTask_Purge:
 		return 0
-	case *nodev1.NodeTask_Prefetch:
+	case *nodev1.NodeTask_Prefetch, *nodev1.NodeTask_Sitemap:
 		return 2
 	default:
 		return 1
@@ -188,6 +193,8 @@ func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask, deadline
 		return a.executePurge(ctx, task, kind.Purge)
 	case *nodev1.NodeTask_Prefetch:
 		return a.executePrefetch(ctx, task, kind.Prefetch, deadline)
+	case *nodev1.NodeTask_Sitemap:
+		return a.executeSitemap(ctx, task, kind.Sitemap, deadline)
 	default:
 		name := unknownKind(task)
 		return withCode(result(task, 0, 0, nodev1.TaskState_TASK_STATE_FAILED, "unsupported task type ("+name+"); upgrade edgeweir-node"),
