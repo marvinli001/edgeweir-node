@@ -30,8 +30,11 @@
 #      request ids; error pages (built-in, site and platform pages, offline
 #      and unknown hosts, origin failures, intercepted origin errors, CRS
 #      blocks, bans); session affinity;
-#  12. a new site reserves its partition; later existing-site changes stay hot;
-#  13. restarting the container serves the last-known-good config.
+#  12. tasks from the console: purges by Cache-Tag and by host, a sitemap
+#      prefetch (gzipped index, both device variants); an active health
+#      check takes a failing origin out of rotation and brings it back;
+#  13. a new site reserves its partition; later existing-site changes stay hot;
+#  14. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -586,6 +589,53 @@ done
 origins=$(for _ in $(seq 1 12); do hv aff.test /echo | header_of x-origin; done | sort -u | wc -l | tr -d ' ')
 [ "$origins" = 2 ] || fail "clients without a cookie all went to one origin"
 pass "session affinity: one cookie, the pinned origin answers"
+
+# Purge tasks from the console: by Cache-Tag (compared in lowercase) and
+# by host.
+task_done() { curl -fsS "$HELPER/task-result?id=$1" | grep -qx "TASK_STATE_SUCCEEDED - $2 0"; }
+CACHE=MISS cache_is tags.test '/tagged?tags=e2e-task' || fail "tags.test first request for the tag purge task"
+CACHE=MISS cache_is tags.test '/tagged?plain=2' || fail "tags.test first request for an untagged object"
+CACHE=HIT cache_is tags.test '/tagged?tags=e2e-task' || fail "tagged object not cached"
+task=$(curl -fsS -X POST "$HELPER/purge-tag?site=site-tags&tag=E2E-Task")
+WAIT_SECS=30 wait_for "tag purge task $task" task_done "$task" 1
+CACHE=MISS cache_is tags.test '/tagged?tags=e2e-task' || fail "the tag purge task did not move the tagged object"
+CACHE=HIT cache_is tags.test '/tagged?plain=2' || fail "the tag purge task moved an untagged object"
+CACHE=MISS cache_is keep.test '/host-purge' || fail "keep.test first request for the host purge"
+CACHE=HIT cache_is tags.test '/tagged?plain=2' || fail "untagged object not cached"
+task=$(curl -fsS -X POST "$HELPER/purge-host?site=site-tags&host=tags.test")
+WAIT_SECS=30 wait_for "host purge task $task" task_done "$task" 1
+CACHE=MISS cache_is tags.test '/tagged?plain=2' || fail "the host purge task did not move an object of the host"
+CACHE=HIT cache_is keep.test '/host-purge' || fail "the host purge task moved an object of another host"
+pass "purge tasks by Cache-Tag and by host"
+
+# Sitemap prefetch: a gzipped index with a plain and a gzipped sitemap;
+# only smap.test URLs, each in both device variants.
+MOBILE_UA='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148'
+CACHE=MISS cache_is smap.test /page-0 || fail "smap.test not served"
+task=$(curl -fsS -X POST "$HELPER/sitemap?site=site-smap&url=http://smap.test/sitemap-index.xml.gz&variants=desktop,mobile")
+WAIT_SECS=60 wait_for "sitemap task $task" task_done "$task" 6
+for path in /page-1 /page-2 '/page-3?v=1'; do
+  CACHE=HIT cache_is smap.test "$path" || fail "sitemap prefetch did not cache $path (desktop)"
+  CACHE=HIT cache_is smap.test "$path" -A "$MOBILE_UA" || fail "sitemap prefetch did not cache $path (mobile)"
+done
+CACHE=MISS cache_is smap.test /page-4 -A "$MOBILE_UA" || fail "a page the sitemap does not list was cached"
+pass "sitemap prefetch: gzipped index followed, both device variants cached"
+
+# Active health check: a failing /health takes o2 (port 8083) out of
+# rotation although it serves requests; a passing one brings it back.
+origins_seen() { for _ in $(seq 1 20); do hv active.test "/echo?n=$RANDOM" | header_of x-origin; done | sort -u | tr '\n' ' '; }
+only_8082() { [ "$(origins_seen)" = "8082 " ]; }
+both_origins() { [ "$(origins_seen)" = "8082 8083 " ]; }
+WAIT_SECS=10 wait_for "both active.test origins in rotation" both_origins
+curl -fsS -X POST "$HELPER/health?port=8083&status=503" >/dev/null
+active_is() { [ "$(curl -fsS "$HELPER/active-health")" = "$1" ]; }
+WAIT_SECS=30 wait_for "o2 reported down by the active check" active_is "site-active o2 false upstream_status"
+WAIT_SECS=10 wait_for "o2 out of rotation" only_8082
+only_8082 || fail "o2 takes traffic while its active check fails"
+curl -fsS -X POST "$HELPER/health?port=8083&status=200" >/dev/null
+WAIT_SECS=30 wait_for "o2 healthy again" active_is ""
+WAIT_SECS=10 wait_for "o2 back in rotation" both_origins
+pass "active health check: a failing origin takes no traffic until its check passes again"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

@@ -30,6 +30,11 @@
 //	dead.test       origin console:9 (nothing listens: 502)
 //	aff.test        origins console:8082 and console:8083 with session
 //	                   affinity (120 s), nothing cached
+//	smap.test       origin console:8082, cache key separates devices (for
+//	                   sitemap prefetches of both variants)
+//	active.test     origins console:8082 and console:8083 with an active
+//	                   health check of /health every 5 s (one result
+//	                   changes the state), nothing cached
 //
 // The configuration names offline hosts (old.test disabled, *.gone.test
 // suspended) and a platform page for suspended sites.
@@ -73,10 +78,20 @@
 //	GET /waf-rules "<site> <rule id> <requests>" per uploaded minute
 //	GET /request-ids "<site> <status> <path> <request id>" per uploaded
 //	              access log
+//	POST /purge-tag?site=&tag=  queue a tag purge task; answers its id
+//	POST /purge-host?site=&host=  queue a host purge task; answers its id
+//	POST /sitemap?site=&url=&max=&variants=desktop,mobile  queue a sitemap
+//	              prefetch task; answers its id
+//	GET /task-result?id=  "<state> <error code> <succeeded> <failed>" of a
+//	              reported task ("-" for no code)
+//	POST /health?port=&status=  the status of the test origin's /health
+//	GET /active-health  "<site> <origin> <healthy> <code>" per ACTIVE entry
+//	              of the last ReportStatus ("-" for no code)
 package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -90,6 +105,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -145,6 +161,11 @@ func serveTLSOrigin(addr, caOut string) {
 //	                  range-<the request's Range or none>
 //	/status/<code>    answers <code> with an ETag
 //	/echo             "port <port> rid <X-Request-Id>"
+//	/health           the status set with the helper's POST /health (200)
+//	/sitemap-index.xml.gz, /sitemap-a.xml, /sitemap-b.xml.gz  a gzipped
+//	                  sitemap index with a plain and a gzipped sitemap of
+//	                  smap.test (page-1, page-2, page-3?v=1) and URLs and a
+//	                  sitemap on other.test
 //
 // Every response carries X-Origin: <port> and the origin's own
 // X-Request-Id (the edge never forwards it).
@@ -153,12 +174,19 @@ func serveTestOrigin(addr string) {
 	big := bytes.Repeat([]byte("0123456789abcdef"), 3<<20/16)
 	var mu sync.Mutex
 	gens := map[string]int{}
+	health := healthOf(port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Origin", port)
 		h.Set("X-Request-Id", "origin-"+port)
+		if doc, ok := sitemaps[r.URL.Path]; ok {
+			_, _ = w.Write(doc)
+			return
+		}
 		switch {
+		case r.URL.Path == "/health":
+			w.WriteHeader(int(health.Load()))
 		case r.URL.Path == "/gen":
 			mu.Lock()
 			gens[r.URL.Path]++
@@ -189,6 +217,43 @@ func serveTestOrigin(addr string) {
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("test origin on %s", addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// healths holds the status of each test origin's /health by port.
+var healths sync.Map
+
+func healthOf(port string) *atomic.Int32 {
+	v, _ := healths.LoadOrStore(port, new(atomic.Int32))
+	h := v.(*atomic.Int32)
+	h.CompareAndSwap(0, http.StatusOK)
+	return h
+}
+
+// sitemaps are the sitemap documents of the test origins.
+var sitemaps = map[string][]byte{
+	"/sitemap-index.xml.gz": gzipped(sitemapDoc("sitemapindex", "sitemap",
+		"http://smap.test/sitemap-a.xml", "http://smap.test/sitemap-b.xml.gz", "http://other.test/sitemap-c.xml")),
+	"/sitemap-a.xml": sitemapDoc("urlset", "url",
+		"http://smap.test/page-1", "http://smap.test/page-2", "http://other.test/page-x"),
+	"/sitemap-b.xml.gz": gzipped(sitemapDoc("urlset", "url", "http://smap.test/page-2", "http://smap.test/page-3?v=1")),
+}
+
+func sitemapDoc(root, entry string, locs ...string) []byte {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n<" + root + ` xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
+	for _, l := range locs {
+		b.WriteString("\n  <" + entry + "><loc>" + strings.ReplaceAll(l, "&", "&amp;") + "</loc></" + entry + ">")
+	}
+	b.WriteString("\n</" + root + ">\n")
+	return []byte(b.String())
+}
+
+func gzipped(b []byte) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write(b)
+	_ = zw.Close()
+	return buf.Bytes()
 }
 
 func cmpOr(v, def string) string {
@@ -247,7 +312,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1"},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1"},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "suspended"},
 			{Name: "old.test", Reason: "disabled"},
@@ -290,7 +355,30 @@ func baseSites(origin string) []*nodev1.Site {
 		pagesSite(),
 		site("site-dead", "dead.test", "console", 9),
 		affinitySite(),
+		sitemapSite(),
+		activeSite(),
 	}
+}
+
+// sitemapSite caches one object per device class.
+func sitemapSite() *nodev1.Site {
+	s := site("site-smap", "smap.test", "console", 8082)
+	s.CacheKey = &nodev1.CacheKeyPolicy{DeviceType: true}
+	return s
+}
+
+// activeSite probes /health of its two origins every 5 seconds; one failed
+// probe takes an origin out, one good probe brings it back.
+func activeSite() *nodev1.Site {
+	s := site("site-active", "active.test", "console", 8082)
+	s.OriginPool.Origins = append(s.OriginPool.Origins, &nodev1.Origin{
+		Id: "o2", Address: "console", Port: 8083, Scheme: nodev1.OriginScheme_ORIGIN_SCHEME_HTTP, Weight: 1,
+	})
+	s.OriginPool.ActiveHealthCheck = &nodev1.ActiveHealthCheck{
+		Path: "/health", IntervalSeconds: 5, TimeoutSeconds: 2, HealthyThreshold: 1, UnhealthyThreshold: 1,
+	}
+	s.CacheRules = nil
+	return s
 }
 
 // keepSite forwards Cache-Tag to clients.
@@ -451,6 +539,63 @@ func main() {
 			Targets: []*nodev1.PurgeTarget{{SiteId: q.Get("site"), Type: nodev1.PurgeType_PURGE_TYPE_PREFIX, Host: q.Get("host"), Path: q.Get("path")}},
 		}}}, false)
 		fmt.Fprint(w, id)
+	})
+	queue := func(w http.ResponseWriter, prefix string, task *nodev1.NodeTask) {
+		task.Id, task.CreatedAt = fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()), timestamppb.Now()
+		c.AddTask(task, false)
+		fmt.Fprint(w, task.Id)
+	}
+	mux.HandleFunc("POST /purge-tag", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		queue(w, "purge-tag", &nodev1.NodeTask{Kind: &nodev1.NodeTask_Purge{Purge: &nodev1.PurgeTask{
+			Targets: []*nodev1.PurgeTarget{{SiteId: q.Get("site"), Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: q.Get("tag")}},
+		}}})
+	})
+	mux.HandleFunc("POST /purge-host", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		queue(w, "purge-host", &nodev1.NodeTask{Kind: &nodev1.NodeTask_Purge{Purge: &nodev1.PurgeTask{
+			Targets: []*nodev1.PurgeTarget{{SiteId: q.Get("site"), Type: nodev1.PurgeType_PURGE_TYPE_HOST, Host: q.Get("host")}},
+		}}})
+	})
+	mux.HandleFunc("POST /sitemap", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		task := &nodev1.SitemapPrefetchTask{SiteId: q.Get("site"), Url: q.Get("url")}
+		if v, err := strconv.ParseUint(q.Get("max"), 10, 32); err == nil {
+			task.MaxUrls = uint32(v)
+		}
+		for _, v := range strings.Split(q.Get("variants"), ",") {
+			switch v {
+			case "desktop":
+				task.Variants = append(task.Variants, nodev1.DeviceVariant_DEVICE_VARIANT_DESKTOP)
+			case "mobile":
+				task.Variants = append(task.Variants, nodev1.DeviceVariant_DEVICE_VARIANT_MOBILE)
+			}
+		}
+		queue(w, "sitemap", &nodev1.NodeTask{Kind: &nodev1.NodeTask_Sitemap{Sitemap: task}})
+	})
+	mux.HandleFunc("GET /task-result", func(w http.ResponseWriter, r *http.Request) {
+		for _, res := range c.TaskResults() {
+			if res.GetTaskId() == r.URL.Query().Get("id") {
+				fmt.Fprintf(w, "%s %s %d %d", res.GetState(), cmpOr(res.GetErrorCode(), "-"), res.GetSucceeded(), res.GetFailed())
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("POST /health", func(w http.ResponseWriter, r *http.Request) {
+		code, err := strconv.Atoi(r.URL.Query().Get("status"))
+		if err != nil || code < 100 || code > 599 {
+			http.Error(w, "status must be 100-599", http.StatusBadRequest)
+			return
+		}
+		healthOf(r.URL.Query().Get("port")).Store(int32(code))
+	})
+	mux.HandleFunc("GET /active-health", func(w http.ResponseWriter, _ *http.Request) {
+		for _, h := range c.LastStatus().GetOriginHealth() {
+			if h.GetSource() == nodev1.OriginHealthSource_ORIGIN_HEALTH_SOURCE_ACTIVE {
+				fmt.Fprintf(w, "%s %s %t %s\n", h.GetSiteId(), h.GetOriginId(), h.GetHealthy(), cmpOr(h.GetLastErrorCode(), "-"))
+			}
+		}
 	})
 	mux.HandleFunc("GET /task-results", func(w http.ResponseWriter, _ *http.Request) {
 		for _, res := range c.TaskResults() {
