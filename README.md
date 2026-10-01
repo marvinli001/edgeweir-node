@@ -172,6 +172,7 @@ edgeweir-node version
 | `--upgrade-allow-http` | `false` | 允许明文 HTTP 发布镜像（本地测试、隔离网络） |
 | `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`），MiB |
 | `--purge-markers-per-site` | `1000` | 每站点 URL 与前缀标记上限，超出后合并为全站标记 |
+| `--purge-tags-per-site` | `5000` | 每站点标签标记上限，超出后该站点的标记合并为全站标记 |
 | `--prefetch-budget` | `4m` | 单批预热时间上限 |
 | `--ban-capacity` | `100000` | 动态封禁条数上限；超出时先淘汰最早的自动封禁 |
 | `--ban-dict-mb` | `32` | 封禁存储（`lua_shared_dict edgeweir_bans`），MiB |

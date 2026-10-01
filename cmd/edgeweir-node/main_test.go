@@ -85,6 +85,11 @@ func TestRealMain(t *testing.T) {
 	if code := realMain([]string{"run", "--purge-markers-per-site", "0"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid purge marker cap: code=%d", code)
 	}
+	errOut.Reset()
+	if code := realMain([]string{"run", "--purge-tags-per-site", "0"}, io.Discard, &errOut); code != 2 ||
+		!strings.Contains(errOut.String(), "--purge-tags-per-site must be at least 1") {
+		t.Fatalf("run with invalid tag marker cap: code=%d stderr=%q", code, errOut.String())
+	}
 	if code := realMain([]string{"run", "--listen-ipv6", "sometimes"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid tristate: code=%d", code)
 	}

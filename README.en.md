@@ -172,6 +172,7 @@ edgeweir-node version
 | `--upgrade-allow-http` | `false` | Permit a plaintext HTTP mirror (local test, air-gapped) |
 | `--purge-dict-mb` | `32` | Purge marker store (`lua_shared_dict edgeweir_purge`), MiB |
 | `--purge-markers-per-site` | `1000` | URL and prefix markers per site before collapsing into a site-level marker |
+| `--purge-tags-per-site` | `5000` | Tag markers per site before the site's markers collapse into a site-level marker |
 | `--prefetch-budget` | `4m` | Time limit per prefetch batch |
 | `--ban-capacity` | `100000` | Maximum dynamic bans; oldest automatic bans are evicted first |
 | `--ban-dict-mb` | `32` | Ban store (`lua_shared_dict edgeweir_bans`), MiB |

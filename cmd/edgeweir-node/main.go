@@ -372,6 +372,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
+		purgeTags     = fs.Int("purge-tags-per-site", agent.DefaultPurgeTagsPerSite, "tag purge markers per site before the site's markers collapse into one site-level marker")
 		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
 		banCapacity   = fs.Int("ban-capacity", render.DefaultBanCapacity, "dynamic bans the data plane holds (console and own); the oldest automatic bans make room first")
 		banDictMB     = fs.Int("ban-dict-mb", render.DefaultBanDictMB, "size of the ban store (lua_shared_dict edgeweir_bans) in MiB")
@@ -409,6 +410,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *purgePerSite < 1 {
 		fmt.Fprintln(stderr, "run: --purge-markers-per-site must be at least 1")
+		return 2
+	}
+	if *purgeTags < 1 {
+		fmt.Fprintln(stderr, "run: --purge-tags-per-site must be at least 1")
 		return 2
 	}
 	if *banCapacity < 1 || *banCapacity > render.MaxBanCapacity {
@@ -578,6 +583,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		Render:              params,
 		DefaultPort:         uint32(*defaultPort),
 		PurgeMarkersPerSite: *purgePerSite,
+		PurgeTagsPerSite:    *purgeTags,
 		PrefetchBudget:      *prefetchTime,
 		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, IPinfoOptional: ipinfoOptional, City: *geoCity, ASN: *geoASN},
 		BanCapacity:         *banCapacity,
