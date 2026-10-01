@@ -224,7 +224,9 @@ type HTTPChallenge struct {
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity}
+// SupportedFeatures are the features of this agent version, announced in
+// NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeaturePurgeTag, FeaturePrefetch}
 
 // Features of the proto v0.12.0 site settings: a served site that uses one
 // needs it (SupportedFeatures or Options.ExtraFeatures).
@@ -232,6 +234,15 @@ const (
 	FeatureErrorPages      = "error-pages-v1"
 	FeatureSessionAffinity = "session-affinity-v1"
 	FeatureActiveHealth    = "active-health-v1"
+)
+
+// Features of the proto v0.12.0 tasks: purges by Host and Cache-Tag
+// (PURGE_TYPE_HOST, PURGE_TYPE_TAG), and prefetches of device variants,
+// https URLs and sitemaps (PrefetchTarget.variant, SitemapPrefetchTask).
+// The console sends such tasks only to nodes that announce them.
+const (
+	FeaturePurgeTag = "purge-tag-v1"
+	FeaturePrefetch = "prefetch-v2"
 )
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for

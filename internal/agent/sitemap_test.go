@@ -124,6 +124,9 @@ func TestAgentSitemapPrefetch(t *testing.T) {
 		"  http://site-a.test/8?q=1&amp;r=2\n  ",
 	)}}
 	e := startEnrolledConfig(t, "sitemap", nil, sitemapConfig(listenEdge(t, edge, nil)))
+	if !hasFeature(e.console.LastStatus(), "prefetch-v2") {
+		t.Fatalf("prefetch-v2 not announced: %v", e.console.LastStatus().GetInfo().GetSupportedFeatures())
+	}
 	mobile := nodev1.DeviceVariant_DEVICE_VARIANT_MOBILE
 	e.console.AddTask(sitemapTask("s1", "site-a", "http://site-a.test/sitemap.xml", 0,
 		mobile, nodev1.DeviceVariant_DEVICE_VARIANT_DESKTOP, nodev1.DeviceVariant_DEVICE_VARIANT_UNSPECIFIED), false)

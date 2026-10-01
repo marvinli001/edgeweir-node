@@ -214,6 +214,9 @@ func TestAgentInstallsSiteLevelFallbackWhenTheFullSetFails(t *testing.T) {
 // again after an nginx restart.
 func TestAgentPurgesByHostAndTag(t *testing.T) {
 	e := startEnrolled(t, "tag", nil, demoSite("site-a", "site-a.test"))
+	if !hasFeature(e.console.LastStatus(), "purge-tag-v1") {
+		t.Fatalf("purge-tag-v1 not announced: %v", e.console.LastStatus().GetInfo().GetSupportedFeatures())
+	}
 	e.console.AddTask(purgeTask("t1", time.Now(),
 		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_HOST, Host: "Site-A.test"},
 		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: "Product-42"},

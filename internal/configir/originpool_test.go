@@ -126,7 +126,7 @@ func TestBuildSessionAffinity(t *testing.T) {
 }
 
 func TestSupportedFeaturesG4(t *testing.T) {
-	for _, f := range []string{FeatureErrorPages, FeatureSessionAffinity} {
+	for _, f := range []string{FeatureErrorPages, FeatureSessionAffinity, FeaturePurgeTag, FeaturePrefetch} {
 		if !slices.Contains(SupportedFeatures, f) {
 			t.Errorf("SupportedFeatures lacks %s", f)
 		}
