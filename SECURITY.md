@@ -77,6 +77,8 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 源站不能指向特殊地址段（回环、链路本地/云元数据、私网、CGNAT、文档、基准测试、组播、保留地址，IPv4 映射与 NAT64 地址按内嵌 IPv4 判断），除非平台管理员把它放进允许清单（`origin_allowed_cidrs`）。配置里的 IP 字面量和每个 DNS 解析结果都会检查，租户无法用源站读取云元数据或访问节点所在网络。完整列表见 ARCHITECTURE.md §3.5。
 - 发往源站的请求带 `CDN-Loop`（RFC 8586）；带有本节点标识的请求直接返回 508，指向节点自己的源站不会无限递归。
 - 回源 HTTPS 默认按源站配置的名称（SNI / Host）用 `--trusted-ca` 或系统 CA 校验证书；关闭了 nginx 1.29.7 起默认开启的、只按地址匹配的上游连接缓存，校验过的连接不会被复用给要校验其他名称的请求。
+- agent 的主动健康检查遵守同一地址策略：解析结果按允许清单过滤，只连接检查过的地址，不跟随重定向；HTTPS 探测同样用 `--trusted-ca` 或系统 CA 校验（ARCHITECTURE.md §2.10）。
+- 预热与 sitemap 预热只经本机边缘监听（回环地址或 unix socket）请求，源站地址策略照常生效，控制台不发起任何请求；https 预热连接节点自己的 HTTPS 监听，不校验它自己的证书。
 - S3 源站收不到客户端的 `x-amz-*` 请求头（节点只签名自己的头），客户端也无法伪造 `X-Edgeweir-*` 内部头。
 - 带 `Authorization` 的请求默认不查缓存也不存储（RFC 9111 §3.5），只有规则显式设置 `cache_authorized` 才缓存。
 - 站点、源站、规则 id 只接受 `[A-Za-z0-9_-]`，避免它们在数据面的键里互相冒充。

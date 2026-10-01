@@ -16,7 +16,7 @@
 | 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
 | OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
-| 缓存与回源 | `Host` 路由、`proxy_cache`、源站池负载均衡、被动健康检查、会话保持（签名 cookie）、清缓存、预热 |
+| 缓存与回源 | `Host` 路由、`proxy_cache`、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
 | 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用、暂停站点的平台页；`X-Request-Id` |
 | 统计与日志 | 按站点按分钟流量统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |
@@ -156,7 +156,7 @@ edgeweir-node version
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层 socket |
 | `--origin-socket-noverify` | 回源 socket 同目录的 `origin-noverify.sock` | 不校验 TLS 的回源层 socket |
 | `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 本地边缘监听，所有监听启用 PROXY protocol 时供预热使用 |
-| `--trusted-ca` | 系统 CA bundle | HTTPS 源站证书的校验 CA |
+| `--trusted-ca` | 系统 CA bundle | HTTPS 源站证书的校验 CA（回源与主动健康检查） |
 | `--resolv-conf` | `/etc/resolv.conf` | nginx resolver 来源 |
 | `--resolver` | 无 | resolver 地址，逗号分隔；优先于 `--resolv-conf` |
 | `--resolver-ipv6` | `auto` | 解析源站 AAAA：`auto`（本机有全局 IPv6 地址时）、`on`、`off` |
@@ -250,7 +250,7 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 - 节点私钥（ECDSA P-256）在本机生成，不离开节点；注册时按 `--ca-sha256` 固定控制台 CA。
 - 注册后所有 RPC 使用 mTLS；数据面控制 API 仅监听 unix socket。
 - 配置回执在应用前持久化；控制台恢复数据库后，仅经其认证的更高 revision 可推进发布序号。
-- 出站连接：控制通道仅连接注册时的控制台；数据面连接已配置源站，启用 OCSP 检查时连接 OCSP 响应方。
+- 出站连接：控制通道仅连接注册时的控制台；数据面连接已配置源站，agent 探测开启主动健康检查的源站（同一地址策略），启用 OCSP 检查时连接 OCSP 响应方。
 - 控制台不保存 SSH 凭据。
 - 无厂商回连，无许可证校验，无遥测。
 

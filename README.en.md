@@ -16,7 +16,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
 | OWASP CRS | Per-site managed rules (ModSecurity v3 + CRS 4.29.0): detect only / block, paranoia level, anomaly threshold, excluded rules, request body inspection limit; cache hits are inspected too, sites without CRS never pass through ModSecurity |
 | Challenges and CC mitigation | Four challenge levels (cookie redirect, JS, proof of work, image captcha), signed passes, node-local tiered CC mitigation, JA4 fingerprints |
-| Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing, passive health checks, session affinity (signed cookie), purge, prefetch |
+| Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
 | Error pages | 403 / 429 / 502 / 503 / 504 from site templates or built-in pages (Chinese and English), optionally replacing origin errors; platform pages for unknown, disabled and suspended sites; `X-Request-Id` |
 | Statistics and logs | Per-site per-minute traffic statistics (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
 | GeoIP | Local MMDB lookups; release images bundle IPinfo Lite (country, ASN) |
@@ -156,7 +156,7 @@ edgeweir-node version
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket |
 | `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Origin layer socket without TLS verification |
 | `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches when every listener uses the PROXY protocol |
-| `--trusted-ca` | system bundle | CA bundle for HTTPS origins |
+| `--trusted-ca` | system bundle | CA bundle for HTTPS origins (proxying and active health checks) |
 | `--resolv-conf` | `/etc/resolv.conf` | Source of the nginx resolvers |
 | `--resolver` | none | Comma-separated resolver addresses; overrides `--resolv-conf` |
 | `--resolver-ipv6` | `auto` | Resolve AAAA for origins: `auto` (host has a global IPv6 address), `on`, `off` |
@@ -250,7 +250,7 @@ gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli
 - The node key (ECDSA P-256) is generated locally and never leaves the node; enrollment pins the console CA by `--ca-sha256`.
 - All RPCs after enrollment use mTLS; the data-plane control API listens on a unix socket only.
 - Configuration receipts are persisted before apply; after a console database restore, only console-authenticated higher revisions advance the publication counter.
-- Outbound connections: the control channel reaches only the enrolling console; the data plane reaches configured origins and, with OCSP checks enabled, OCSP responders.
+- Outbound connections: the control channel reaches only the enrolling console; the data plane reaches configured origins, the agent probes origins with active health checks (same address policy) and, with OCSP checks enabled, reaches OCSP responders.
 - The console never stores SSH credentials.
 - No vendor phone-home, no license checks, no telemetry.
 

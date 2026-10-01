@@ -14,14 +14,15 @@
 │ edgeweir-node (Go, 静态二进制)                                               │
 │  enroll ─ pki ─ identity    controlplane (Connect 客户端, 证书热替换)        │
 │  agent: watch / poll / sync / report / renew / stats / logs / tasks /        │
-│         dataplane / ocsp / bans / autobans / kernel / captchas / security；  │
-│         任务类型: purge / prefetch / upgrade                                 │
+│         dataplane / activehealth / ocsp / bans / autobans / kernel /         │
+│         captchas / security；任务类型: purge / prefetch / sitemap /          │
+│         upgrade                                                              │
 │  configir (规范排序, content_hash, diff, 校验 → Plan)   configstore (LKG)    │
 │  render (nginx.conf 模板)   engine (openresty -t / reload / 子进程托管)      │
 │  dataplane (unix socket JSON 客户端)   geoip (MMDB, unix socket)             │
 │  upgrade (supervise 监督进程: 验签 / 试运行 / 回滚)                          │
 │  bans (封禁状态、bans.json)   nft (table inet edgeweir，`nft -f -`)          │
-│  captcha (验证码图片，标准库)                                                │
+│  captcha (验证码图片，标准库)   healthcheck (主动健康检查)                   │
 └───────────────┬──────────────────────────────────┬───────────────────────────┘
      nginx.conf │ -t / HUP / 子进程                │ /v1/health /v1/status /v1/sites
                 │                                  │ /v1/purge /v1/origins/health /v1/origins/active
@@ -53,7 +54,8 @@
 | `internal/render` | 用 Go `text/template` 渲染 `nginx.conf`（含配置 id、每个已发布站点的限速分区、设置了 `Site.tls` 的站点的 `server` 块、OWASP CRS 的位置）与 ModSecurity 配置，解析 resolv.conf |
 | `internal/engine` | `openresty -t`、reload、托管模式下的子进程监督；从 `nginx -V` 读出静态模块（Brotli、Zstandard），汇总 ModSecurity 的拦截日志 |
 | `internal/dataplane` | Lua 控制 API 的 unix socket 客户端，站点表 / 清缓存标记 / 健康状态与主动检查标记 / 统计 / 采样访问日志 / 封禁 / 挑战密钥与验证码池 / CC 状态与事件的 JSON 结构 |
-| `internal/agent` | 运行时主循环、源站凭据、网站证书与 OCSP、清缓存标记集合、统计与访问日志上报、类型化任务（清缓存、预热、升级）、挑战密钥与验证码池、CC 事件上报；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
+| `internal/agent` | 运行时主循环、源站凭据、网站证书与 OCSP、清缓存标记集合、统计与访问日志上报、类型化任务（清缓存、预热、sitemap 预热、升级）、挑战密钥与验证码池、CC 事件上报、主动健康检查标记的推送与上报；定义引擎接口 `agent.Engine` 与数据面接口 `agent.DataPlane` |
+| `internal/healthcheck` | 主动健康检查（§2.10）：按应用的 Plan 调度探测，地址策略、请求与 TLS 校验、状态阈值；resolver、dialer 与时钟可替换 |
 | `internal/captcha` | 验证码图片：内置 5×7 点阵字体，随机位置、缩放、旋转、倾斜、波浪基线、干扰线与噪点，160×60 调色板 PNG；答案取自 crypto/rand |
 | `internal/geoip` | 读取本地 MMDB（内置 IPinfo Lite、运维提供的 City / ASN），经 0600 unix socket（默认 `control.sock.geo`）为 Lua 提供查询；`internal/geoip/check` 在镜像构建时校验下载的 IPinfo Lite |
 | `internal/upgrade` | `supervise` 监督进程：经 `upgrade.sock` 接收升级任务，按本机信任策略下载并用 cosign 验签发布包，试运行新版本，失败时回滚（§2.6） |
@@ -62,7 +64,7 @@
 | `internal/nft` | 内核封禁：管理 `table inet edgeweir`，生成并以 `nft -f -` 执行事务脚本，去除重叠元素；执行器接口 `nft.Executor`（测试用假的执行器） |
 | `internal/fsutil` | 崩溃安全的文件操作：`WriteFileAtomic`（临时文件 → fsync → rename → fsync 目录）、`Rename`、`SyncDir`；所有持久化写入都用它 |
 | `internal/version` | 构建信息（版本、commit、提交时间），由 `-ldflags -X` 注入，`edgeweir-node version` 和 `NodeInfo.agent_version` 使用 |
-| `internal/testutil`、`internal/pki/pkitest` | 只用于测试：假控制台（内存中的 NodeService，也用于容器冒烟测试）、假数据面（控制 API）、临时内部 CA、合成 MMDB（`geofixture`，`test/geoip` 用它生成 e2e 夹具） |
+| `internal/testutil`、`internal/pki/pkitest` | 只用于测试：假控制台（内存中的 NodeService，也用于容器冒烟测试）、假数据面（控制 API）、手动时钟（`fakeclock`）、临时内部 CA、合成 MMDB（`geofixture`，`test/geoip` 用它生成 e2e 夹具） |
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
@@ -108,6 +110,7 @@ run 启动
         logs   : 每 10s 从 Lua 取出采样访问日志，ReportLogs 上报
         tasks  : 流通知、心跳 tasks_pending 或约每 30s（抖动）PullTasks
         dataplane: 每 5s 及 nginx (重)启动时检查 GET /v1/status 与 GET /v1/bans，不一致则重推（注册前已运行）
+        activehealth: 主动健康检查的判定变化、每次应用、至少每 30s 及 nginx 重启后 PUT /v1/origins/active（注册前已运行，§2.10）
         ocsp   : 每 5 分钟刷新 1 小时内到期的 OCSP 响应，有变化时重推站点表（注册前已运行）
         bans   : 流通知 BANS、约每 30s 的轮询和启动时 GetBans，持久化后推给数据面与内核
         autobans: 每 5s 取出本机自动封禁，ReportBans 上报
@@ -174,7 +177,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 离线 Host 的原因不是 `disabled` / `suspended` | 整个配置拒绝 |
 | 离线 Host 的名称非法（同域名规则）、单级顶级泛域名或重复 | 跳过该条并告警 |
 | 主动健康检查（任一站点）：路径不是以 `/` 开头的 1–1024 字节可打印 ASCII（不含空格）、方法不是 GET / HEAD、期望状态码不满足 100 ≤ min ≤ max ≤ 599、Host 非法、间隔不在 5–300 秒、超时不在 1–60 秒或超过间隔、阈值不在 1–10；会话保持有效期不在 60–604800 秒 | 整个配置拒绝（数值为 0 取默认值：路径 `/`、GET、200–399、间隔 30 秒、超时 5 秒、阈值 2 / 3、有效期 3600 秒） |
-| 已发布站点使用会话保持而配置没有挑战密钥；已发布站点使用本节点不支持的设置（错误页 `error-pages-v1`、会话保持 `session-affinity-v1`、主动健康检查 `active-health-v1`） | 整个配置拒绝 |
+| 已发布站点使用会话保持而配置没有挑战密钥 | 整个配置拒绝 |
 
 跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`、reload 未生效）的同一 revision 在 5 分钟内不重复尝试。
 
@@ -191,7 +194,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.4 状态回报、续期、统计
 
-- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（最多 2000 条，§3.7）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 或有升级路径的站点及其升级路径数，最多 2000 个，§3.15）。能力列表总是带 `challenge-v1` 与 `ja4-v1`；`brotli-v1`、`zstd-v1` 取自 `nginx -V` 的 configure 参数（`--add-module` 的 ngx_brotli 与 zstd-nginx-module），`modsecurity-v1` 只在 ModSecurity 模块（`--modsecurity-module`，默认在 `--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 下找）与 CRS（`--crs-dir`）都在、并且加载它们的 `nginx -t` 探测通过时上报。这三项在 agent 启动时检测一次，也是站点可以使用的能力（§2.3）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
+- `ReportStatus`：`applied_revision`、`applied_content_hash`、`state`、`message`、`info`（hostname、agent_version、os、arch、engine=`openresty`、`openresty -v` 得到的版本、非回环地址）、`applied_at`、`data_plane_healthy`（最近一次控制 API 探测结果）、`certificate_not_after`、`origin_health`（被动检查 `source=PASSIVE` 与主动检查 `source=ACTIVE` 的条目，合计最多 2000 条，超出时先保留不健康的，§3.7、§2.10）、`bans`（`BanStatus`，§2.7）、`security`（级别高于 normal 或有升级路径的站点及其升级路径数，最多 2000 个，§3.15）。能力列表总是带 `challenge-v1`、`ja4-v1`、`active-health-v1`（主动健康检查）、`purge-tag-v1`（按 Host 与 Cache-Tag 清缓存）与 `prefetch-v2`（设备变体、https URL 与 sitemap 预热）；`brotli-v1`、`zstd-v1` 取自 `nginx -V` 的 configure 参数（`--add-module` 的 ngx_brotli 与 zstd-nginx-module），`modsecurity-v1` 只在 ModSecurity 模块（`--modsecurity-module`，默认在 `--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 下找）与 CRS（`--crs-dir`）都在、并且加载它们的 `nginx -t` 探测通过时上报。这三项在 agent 启动时检测一次，也是站点可以使用的能力（§2.3）。响应中的 `latest_revision` 比已应用的新会触发 sync，`tasks_pending` 触发任务拉取；`report_interval_seconds` 调整心跳间隔（限制在 1s–5min）。
 - 续期：响应要求或剩余有效期不足 1/3 时，生成新密钥和 CSR 调用 `RenewCertificate`；新证书必须由已固定的 CA 签发（尚不支持 CA 轮换）。先写 `node.key.new` / `node.crt.new`，再依次改名；启动时若发现密钥和证书不匹配且存在 `node.crt.new`，自动完成中断的替换。随后重建 TLS 客户端。
 - 统计：Lua 在边缘层 log 阶段按 `<分钟>|<站点id>|<指标>` 累加（请求数、发送/接收字节、命中/未命中、状态码，CRS 站点还有命中的规则 id），另按分钟汇总 Top URL / Top IP。命中的 CRS 规则按次数取每站点每分钟最多的 20 条，上报为 `MinuteStats.waf_rules`（值为规则 id）。agent 每分钟调用 `POST /v1/stats/drain` 取出已结束的分钟并删除，转换成 `MinuteStats`，每批最多 1000 个分钟桶、带批次序号经 `ReportStatsV2` 上报。未确认的批次保存在 `traffic-spool.json`（0600），总量超过 10000 个分钟桶或 32 MiB 时丢弃最旧的批次。全部批次确认后，agent 用空的游标查询（`batch_sequence` 为 0）上报统计水位 `complete_until`：最近一次成功取出时所在分钟的开始，这之前的分钟都已上报；控制台据此判断用量窗口是否完整（能力 `stats-watermark-v1`）。
 - 访问日志：站点设置了采样率（`log_sample_rate`，万分比）时，Lua 在边缘层 log 阶段按 nginx 的请求 id 抽样，记录时间、客户端 IP、方法、Host、改写前的路径（不含查询串）、状态码、发送字节、耗时、缓存状态、响应的 `X-Request-Id`（§3.19，`AccessLog.request_id`），站点开启 JA4 日志时还有 JA4（§3.16），CRS 站点还有命中的规则 id（最多 16 个，`waf_rule_ids`）与是否被 CRS 拦截（`waf_blocked`），放进 `edgeweir_logs` 队列（最多 2000 条，满了计入丢弃数）。agent 每 10 秒调用 `POST /v1/logs/drain`（每次最多取 1000 条），带批次序号经 `ReportLogs` 上报；未确认的批次保存在 `logs-spool.json`（0600），总量超过 10000 条或 32 MiB 时丢弃最旧的批次。
@@ -205,20 +208,23 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.6 类型化任务（清缓存、预热、升级）
 
-控制台只能下发三类任务（`NodeTask` 的 `kind`）：`PurgeTask`、`PrefetchTask` 与 `UpgradeTask`，节点不执行其他任何操作。任务幂等；结果没送到控制台时，控制台 5 分钟后再次交出，节点再执行一次。
+控制台只能下发四类任务（`NodeTask` 的 `kind`）：`PurgeTask`、`PrefetchTask`、`SitemapPrefetchTask` 与 `UpgradeTask`，节点不执行其他任何操作。任务幂等；结果没送到控制台时，控制台 5 分钟后再次交出，节点再执行一次。
 
-- **拉取与顺序**：先重报之前没送到的结果和监督进程保存的升级结果，再拉取任务：每次 `PullTasks` 最多 10 个、最多 10 轮。一批里先执行所有清缓存（很快，且不能排在慢源站后面），然后是升级，最后是预热；这一批预热共享一个从拉取时刻算起的时间预算（`--prefetch-budget`，默认 4 分钟，小于控制台再次交出任务的 5 分钟）。
-- **清缓存**：目标转换成标记（URL、前缀、全站，§3.4）。标记时间由节点在第一次执行该任务时分配：`max(当前毫秒, 上一个+1)`，按任务 id 记在 `purge.json` 里，同一任务再次交出时沿用原时间；不采用控制台的 `created_at`（事务乱序提交或多实例时钟偏差会让清除静默无效）。
-- **预热**：经本机边缘监听请求 URL（响应像客户端请求一样落进缓存），并发 4，单个 URL 超时 60 秒，2xx/3xx 算成功，重定向不跟随。使用第一个既不是 HTTPS、也不要求 PROXY protocol 的监听（`127.0.0.1:<端口>`）；没有这样的监听时改用本地 unix socket 边缘监听（`--edge-socket`，默认 `edge.sock`）。只支持 http URL，https URL 记为失败（`https_unsupported`）。预算用完时，尚未开始或被中断的 URL 记为失败。
+- **拉取与顺序**：先重报之前没送到的结果和监督进程保存的升级结果，再拉取任务：每次 `PullTasks` 最多 10 个、最多 10 轮。一批里先执行所有清缓存（很快，且不能排在慢源站后面），然后是升级，最后是预热与 sitemap 预热；它们共享一个从拉取时刻算起的时间预算（`--prefetch-budget`，默认 4 分钟，小于控制台再次交出任务的 5 分钟）。
+- **清缓存**：目标转换成标记（§3.4）：URL、前缀、全站；Host 目标是该 Host 上 `/` 的前缀标记；标签目标是标签标记，标签按控制台的规则校验（1–128 字节可打印 ASCII，不含逗号，首尾不是空格）并按小写比较。非法目标（含不合规的站点 id）单独记为失败（`purge_failed`），其余照常生效。标记时间由节点在第一次执行该任务时分配：`max(当前毫秒, 上一个+1)`，按任务 id 记在 `purge.json` 里，同一任务再次交出时沿用原时间；不采用控制台的 `created_at`（事务乱序提交或多实例时钟偏差会让清除静默无效）。
+- **预热**：经本机边缘监听请求 URL（响应像客户端请求一样落进缓存），并发 4，单个 URL 超时 60 秒，2xx/3xx 算成功，重定向不跟随，Host 头不带端口。http URL 使用第一个既不是 HTTPS、也不要求 PROXY protocol 的监听（`127.0.0.1:<端口>`），没有这样的监听时改用本地 unix socket 边缘监听（`--edge-socket`，默认 `edge.sock`）；https URL 经 TLS 发往第一个不要求 PROXY protocol 的 HTTPS 监听，SNI 与 Host 为 URL 的主机名，不校验节点自己的证书。没有这样的 HTTPS 监听时 https URL 记为失败（`https_unsupported`），握手失败（节点没有该主机的证书）记为 `other`。设备变体（`PrefetchTarget.variant`）决定 User-Agent：桌面（及未指定）为 `edgeweir-node-prefetch/<版本>`，移动为 `Mozilla/5.0 (Linux; Android 14; Mobile) edgeweir-node-prefetch/<版本>`，它匹配 `edgeweir.cachekey` 的 `MOBILE_RE`（测试从 Lua 文件读出该正则核对两个 User-Agent），缓存键区分设备的站点因此各缓存一份；本版本不认识的变体记为失败（`other`）。预算用完时，尚未开始或被中断的 URL 记为失败。
+- **sitemap 预热**（`SitemapPrefetchTask`）：经本机边缘获取 sitemap（与预热相同的连接方式，桌面 User-Agent，重定向不跟随，非 2xx 即失败），每个文档最多 30 秒、解压后最多 50 MiB：以 `1f 8b` 开头的响应体按 gzip 解压，压缩后的大小同样以 50 MiB 为限。`encoding/xml` 流式解析，元素名不看命名空间：`urlset` 取 `url/loc`，`sitemapindex` 取 `sitemap/loc` 并跟随一层（本身是索引的子 sitemap 不跟随）。只保留 Host 按当前 Plan 路由到该站点的绝对 http(s) URL（先查所有站点的精确域名，再查该站点上一级的泛域名，与边缘层选站相同；长度不超过 sitemap 协议的 2048 字节），按文档顺序去重，最多 `max_urls` 个（0 取 1000，上限 10000，够数即停止读取）；子 sitemap 也必须在该站点的 Host 上。随后每个 URL 按每个变体（缺省为桌面）以预热的并发与该批时间预算请求，`succeeded` / `failed` 按 URL × 变体计数。任务的 sitemap 无法使用时直接失败（`sitemap_failed`）；索引中某个子 sitemap 无法使用时，其他子 sitemap 与预热照常进行，结果仍为 `sitemap_failed`（计数为实际的预热）；没有该站点的 URL 时为 `sitemap_empty`；其余与预热的结果相同。
 - **升级**：`UpgradeTask` 带 `version`、`archive_url`、`sha256`、`checksums_url`、`signature_url`。执行升级需要监督进程的 socket：`edgeweir-node supervise` 启动 `run` 子进程时经环境变量 `EDGEWEIR_SUPERVISOR_SOCKET` 传入 `<state-dir>/upgrade.sock`（0600）；没有这个 socket 时任务失败（`task_unsupported`，`type=upgrade`）。`created_at` 缺失、早于 30 分钟前或晚于 5 分钟后的任务被拒绝（`upgrade_rejected`）。agent 把任务交给监督进程暂存（最多等 4 分钟）后不回报结果，由监督进程下载、验签并试运行新版本（见下方 M6 记录）：新进程 90 秒内持续健康至少 10 秒才提交（健康指 `ReportStatus` 成功、最新 revision 已应用且数据面健康），否则恢复前一版本和配置快照。结果持久化在 `upgrades/state.json`，由之后运行的 agent 在下次拉取任务前回报，控制台确认后清除。监督进程可用（找得到 cosign；配置了 `--upgrade-public-key` 时该文件存在）时，`ReportStatus` 的能力列表带 `self-upgrade-v1`。
 - **结果与错误码**（v0.2.1，`message` 仍按旧格式填写，给旧控制台用）：
 
 | 错误码 | 参数 | 含义 |
 | --- | --- | --- |
-| `prefetch_failed` | `failed`、`total`、`url`、`reason`、`status` | 第一个失败的 URL；`reason` 为 `status`（带 `status`）、`connect_failed`、`timeout`、`https_unsupported`、`other` |
+| `prefetch_failed` | `failed`、`total`、`url`、`reason`、`status` | 第一个失败的 URL；`reason` 为 `status`（带 `status`）、`connect_failed`、`timeout`、`https_unsupported`（节点没有可用的 HTTPS 监听）、`other` |
 | `prefetch_timeout` | `done`、`total` | 时间预算用完，剩余 URL 记为失败 |
 | `task_unsupported` | `type` | 更新的控制台下发了本版本不认识的任务类型：`field_<字段号>`，没有任何内容时为 `unknown`；没有监督进程时的升级任务为 `upgrade` |
 | `purge_failed` | 无 | 目标非法或数据面不可用（标记已持久化，数据面恢复后生效） |
+| `sitemap_failed` | `url`、`reason`、`status` | 无法使用的 sitemap（任务的 sitemap，或索引中第一个失败的子 sitemap）；`reason` 同 `prefetch_failed`，另有 `invalid`（不是 sitemap：XML 错误、根元素不是 `urlset` / `sitemapindex`、gzip 损坏）与 `too_large`（超过 50 MiB）；站点不在本节点或 sitemap 不在站点的 Host 上为 `other` |
+| `sitemap_empty` | `url` | sitemap 中没有该站点的 URL |
 | `upgrade_rejected` | `version` | 任务过期，或监督进程没能准备新版本（下载、签名、校验和、归档内容、版本或架构校验失败） |
 | `upgrade_rolled_back` | `version` | 新版本启动失败、试运行中退出或没通过健康窗口，已恢复前一版本和配置快照 |
 | `upgrade_interrupted` | `version` | 激活前或结果确认前，基础安装（镜像或系统包）发生了变化 |
@@ -244,6 +250,18 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 ### 2.9 CC 事件
 
 agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了继续取），事件 id 由数据面生成（`<启动随机数>-<序号>`），转换后经 `ReportSecurityEvents` 上报（每批最多 500 条，id 幂等）；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。控制台不支持时只记一次日志。`edgeweir-node security` 打印数据面的挑战与 CC 状态（不取出事件）。
+
+### 2.10 主动健康检查
+
+源站池设置了 `active_health_check` 的站点（能力 `active-health-v1`），agent 按当前应用的 Plan 探测它的每个源站（S3 源站与被地址策略拒绝的源站除外），把判为不健康的源站推给数据面（§3.7）。注册前按 LKG 配置运行。
+
+- **调度**（`internal/healthcheck`）：新检查在间隔内的随机时刻首次探测，之后每个间隔一次，同时最多 64 个探测。每次应用配置都对齐检查集合：参数不变的检查保留状态与时间表，参数变化的从头开始，删除的停止。
+- **地址策略**：主机名用系统 resolver 解析（A 记录；没有 A 记录且节点使用 IPv6 时查 AAAA，与数据面相同），丢弃允许清单（`origin_allowed_cidrs`）以外的特殊地址段（§3.5），只连接检查过的地址（按解析顺序，连不上换下一个），不做第二次解析。IP 字面量同样检查。解析失败为 `dns_failed {host}`，全部被拒为 `address_forbidden {address}`。
+- **请求**：检查的方法（GET / HEAD）与路径（可带查询串）；Host 取检查的 `host`，其次源站的 `host_header`，最后是源站地址（IPv6 加方括号，非默认端口带端口）；User-Agent `edgeweir-node-healthcheck/<版本>`，`Connection: close`。HTTPS 的 SNI 取源站的 `sni`，其次 `host_header`（去掉端口），最后是地址，按 `--trusted-ca` 或系统 CA bundle 校验（都没有时校验失败，与 nginx 相同），源站池关闭校验时不校验。重定向不跟随，响应体最多读 64 KiB，整个探测的超时为检查的 `timeout_seconds`。
+- **判定**：状态码在期望范围内为成功；失败的错误码与被动检查相同：`connect_failed`（连接失败或没有收到响应头）、`timeout`、`tls_failed`、`upstream_status {status}`。源站初始为健康，连续 `unhealthy_threshold` 次失败判为不健康，不健康时连续 `healthy_threshold` 次成功恢复。
+- **推送**：判定变化时、每次应用配置后、至少每 30 秒，以及 nginx 重启后（站点表之前），以 `PUT /v1/origins/active` 整体替换不健康源站的集合（最多 10000 个），ttl 为 max(90 秒, 3 × 最长间隔)，agent 停止推送后标记自行过期。没有检查时只在数据面可能还有标记时推送一次空集合。
+- **上报**：`ReportStatus.origin_health` 中数据面的条目带 `source=PASSIVE`；主动检查不健康或有连续失败的源站另有一条 `source=ACTIVE`（`healthy`、`consecutive_failures`、`last_failure_at`、`last_error`、`last_error_code` / `last_error_params`，没有 `down_until`）。合计最多 2000 条，超出时先保留不健康的。判定变化时立即上报。
+- **合并**：任一检查判为下线的源站不接流量（§3.2）；被动检查的下线持续到它的恢复时间；没有开启主动检查的站点只看被动检查。
 
 ## 3. 数据面
 
@@ -341,10 +359,10 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 - **存储**：`lua_shared_dict edgeweir_purge`（`--purge-dict-mb`，默认 32 MiB）。`u|<站点>|<路径>` 为 URL 标记列表 `[[host, query, 时间], ...]`，`p|<站点>` 为前缀标记列表，`s|<站点>` 为全站标记；`#id` 标记集合 id，`#ver` 每次变化递增（让 worker 缓存失效），`#entries` / `#markers` 为计数器，`#lock` 串行化写入。`GET /v1/status` 读计数器，不遍历字典。
 - **匹配**：按站点当前的缓存键策略：不含 host 时忽略 host；查询串按与键相同的规范化比较；标记路径按请求时的写法（百分号编码）下发，装入时按 `$uri` 的规则规范化。
-- **上限**：每个站点的 URL + 前缀标记超过 `--purge-markers-per-site`（默认 1000）时，合并为一个时间取最大值的全站标记（宁可多刷）。全量替换时某个站点的条目装不下，Lua 把这个站点换成全站标记并在响应的 `collapsed` 里报告，agent 同步合并；整个集合都装不下（507）时 agent 只保留全站标记。
+- **上限**：每个站点的 URL + 前缀标记超过 `--purge-markers-per-site`（默认 1000），或标签标记超过 `--purge-tags-per-site`（默认 5000）时，该站点的全部标记合并为一个时间取最大值的全站标记（宁可多刷）。全量替换时某个站点的条目装不下，Lua 把这个站点换成全站标记并在响应的 `collapsed` 里报告，agent 同步合并；整个集合都装不下（507）时 agent 只保留全站标记。
 - **集合 id**：`<随机代号>-<序号>`，每次变化序号加一，比较 id 是 O(1)。过期标记（最长 inactive + 1 小时）每分钟最多清理一次。
 - **标签标记**：`t|<站点>|<标签>` 为标签标记（标签按小写），`T|<站点>` 为该站点最大的标签标记时间（计入条目数，不计入标记数）；全站合并时标签标记一并换成全站标记，时间取包括标签在内的最大值。标签标记不直接改变缓存键，见下面的 Cache-Tag 索引。
-- **重启**：`purge.json`（0600，格式版本 2，含任务时间）在 agent 和 nginx 重启后保留。nginx 重启后先装标记再推站点表；标记装不进去时退化为"每个有标记的站点一个全站标记"（一分钟后再试完整集合），仍失败也照样推送站点表：站点绝不会因此变成 404。`purge.json` 无法读取时，下一次应用配置给每个站点加一个全站标记。
+- **重启**：`purge.json`（0600，格式版本 2，含任务时间与标签标记；不认识标签标记的旧 agent 跳过它们）在 agent 和 nginx 重启后保留。nginx 重启后先装标记再推站点表；标记装不进去时退化为"每个有标记的站点一个全站标记"（一分钟后再试完整集合），仍失败也照样推送站点表：站点绝不会因此变成 404。`purge.json` 无法读取时，下一次应用配置给每个站点加一个全站标记。
 
 #### Cache-Tag 索引与键时间
 
@@ -379,7 +397,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 真实流量就是探测：连接失败、超时、502/503/504、DNS 失败、地址被禁止都计为失败，其他响应清零。连续失败达到 `max_fails`（默认 3）后在 `recovery_seconds`（默认 30）内不再选中；之后流量会再试，再失败一次立即再次下线；成功一次恢复健康。状态在 `lua_shared_dict edgeweir_health`，按"站点 + 源站"区分（同一源站 id 在不同站点互不影响），经 `GET /v1/origins/health` 随心跳上报。
 
-主动健康检查由 agent 执行，结果以 `PUT /v1/origins/active` 推给数据面：`{"ttl": <秒>, "down": [{"site_id", "origin_id"}]}` 是当前被主动检查判为不健康的全部源站，写成 `a|<站点>|<源站>`（带 ttl，agent 停止推送后自行过期）并删除上一次推送中不再出现的条目（`a#keys`）。只有站点表 `active_health` 的站点计入这些标记（§3.2）；`GET /v1/origins/health` 只报告被动检查。
+主动健康检查由 agent 执行（§2.10），结果以 `PUT /v1/origins/active` 推给数据面：`{"ttl": <秒>, "down": [{"site_id", "origin_id"}]}` 是当前被主动检查判为不健康的全部源站，写成 `a|<站点>|<源站>`（带 ttl，agent 停止推送后自行过期）并删除上一次推送中不再出现的条目（`a#keys`）。只有站点表 `active_health` 的站点计入这些标记（§3.2）；`GET /v1/origins/health` 只报告被动检查。
 
 错误码（`last_error_code` / `last_error_params`，v0.2.1；`last_error` 仍为文本）：`connect_failed`、`timeout`、`upstream_status {status}`（源站自己返回 502/503/504）、`dns_failed {host}`、`address_forbidden {address}`、`tls_failed`；其他错误（如缺少 S3 凭据）码为空。TLS 握手或证书校验失败在 nginx 变量里与连接失败完全相同（502，没有响应头时间，字节数为 0）；回源层用 `lua_capture_error_log 64k`（只捕获 error 级别，每个 worker 独立）读取 "while SSL handshaking to upstream" 的日志行，按连接号和上游地址对应到尝试上（`edgeweir.upstreamerr`），对不上的按连接失败处理。
 
@@ -458,7 +476,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | 已发布站点集合：新增、删除、启用、停用站点，或站点因没有有效源站或域名被跳过（增删它的固定 256 KiB 限速分区 `edgeweir_rate_<站点 id 的十六进制>`；其他站点的分区名称和大小不变，计数保留） | 同上 |
 | 设置了 `Site.tls` 的站点：`Site.tls` 的有无、域名、HTTP/2、HTTP/3、gzip、Brotli、Zstandard（开关、级别、最小长度、类型）、密码套件档位，以及有没有证书（这些值写在站点自己的 `server` 块里；HTTPS 监听上的块只在站点有证书时生成） | 同上 |
 | OWASP CRS：第一个站点开启（加载 ModSecurity 与 CRS）、最后一个站点关闭（卸载）、出现或不再使用某个请求体上限（CRS 位置）、站点排除的规则（ModSecurity 配置） | 同上 |
-| agent 启动参数：resolver（`--resolver`，或启动时读取的 `--resolv-conf`）、回源 CA bundle（`--trusted-ca` 或系统 bundle）、`--purge-dict-mb`、`--tag-dict-mb`、IPv6 探测、worker 与 nginx 用户设置、socket 与目录 | agent 重启后生效：启动后的第一次应用总会写入、检查并 reload（托管模式下是启动 OpenResty） |
+| agent 启动参数：resolver（`--resolver`，或启动时读取的 `--resolv-conf`）、回源 CA bundle（`--trusted-ca` 或系统 bundle）、`--sites-dict-mb`、`--purge-dict-mb`、`--tag-dict-mb`、IPv6 探测、worker 与 nginx 用户设置、socket 与目录 | agent 重启后生效：启动后的第一次应用总会写入、检查并 reload（托管模式下是启动 OpenResty） |
 | 站点表里的其他内容：源站与源站池设置、缓存规则与 TTL、缓存键、缓存代际号、所用 cache zone、Range 分片与 WebSocket 开关、边缘规则、日志采样率、证书与私钥（同一站点换证书）、OCSP stapling 开关与 OCSP 响应、强制 HTTPS、HSTS、最低 TLS 版本；表级的源站允许清单、cdn-id、HTTP-01 应答、IP 名单、平台规则 | 热更新：`PUT /v1/sites`，不 reload |
 | 清缓存（含标签标记） | 热更新：`POST` / `PUT /v1/purge` |
 | Cache-Tag 保留、站点与平台错误页、离线 Host、会话保持、主动健康检查的开关 | 热更新：站点表（`keep_cache_tag`、`error_pages`、`platform_error_pages`、`offline_hosts`、`affinity`、`active_health`） |
@@ -703,8 +721,9 @@ table inet edgeweir {
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
 - 访问日志默认关闭，按站点采样，经有界私有队列与持久批次去重上报。
-- 预热只预热桌面变体，不支持前缀与全站预热。
-- 错误页模板与离线 Host 在站点表里（`edgeweir_sites`，64 MiB，保存当前与上一版本）；每个站点最多 5 个 64 KiB 的模板。
+- 预热不支持前缀与全站预热；sitemap 预热只跟随一层索引，每个文档最多 50 MiB。
+- 错误页模板与离线 Host 在站点表里（`edgeweir_sites`，`--sites-dict-mb`，默认 64 MiB，保存当前与上一版本）；每个站点最多 5 个 64 KiB 的模板，站点多、模板大时需要调大。
+- 主动健康检查的状态只在 agent 内存里：agent 重启后源站从健康开始重新探测。
 - Cache-Tag 索引按对象记录标签，字典满时按 LRU 淘汰；被淘汰对象在有标签标记的站点上多回源一次。
 - 使用 required_features 协商能力；未知枚举或能力拒绝整份配置，保留 LKG。
 - 尚未收到第一份配置时，`ReportStatus.state` 为 `APPLY_STATE_UNSPECIFIED`，message 为 `waiting for the first configuration`。
