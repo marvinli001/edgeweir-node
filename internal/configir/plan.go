@@ -41,13 +41,16 @@ const (
 	// events.
 	DictChallenge = "edgeweir_challenge"
 	DictCC        = "edgeweir_cc"
+	// DictTags is the Cache-Tag index (lua/edgeweir/cachetags.lua): the
+	// tags and key epoch of cached objects, for purges by tag.
+	DictTags = "edgeweir_tags"
 )
 
 // SharedDicts lists the static lua_shared_dicts in declaration order.
 // nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC, DictTags}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.

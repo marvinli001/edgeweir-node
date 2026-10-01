@@ -86,6 +86,9 @@ type Params struct {
 	// used challenge nonces).
 	CCDictMB        int
 	ChallengeDictMB int
+	// TagDictMB sizes lua_shared_dict edgeweir_tags, the Cache-Tag index
+	// (tags and key epoch of cached objects, for purges by tag).
+	TagDictMB int
 	// ModSecurityModule is the ModSecurity-nginx dynamic module; nginx.conf
 	// loads it only while a site runs the OWASP CRS. Empty: the node has
 	// none (such configurations are rejected earlier, see configir).
@@ -111,6 +114,8 @@ const (
 	// CC and challenge store defaults (--cc-dict-mb, --challenge-dict-mb).
 	DefaultCCDictMB        = 32
 	DefaultChallengeDictMB = 8
+	// DefaultTagDictMB sizes the Cache-Tag index (--tag-dict-mb).
+	DefaultTagDictMB = 64
 )
 
 // WithDefaults fills zero values with production defaults.
@@ -144,6 +149,9 @@ func (p Params) WithDefaults() Params {
 	}
 	if p.ChallengeDictMB == 0 {
 		p.ChallengeDictMB = DefaultChallengeDictMB
+	}
+	if p.TagDictMB == 0 {
+		p.TagDictMB = DefaultTagDictMB
 	}
 	if p.GeoIPSocket == "" && p.ControlSocket != "" {
 		p.GeoIPSocket = p.ControlSocket + ".geo"
@@ -195,7 +203,7 @@ func (p Params) validate() error {
 	if p.BanCapacity < 1 || p.BanCapacity > MaxBanCapacity {
 		return fmt.Errorf("ban capacity %d out of range (1-%d)", p.BanCapacity, MaxBanCapacity)
 	}
-	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB, "ban dict": p.BanDictMB, "CC dict": p.CCDictMB, "challenge dict": p.ChallengeDictMB} {
+	for name, v := range map[string]int{"sites dict": p.SitesDictMB, "stats dict": p.StatsDictMB, "purge dict": p.PurgeDictMB, "ban dict": p.BanDictMB, "CC dict": p.CCDictMB, "challenge dict": p.ChallengeDictMB, "tag dict": p.TagDictMB} {
 		if v < 1 || v > 65536 {
 			return fmt.Errorf("%s size %d MiB out of range (1-65536)", name, v)
 		}
@@ -245,6 +253,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictBans:       p.BanDictMB,
 		configir.DictChallenge:  p.ChallengeDictMB,
 		configir.DictCC:         p.CCDictMB,
+		configir.DictTags:       p.TagDictMB,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {

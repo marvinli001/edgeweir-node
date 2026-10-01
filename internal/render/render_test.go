@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -417,5 +418,103 @@ func TestRenderConfID(t *testing.T) {
 	}
 	if ConfID([]byte("worker_processes 1;")) != "" {
 		t.Fatal("id found in a file without one")
+	}
+}
+
+// TestRenderTagStore: --tag-dict-mb sizes edgeweir_tags, the Cache-Tag
+// index.
+func TestRenderTagStore(t *testing.T) {
+	got, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "lua_shared_dict edgeweir_tags 64m;") {
+		t.Error("default tag dict size not rendered")
+	}
+	p := params()
+	p.TagDictMB = 256
+	if got, err = Render(p, configir.Bootstrap(80)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "lua_shared_dict edgeweir_tags 256m;") {
+		t.Error("tag dict size not rendered")
+	}
+	for _, size := range []int{-1, 65537} {
+		p := params()
+		p.TagDictMB = size
+		if _, err := Render(p, configir.Bootstrap(80)); err == nil {
+			t.Errorf("tag dict size %d accepted", size)
+		}
+	}
+}
+
+// locations returns the bodies of the location blocks of conf by name
+// ("/" of every server, "@edgeweir_waf_<limit>"), in order.
+func locations(conf string) map[string][]string {
+	out := map[string][]string{}
+	lines := strings.Split(conf, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "location ") || !strings.HasSuffix(line, "{") {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "location "), "{"))
+		depth, body := 1, []string{}
+		for i++; i < len(lines) && depth > 0; i++ {
+			depth += strings.Count(lines[i], "{") - strings.Count(lines[i], "}")
+			body = append(body, lines[i])
+		}
+		i--
+		out[name] = append(out[name], strings.Join(body, "\n"))
+	}
+	return out
+}
+
+// TestRenderEdgeRequestIDsAndHiddenHeaders: every edge location answers
+// with the request id (also on errors), passes it to the origin layer and
+// never forwards the origin's id, Cache-Tag or the affinity announcement.
+func TestRenderEdgeRequestIDsAndHiddenHeaders(t *testing.T) {
+	p := params()
+	p.ModSecurityModule = "/usr/lib/edgeweir-openresty/modules/ngx_http_modsecurity_module.so"
+	plan := wafPlan()
+	got, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	if !strings.Contains(conf, "map $http_x_request_id $edgeweir_request_id {\n        default $request_id;\n        \"~^[A-Za-z0-9._:-]{8,128}$\" $http_x_request_id;\n    }") {
+		t.Error("request id map missing")
+	}
+	locs := locations(conf)
+	var edge, origin []string
+	for _, body := range locs["/"] {
+		switch {
+		case strings.Contains(body, "edgeweir.router\").access()"):
+			edge = append(edge, body)
+		case strings.Contains(body, "edgeweir.origin\").access()"):
+			origin = append(origin, body)
+		}
+	}
+	waf := append(slices.Clone(locs["@edgeweir_waf_0"]), locs["@edgeweir_waf_131072"]...)
+	if len(edge) == 0 || len(origin) != 2 || len(waf) == 0 {
+		t.Fatalf("locations: %d edge, %d origin, %d CRS", len(edge), len(origin), len(waf))
+	}
+	for _, body := range append(slices.Clone(edge), waf...) {
+		for _, want := range []string{
+			"add_header X-Request-Id $edgeweir_request_id always;",
+			"proxy_set_header X-Request-Id $edgeweir_request_id;",
+			"proxy_hide_header X-Request-Id;",
+			"proxy_hide_header Cache-Tag;",
+			"proxy_hide_header X-Edgeweir-Affinity;",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("edge location lacks %q", want)
+			}
+		}
+	}
+	for _, body := range origin {
+		if strings.Contains(body, "X-Request-Id") {
+			t.Error("the origin layer touches X-Request-Id (it forwards the edge's)")
+		}
 	}
 }

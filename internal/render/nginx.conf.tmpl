@@ -112,6 +112,12 @@ http {
         default upgrade;
         ""      "";
     }
+    # Request id of the edge layer (X-Request-Id, error pages, access logs):
+    # the client's when it is valid, nginx's own otherwise.
+    map $http_x_request_id $edgeweir_request_id {
+        default $request_id;
+        "~^[A-Za-z0-9._:-]{8,128}$" $http_x_request_id;
+    }
 
     # Edge -> origin layer (local unix sockets). The variant without TLS
     # verification serves sites that turned it off.
@@ -340,6 +346,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -357,6 +365,13 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
 {{- end }}

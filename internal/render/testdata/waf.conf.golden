@@ -44,6 +44,7 @@ http {
     lua_shared_dict edgeweir_bans 32m;
     lua_shared_dict edgeweir_challenge 8m;
     lua_shared_dict edgeweir_cc 32m;
+    lua_shared_dict edgeweir_tags 64m;
     lua_shared_dict edgeweir_rate_6372732d626c6f636b 256k;
     lua_shared_dict edgeweir_rate_6372732d646574656374 256k;
     lua_shared_dict edgeweir_rate_6372732d73616d652d6c696d6974 256k;
@@ -57,7 +58,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "4b68121f09e89bc7",
+            conf_id = "243455a2dbc38a82",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -108,6 +109,12 @@ http {
     map $http_upgrade $edgeweir_origin_connection {
         default upgrade;
         ""      "";
+    }
+    # Request id of the edge layer (X-Request-Id, error pages, access logs):
+    # the client's when it is valid, nginx's own otherwise.
+    map $http_x_request_id $edgeweir_request_id {
+        default $request_id;
+        "~^[A-Za-z0-9._:-]{8,128}$" $http_x_request_id;
     }
 
     # Edge -> origin layer (local unix sockets). The variant without TLS
@@ -279,6 +286,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -296,8 +305,15 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
         }
@@ -328,6 +344,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -345,8 +363,15 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
         }
@@ -378,6 +403,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -395,8 +422,15 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
         }
@@ -441,6 +475,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -458,8 +494,15 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
         }
@@ -490,6 +533,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -507,8 +552,15 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
         }
@@ -540,6 +592,8 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer; these
             # only bound the local hop (long for WebSocket).
             proxy_send_timeout 3600s;
@@ -557,8 +611,15 @@ http {
             proxy_cache_background_update on;
             proxy_cache_revalidate on;
             proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag and the origin layer's affinity
+            # announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
 
             add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
         }
