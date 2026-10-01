@@ -12,11 +12,11 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Area | Capabilities |
 | --- | --- |
 | HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, hot certificate rotation |
-| Compression | gzip, Brotli, Zstandard; one coding per response by the q-values of `Accept-Encoding` (zstd > br > gzip at equal q), one uncompressed object in the cache |
-| Access policy | IP / GeoIP lists, phased rules, WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
+| Compression | gzip, Brotli, Zstandard; one coding per response by the q-values of `Accept-Encoding` (zstd > br > gzip at equal q, compression rules restrict and order the codings), one uncompressed object in the cache |
+| Access policy | IP / GeoIP lists, phased rules (expression functions, dynamic redirects and rewrites, query edits, bulk redirects, origin rules and origin groups, per-request overrides of site settings, compression rules), WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
 | OWASP CRS | Per-site managed rules (ModSecurity v3 + CRS 4.29.0): detect only / block, paranoia level, anomaly threshold, excluded rules, request body inspection limit; cache hits are inspected too, sites without CRS never pass through ModSecurity |
 | Challenges and CC mitigation | Four challenge levels (cookie redirect, JS, proof of work, image captcha), signed passes, node-local tiered CC mitigation, JA4 fingerprints |
-| Cache and origins | `Host` routing, `proxy_cache`, origin-pool load balancing, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
+| Cache and origins | `Host` routing, `proxy_cache`, cache rules with expression conditions and browser TTLs, origin-pool load balancing, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
 | Error pages | 403 / 429 / 502 / 503 / 504 from site templates or built-in pages (Chinese and English), optionally replacing origin errors; platform pages for unknown, disabled and suspended sites; `X-Request-Id` |
 | Statistics and logs | Per-site per-minute traffic statistics (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
 | GeoIP | Local MMDB lookups; release images bundle IPinfo Lite (country, ASN) |
