@@ -17,8 +17,9 @@ var ErrBaseMismatch = errors.New("diff base revision mismatch")
 // revision described by d:
 //
 //   - listeners, cache zones, certificates, the origin allow list, the
-//     platform protection, the challenge keys, the platform error pages and
-//     the offline hosts are replaced wholesale;
+//     platform protection, the challenge keys, the platform error pages,
+//     the offline hosts and the layer-4 applications are replaced
+//     wholesale;
 //   - sites listed in removed_site_ids are dropped;
 //   - upserted sites replace sites with the same id or are added;
 //   - the result is canonicalized and its content hash must equal
@@ -57,6 +58,7 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 		PlatformRules:      cloneAll(d.GetPlatformRules()),
 		ChallengeKeys:      cloneAll(d.GetChallengeKeys()),
 		OfflineHosts:       cloneAll(d.GetOfflineHosts()),
+		L4Apps:             cloneAll(d.GetL4Apps()),
 	}
 	if p := d.GetPlatformProtection(); p != nil {
 		out.PlatformProtection = proto.CloneOf(p)
@@ -117,6 +119,7 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 		PlatformRules:      cloneAll(target.GetPlatformRules()),
 		ChallengeKeys:      cloneAll(target.GetChallengeKeys()),
 		OfflineHosts:       cloneAll(target.GetOfflineHosts()),
+		L4Apps:             cloneAll(target.GetL4Apps()),
 	}
 	if p := target.GetPlatformProtection(); p != nil {
 		d.PlatformProtection = proto.CloneOf(p)

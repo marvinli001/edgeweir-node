@@ -20,6 +20,9 @@
 //   - inside a site bulk_redirects by source; inside the action of every
 //     platform and site rule set_query by name and remove_query ascending
 //     (proto v0.13.0);
+//   - l4_apps by id, inside an application origins by id and
+//     allow_list_ids / block_list_ids ascending without duplicates (proto
+//     v0.15.0; the console sorts the list ids as sets too);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -82,6 +85,14 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	for _, l := range c.IpLists {
 		slices.Sort(l.Entries)
 		l.Entries = slices.Compact(l.Entries)
+	}
+	slices.SortStableFunc(c.L4Apps, func(a, b *nodev1.L4App) int { return cmp.Compare(a.GetId(), b.GetId()) })
+	for _, a := range c.L4Apps {
+		slices.SortStableFunc(a.Origins, func(x, y *nodev1.L4Origin) int { return cmp.Compare(x.GetId(), y.GetId()) })
+		slices.Sort(a.AllowListIds)
+		a.AllowListIds = slices.Compact(a.AllowListIds)
+		slices.Sort(a.BlockListIds)
+		a.BlockListIds = slices.Compact(a.BlockListIds)
 	}
 	canonicalizeRules(c.PlatformRules)
 	for _, s := range c.Sites {

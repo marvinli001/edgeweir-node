@@ -121,6 +121,9 @@ type Plan struct {
 	// suspended sites, answered with those pages.
 	PlatformErrorPages *PlatformErrorPages
 	OfflineHosts       []OfflineHost
+	// L4Apps are the layer-4 (TCP / UDP) applications, sorted by id
+	// (feature l4-v1).
+	L4Apps []L4App
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -238,7 +241,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -544,6 +547,11 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	policy, allowed, policyWarnings := NewAddressPolicy(c.GetOriginAllowedCidrs())
 	p.OriginAllowedCIDRs = allowed
 	p.Warnings = append(p.Warnings, policyWarnings...)
+	var l4Warnings []string
+	if p.L4Apps, l4Warnings, err = buildL4Apps(c, policy); err != nil {
+		return nil, err
+	}
+	p.Warnings = append(p.Warnings, l4Warnings...)
 
 	// Listeners.
 	seenPorts := map[uint32]bool{}
