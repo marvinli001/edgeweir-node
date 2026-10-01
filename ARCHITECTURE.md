@@ -561,7 +561,7 @@ table inet edgeweir {
   | 运行 CRS 的站点，`detect` | 6,100–8,000 | 1.8–4.9 ms | 10–21 ms |
   | 运行 CRS 的站点，`block`（请求未被拦截） | 6,400–8,200 | 1.5–4.6 ms | 8.8–15 ms |
 
-  不运行 CRS 的站点在两种情况下的差异在本机的轮次间波动之内。运行 CRS 的请求吞吐约为前者的 1/13：4 个核心约 7,500 req/s，折合每个请求约 0.5 ms 的 CPU。内存（nginx 各进程 PSS 之和）：不加载时 30 MiB；加载 CRS 后启动时 71 MiB（CRS 在 master 解析一次，worker 写时复制共享），持续负载后 99 MiB。
+  不运行 CRS 的站点在两种情况下的差异在本机的轮次间波动之内。运行 CRS 的请求吞吐约为前者的 1/13：4 个核心约 7,500 req/s，折合每个请求约 0.5 ms 的 CPU。内存（nginx 各进程 PSS 之和）：不加载时 30 MiB；加载 CRS 后启动时 71 MiB（CRS 在 master 解析一次，worker 写时复制共享），持续负载后 99 MiB。最后一个 CRS 站点关闭后配置不再加载模块，但 reload 不会让 master 卸载已加载的动态模块：libmodsecurity 与解析过的规则（约 64 MiB）留在 master 里，由 master 派生的 cache manager 继承，直到 nginx 重启（例如升级或重启服务）才释放。
 
 ## 4. 文件布局
 
