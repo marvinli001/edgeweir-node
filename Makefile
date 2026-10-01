@@ -83,7 +83,8 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 		resty -I /lua --shdict "edgeweir_challenge 4m" /t/challenge.lua && \
 		resty -I /lua --shdict "edgeweir_cc 8m" --shdict "edgeweir_bans 4m" /t/cc.lua && \
 		resty -I /lua --shdict "edgeweir_rate_61 256k" --shdict "edgeweir_rate_62 256k" --shdict "edgeweir_policy_logs 1m" /t/ratelimit.lua && \
-		resty -I /lua --shdict "edgeweir_bans 4m" /t/bans.lua && resty -I /lua --shdict "edgeweir_bans 64k" /t/bans_memory.lua'
+		resty -I /lua --shdict "edgeweir_bans 4m" /t/bans.lua && resty -I /lua --shdict "edgeweir_bans 64k" /t/bans_memory.lua && \
+		resty -I /lua --shdict "edgeweir_l4 1m" --shdict "edgeweir_l4_state 1m" --shdict "edgeweir_l4_stats 1m" /t/l4.lua'
 
 .PHONY: docker
 docker: ## Build the node container image (bundles IPinfo Lite when IPINFO_TOKEN is set)

@@ -8,12 +8,16 @@ local _M = {}
 -- init(opts): opts.resolvers are the nameservers of nginx's `resolver`
 -- directive, opts.ipv6 whether AAAA records are used.
 _M.conf_id = ""
+_M.l4_socket = ""
 
 function _M.init(opts)
   opts = opts or {}
   -- Id of the nginx.conf being loaded (reported by GET /v1/status; the
   -- agent checks it after a reload).
   _M.conf_id = type(opts.conf_id) == "string" and opts.conf_id or ""
+  -- The stream subsystem's control relay ("unix:<path>"), when nginx.conf
+  -- has layer-4 applications (edgeweir.control forwards /v1/l4 to it).
+  _M.l4_socket = type(opts.l4_socket) == "string" and opts.l4_socket or ""
   -- Load every module eagerly: workers inherit them after fork.
   require("edgeweir.geoip").socket = opts.geoip_socket or ""
   -- Request body limits of this nginx.conf's CRS locations.

@@ -104,7 +104,7 @@ type Params struct {
 	// L4Socket is the unix socket of the stream subsystem's control relay
 	// (default: l4.sock next to ControlSocket); the control API forwards
 	// /v1/l4 requests to it. L4DictMB sizes lua_shared_dict edgeweir_l4
-	// (layer-4 table, passive health, connection counters).
+	// (the current and the previous layer-4 table with their IP lists).
 	L4Socket string
 	L4DictMB int
 	// WorkerShutdownTimeout bounds the graceful shutdown of the workers a
@@ -134,9 +134,8 @@ const (
 	// DefaultSitesDictMB sizes the site table store (--sites-dict-mb): the
 	// current and the previous table, error page templates included.
 	DefaultSitesDictMB = 64
-	// DefaultL4DictMB sizes the layer-4 store (--l4-dict-mb): the current
-	// and the previous layer-4 table with their IP lists, passive health
-	// and connection counters.
+	// DefaultL4DictMB sizes the layer-4 table store (--l4-dict-mb): the
+	// current and the previous layer-4 table with their IP lists.
 	DefaultL4DictMB = 32
 	// Rate-limit partition size of each published site (--rate-limit-dict-kb)
 	// and its bounds.

@@ -21,6 +21,12 @@
 --   PUT  /v1/challenge/captchas  replace the captcha pool {id, images}
 --   GET  /v1/security         CC levels of the sites with CC
 --   POST /v1/security/drain   return and delete up to 1000 CC events
+--   GET  /v1/l4, PUT /v1/l4, POST /v1/l4/stats/drain
+--                             layer-4 applications: forwarded to the
+--                             stream subsystem (edgeweir.l4control), whose
+--                             shared dicts this one cannot reach; 404 when
+--                             nginx.conf has no layer-4 applications, 503
+--                             when the stream side does not answer
 local cjson = require("cjson.safe")
 local store = require("edgeweir.store")
 local stats = require("edgeweir.stats")
@@ -63,9 +69,52 @@ local function read_body()
   return data
 end
 
+-- l4 forwards a /v1/l4 request to the stream subsystem's control relay
+-- (framing in edgeweir.l4control) and answers with its response.
+local function l4(method, uri)
+  local socket = require("edgeweir.init").l4_socket
+  if socket == "" then
+    return reply(404, { error = "no layer-4 applications in this configuration" })
+  end
+  local body = ""
+  if method == "PUT" or method == "POST" then
+    local err
+    body, err = read_body()
+    if not body then
+      if method == "PUT" then
+        return reply(400, { error = "read body: " .. tostring(err) })
+      end
+      body = ""
+    end
+  end
+  local sock = ngx.socket.tcp()
+  sock:settimeouts(2000, 30000, 30000)
+  local ok, err = sock:connect(socket)
+  if not ok then
+    return reply(503, { error = "layer-4 control relay " .. socket .. ": " .. tostring(err) })
+  end
+  ok, err = sock:send(method .. " " .. uri .. " " .. #body .. "\n" .. body)
+  local line = ok and sock:receive("*l")
+  local status, len = (line or ""):match("^(%d+) (%d+)$")
+  local resp = status and sock:receive(tonumber(len))
+  sock:close()
+  if not resp then
+    return reply(503, { error = "layer-4 control relay " .. socket .. ": no answer (" .. tostring(err) .. ")" })
+  end
+  ngx.status = tonumber(status)
+  ngx.header["Content-Type"] = "application/json"
+  ngx.header["Cache-Control"] = "no-store"
+  ngx.print(resp)
+  return ngx.exit(ngx.HTTP_OK)
+end
+
 function _M.handle()
   local method = ngx.req.get_method()
   local uri = ngx.var.uri
+
+  if uri == "/v1/l4" or uri:sub(1, 7) == "/v1/l4/" then
+    return l4(method, uri)
+  end
 
   if uri == "/v1/health" then
     return reply(200, { status = "ok" })

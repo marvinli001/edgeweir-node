@@ -354,7 +354,10 @@ http {
 # block cannot see them, hence the relay socket below).
 stream {
     lua_package_path "{{ .LuaDir }}/?.lua;;";
+    # The layer-4 table; passive health, connection counts and rates;
+    # minute statistics (edgeweir.l4).
     lua_shared_dict edgeweir_l4 {{ .L4DictMB }}m;
+    lua_shared_dict edgeweir_l4_state 8m;
     lua_shared_dict edgeweir_l4_stats 4m;
     # The relay's idle checks time out reads on purpose.
     lua_socket_log_errors off;

@@ -54,7 +54,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "184db1a94aab5984",
+            conf_id = "e661536f729b5959",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -405,7 +405,10 @@ http {
 # block cannot see them, hence the relay socket below).
 stream {
     lua_package_path "/usr/share/edgeweir-node/lua/?.lua;;";
+    # The layer-4 table; passive health, connection counts and rates;
+    # minute statistics (edgeweir.l4).
     lua_shared_dict edgeweir_l4 32m;
+    lua_shared_dict edgeweir_l4_state 8m;
     lua_shared_dict edgeweir_l4_stats 4m;
     # The relay's idle checks time out reads on purpose.
     lua_socket_log_errors off;
@@ -413,7 +416,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "184db1a94aab5984",
+            conf_id = "e661536f729b5959",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }
