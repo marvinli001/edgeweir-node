@@ -331,6 +331,16 @@ local function stale_capable(chain, authorized)
   return false
 end
 
+-- defer_to_stale reports whether a response of the origin layer must be
+-- dropped (the connection closed without a response) so that the edge
+-- serves its expired copy under stale-if-error: a 5xx, also one this layer
+-- produced itself (no usable origin, signing failures), while the edge
+-- holds an EXPIRED copy that a cache rule of the request may serve stale.
+-- cache_status is the edge's X-Edgeweir-Cache-Status.
+function _M.defer_to_stale(status, cache_status, chain, authorized)
+  return status >= 500 and cache_status == "EXPIRED" and stale_capable(chain, authorized)
+end
+
 -- decide returns what the origin layer adds to a response for the edge
 -- cache: { accel_expires = seconds or nil, cache_control = string or nil,
 -- stash = original Cache-Control ("-" when absent) or nil }.
@@ -392,8 +402,21 @@ function _M.header_filter()
   -- Only this layer may set the stash header the edge restores.
   h["X-Edgeweir-CC"] = nil
   local site = ctx.site
-  if not site or ctx.edgeweir_failed then
+  if not site then
     return
+  end
+  local status = ngx.status
+  local chain = ctx.chain
+  local var = ngx.var
+  -- Stale first, before anything else, also for this layer's own failures
+  -- (fail(): every origin dropped before an attempt, e.g. a name that no
+  -- longer resolves): close without a response, so that the edge sees a
+  -- transport error and serves its stale copy if stale-if-error allows it.
+  if _M.defer_to_stale(status, var.http_x_edgeweir_cache_status, chain, ctx.authorized) then
+    return ngx.exit(ngx.ERROR)
+  end
+  if ctx.edgeweir_failed then
+    return -- fail() answered with its page or text already
   end
   if site._affinity_ttl then
     -- Only this layer announces affinity cookies.
@@ -402,14 +425,6 @@ function _M.header_filter()
   -- Sites the edge compresses asked for identity: the cached object does
   -- not vary by Accept-Encoding.
   compress.origin_header_filter(site)
-  local status = ngx.status
-  local chain = ctx.chain
-  local var = ngx.var
-  if status >= 500 and var.http_x_edgeweir_cache_status == "EXPIRED" and stale_capable(chain, ctx.authorized) then
-    -- Close without a response: the edge sees a transport error and serves
-    -- its stale copy if stale-if-error allows it.
-    return ngx.exit(ngx.ERROR)
-  end
   local code = _M.page_code(site, status, var.upstream_header_time)
   if code then
     return errorpages.replace(status, code, site, true)

@@ -534,6 +534,23 @@ test("origin.decide carries stale-while-revalidate and stale-if-error", function
   eq(origin.decide(override, 404, 10, nil, nil).cache_control, nil, "uncached responses keep their headers")
 end)
 
+test("origin.defer_to_stale yields 5xx answers to an expired edge copy, the node's own too", function()
+  local sie = prepared_chain({ { id = "s", action = "cache", ttl = 60, mode = "override", sie = 600 } })
+  local plain = prepared_chain({ { id = "p", action = "cache", ttl = 60, mode = "override" } })
+  local respect = prepared_chain({ { id = "r", action = "cache", ttl = 60, mode = "respect" } })
+  -- 502 of fail() (no usable origin) and nginx's own 502/504 alike: only the status counts.
+  for _, status in ipairs({ 500, 502, 503, 504 }) do
+    eq(origin.defer_to_stale(status, "EXPIRED", sie, false), true, "status " .. status)
+  end
+  eq(origin.defer_to_stale(502, "EXPIRED", respect, false), true, "respect mode may hold stale-if-error")
+  eq(origin.defer_to_stale(429, "EXPIRED", sie, false), false, "only 5xx")
+  eq(origin.defer_to_stale(502, "MISS", sie, false), false, "no copy at the edge")
+  eq(origin.defer_to_stale(502, "", sie, false), false, "no cache lookup")
+  eq(origin.defer_to_stale(502, nil, sie, false), false)
+  eq(origin.defer_to_stale(502, "EXPIRED", plain, false), false, "no stale-if-error")
+  eq(origin.defer_to_stale(502, "EXPIRED", nil, false), false, "the edge does not cache the request")
+end)
+
 test("cachekey keeps the Phase 0 key by default", function()
   local s = store.prepare(site("k", { { name = "k.test" } }, { cache_generation = "7" }))
   local req = { scheme = "http", host = "k.test", path = "/a/b.js", args = "v=1&x=2" }
