@@ -33,7 +33,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement; hot updates for sites, origins, certificates and rules over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.14.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.15.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules) re-render `nginx.conf` and reload after `openresty -t`; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
