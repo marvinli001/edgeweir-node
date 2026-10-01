@@ -238,7 +238,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -256,6 +256,14 @@ const (
 	FeaturePurgeTag = "purge-tag-v1"
 	FeaturePrefetch = "prefetch-v2"
 )
+
+// FeatureRulesV2 covers the rule engine extensions of proto v0.13.0:
+// functions and the new fields in expressions, value expressions in
+// redirects and rewrites, query edits, origin, compression and extended
+// config actions, the compression phase, cache rule conditions and
+// browser TTLs, bulk redirects and origin groups. The console requires it
+// when a configuration uses any of them.
+const FeatureRulesV2 = "rules-v2"
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.

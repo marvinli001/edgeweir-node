@@ -1,10 +1,13 @@
 -- edgeweir.rules: cache rule evaluation.
 --
 -- Rules arrive sorted by (priority, id). Request conditions (exact paths,
--- path prefixes, extensions) are checked on the edge layer when the request
--- arrives; response conditions (status codes, size) on the origin layer when
--- the origin answers. Empty lists match everything; when several conditions
--- are set, all of them must match (see CacheRuleMatch in edgeweir/proto).
+-- path prefixes, extensions, or since proto v0.13.0 a typed expression,
+-- `condition`, of phase cache) are checked on the edge layer when the
+-- request arrives, against the client's original request (the values
+-- edgeweir.policy keeps before any rewrite, like the cache key); response
+-- conditions (status codes, size) on the origin layer when the origin
+-- answers. Empty lists match everything; when several conditions are set,
+-- all of them must match (see CacheRuleMatch in edgeweir/proto).
 --
 -- chain() returns the rules whose request conditions match, in order, up to
 -- and including the first rule that matches every response (later rules can
@@ -14,11 +17,15 @@
 -- Requests that carry Authorization (RFC 9111, section 3.5): a caching rule
 -- without cache_authorized acts as a bypass rule for them, so they are
 -- neither looked up nor stored unless the rule that applies allows it.
+--
+-- browser_cache_control() is the Cache-Control a rule's browser TTL gives
+-- clients (edge header filter).
 local expressions = require("edgeweir.expressions")
 
 local _M = {}
 
 local sub = string.sub
+local lower = string.lower
 
 -- Statuses a rule without explicit status codes may cache. Error responses
 -- are only cached when a rule lists them (or the origin asks for it and the
@@ -44,8 +51,9 @@ local function set_of(list)
   return set, next(set) ~= nil
 end
 
--- prepare precomputes lookup tables on a decoded rule.
-function _M.prepare(rule)
+-- prepare precomputes lookup tables on a decoded rule; lists are the IP
+-- lists a condition may name (in_list).
+function _M.prepare(rule, lists)
   rule._ext_set, rule._has_ext = set_of(rule.extensions)
   rule._path_set, rule._has_path = set_of(rule.paths)
   rule._status_set, rule._has_status = set_of(rule.status_codes)
@@ -56,6 +64,10 @@ function _M.prepare(rule)
   rule.swr = tonumber(rule.swr) or 0
   rule.sie = tonumber(rule.sie) or 0
   rule.cache_authorized = rule.cache_authorized == true
+  rule.browser_ttl = tonumber(rule.browser_ttl) or 0
+  if type(rule.condition) == "table" then
+    rule._condition = expressions.compile(rule.condition, lists or {})
+  end
   -- Acts as a bypass rule for requests with Authorization.
   rule._auth_bypass = rule.action == "cache" and not rule.cache_authorized
   -- A rule without response conditions that bypasses or respects origin
@@ -105,8 +117,10 @@ function _M.request_matches(rule, uri)
 end
 
 -- chain returns the list of rules that may decide the request (see above),
--- or nil when none does.
-function _M.chain(site, uri, authorized)
+-- or nil when none does. uri is the normalized request path, values the
+-- client's original request values for rules with a condition (built from
+-- uri when absent).
+function _M.chain(site, uri, authorized, values)
   local rules = site.cache_rules
   if not rules then
     return nil
@@ -114,7 +128,14 @@ function _M.chain(site, uri, authorized)
   local out
   for i = 1, #rules do
     local r = rules[i]
-    if _M.request_matches(r, uri) then
+    local hit
+    if r._condition then
+      values = values or { ["http.request.uri.path"] = uri, ["http.request.uri.path.extension"] = expressions.path_extension(uri) }
+      hit = r._condition(values)
+    else
+      hit = _M.request_matches(r, uri)
+    end
+    if hit then
       out = out or {}
       out[#out + 1] = r
       if (authorized and r._always_auth) or (not authorized and r._always) then
@@ -177,6 +198,34 @@ function _M.response_matches(rule, status, size, authorized)
     end
   end
   return true
+end
+
+-- NOT_STORED are the Cache-Control directives that keep nginx from storing
+-- a response when the rule respects origin headers.
+local NOT_STORED = { "no-store", "no-cache", "private" }
+
+-- browser_cache_control returns "max-age=N" for a response the chain's
+-- deciding rule caches with a browser TTL N (status and size as in
+-- decide), or nil to keep the response's Cache-Control (cc: its value
+-- after the edge restored the origin's). A rule that respects origin
+-- headers leaves responses the origin keeps out of shared caches alone.
+function _M.browser_cache_control(chain, status, size, authorized, cc)
+  local rule = _M.decide(chain, status, size, authorized)
+  if not rule or rule.browser_ttl <= 0 or _M.action(rule, authorized) ~= "cache" then
+    return nil
+  end
+  if rule.mode == "override" and rule.ttl <= 0 then
+    return nil
+  end
+  if rule.mode == "respect" and cc then
+    local value = lower(type(cc) == "table" and table.concat(cc, ", ") or cc)
+    for i = 1, #NOT_STORED do
+      if value:find(NOT_STORED[i], 1, true) then
+        return nil
+      end
+    end
+  end
+  return "max-age=" .. rule.browser_ttl
 end
 
 -- decide returns the rule of chain that applies to the response, or nil.

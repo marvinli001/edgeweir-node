@@ -12,11 +12,11 @@
 | 领域 | 能力 |
 | --- | --- |
 | HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、证书热轮换 |
-| 压缩 | gzip、Brotli、Zstandard；按 `Accept-Encoding` 的 q 值为每个响应选一种（同 q 值 zstd > br > gzip），缓存只存一份未压缩对象 |
-| 访问策略 | IP / GeoIP 名单、分阶段规则、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
+| 压缩 | gzip、Brotli、Zstandard；按 `Accept-Encoding` 的 q 值为每个响应选一种（同 q 值 zstd > br > gzip，压缩规则可限定并排序），缓存只存一份未压缩对象 |
+| 访问策略 | IP / GeoIP 名单、分阶段规则（表达式函数、动态重定向与改写、查询串编辑、批量重定向、Origin 规则与源站组、按请求覆盖站点设置、压缩规则）、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
 | OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
-| 缓存与回源 | `Host` 路由、`proxy_cache`、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
+| 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
 | 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用、暂停站点的平台页；`X-Request-Id` |
 | 统计与日志 | 按站点按分钟流量统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |

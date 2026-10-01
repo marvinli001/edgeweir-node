@@ -11,9 +11,12 @@
 -- the rules (edgeweir.challenge, edgeweir.cc): the reserved prefix
 -- /.edgeweir/ is answered at the edge, requests without a sufficient pass
 -- are challenged for Under Attack and CC levels unless an allow rule or a
--- platform allow list exempts them. The chosen rules travel
--- to the origin layer in X-Edgeweir-Rules, which decides the TTL once the
--- response status and size are known.
+-- platform allow list exempts them. Config rules may turn Under Attack on
+-- or off, CC off or cap its level, and WebSocket off or on for a request
+-- (edgeweir.policy). The chosen cache rules (whose conditions see the
+-- client's original request) travel to the origin layer in
+-- X-Edgeweir-Rules, which decides the TTL once the response status and
+-- size are known; origin rules' overrides travel in X-Edgeweir-Origin.
 --
 -- Sites that run the OWASP CRS continue in the edge layer's CRS location
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
@@ -30,7 +33,9 @@
 -- indexes the Cache-Tag of responses fetched for the cache (also in slice
 -- and background-update subrequests), forwards Cache-Tag only for sites
 -- that keep it, issues session affinity cookies (edgeweir.affinity),
--- replaces CRS blocks with error pages and chooses the response's content
+-- replaces CRS blocks with error pages, applies the browser TTL of the cache
+-- rule that decided the response, runs the response phases
+-- (response-transform, compression) and chooses the response's content
 -- coding (edgeweir.compress).
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
@@ -247,7 +252,9 @@ local function access()
   -- Under Attack and CC challenges.
   local pctx = ngx.ctx.edgeweir_policy
   local exempt = pctx and (pctx.allowed or pctx.platform_allowed)
-  if cc_n and not exempt and cc.check_ip(site, var.remote_addr, cc_n, cc_w, cc_now) then
+  -- Config rules may turn CC off for the request (it is still counted).
+  local cc_on = not (pctx and pctx.cc_enabled == false)
+  if cc_n and cc_on and not exempt and cc.check_ip(site, var.remote_addr, cc_n, cc_w, cc_now) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   if result then
@@ -256,13 +263,16 @@ local function access()
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
     return deny(result.status, result.code or "policy-denied", result.message or "request denied")
   end
-  if site._guard and not exempt then
-    local level, kind = challenge.required(site, site._cc and cc.level(site, original_path) or 0)
+  local under_attack = pctx and pctx.under_attack
+  if (site._guard or under_attack == true) and not exempt then
+    local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
+    local level, kind = challenge.required(site, cc_level, under_attack)
     if level > 0 and challenge.pass_level(site) < level then
       return run_challenge(site, kind, level)
     end
   end
   headers = ngx.req.get_headers(0)
+  var.edgeweir_origin_override = policy.origin_header(pctx)
 
   var.edgeweir_site = site.id
   var.edgeweir_cache_zone = site.cache_zone
@@ -276,7 +286,11 @@ local function access()
 
   local upgrade = var.http_upgrade
   if upgrade and lower(upgrade) == "websocket" then
-    if not site.websocket then
+    local websocket = site.websocket
+    if pctx and pctx.websocket ~= nil then
+      websocket = pctx.websocket
+    end
+    if not websocket then
       return deny(ngx.HTTP_FORBIDDEN, "websocket-disabled", "websocket disabled")
     end
     -- Proxied as is, never cached.
@@ -293,15 +307,18 @@ local function access()
   -- RFC 9111, section 3.5: responses to requests with Authorization are
   -- shared only when the applying rule allows it (cache_authorized).
   local authorized = var.http_authorization ~= nil
-  if ngx.ctx.edgeweir_policy and ngx.ctx.edgeweir_policy.cache_bypass then
+  if pctx and pctx.cache_bypass then
     var.edgeweir_range_mode = "pass"
     return true
   end
-  local chain = rules.chain(site, original_path, authorized)
+  local chain = rules.chain(site, original_path, authorized, pctx and pctx.original)
   if not rules.may_cache(chain, authorized) then
     var.edgeweir_range_mode = "pass"
     return true
   end
+  -- For the browser TTL of the rule that decides the response.
+  ngx.ctx.edgeweir_chain = chain
+  ngx.ctx.edgeweir_authorized = authorized
 
   var.edgeweir_cache_bypass = "0"
   var.edgeweir_no_cache = "0"
@@ -358,6 +375,23 @@ function _M.http3_port(authority, listener_port)
   if authority:match("^[A-Za-z0-9][A-Za-z0-9.-]*$") then return 443 end
   local host, port = authority:match("^([A-Za-z0-9][A-Za-z0-9.-]*):(%d+)$")
   if host then return port_number(port) end
+end
+
+-- response_size returns the full entity size of a response when known
+-- (Content-Range of a 206, else Content-Length), like the origin layer's.
+function _M.response_size(h, status)
+  if status == 206 then
+    local range = h["Content-Range"]
+    local total = type(range) == "string" and range:match("/(%d+)$")
+    if total then
+      return tonumber(total)
+    end
+  end
+  local length = h["Content-Length"]
+  if type(length) == "table" then
+    length = length[1]
+  end
+  return tonumber(length)
 end
 
 -- FROM_CACHE are the cache statuses of responses the edge cache served:
@@ -419,6 +453,17 @@ function _M.header_filter(waf_location)
       h["Cache-Control"] = nil
     else
       h["Cache-Control"] = stashed
+    end
+  end
+  -- The browser TTL replaces the origin's Cache-Control (restored above)
+  -- on responses the deciding cache rule caches; response rules may still
+  -- change it.
+  local chain = ngx.ctx.edgeweir_chain
+  if chain and not ngx.is_subrequest then
+    local status = ngx.status
+    local value = rules.browser_cache_control(chain, status, _M.response_size(h, status), ngx.ctx.edgeweir_authorized, h["Cache-Control"])
+    if value then
+      h["Cache-Control"] = value
     end
   end
   if site then

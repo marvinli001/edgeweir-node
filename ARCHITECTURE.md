@@ -68,7 +68,7 @@
 | `lua/edgeweir/*.lua` | 数据面，见 §3 |
 | `internal/gen` | 由 buf 从 `edgeweir/proto` 的 git tag 生成，已提交 |
 
-Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查与主动检查标记）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`cachetags`（Cache-Tag 解析与索引，§3.4）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式编译为闭包）、`policy`（规则阶段与动作）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`affinity`（会话保持，§3.20）、`errorpages`（错误页，§3.19）、`cc`（分级 CC）、`compress`（压缩编码协商）、`waf`（OWASP CRS 的位置与请求上下文）、`control`（控制 API）、`init`。
+Lua 模块：`router`（边缘层）、`origin`（回源层与 balancer）、`lb`（选源）、`dns`（解析与地址过滤）、`ipaddr`（地址解析与特殊地址段）、`health`（被动健康检查与主动检查标记）、`upstreamerr`（区分 TLS 失败）、`rules`（缓存规则）、`cachekey`（缓存键与路径规范化）、`purge`（清缓存标记）、`cachetags`（Cache-Tag 解析与索引，§3.4）、`bans`（动态封禁）、`sigv4`（S3 签名）、`store`（站点表）、`tls`（按 SNI 选证书、最低 TLS 版本、OCSP stapling）、`expressions`（规则表达式与值表达式编译为闭包，函数与派生字段，§3.21）、`policy`（规则阶段与动作、批量重定向、源站覆盖，§3.21）、`ratelimit`（每站点分区的固定窗口计数）、`geoip`（查询 agent 的 GeoIP socket）、`stats`（分钟统计）、`topstats`（Top URL / Top IP）、`accesslogs`（采样访问日志）、`ja4`（TLS 客户端指纹）、`challenge`（挑战、通行凭证、保留前缀）、`affinity`（会话保持，§3.20）、`errorpages`（错误页，§3.19）、`cc`（分级 CC）、`compress`（压缩编码协商）、`waf`（OWASP CRS 的位置与请求上下文）、`control`（控制 API）、`init`。
 
 数据面是 edgeweir-openresty：从固定版本源码构建的 OpenResty 1.31.1.1，带 Brotli、Zstandard 与可选的 ModSecurity 动态模块和 OWASP CRS（§5.1）。
 
@@ -146,14 +146,15 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - LKG 属于其他集群（重新注册到别的集群）时不作为 diff 基础。
 - 控制台返回比已应用更旧的 revision（例如从备份恢复）时忽略，继续服务 LKG；控制台恢复备份后凭节点保存的认证回执发布更高的 revision（见 §6「运维」）。
 
-**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序；`gzip_types`、`brotli_types`、`zstd_types` 与 `excluded_rule_ids` 排序去重；`offline_hosts` 按 (name, wildcard) 排序，精确域名在前；站点内 `error_pages.pages` 按状态码），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）、`content_hash_vector_v0110.json`（v0.11.0）、`content_hash_vector_v0120.json`（v0.12.0：M2 向量加 Cache-Tag 保留、乱序的站点错误页、主动健康检查、会话保持、挑战密钥、平台错误页、乱序的离线 Host 与带重复的 required_features；与控制台测试夹具是同一份数据）。
+**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序；`gzip_types`、`brotli_types`、`zstd_types` 与 `excluded_rule_ids` 排序去重；`offline_hosts` 按 (name, wildcard) 排序，精确域名在前；站点内 `error_pages.pages` 按状态码；站点内 `bulk_redirects` 按来源，平台与站点规则动作里的 `set_query` 按名称、`remove_query` 按字节序），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）、`content_hash_vector_v0110.json`（v0.11.0）、`content_hash_vector_v0120.json`（v0.12.0：M2 向量加 Cache-Tag 保留、乱序的站点错误页、主动健康检查、会话保持、挑战密钥、平台错误页、乱序的离线 Host 与带重复的 required_features；与控制台测试夹具是同一份数据）、`content_hash_vector_v0130.json`（v0.13.0：M2 向量加源站组、带函数与值表达式的规则、乱序的查询参数编辑、config / Origin / compression 动作、浏览器 TTL 与类型化条件的缓存规则、乱序的批量重定向（来源按 UTF-8 字节排序，与 UTF-16 顺序不同）与带乱序 set_query 的平台规则；同样来自控制台）。
 
 **校验策略**（`configir.Build`）：
 
 | 情况 | 处理 |
 | --- | --- |
 | 哈希不符（快照或 diff 回退后的快照） | 整个配置拒绝 |
-| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（旧占位字段；规则表达式用类型化的 `Site.rules`） |
+| 任一缓存规则的 `match.expression` 非空 | 整个配置拒绝（旧占位字段；规则表达式用类型化的 `Site.rules` 与 `match.condition`） |
+| 规则表达式、值表达式或缓存规则条件不合法（未知 op、字段或函数，参数个数或类型不符，函数嵌套超过 4 层，节点超过 256 个，正则不在子集内，替换串引用不存在的捕获，§3.21）；动作不在其阶段、带别的动作类型的字段或取值越界；带条件的缓存规则同时有路径列表，浏览器 TTL 超过 31536000 秒；批量重定向超过 5000 条、未按来源排序去重或来源 / 目标 / 状态码非法；源站组名不是 `[a-z0-9_-]{1,32}`（任一站点，含停用站点） | 整个配置拒绝 |
 | `cluster_id` 与节点所属集群不同 | 整个配置拒绝 |
 | 站点、源站、缓存规则 id 含 `[A-Za-z0-9_-]` 以外的字符或超过 128 个字符 | 整个配置拒绝（id 在数据面里作为分隔符的一部分） |
 | listener 端口非法 / 重复 | 跳过该 listener 并告警 |
@@ -278,11 +279,14 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
                 site-disabled / site-suspended，否则 404 unknown-host（平台错误页，§3.19）
               · 动态封禁：先平台范围、后站点范围；命中且不在平台 allow 名单 → 403 ip-banned
               · 开启 CC 的站点计数（§3.15）；保留前缀 /.edgeweir/ 在这里应答，永不回源（§3.14）
-              · 规则阶段（`challenge` 动作在 waf-custom 中挑战）；CC 单 IP 超限 → 自动封禁并 403 ip-banned
+              · 规则阶段（`challenge` 动作在 waf-custom 中挑战；重定向阶段的规则之后查批量重定向表，§3.21）；
+                CC 单 IP 超限 → 自动封禁并 403 ip-banned（config 规则可为本请求关闭 CC）
               · Under Attack 与 CC 级别：没有足够级别凭证的请求被挑战；allow 规则或平台 allow 名单命中的请求例外
-              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403
+                （config 规则可为本请求开关站点 Under Attack、限制 CC 最高级别）
+              · Origin 规则与 config 规则的回源超时写入 $edgeweir_origin_override（X-Edgeweir-Origin）
+              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403（config 规则可覆盖）
               · 非 GET/HEAD：透传（Range 原样转发）
-              · 按规则链判断是否可能缓存（带 Authorization 的请求见 §3.3）
+              · 按规则链判断是否可能缓存（带条件的缓存规则按客户端原始请求求值；带 Authorization 的请求见 §3.3）
               · 设置 $edgeweir_cache_zone / $edgeweir_cache_key / bypass / no_cache / Range 模式；
                 有标签标记的站点按 Cache-Tag 索引算出键时间（§3.4）
               · 403 / 429 / 503 的拒绝用错误页应答（§3.19）
@@ -295,19 +299,20 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
             proxy_hide_header X-Request-Id / Cache-Tag / X-Edgeweir-Affinity（缓存命中同样隐藏）
             header_filter_by_lua  edgeweir.router：还原 Cache-Control，记录 Cache-Tag 索引（含 slice
               与后台更新子请求），保留 Cache-Tag 的站点转发它，会话保持的 Set-Cookie（§3.20），
-              CRS 拦截换成错误页（只在 CRS 位置有 body filter），选定压缩编码（§3.17）
-            内部请求头 X-Edgeweir-Site / -Rules / -Cache-Status（proxy_set_header 设置，覆盖客户端同名头）
+              CRS 拦截换成错误页（只在 CRS 位置有 body filter），缓存规则的浏览器 TTL（§3.3），
+              response-transform 与 compression 阶段，选定压缩编码（§3.17）
+            内部请求头 X-Edgeweir-Site / -Rules / -Cache-Status / -Origin（proxy_set_header 设置，覆盖客户端同名头）
                 │ keepalive, unix socket（关闭证书校验的站点走 origin-noverify.sock）
                 ▼
           回源层 (listen unix:origin.sock / origin-noverify.sock)，外部不可达
             access_by_lua  edgeweir.origin
-              · 按站点 id 取源站，lb.order 排序（主动检查标记、会话保持的源站在前，§3.2）；
-                DNS 解析并按地址策略过滤；S3 源站签名
+              · 按站点 id 与 X-Edgeweir-Origin 的源站组取源站，lb.order 排序（主动检查标记、会话保持的
+                源站在前，§3.2），套用 Origin 规则的 Host、SNI、端口覆盖；DNS 解析并按地址策略过滤；S3 源站签名
               · 候选中有 S3 源站时删除客户端的 x-amz-* 请求头
               · 发往源站前清除内部头；忽略源站的 X-Accel-*（防止源站操纵缓存或内部跳转）
             balancer_by_lua（每次尝试一次）
               · set_current_peer(ip, port, sni)，$edgeweir_ssl_name = sni（证书名校验，§3.6）
-              · 重试次数、超时、按地址+端口+SNI 的连接池；换到 Host/签名不同的源站时重建请求
+              · 重试次数、超时（config 规则可覆盖）、按地址+端口+SNI 的连接池；换到 Host/签名不同的源站时重建请求
             header_filter_by_lua
               · 源站 5xx 且边缘持有可 stale 的过期副本时断开连接，让边缘层返回 stale（最先判断）
               · nginx 自己生成的回源失败与拦截的源站错误换成错误页（body_filter_by_lua 发送，§3.19）
@@ -323,7 +328,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`site-suspended`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`，以及 CRS 拦截的 `waf-blocked`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error）、`X-Edgeweir-Origin`（Origin 规则的源站组、Host、SNI、端口与 config 规则的回源超时，§3.21），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`site-suspended`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`，以及 CRS 拦截的 `waf-blocked`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -333,16 +338,19 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 | `round_robin` | 平滑加权轮询（nginx 的算法），状态按 worker 和站点表版本保存在解码后的站点对象上 |
 | `consistent_hash` | ketama 式哈希环（每单位权重 40 个点），键为请求 URI；某源站下线只移动它自己的键 |
 
+源站可以分组（`Origin.group`，空为默认组）。没有 Origin 规则时只用默认组；Origin 规则选中的组单独排序，轮询状态与哈希环按组保存；组里没有源站时 502 `no-origin`（§3.21）。
+
 一次请求最多尝试 3 个源站。重试只在健康的主源之间进行；**所有主源都被标记为下线时才用备用源**；全部下线时仍全部尝试（先主源，fail open），尝试成功即提前结束下线。一次请求内不能在 HTTP 和 HTTPS 之间切换（下一个请求可以）。
 
 "下线"合并两种检查：被动检查（§3.7）标记的源站在恢复时间内不选；源站池开启主动健康检查的站点（站点表 `active_health`），agent 的主动检查标记为不健康的源站同样不选。任一检查判为下线的源站都不接流量；没有开启主动检查的站点只看被动检查，不多读共享内存。会话保持的站点（§3.20）：有效 cookie 指定的源站若在承接流量的那一层（健康的主源；主源全部下线时健康的备用源）里，排在第一个，其余源站按策略排在后面（轮询策略不为这类请求推进轮询状态）；全部下线时不按 cookie 选源。
 
 ### 3.3 缓存规则与缓存键
 
-规则按 (priority, id) 排序，首个匹配生效。请求条件（精确路径、路径前缀、扩展名）在边缘层按 nginx 规范化后的 `$uri` 判断，响应条件（状态码、大小）在回源层判断。规则链是请求条件匹配的规则，直到第一个"匹配任何响应"的规则为止；回源层取链中第一个响应条件也匹配的规则。
+规则按 (priority, id) 排序，首个匹配生效。请求条件（精确路径、路径前缀、扩展名）在边缘层按 nginx 规范化后的 `$uri` 判断；请求条件也可以是一条 `cache` 阶段的类型化表达式（`match.condition`，能力 `rules-v2`，字段与函数同 §3.21），按客户端原始请求（任何改写之前，与缓存键、清缓存一致）求值，这时没有路径列表。响应条件（状态码、大小）在回源层判断。规则链是请求条件匹配的规则，直到第一个"匹配任何响应"的规则为止；回源层取链中第一个响应条件也匹配的规则。
 
 - **遵循 / 覆盖源站缓存头**：覆盖模式用规则 TTL（没有状态码条件时只缓存 200/203/206/300/301/308）；遵循模式交给 proxy_cache 解析源站头，源站没有 Cache-Control/Expires 时才用规则 TTL。
 - **stale**：规则的 stale-while-revalidate / stale-if-error 秒数写成 Cache-Control 扩展交给边缘层的 proxy_cache，原头部经 `X-Edgeweir-CC` 还原给客户端。
+- **浏览器 TTL**（`browser_ttl_seconds`，最多 31536000）：边缘层 header filter 按规则链、响应状态与大小找出决定该响应的规则；它缓存这个响应时（覆盖模式且 TTL 大于 0；遵循模式且源站的 `Cache-Control` 不含 `no-store`、`no-cache`、`private`），在还原源站头之后把客户端收到的 `Cache-Control` 换成 `max-age=N`，缓存命中同样如此；response-transform 规则仍可改写它。
 - **Range**：站点开启 slice 时按 1 MiB 分片获取并缓存，分片范围进入缓存键；不缓存的请求原样转发 Range；其余情况由缓存获取整个对象。
 - **Authorization**（RFC 9111 §3.5）：带 `Authorization` 的请求既不查缓存也不存储，除非生效的规则设置了 `cache_authorized`（v0.2.1）；对这类请求，没有该标记的缓存规则按 bypass 规则处理（即使源站返回 `public`）。
 - **缓存键**：
@@ -483,6 +491,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | 主动健康检查结果 | 热更新：`PUT /v1/origins/active` |
 | 动态封禁 | 热更新：`POST` / `PUT /v1/bans`，平台范围另写 nftables；`--ban-dict-mb` 与 `--ban-capacity` 属于 agent 启动参数 |
 | Under Attack、挑战规则、CC 策略、JA4 日志开关、平台 Under Attack | 热更新：站点表（`protection`、`platform_protection`、`rules`） |
+| 批量重定向、源站组、缓存规则条件与浏览器 TTL、Origin 与 compression 规则 | 热更新：站点表（`bulk_redirects`、`origins[].group`、`cache_rules`、`rules`） |
 | OWASP CRS 的模式、paranoia level、异常分数阈值；请求体上限已有 CRS 位置、没有排除规则的站点开启或关闭 CRS | 热更新：站点表（`waf`） |
 | 挑战密钥、验证码池 | 热更新：`PUT /v1/challenge/keys`、`PUT /v1/challenge/captchas`；`--cc-dict-mb` 与 `--challenge-dict-mb` 属于 agent 启动参数 |
 
@@ -560,7 +569,7 @@ table inet edgeweir {
 
 `edgeweir.challenge` 实现四个级别：`cookie302`（1）、`js`（2）、`pow`（3）、`captcha`（4），级别 L 的凭证满足不高于 L 的要求。站点 `protection` 的默认值：Under Attack 类型 `js`，凭证有效期 1800 秒（300–86400），PoW 16 位（8–24），高难度 PoW 20 位（8–26，不低于普通难度）；IR 中为 0 的值取默认值。
 
-- **需要的级别**：平台 Under Attack、站点 Under Attack、站点 CC 级别、该路径的 CC 级别取最大值，在规则阶段之后判断；`waf-custom` 的 `challenge` 规则在命中处判断（凭证级别足够就继续后续规则，否则挑战）。`allow` 规则（平台或站点）或平台 allow 名单命中的请求不受 Under Attack 与 CC 挑战，也不被 CC 自动封禁。CC 到 `captcha` 级且策略设置了高难度 PoW 时改用高难度 PoW。
+- **需要的级别**：平台 Under Attack、站点 Under Attack、站点 CC 级别、该路径的 CC 级别取最大值，在规则阶段之后判断（config 规则可为本请求打开或关闭站点 Under Attack、关闭 CC 或限制其最高级别，平台 Under Attack 不受影响，§3.21）；`waf-custom` 的 `challenge` 规则在命中处判断（凭证级别足够就继续后续规则，否则挑战）。`allow` 规则（平台或站点）或平台 allow 名单命中的请求不受 Under Attack 与 CC 挑战，也不被 CC 自动封禁。CC 到 `captcha` 级且策略设置了高难度 PoW 时改用高难度 PoW。
 - **应答**：
   - 没有密钥（节点从未拿到过）：503，`X-Edgeweir-Error: challenge-unavailable`。
   - 非 GET/HEAD：403，`X-Edgeweir-Challenge: required`，不给挑战页。
@@ -598,7 +607,7 @@ table inet edgeweir {
 - **协商**（`edgeweir.compress`，纯函数由 `make lua-test` 覆盖）：过滤器本身不看 q 值，客户端接受几种就可能都去压缩。边缘层的 header filter 在压缩过滤器之前运行：按上面的条件列出站点开启且适用于这个响应的算法，再按客户端 `Accept-Encoding` 的 q 值选出一种（RFC 9110 §12.5.3：q=0 不接受；没列出的编码取 `*` 的 q 值；`x-gzip` 等同 gzip；格式错误的项忽略；没有 `Accept-Encoding` 或只剩 identity 时不压缩），q 值相同时 zstd > br > gzip，然后把请求的 `Accept-Encoding` 改写成只含这一种（或删除），只有它的过滤器会压缩。
 - **不重复压缩**：源站已经编码的响应（带 `Content-Encoding`）原样返回。
 - **缓存**：边缘压缩的站点回源时不带 `Accept-Encoding`（`$edgeweir_upstream_ae`），源站返回未压缩的内容；回源层把这类响应 `Vary` 里的 `Accept-Encoding` 去掉，边缘缓存里每个 URL 只有一份未压缩对象，命中后按每个请求重新协商、压缩。没有边缘压缩的站点照旧把客户端的 `Accept-Encoding` 转给源站，缓存按源站的 `Vary` 区分。
-- 规则动作 `gzip=false` 删除请求的 `Accept-Encoding`，该请求不压缩。
+- **规则**：config 规则的 `gzip`、`brotli`、`zstd` 为 `false` 时本次响应不用该算法，`true` 重新允许（只在站点开启的算法里）；compression 阶段的规则（§3.21）给出允许的算法及其顺序，候选只保留列表里的算法，q 值相同时按列表顺序选，空列表不压缩。两者都不绕过缓存：边缘压缩的站点缓存里仍是同一份未压缩对象。不在边缘压缩的站点上，`gzip=false` 删除请求的 `Accept-Encoding`，源站返回未压缩内容，缓存按源站的 `Vary` 区分变体（源站不带 `Vary: Accept-Encoding` 时，同一 URL 可能命中之前缓存的压缩对象）。
 - nginx 的 gzip 另有两个条件：带 `Via` 请求头的请求（经过其他代理）不压缩（`gzip_proxied off`），HTTP/1.0 请求不压缩；此时协商选中 gzip 的响应以 identity 返回。
 
 ### 3.18 OWASP CRS（ModSecurity）
@@ -637,6 +646,22 @@ table inet edgeweir {
 - **cookie**：`__ew_affinity=<源站 id>.<到期>.<kid>.<sig>`，`sig` 为 `HMAC-SHA256(密钥, "affinity|" .. 站点 id .. "|" .. 源站 id .. "|" .. 到期)` 的无填充 base64url，到期为 Unix 秒。使用集群的挑战密钥（§2.8）：`current` 签名，`next`、`current`、`previous` 都能验证，集群内任一节点都认同一个 cookie。节点还没有密钥时既不按 cookie 选源，也不签发。
 - **回源层**：会话保持的站点读取 cookie，有效时指定的源站在选源时排在最前（§3.2）；源站被禁止或不可用时按其他源站一样跳过，重试可以离开它。header filter 中取最后一次尝试的源站：请求没有有效 cookie、cookie 指向别的源站，或剩余有效期不足一半时，以内部响应头 `X-Edgeweir-Affinity` 告知新的 cookie 值（到期 = 现在 + 有效期）。回源层先删除源站自己发出的同名头。
 - **边缘层**：不是来自缓存的响应（`$upstream_cache_status` 不是 HIT、STALE、UPDATING、REVALIDATED）把它变成 `Set-Cookie: __ew_affinity=<值>; Path=/; Max-Age=<有效期>; HttpOnly; SameSite=Lax`（HTTPS 加 `Secure`），保留源站的 `Set-Cookie`；`X-Edgeweir-Affinity` 不转给客户端（`proxy_hide_header`，它可能留在缓存对象里，命中时忽略）。
+
+### 3.21 规则引擎扩展（`rules-v2`）
+
+proto v0.13.0 的规则扩展由能力 `rules-v2` 标明，用到其中任何一项的配置都要求它。Go（`internal/configir/rules.go`）逐项校验 IR，Lua 编译为闭包（`edgeweir.expressions`、`edgeweir.policy`）；语义与控制台规则包的参考求值一致，共享向量同时由 Go 与 Lua 执行。
+
+- **函数**（字符串一律按字节处理）：`lower`、`upper`（只转换 ASCII 字母）、`len`（字节数）、`starts_with`、`ends_with`（空串总是匹配）、`url_decode`（一遍：`%XX` 不分大小写 → 字节，`+` → 空格，不完整的 `%` 原样保留）、`concat`（2–8 个参数）；只在值表达式里、每个表达式各一次：`regex_replace(串, 正则, 替换)`（替换第一个匹配；正则与 `matches` 同一子集与 PCRE 预算；`${1}`–`${8}` 引用捕获，未参与匹配的组为空串，其他 `$` 是字面量）与 `wildcard_replace(串, 通配, 替换[, "s"])`（整串匹配，`*` 匹配任意字节、至多 8 个，`\*`、`\\` 为字面量；默认 ASCII 不区分大小写，`"s"` 区分；捕获取最左放置：首段是前缀，中间每段取上一段之后的第一次出现，末段是不早于当前位置的后缀；捕获是原串的字节；不匹配时返回原串）。参数是字段、字符串常量或另一个调用，嵌套至多 4 层。任何函数算出的字符串超过 8192 字节时求值失败（失败关闭，503 `policy-unavailable`）。
+- **IR**：`call`（`field` 为函数名，`value_type` 为返回类型，`children` 为参数）、`field`（参数里的字段）、`const`（字符串常量）；比较的左侧可以是一个值节点（`field` 为空，`children` 只有它，类型规则同字段，`in $列表` 只用于字段）；返回布尔的调用可以单独作为条件。
+- **新字段**：`http.request.full_uri`（`scheme://host` 加收到的请求 URI）、`http.request.uri.path.extension`（最后一段路径中最后一个 `.` 之后的部分，小写，没有时为空串；与缓存规则的扩展名是同一个函数）、`http.response.content_type.media_type`（响应 `Content-Type` 去掉参数后的小写媒体类型；response-transform 改写 `Content-Type` 后随之更新）。响应字段可用于 `response-transform` 与 `compression` 阶段。
+- **请求快照**：规则读写一张请求值表；改写和请求头动作写到它的副本（第一次修改时复制），原表保留客户端的请求，供批量重定向与缓存规则条件使用。
+- **重定向**：静态目标或值表达式 `target` 二选一。动态目标必须是不含空白、控制字符和反斜杠的 `http(s)` 绝对 URL（有主机、无用户信息）或以单个 `/` 开头的路径，否则失败关闭。查询串在 `#` 之前处理，片段放回最后：`preserve_query` 时接上请求的查询串（目标已有查询串时用 `&`），再删除原名（每段第一个 `=` 之前的部分，逐字节比较）在 `remove_query` 或 `set_query` 中的参数，按顺序追加 `set_query` 的 `name=值`（值按 RFC 3986 非保留字符以外一律百分号编码）；没有参数时不留 `?`。
+- **改写**：静态路径或 `target`；动态结果必须以单个 `/` 开头、不含 `?`、`#`、`\` 与控制字符。查询串默认保留，`preserve_query=false` 时清空，然后按上面的规则删除与追加参数。之后的阶段看到改写后的路径、查询串与扩展名。
+- **批量重定向**：站点表的 `bulk_redirects` 在解码站点时建成哈希表；重定向阶段的平台与站点规则之后，按客户端原始请求的 Host 与 `$uri` 先查 `host/path` 再查 `/path`，命中时按条目的状态码重定向，`preserve_query` 时附上原始查询串（查询处理同重定向）。表随站点表热更新，不 reload。
+- **Origin 规则**（`origin` 阶段）：源站组、Host、SNI、端口，后命中的规则逐项覆盖。它们与 config 规则的回源超时一起编码进 `$edgeweir_origin_override`，经内部请求头 `X-Edgeweir-Origin`（`g=组;h=Host;s=SNI;p=端口;c=、w=、r=毫秒`）交给回源层。客户端带来的 `X-Edgeweir-*` 在边缘层就被删除，边缘层总用 `proxy_set_header` 覆盖它，回源层只经本机 unix socket 接受边缘层的请求，并在发往源站前清空它。回源层只在选中组的源站里负载均衡；端口覆盖作用于组内每个源站，Host 覆盖替换源站自己的 Host（S3 源站不受影响，签名用的 Host 照旧），SNI 覆盖替换 TLS 名称（也进入连接池的键），没有 SNI 覆盖时 TLS 名称照常由源站的 SNI 或 Host 推出；超时覆盖 balancer 的连接、发送、读取超时。会话保持、健康检查与选源顺序不变。
+- **config 动作**：在 `cache_bypass`、`force_https`、`gzip` 之外，`gzip=true`、`brotli`、`zstd`（§3.17）、`websocket`、`under_attack`（站点级，§3.14）、`cc_enabled`（`false` 时本请求不受 CC 级别挑战与 CC 单 IP 封禁，计数照常）、`cc_max_level`、三个回源超时（连接 100–120000 毫秒，发送与读取 100–3600000 毫秒）、`log_sample_rate`（本请求的采样率，万分比）；新字段只在 `config` 阶段可用，后命中的规则逐项覆盖。`gzip=false` 不绕过缓存。
+- **compression 阶段**：在边缘层 header filter 中，response-transform 之后运行平台与站点的 `compression` 规则，可读响应字段；动作 `compression` 给出有序的算法列表（`zstd`、`br`、`gzip` 的子集，可为空），后命中的覆盖前面的（§3.17）。
+- **GeoIP 与 JA4**：缓存规则条件、值表达式和函数参数读取 GeoIP 字段或 `tls.ja4` 的站点同样查 GeoIP、计算 JA4。
 
 ## 4. 文件布局
 
@@ -717,7 +742,7 @@ table inet edgeweir {
 
 ## 6. 已知限制
 
-- 旧占位字段 `CacheRuleMatch.expression` 仍拒绝非空值；通用表达式通过 `EdgeRule` 结构化 AST 下发，公共缓存 API 不暴露旧占位字段。
+- 旧占位字段 `CacheRuleMatch.expression` 仍拒绝非空值；表达式通过 `EdgeRule` 与 `CacheRuleMatch.condition` 的类型化 AST 下发。
 - 不支持内部 CA 轮换。
 - 客户端上传大小固定为 100m（IR 暂无对应字段）。
 - 访问日志默认关闭，按站点采样，经有界私有队列与持久批次去重上报。
@@ -741,12 +766,12 @@ table inet edgeweir {
 
 ## 规则与 GeoIP
 
-- `Site.rules`、`NodeConfig.ip_lists/platform_rules` 进入热更新表，Go 验证后 Lua 编译为固定闭包。禁止运行用户 Lua。每阶段平台规则先执行，平台 IP 白名单仅覆盖平台 IP 黑名单；站点放行不能绕过平台 WAF。
+- `Site.rules`、`NodeConfig.ip_lists/platform_rules`、缓存规则条件与批量重定向进入热更新表，Go 验证后 Lua 编译为固定闭包（函数、值表达式与新动作见 §3.21）。禁止运行用户 Lua。每阶段平台规则先执行，平台 IP 白名单仅覆盖平台 IP 黑名单；站点放行不能绕过平台 WAF。
 - IP 前缀树、有限 PCRE 工作量、不会淘汰现有键的固定窗口限速（分区满时新计数放行并每分钟记录一次日志，见 docs/rate-limit-storage.md）；规则或依赖数据执行错误时拒绝请求。
 - `internal/geoip` 读取本地 MMDB，经 0600 Unix socket 服务同机 worker：发布镜像构建时下载并内置的 IPinfo Lite（国家、ASN，`--geoip-ipinfo auto`），以及运维提供的 City/ASN MMDB。国家和 ASN 优先取 IPinfo，查不到时回落到 City/ASN；一级行政区只来自 City，且仅当其国家与结果一致。数据库通过完整性与类型检查才上报能力；GeoIP 请求不离开节点，运行时不下载数据。
-- 缓存和刷新使用改写前路径；配置与列表更新不 reload。`rules-v1`、`geoip-city-v1`（国家；沿用旧名以兼容控制台，来自 IPinfo 或 City）、`geoip-subdivision-v1`（City，一级行政区）、`geoip-asn-v1`（IPinfo 或 ASN）分开上报；`geoip-country-v1` 告知控制台一级行政区已单独上报。控制台对国家和一级行政区规则仍只下发 `geoip-city-v1` 要求，节点逐条表达式校验时一级行政区需要 `geoip-subdivision-v1`，没有 City MMDB 的节点拒绝这类配置。
+- 缓存、缓存规则条件、批量重定向和刷新使用改写前的请求；配置与列表更新不 reload。`rules-v1`、`rules-v2`（§3.21）、`geoip-city-v1`（国家；沿用旧名以兼容控制台，来自 IPinfo 或 City）、`geoip-subdivision-v1`（City，一级行政区）、`geoip-asn-v1`（IPinfo 或 ASN）分开上报；`geoip-country-v1` 告知控制台一级行政区已单独上报。控制台对国家和一级行政区规则仍只下发 `geoip-city-v1` 要求，节点逐条表达式校验时一级行政区需要 `geoip-subdivision-v1`，没有 City MMDB 的节点拒绝这类配置。
 - 持久化失败在恢复旧配置后退避五分钟或等下一版本，避免每次轮询重新激活未持久化内容。
-- `test/lua/expression-vectors.json` 镜像控制面规则包的共享向量（接受向量由 Lua PCRE2 与 Go RE2 执行，拒绝向量由 Go 校验拒绝）；GeoIP MMDB（City、ASN 及 IPinfo Lite 结构）为 `internal/testutil/geofixture` 自行生成的数据。
+- `test/lua/expression-vectors.json` 镜像控制面规则包的共享向量：接受的条件由 Lua（PCRE2）求值、Go 校验（字段比较的 `matches` 另由 Go RE2 执行），值表达式由 Lua 求出期望的字符串，结构化缓存条件同时按结构化匹配检查，派生字段（扩展名、媒体类型）由 Lua 计算，被拒的正则与 IR 由 Go 校验拒绝；GeoIP MMDB（City、ASN 及 IPinfo Lite 结构）为 `internal/testutil/geofixture` 自行生成的数据。
 
 ## 统计
 

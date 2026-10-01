@@ -34,6 +34,7 @@ local policy = require("edgeweir.policy")
 local ratelimit = require("edgeweir.ratelimit")
 local cc = require("edgeweir.cc")
 local errorpages = require("edgeweir.errorpages")
+local expressions = require("edgeweir.expressions")
 
 local _M = {}
 
@@ -123,34 +124,75 @@ local function with_defaults(t, defaults)
   return t
 end
 
+-- derive_origin (re)computes the derived fields of an origin: its URL, the
+-- Host of S3 origins without an explicit one (the default port of the
+-- scheme left out, as HTTP clients and SigV4 signers do) and the TLS name
+-- (sni, else the host_header without its port, else the address). The
+-- origin layer calls it again on copies with an origin rule's overrides.
+function _M.derive_origin(o)
+  local host = o.address
+  if find(host, ":", 1, true) then
+    host = "[" .. host .. "]" -- IPv6 literal
+  end
+  o.url = o.scheme .. "://" .. host .. ":" .. tostring(o.port)
+  local default_port = (o.scheme == "https") and 443 or 80
+  o._s3_host = (o.port == default_port) and host or (host .. ":" .. tostring(o.port))
+  local sni = o.sni
+  if not is_nonempty_string(sni) then
+    sni = o.host_header
+    if is_nonempty_string(sni) then
+      sni = sni:gsub(":%d+$", "")
+    else
+      sni = o.address
+    end
+  end
+  o.sni_name = sni
+  return o
+end
+
+-- reads_field reports whether any rule (condition or value expression) or
+-- cache rule condition of the site's rules list reads a field for which
+-- test(field) is true.
+local function reads_field(rule_lists, cache_rules, test)
+  for _, list in ipairs(rule_lists) do
+    for _, r in ipairs(list or {}) do
+      if type(r) == "table" and (expressions.reads(r.expression, test)
+        or (type(r.action) == "table" and expressions.reads(r.action.target, test))) then
+        return true
+      end
+    end
+  end
+  for _, r in ipairs(type(cache_rules) == "table" and cache_rules or {}) do
+    if type(r) == "table" and expressions.reads(r.condition, test) then return true end
+  end
+  return false
+end
+
+local function is_geo(field) return field:sub(1, 9) == "ip.geoip." end
+local function is_ja4(field) return field == "tls.ja4" end
+
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
 function _M.prepare(s, cfg)
   s._rate_limit_dict = ngx.shared[ratelimit.dict_name(s.id)]
   s._config = cfg or policy.prepare_config({})
   s._rule_groups = policy.prepare_rules(s.rules, s._config.lists)
-  local function geo(r)
-    if (r.field or ""):sub(1,9) == "ip.geoip." then return true end
-    for _, c in ipairs(r.children or {}) do if geo(c) then return true end end
-    return false
-  end
-  for _, r in ipairs(s.rules or {}) do if geo(r.expression) then s._geo = true end end
-  for _, r in ipairs(s._config.platform_rules or {}) do if geo(r.expression) then s._geo = true end end
-  -- JA4 is computed at the handshake only for sites that read it.
-  local function ja4(r)
-    if (r.field or "") == "tls.ja4" then return true end
-    for _, c in ipairs(r.children or {}) do if ja4(c) then return true end end
-    return false
-  end
-  local function uses_ja4(r)
-    return type(r) == "table" and ((r.expression and ja4(r.expression)) or (type(r.action) == "table" and r.action.key == "tls.ja4"))
-  end
+  s._bulk = policy.prepare_bulk(s.bulk_redirects)
+  -- GeoIP is looked up and JA4 computed at the handshake only for sites
+  -- whose rules (conditions, value expressions, cache rule conditions,
+  -- rate limit keys) read them.
+  local rule_lists = { s.rules or {}, s._config.platform_rules or {} }
+  s._geo = reads_field(rule_lists, s.cache_rules, is_geo) or nil
   if type(s.protection) ~= "table" then s.protection = nil end
   if type(s.waf) ~= "table" then s.waf = nil end
   if type(s.tls) ~= "table" then s.tls = nil end
   s._ja4 = s.protection ~= nil and s.protection.log_ja4 == true
-  for _, r in ipairs(s.rules or {}) do if uses_ja4(r) then s._ja4 = true end end
-  for _, r in ipairs(s._config.platform_rules or {}) do if uses_ja4(r) then s._ja4 = true end end
+  if reads_field(rule_lists, s.cache_rules, is_ja4) then s._ja4 = true end
+  for _, list in ipairs(rule_lists) do
+    for _, r in ipairs(list or {}) do
+      if type(r) == "table" and type(r.action) == "table" and r.action.key == "tls.ja4" then s._ja4 = true end
+    end
+  end
   cc.prepare(s)
   -- _guard: Under Attack (platform or site) or CC may challenge requests.
   local pp = s._config.platform_protection
@@ -172,49 +214,54 @@ function _M.prepare(s, cfg)
   s.health = with_defaults(s.health, DEFAULT_HEALTH)
   s.conn = with_defaults(s.conn, DEFAULT_CONN)
   s.cache_key = cachekey.prepare(s.cache_key)
-  local primaries, backups, pw, bw = {}, {}, 0, 0
+  -- Origin pools by group ("" is the default group; origin rules choose
+  -- the others): primaries and backups with their total weights.
+  local pools = {}
   for _, o in ipairs(s.origins or {}) do
     local w = tonumber(o.weight) or 1
     if w < 1 then
       w = 1
     end
     o.weight = w
-    local host = o.address
-    if find(host, ":", 1, true) then
-      host = "[" .. host .. "]" -- IPv6 literal
+    _M.derive_origin(o)
+    local group = is_nonempty_string(o.group) and o.group or ""
+    local pool = pools[group]
+    if not pool then
+      pool = { primaries = {}, backups = {}, pw = 0, bw = 0 }
+      pools[group] = pool
     end
-    o.url = o.scheme .. "://" .. host .. ":" .. tostring(o.port)
-    -- Host header for S3 origins without an explicit one: the default port
-    -- of the scheme is left out, as HTTP clients (and SigV4 signers) do.
-    local default_port = (o.scheme == "https") and 443 or 80
-    o._s3_host = (o.port == default_port) and host or (host .. ":" .. tostring(o.port))
-    local sni = o.sni
-    if not is_nonempty_string(sni) then
-      sni = o.host_header
-      if is_nonempty_string(sni) then
-        sni = sni:gsub(":%d+$", "")
-      else
-        sni = o.address
-      end
-    end
-    o.sni_name = sni
     if o.backup == true then
-      backups[#backups + 1] = o
-      bw = bw + w
+      pool.backups[#pool.backups + 1] = o
+      pool.bw = pool.bw + w
     else
-      primaries[#primaries + 1] = o
-      pw = pw + w
+      pool.primaries[#pool.primaries + 1] = o
+      pool.pw = pool.pw + w
     end
   end
-  s._primaries, s._backups, s._pw, s._bw = primaries, backups, pw, bw
+  local default = pools[""] or { primaries = {}, backups = {}, pw = 0, bw = 0 }
+  s._pools = pools
+  s._primaries, s._backups, s._pw, s._bw = default.primaries, default.backups, default.pw, default.bw
   if type(s.cache_rules) == "table" then
     for i = 1, #s.cache_rules do
-      rules.prepare(s.cache_rules[i])
+      rules.prepare(s.cache_rules[i], s._config.lists)
     end
   else
     s.cache_rules = nil
   end
   return s
+end
+
+-- check_site compiles what prepare compiles from a pushed site (rules,
+-- cache rule conditions, the redirect table) and raises an error when
+-- something does not compile.
+local function check_site(site, lists)
+  policy.prepare_rules(site.rules, lists)
+  policy.prepare_bulk(site.bulk_redirects)
+  for _, r in ipairs(type(site.cache_rules) == "table" and site.cache_rules or {}) do
+    if type(r) == "table" and type(r.condition) == "table" then
+      expressions.compile(r.condition, lists)
+    end
+  end
 end
 
 -- replace installs a new site table. doc = { revision, content_hash, sites }.
@@ -288,7 +335,7 @@ function _M.replace(doc)
     local site = list[i]
     local err = validate(site)
     if not err then
-      local ok = pcall(policy.prepare_rules, site.rules, compiled_cfg.lists)
+      local ok = pcall(check_site, site, compiled_cfg.lists)
       if not ok then err = "invalid site policy" end
     end
     if err then

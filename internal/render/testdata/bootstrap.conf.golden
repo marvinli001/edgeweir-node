@@ -51,7 +51,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "0e043156d86a8eb1",
+            conf_id = "6a5fbae8ea8c38c7",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -167,6 +167,7 @@ http {
             proxy_set_header X-Edgeweir-Site "";
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, $proxy_host, would be
@@ -214,6 +215,7 @@ http {
             proxy_set_header X-Edgeweir-Site "";
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, $proxy_host, would be
@@ -255,6 +257,7 @@ http {
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -273,6 +276,9 @@ http {
             proxy_set_header X-Edgeweir-Site $edgeweir_site;
             proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -326,6 +332,7 @@ http {
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -344,6 +351,9 @@ http {
             proxy_set_header X-Edgeweir-Site $edgeweir_site;
             proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.

@@ -10,6 +10,11 @@
 -- Accept-Encoding to that coding alone (or removes it). Responses that
 -- already carry a Content-Encoding are never compressed again.
 --
+-- Rules narrow the choice for one response (edgeweir.policy): a config
+-- rule may switch a coding off (gzip, br and zstd false in the policy
+-- context) and a compression rule names the codings allowed, in its order
+-- of preference at equal q-values ([] means identity); see restrict().
+--
 -- Towards the origin, sites the edge compresses send no Accept-Encoding
 -- (router: $edgeweir_upstream_ae), and the origin layer drops
 -- Accept-Encoding from the Vary of uncompressed responses (strip_vary):
@@ -61,13 +66,14 @@ end
 -- candidates (codings enabled and applicable), or nil for identity.
 -- A coding the client does not name is acceptable with the q-value of "*"
 -- (RFC 9110, 12.5.3); q=0 means not acceptable; no Accept-Encoding at all
--- means identity. Ties go to the candidate listed first in PREFERENCE.
-function _M.choose(accept_encoding, candidates)
+-- means identity. Ties go to the candidate listed first in preference
+-- (default PREFERENCE).
+function _M.choose(accept_encoding, candidates, preference)
   if not accept_encoding or not candidates or #candidates == 0 then return nil end
   local q = _M.parse(accept_encoding)
   local star = q["*"]
   local best, best_q = nil, 0
-  for _, coding in ipairs(_M.PREFERENCE) do
+  for _, coding in ipairs(preference or _M.PREFERENCE) do
     local offered = false
     for i = 1, #candidates do
       if candidates[i] == coding then offered = true; break end
@@ -123,6 +129,28 @@ function _M.applicable(tls, resp)
   return out
 end
 
+-- restrict applies the rules of a request (policy context ctx, or nil) to
+-- the applicable codings: those a config rule switched off (ctx.gzip,
+-- ctx.br, ctx.zstd false) go, and after a compression rule (ctx.compression)
+-- only its codings remain, its order becoming the preference. Returns the
+-- candidates and the preference (nil: PREFERENCE).
+function _M.restrict(candidates, ctx)
+  if not ctx then return candidates, nil end
+  local list = ctx.compression
+  local out = {}
+  for i = 1, #candidates do
+    local coding = candidates[i]
+    local listed = list == nil
+    if list then
+      for j = 1, #list do
+        if list[j] == coding then listed = true; break end
+      end
+    end
+    if listed and ctx[coding] ~= false then out[#out + 1] = coding end
+  end
+  return out, list
+end
+
 -- enabled reports whether the edge compresses any coding for the site.
 function _M.enabled(site)
   local tls = site and site.tls
@@ -165,7 +193,9 @@ function _M.header_filter(site)
     content_encoding = header_value(h["Content-Encoding"]),
     head = ngx.req.get_method() == "HEAD",
   })
-  local coding = _M.choose(ngx.var.http_accept_encoding, candidates)
+  local preference
+  candidates, preference = _M.restrict(candidates, ngx.ctx.edgeweir_policy)
+  local coding = _M.choose(ngx.var.http_accept_encoding, candidates, preference)
   if coding then
     ngx.req.set_header("Accept-Encoding", coding)
   else

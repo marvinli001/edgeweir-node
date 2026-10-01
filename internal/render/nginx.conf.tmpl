@@ -183,6 +183,7 @@ http {
             proxy_set_header X-Edgeweir-Site "";
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
 {{- if $.ModSecurityConf }}
             proxy_set_header {{ $.WAFHeader }} "";
 {{- end }}
@@ -300,6 +301,7 @@ http {
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
 {{- if $.ModSecurityConf }}
             set $edgeweir_ctx_ref "";
 {{- end }}
@@ -349,6 +351,9 @@ http {
             proxy_set_header X-Edgeweir-Site $edgeweir_site;
             proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
             proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
