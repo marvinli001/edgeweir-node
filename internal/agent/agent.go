@@ -34,6 +34,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
+	"github.com/marvinli001/edgeweir-node/internal/healthcheck"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/render"
@@ -74,6 +75,7 @@ type DataPlane interface {
 	PutCaptchas(ctx context.Context, p *dataplane.CaptchaPool) (*dataplane.ChallengeStatus, error)
 	SecurityStatus(ctx context.Context) (*dataplane.SecurityStatus, error)
 	DrainSecurity(ctx context.Context) ([]dataplane.SecurityEvent, error)
+	PutActiveHealth(ctx context.Context, doc *dataplane.ActiveHealth) (*dataplane.ActiveHealthStatus, error)
 }
 
 // Config configures the agent.
@@ -140,6 +142,14 @@ type Config struct {
 	// ChallengeKeyRetry: challenge keys the configuration names but the
 	// console did not hand out are asked for again this often (default 30s).
 	ChallengeKeyRetry time.Duration
+
+	// ActiveHealth configures the active health checker; the agent sets
+	// the trust store (unless RootCAs is set), IPv6 and OnChange. Tests
+	// replace the resolver, dialer and clock.
+	ActiveHealth healthcheck.Options
+	// ActiveHealthRefresh: the active health marks are pushed again this
+	// often (default 30s).
+	ActiveHealthRefresh time.Duration
 }
 
 func (c *Config) setDefaults() {
@@ -167,6 +177,7 @@ func (c *Config) setDefaults() {
 	def(&c.CaptchaInterval, 10*time.Minute)
 	def(&c.SecurityInterval, 5*time.Second)
 	def(&c.ChallengeKeyRetry, 30*time.Second)
+	def(&c.ActiveHealthRefresh, 30*time.Second)
 	if c.CaptchaPoolSize <= 0 {
 		c.CaptchaPoolSize = 256
 	}
@@ -268,6 +279,15 @@ type Agent struct {
 	captchaCh           chan struct{}
 	keysFetchedAt       time.Time // data plane loop only
 	securityUnsupported sync.Once
+
+	// Active health checks (activehealth.go). activeMu serializes the
+	// pushes; activeMarks: the data plane may hold marks (unknown at
+	// startup); activeDown: the origins of the last push.
+	health      *healthcheck.Checker
+	activeCh    chan struct{}
+	activeMu    sync.Mutex
+	activeMarks bool
+	activeDown  map[healthcheck.Key]bool
 }
 
 // New creates an agent.
@@ -276,7 +296,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Agent{
+	a := &Agent{
 		cfg:          cfg,
 		log:          log,
 		engine:       eng,
@@ -299,7 +319,12 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 
 		challengeKeys: map[string][]byte{},
 		captchaCh:     make(chan struct{}, 1),
+
+		activeCh:    make(chan struct{}, 1),
+		activeMarks: true,
 	}
+	a.health = a.newHealthChecker()
+	return a
 }
 
 func kernelManager(exec nft.Executor, log *slog.Logger) *nft.Manager {
@@ -365,12 +390,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.loadCertificates()
 	a.loadPurge()
 	a.loadChallengeKeys()
+	defer a.health.Close()
 	a.serveInitialConfig(ctx)
 	a.startBans(ctx)
 	// Runs before the loops finish (defers are last in, first out); a sync
 	// after it finds the manager inactive.
 	defer a.stopKernel()
 	spawn("dataplane", a.dataPlaneLoop)
+	spawn("activehealth", a.activeHealthLoop)
 	spawn("ocsp", a.ocspLoop)
 	spawn("kernel", a.kernelLoop)
 	spawn("captchas", a.captchaLoop)

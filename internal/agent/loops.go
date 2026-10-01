@@ -1,10 +1,11 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
-	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -15,8 +16,10 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/controlplane"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/healthcheck"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
 	"github.com/marvinli001/edgeweir-node/internal/pki"
+	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 )
 
 func (a *Agent) logRPCError(msg string, err error) {
@@ -305,18 +308,23 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 // maxOriginHealth bounds the origin health entries of one heartbeat.
 const maxOriginHealth = 2000
 
-// originHealth converts the data plane's passive health state for ReportStatus.
+// originHealth converts the data plane's passive health state and the
+// active checks' state for ReportStatus.
 func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
 	list, err := a.dp.OriginHealth(ctx)
 	if err != nil {
 		a.log.Debug("cannot read origin health", "err", err)
-		return nil
 	}
-	out := make([]*nodev1.OriginHealth, 0, min(len(list), maxOriginHealth))
-	for _, h := range list {
-		if len(out) == maxOriginHealth {
-			break
-		}
+	return mergeOriginHealth(list, a.health.Statuses())
+}
+
+// mergeOriginHealth returns one entry per origin and check: the passive
+// check's entries (source PASSIVE) and the active check's for origins
+// that are unhealthy or have failures (source ACTIVE, no down_until).
+// Beyond maxOriginHealth entries the unhealthy ones are kept first.
+func mergeOriginHealth(passive []dataplane.OriginHealth, active []healthcheck.Status) []*nodev1.OriginHealth {
+	out := make([]*nodev1.OriginHealth, 0, len(passive)+len(active))
+	for _, h := range passive {
 		e := &nodev1.OriginHealth{
 			SiteId:              h.SiteID,
 			OriginId:            h.OriginID,
@@ -325,6 +333,7 @@ func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
 			LastError:           h.LastError,
 			LastErrorCode:       h.LastErrorCode,
 			LastErrorParams:     h.LastErrorParams,
+			Source:              nodev1.OriginHealthSource_ORIGIN_HEALTH_SOURCE_PASSIVE,
 		}
 		if h.LastFailureAt > 0 {
 			e.LastFailureAt = timestamppb.New(unixFloat(h.LastFailureAt))
@@ -334,7 +343,36 @@ func (a *Agent) originHealth(ctx context.Context) []*nodev1.OriginHealth {
 		}
 		out = append(out, e)
 	}
+	for _, s := range active {
+		e := &nodev1.OriginHealth{
+			SiteId:              s.SiteID,
+			OriginId:            s.OriginID,
+			Healthy:             s.Healthy,
+			ConsecutiveFailures: s.ConsecutiveFailures,
+			LastError:           s.LastError,
+			LastErrorCode:       s.LastErrorCode,
+			LastErrorParams:     s.LastErrorParams,
+			Source:              nodev1.OriginHealthSource_ORIGIN_HEALTH_SOURCE_ACTIVE,
+		}
+		if !s.LastFailureAt.IsZero() {
+			e.LastFailureAt = timestamppb.New(s.LastFailureAt.UTC())
+		}
+		out = append(out, e)
+	}
+	if len(out) > maxOriginHealth {
+		slices.SortStableFunc(out, func(x, y *nodev1.OriginHealth) int {
+			return cmp.Compare(boolRank(x.GetHealthy()), boolRank(y.GetHealthy()))
+		})
+		out = out[:maxOriginHealth]
+	}
 	return out
+}
+
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func unixFloat(s float64) time.Time {

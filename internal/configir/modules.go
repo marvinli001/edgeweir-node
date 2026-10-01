@@ -153,33 +153,6 @@ func requireModules(site *Site, extra []string) error {
 	return nil
 }
 
-// requireFeatures rejects a site that uses a proto v0.12.0 setting this
-// node does not implement (error pages, session affinity, active health
-// checks). The console requires the matching feature anyway; this names
-// the site.
-func requireFeatures(site *Site, extra []string) error {
-	need := func(feature, what string) error {
-		if slices.Contains(SupportedFeatures, feature) || slices.Contains(extra, feature) {
-			return nil
-		}
-		return fmt.Errorf("%w: site %q uses %s, which needs %s", ErrRejected, site.ID, what, feature)
-	}
-	if site.ErrorPages != nil {
-		if err := need(FeatureErrorPages, "error pages"); err != nil {
-			return err
-		}
-	}
-	if site.Affinity != nil {
-		if err := need(FeatureSessionAffinity, "session affinity"); err != nil {
-			return err
-		}
-	}
-	if site.ActiveHealthCheck != nil {
-		return need(FeatureActiveHealth, "active health checks")
-	}
-	return nil
-}
-
 // UsesWAF reports whether a site of the plan runs the OWASP CRS.
 func (p *Plan) UsesWAF() bool {
 	return slices.ContainsFunc(p.Sites, func(s Site) bool { return s.WAF != nil })

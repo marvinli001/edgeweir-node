@@ -226,10 +226,10 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeaturePurgeTag, FeaturePrefetch}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch}
 
-// Features of the proto v0.12.0 site settings: a served site that uses one
-// needs it (SupportedFeatures or Options.ExtraFeatures).
+// Features of the proto v0.12.0 site settings: the console requires them
+// (required_features) when a served site uses the setting.
 const (
 	FeatureErrorPages      = "error-pages-v1"
 	FeatureSessionAffinity = "session-affinity-v1"
@@ -684,9 +684,6 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			site.CacheRules = append(site.CacheRules, rule)
 		}
 		if err := requireModules(&site, opts.ExtraFeatures); err != nil {
-			return nil, err
-		}
-		if err := requireFeatures(&site, opts.ExtraFeatures); err != nil {
 			return nil, err
 		}
 		p.Sites = append(p.Sites, site)

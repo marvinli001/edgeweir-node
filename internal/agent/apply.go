@@ -144,6 +144,10 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.desired = table
 	a.plan = plan
 	a.mu.Unlock()
+	// Checks of the plan start (or stop); the marks' lifetime follows
+	// their intervals.
+	a.health.Update(plan)
+	a.triggerActiveHealth()
 	a.challengePushMu.Lock()
 	noPool := a.captchaID == ""
 	a.challengePushMu.Unlock()
@@ -314,6 +318,11 @@ func (a *Agent) reconcileDataPlane(ctx context.Context) bool {
 	}
 	a.log.Info("data plane out of sync (nginx restarted?), pushing site table",
 		"data_plane_revision", st.Revision, "data_plane_table_version", st.Version, "revision", desired.Revision)
+	// A restarted nginx lost the active health marks as well.
+	if err := a.pushActiveHealth(cctx); err != nil {
+		a.log.Warn("cannot install the active health marks; retrying", "err", err)
+		a.triggerActiveHealth()
+	}
 	if err := a.pushDesired(cctx); err != nil {
 		a.log.Warn("cannot push site table", "err", err)
 		return false

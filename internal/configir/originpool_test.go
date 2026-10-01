@@ -80,13 +80,10 @@ func TestBuildActiveHealthCheck(t *testing.T) {
 		t.Fatal("path length bounds")
 	}
 
-	// A served site with an active check needs active-health-v1; a
-	// disabled one only needs valid settings.
-	if !slices.Contains(SupportedFeatures, FeatureActiveHealth) {
-		_, err := Build(activeConfig(check), Options{})
-		if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), FeatureActiveHealth) {
-			t.Fatalf("active check without %s: %v", FeatureActiveHealth, err)
-		}
+	// This agent runs active checks (active-health-v1): a served site
+	// with one needs no extra feature; a disabled one only valid settings.
+	if p, err := Build(activeConfig(check), Options{}); err != nil || !p.Sites[0].ActiveHealth {
+		t.Fatalf("active check without extra features: %v", err)
 	}
 	off := activeConfig(check)
 	off.Sites[0].Enabled = false
@@ -126,17 +123,14 @@ func TestBuildSessionAffinity(t *testing.T) {
 }
 
 func TestSupportedFeaturesG4(t *testing.T) {
-	for _, f := range []string{FeatureErrorPages, FeatureSessionAffinity, FeaturePurgeTag, FeaturePrefetch} {
+	g4 := []string{FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch}
+	for _, f := range g4 {
 		if !slices.Contains(SupportedFeatures, f) {
 			t.Errorf("SupportedFeatures lacks %s", f)
 		}
 	}
-	c := &nodev1.NodeConfig{Sites: []*nodev1.Site{site("site-a", "a.test")}, RequiredFeatures: []string{FeatureErrorPages, FeatureSessionAffinity}}
+	c := &nodev1.NodeConfig{Sites: []*nodev1.Site{site("site-a", "a.test")}, RequiredFeatures: g4}
 	if _, err := Build(c, Options{}); err != nil {
-		t.Fatalf("required error-pages-v1 and session-affinity-v1: %v", err)
-	}
-	c.RequiredFeatures = []string{FeatureActiveHealth}
-	if _, err := Build(c, Options{ExtraFeatures: []string{FeatureActiveHealth}}); err != nil {
-		t.Fatalf("active-health-v1 through ExtraFeatures: %v", err)
+		t.Fatalf("required %v: %v", g4, err)
 	}
 }
