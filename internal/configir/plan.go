@@ -113,6 +113,11 @@ type Plan struct {
 	// ChallengeKeys name the cluster's challenge pass keys; the secrets
 	// come from GetChallengeKeys.
 	ChallengeKeys []ChallengeKeyRef
+	// PlatformErrorPages are the platform's pages for unknown and offline
+	// hosts (nil: built-in pages); OfflineHosts the domains of disabled and
+	// suspended sites, answered with those pages.
+	PlatformErrorPages *PlatformErrorPages
+	OfflineHosts       []OfflineHost
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -163,6 +168,17 @@ type Site struct {
 	Protection *Protection `json:"protection,omitempty"`
 	// WAF runs the OWASP CRS on the site's requests (nil: off).
 	WAF *WAF `json:"waf,omitempty"`
+	// KeepCacheTag forwards the origin's Cache-Tag header to clients.
+	KeepCacheTag bool `json:"keep_cache_tag,omitempty"`
+	// ErrorPages replace the built-in error pages of the site (nil: none).
+	ErrorPages *ErrorPages `json:"error_pages,omitempty"`
+	// ActiveHealthCheck is the pool's active health check (nil: passive
+	// checks only); the agent runs it. ActiveHealth tells the data plane
+	// that the agent's marks count for the site.
+	ActiveHealthCheck *ActiveHealthCheck `json:"-"`
+	ActiveHealth      bool               `json:"active_health,omitempty"`
+	// Affinity is the pool's cookie-based session affinity (nil: none).
+	Affinity *Affinity `json:"affinity,omitempty"`
 }
 
 type TLSOptions struct {
@@ -205,7 +221,15 @@ type HTTPChallenge struct {
 	ExpiresAt        int64  `json:"expires_at"`
 }
 
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1"}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity}
+
+// Features of the proto v0.12.0 site settings: a served site that uses one
+// needs it (SupportedFeatures or Options.ExtraFeatures).
+const (
+	FeatureErrorPages      = "error-pages-v1"
+	FeatureSessionAffinity = "session-affinity-v1"
+	FeatureActiveHealth    = "active-health-v1"
+)
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
@@ -357,7 +381,9 @@ func defaultZone() CacheZone {
 //
 // Whole-config rejections include unsupported capabilities/enums, invalid IDs,
 // invalid typed rules/list references, missing certificate references, invalid
-// TLS policy, and the legacy CacheRuleMatch.expression placeholder. M4 rules
+// TLS policy, invalid error pages, offline host reasons, active health checks
+// or session affinity (also without challenge keys), and the legacy
+// CacheRuleMatch.expression placeholder. M4 rules
 // use Site.rules instead. Invalid listeners/empty sites/cache conditions are
 // handled conservatively without widening a condition to match everything.
 // Special-purpose origins outside the platform allow list remain marked
@@ -417,19 +443,41 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if p.ChallengeKeys, err = buildChallengeKeys(c.GetChallengeKeys()); err != nil {
 		return nil, err
 	}
-	// Every site's protection and CRS setting is checked, disabled sites
-	// included: an unknown challenge type or CRS mode rejects the whole
-	// configuration.
+	// Every site's protection, CRS setting, error pages, active health
+	// check and session affinity are checked, disabled sites included: an
+	// unknown challenge type, CRS mode or error page status rejects the
+	// whole configuration.
 	protections := map[string]*Protection{}
 	wafs := map[string]*WAF{}
+	pages := map[string]*ErrorPages{}
+	checks := map[string]*ActiveHealthCheck{}
+	affinities := map[string]*Affinity{}
 	for _, s := range c.GetSites() {
-		if protections[s.GetId()], err = buildProtection(s.GetProtection()); err != nil {
-			return nil, fmt.Errorf("site %q: %w", s.GetId(), err)
+		id := s.GetId()
+		if protections[id], err = buildProtection(s.GetProtection()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
-		if wafs[s.GetId()], err = buildWAF(s.GetWaf()); err != nil {
-			return nil, fmt.Errorf("site %q: %w", s.GetId(), err)
+		if wafs[id], err = buildWAF(s.GetWaf()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if pages[id], err = buildErrorPages(s.GetErrorPages()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if checks[id], err = buildActiveHealthCheck(s.GetOriginPool().GetActiveHealthCheck()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if affinities[id], err = buildAffinity(s.GetOriginPool().GetSessionAffinity()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 	}
+	if p.PlatformErrorPages, err = buildPlatformErrorPages(c.GetPlatformErrorPages()); err != nil {
+		return nil, err
+	}
+	var offlineWarnings []string
+	if p.OfflineHosts, offlineWarnings, err = buildOfflineHosts(c.GetOfflineHosts()); err != nil {
+		return nil, err
+	}
+	p.Warnings = append(p.Warnings, offlineWarnings...)
 	for _, ch := range c.GetHttpChallenges() {
 		if !idRE.MatchString(ch.GetToken()) || len(ch.GetKeyAuthorization()) > 512 || ch.GetExpiresAt() == nil {
 			return nil, fmt.Errorf("%w: invalid HTTP challenge", ErrRejected)
@@ -530,6 +578,15 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		site.Protection = protections[id]
 		site.WAF = wafs[id]
+		site.KeepCacheTag = s.GetKeepCacheTag()
+		site.ErrorPages = pages[id]
+		site.ActiveHealthCheck = checks[id]
+		site.ActiveHealth = site.ActiveHealthCheck != nil
+		site.Affinity = affinities[id]
+		// Affinity cookies are signed with the cluster's challenge keys.
+		if site.Affinity != nil && len(p.ChallengeKeys) == 0 {
+			return nil, fmt.Errorf("%w: site %q uses session affinity, but the configuration carries no challenge keys to sign its cookies", ErrRejected, id)
+		}
 		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
 			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)
 		}
@@ -613,6 +670,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			site.CacheRules = append(site.CacheRules, rule)
 		}
 		if err := requireModules(&site, opts.ExtraFeatures); err != nil {
+			return nil, err
+		}
+		if err := requireFeatures(&site, opts.ExtraFeatures); err != nil {
 			return nil, err
 		}
 		p.Sites = append(p.Sites, site)
