@@ -3159,7 +3159,15 @@ type Domain struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// When true, name is a suffix and matches any single left-most label
 	// ("*.example.com" is stored as name "example.com", wildcard true).
-	Wildcard      bool `protobuf:"varint,2,opt,name=wildcard,proto3" json:"wildcard,omitempty"`
+	Wildcard bool `protobuf:"varint,2,opt,name=wildcard,proto3" json:"wildcard,omitempty"`
+	// The site's certificate does not cover this domain yet (its ACME
+	// certificate is being reissued for it): the domain is served over HTTP
+	// only, with no certificate in the TLS handshake and no HTTPS redirect or
+	// HSTS, until a revision without the flag. Only on sites with a
+	// certificate. Added in v0.19.0 (feature tls-pending-domains-v1); the
+	// console sends it only to clusters whose active nodes all report the
+	// feature and otherwise leaves such domains out.
+	TlsPending    bool `protobuf:"varint,3,opt,name=tls_pending,json=tlsPending,proto3" json:"tls_pending,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3204,6 +3212,13 @@ func (x *Domain) GetName() string {
 func (x *Domain) GetWildcard() bool {
 	if x != nil {
 		return x.Wildcard
+	}
+	return false
+}
+
+func (x *Domain) GetTlsPending() bool {
+	if x != nil {
+		return x.TlsPending
 	}
 	return false
 }
@@ -4444,10 +4459,12 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\acookies\x18\x05 \x03(\tR\acookies\x12\x1f\n" +
 	"\vdevice_type\x18\x06 \x01(\bR\n" +
 	"deviceType\x12!\n" +
-	"\fexclude_host\x18\a \x01(\bR\vexcludeHost\"8\n" +
+	"\fexclude_host\x18\a \x01(\bR\vexcludeHost\"Y\n" +
 	"\x06Domain\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
-	"\bwildcard\x18\x02 \x01(\bR\bwildcard\"\xe5\x03\n" +
+	"\bwildcard\x18\x02 \x01(\bR\bwildcard\x12\x1f\n" +
+	"\vtls_pending\x18\x03 \x01(\bR\n" +
+	"tlsPending\"\xe5\x03\n" +
 	"\n" +
 	"OriginPool\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
