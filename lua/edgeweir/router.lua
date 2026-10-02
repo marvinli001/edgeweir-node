@@ -154,7 +154,8 @@ local function rule_ids(chain)
 end
 
 -- key_request collects what the cache key policy of site needs. path is
--- the normalized $uri, headers every request header.
+-- the normalized $uri, headers every request header. nil: the key cookies
+-- are ambiguous (edgeweir.cachekey.key_cookies), the request is not cached.
 local function key_request(site, var, path, headers)
   local key = site.cache_key
   local req = {
@@ -170,8 +171,12 @@ local function key_request(site, var, path, headers)
     req.headers = headers
   end
   if #key.cookies > 0 then
+    local values = cachekey.key_cookies(headers.cookie, key.cookies)
+    if not values then
+      return nil
+    end
     req.cookie = function(name)
-      return ngx.var["cookie_" .. name]
+      return values[name]
     end
   end
   return req
@@ -323,6 +328,14 @@ local function access()
     var.edgeweir_range_mode = "pass"
     return true
   end
+  -- Cache rules, purge markers and the key all use nginx's normalized
+  -- path, so an encoded variant of a URL can never escape a purge.
+  local path = original_path
+  local req = key_request(site, var, path, headers)
+  if not req then
+    var.edgeweir_range_mode = "pass"
+    return true
+  end
   if site._browser_ttl then
     -- For the browser TTL of the rule that decides the response.
     local ctx = ngx.ctx
@@ -337,11 +350,7 @@ local function access()
     var.edgeweir_range_mode = "slice"
   end
 
-  -- Cache rules, purge markers and the key all use nginx's normalized
-  -- path, so an encoded variant of a URL can never escape a purge.
-  local path = original_path
   local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
-  local req = key_request(site, var, path, headers)
   local tmax = purge.tag_max(site.id)
   if tmax then
     -- The site has tag markers: the object's tags may move its key.

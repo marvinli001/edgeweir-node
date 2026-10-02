@@ -586,6 +586,35 @@ test("cachekey query modes, sorting, device, headers, cookies and host", functio
   eq(cachekey.build(s, req, 0), "v:1:http:///p|d=m|h:accept-language=de,en|c:ab=b")
 end)
 
+test("cachekey.key_cookies reads cookies like origins and refuses ambiguous ones", function()
+  local function values(header, names)
+    local v = cachekey.key_cookies(header, names or { "lang" })
+    if not v then return "ambiguous" end
+    local out = {}
+    for _, n in ipairs(names or { "lang" }) do out[#out + 1] = n .. "=" .. tostring(v[n]) end
+    return table.concat(out, ";")
+  end
+  eq(values(nil), "lang=nil")
+  eq(values("a=1; lang=fr; b=2"), "lang=fr")
+  eq(values("lang="), "lang=")
+  eq(values("lang=en,fr"), "lang=en,fr", "a comma inside the value is the value (RFC 6265)")
+  eq(values("x=1; lang=a=b"), "lang=a=b")
+  -- Names are case-sensitive: other cookies never stand in for the key's.
+  eq(values("LANG=en"), "ambiguous", "another case only")
+  eq(values("LANG=en; lang=fr"), "ambiguous", "the origin and nginx disagree about which counts")
+  eq(values("lang=en; lang=fr"), "ambiguous", "repeated")
+  eq(values("a=1, lang=fr"), "ambiguous", "after a comma (nginx splits there)")
+  eq(values("l%61ng=fr"), "ambiguous", "percent-encoded name")
+  eq(values("lang"), "ambiguous", "without =")
+  eq(values("lang =fr"), "ambiguous", "space before =")
+  -- Several Cookie fields (HTTP/2 crumbs) are one list.
+  eq(values({ "a=1", "lang=de" }), "lang=de")
+  eq(values({ "lang=de", "lang=fr" }), "ambiguous")
+  eq(values("ab=1; cd=2", { "ab", "cd" }), "ab=1;cd=2")
+  eq(values("ab=1; Ab=2", { "ab", "cd" }), "ambiguous")
+  eq(values("other=LANG"), "lang=nil", "values never count as names")
+end)
+
 test("cachekey parts are escaped so no value can imitate another part", function()
   local s = store.prepare(site("x", { { name = "x.test" } }, {
     cache_key = { query = "all", headers = { "h1", "h2" }, cookies = { "c1", "c2" } },

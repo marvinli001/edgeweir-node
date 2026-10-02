@@ -23,8 +23,8 @@
 local _M = {}
 
 local concat, sort = table.concat, table.sort
-local byte, char, format, gmatch, gsub, find, sub = string.byte, string.char, string.format, string.gmatch,
-  string.gsub, string.find, string.sub
+local byte, char, format, gmatch, gsub, find, lower, match, sub = string.byte, string.char, string.format,
+  string.gmatch, string.gsub, string.find, string.lower, string.match, string.sub
 local re_find = ngx.re.find
 local unescape = ngx.unescape_uri
 
@@ -146,9 +146,58 @@ local function header_value(v)
   return v and escape(v, ESC_VALUE) or ""
 end
 
+local function trim(s)
+  return (match(s, "^[ \t]*(.-)[ \t]*$"))
+end
+
+-- key_cookies reads the cookies the key names (names) from the request's
+-- Cookie header (a string, a list of fields, or nil) as origins do (RFC
+-- 6265, section 5.4): pairs separated by ";", names compared exactly.
+-- Returns name -> raw value, or nil when the key would be ambiguous: a key
+-- cookie that appears twice, in another case, percent-encoded, without
+-- "=", or after a "," (nginx's $cookie_ and other parsers split there and
+-- compare names in any case). Origins disagree about which of those
+-- counts, so such requests are not cached at all.
+function _M.key_cookies(header, names)
+  if type(header) == "table" then
+    header = concat(header, "; ")
+  end
+  local values = {}
+  if type(header) ~= "string" or header == "" then
+    return values
+  end
+  local exact, loose, wanted = {}, {}, {}
+  for i = 1, #names do
+    exact[names[i]] = 0
+    wanted[lower(names[i])] = true
+  end
+  for pair in gmatch(header, "[^;]+") do
+    local eq = find(pair, "=", 1, true)
+    local name = eq and match(sub(pair, 1, eq - 1), "^[ \t]*(.*)$")
+    if name and exact[name] then
+      exact[name] = exact[name] + 1
+      values[name] = sub(pair, eq + 1)
+    end
+  end
+  for segment in gmatch(header, "[^;,]+") do
+    local name = lower(unescape(trim(match(segment, "^[^=]*"))))
+    if wanted[name] then
+      loose[name] = (loose[name] or 0) + 1
+    end
+  end
+  for i = 1, #names do
+    local n = loose[lower(names[i])] or 0
+    if n > 1 or (n == 1 and exact[names[i]] ~= 1) then
+      return nil
+    end
+  end
+  return values
+end
+
 -- build returns the cache key. req = { scheme, host, path (normalized
 -- $uri), args (raw query string), user_agent, headers (lowercase name ->
--- value or list, e.g. ngx.req.get_headers(0)), cookie (name -> value) }.
+-- value or list, e.g. ngx.req.get_headers(0)), cookie (name -> value, see
+-- key_cookies) }.
 function _M.build(site, req, epoch)
   local key = site.cache_key
   local parts = { site.id, ":", site.cache_generation, ":", req.scheme, "://" }
