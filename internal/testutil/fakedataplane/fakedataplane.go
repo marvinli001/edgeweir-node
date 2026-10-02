@@ -31,6 +31,10 @@ type Server struct {
 	pending        []dataplane.MinuteStats
 	failPut        int
 	rejectRevision uint64
+	// tooLarge answers 507 to the site table of that revision; putCalls
+	// counts PUT /v1/sites requests.
+	tooLarge uint64
+	putCalls int
 	// Purge markers by identity (site, type, host, path, query) -> epoch.
 	markers    map[string]dataplane.PurgeMarker
 	purgeCalls []string
@@ -178,6 +182,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/v1/status" && r.Method == http.MethodGet:
 		reply(w, 200, s.status)
 	case r.URL.Path == "/v1/sites" && r.Method == http.MethodPut:
+		s.putCalls++
 		if s.failPut > 0 {
 			s.failPut--
 			reply(w, 500, map[string]string{"error": "injected failure"})
@@ -191,6 +196,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if t.Revision == s.rejectRevision && s.rejectRevision != 0 {
 			reply(w, 400, map[string]string{"error": "injected revision rejection"})
+			return
+		}
+		if t.Revision == s.tooLarge && s.tooLarge != 0 {
+			reply(w, 507, map[string]string{"error": "shared dict edgeweir_sites: no memory"})
 			return
 		}
 		s.table = &t
@@ -714,6 +723,20 @@ func (s *Server) FailNextPuts(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failPut = n
+}
+
+// TooLarge makes the site table of revision not fit (507).
+func (s *Server) TooLarge(revision uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tooLarge = revision
+}
+
+// PutCalls counts PUT /v1/sites requests.
+func (s *Server) PutCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.putCalls
 }
 
 func (s *Server) RejectRevision(revision uint64) {

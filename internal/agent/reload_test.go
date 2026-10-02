@@ -195,3 +195,24 @@ func TestAgentRetriesAnInterruptedTest(t *testing.T) {
 	e.eng.mu.Unlock()
 	eventually(t, "revision 2 applied", statusWith(e.console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
 }
+
+// TestAgentDoesNotRetryATableThatDoesNotFit (P1-62): a site table the data
+// plane has no room for (507) fails like a rejected one, naming the flag
+// to raise, instead of being pushed again and again.
+func TestAgentDoesNotRetryATableThatDoesNotFit(t *testing.T) {
+	e := startEnrolled(t, "toolarge", func(c *agent.Config) { c.PollInterval = 100 * time.Millisecond },
+		demoSite("site-a", "site-a.test"))
+	e.dp.TooLarge(e.rev + 1)
+	e.console.Publish(baseConfig(demoSite("site-a", "site-a.test"), demoSite("site-b", "site-b.test")))
+	eventually(t, "revision 2 failed", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
+	if msg := e.console.LastStatus().GetMessage(); !strings.Contains(msg, "does not fit the data plane's site store (--sites-dict-mb 64)") {
+		t.Fatalf("message = %q", msg)
+	}
+	puts := e.dp.PutCalls()
+	calls := len(e.console.GetConfigCalls())
+	eventually(t, "more polls", func() bool { return len(e.console.GetConfigCalls()) >= calls+5 })
+	// The previous table may be pushed back once; the new one is not retried.
+	if n := e.dp.PutCalls(); n > puts+1 {
+		t.Fatalf("site table pushed %d more times", n-puts)
+	}
+}

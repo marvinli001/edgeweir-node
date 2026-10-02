@@ -138,6 +138,9 @@ const (
 	// DefaultSitesDictMB sizes the site table store (--sites-dict-mb): the
 	// current and the previous table, error page templates included.
 	DefaultSitesDictMB = 64
+	// DefaultStatsDictMB sizes the statistics counters (--stats-dict-mb):
+	// per site and minute until the agent drains them.
+	DefaultStatsDictMB = 16
 	// DefaultL4DictMB sizes the layer-4 table store (--l4-dict-mb): the
 	// current and the previous layer-4 table with their IP lists.
 	DefaultL4DictMB = 32
@@ -163,7 +166,7 @@ func (p Params) WithDefaults() Params {
 		p.SitesDictMB = DefaultSitesDictMB
 	}
 	if p.StatsDictMB == 0 {
-		p.StatsDictMB = 16
+		p.StatsDictMB = DefaultStatsDictMB
 	}
 	if p.PurgeDictMB == 0 {
 		p.PurgeDictMB = 32

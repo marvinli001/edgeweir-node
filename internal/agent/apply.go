@@ -274,6 +274,11 @@ func (a *Agent) pushWithRetry(ctx context.Context, table *dataplane.SiteTable) e
 		if errors.As(err, &apiErr) && apiErr.Status == 400 {
 			return &permanentError{fmt.Errorf("data plane rejected the site table: %w", err)}
 		}
+		if errors.As(err, &apiErr) && apiErr.Status == 507 {
+			// It will not fit on a retry either.
+			return &permanentError{fmt.Errorf("the site table does not fit the data plane's site store (--sites-dict-mb %d): %w",
+				a.cfg.Render.WithDefaults().SitesDictMB, err)}
+		}
 		if time.Now().After(deadline) {
 			a.setDataPlaneHealthy(false)
 			return fmt.Errorf("push site table: %w", err)
@@ -312,6 +317,10 @@ func (a *Agent) pushL4WithRetry(ctx context.Context, t *dataplane.L4Table) error
 		var apiErr *dataplane.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 400 {
 			return &permanentError{fmt.Errorf("data plane rejected the layer-4 table: %w", err)}
+		}
+		if errors.As(err, &apiErr) && apiErr.Status == 507 {
+			return &permanentError{fmt.Errorf("the layer-4 table does not fit the data plane's store (--l4-dict-mb %d): %w",
+				a.cfg.Render.WithDefaults().L4DictMB, err)}
 		}
 		if time.Now().After(deadline) {
 			a.setDataPlaneHealthy(false)

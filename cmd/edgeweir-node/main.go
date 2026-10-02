@@ -442,6 +442,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		geoCity       = fs.String("geoip-city", "", "operator-provided City MMDB path")
 		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
 		sitesDictMB   = fs.Int("sites-dict-mb", render.DefaultSitesDictMB, "size of the site table store (lua_shared_dict edgeweir_sites: the current and the previous site table, error page templates included) in MiB")
+		statsDictMB   = fs.Int("stats-dict-mb", render.DefaultStatsDictMB, "size of the statistics counters (lua_shared_dict edgeweir_stats: per site and minute until the agent drains them) in MiB")
 		purgeDictMB   = fs.Int("purge-dict-mb", 32, "size of the purge marker store (lua_shared_dict edgeweir_purge) in MiB")
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
 		purgeTags     = fs.Int("purge-tags-per-site", agent.DefaultPurgeTagsPerSite, "tag purge markers per site before the site's markers collapse into one site-level marker")
@@ -606,6 +607,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		WorkerRlimitNofile: nofile,
 		WorkerConnections:  workerConnections,
 		SitesDictMB:        *sitesDictMB,
+		StatsDictMB:        *statsDictMB,
 		PurgeDictMB:        *purgeDictMB,
 		BanDictMB:          *banDictMB,
 		BanCapacity:        *banCapacity,

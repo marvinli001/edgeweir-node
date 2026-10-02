@@ -231,6 +231,7 @@ edgeweir-node version
 | `--upgrade-public-key` | 空 | 发布公钥；为空时固定官方 GitHub OIDC 身份 |
 | `--upgrade-allow-http` | `false` | 允许明文 HTTP 发布镜像（本地测试、隔离网络） |
 | `--sites-dict-mb` | `64` | 站点表存储（`lua_shared_dict edgeweir_sites`：当前与上一版站点表，含错误页模板），MiB |
+| `--stats-dict-mb` | `16` | 统计计数存储（`lua_shared_dict edgeweir_stats`：各站点每分钟计数，agent 取走前保存），MiB |
 | `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`），MiB |
 | `--purge-markers-per-site` | `1000` | 每站点 URL 与前缀标记上限，超出后合并为全站标记 |
 | `--purge-tags-per-site` | `5000` | 每站点标签标记上限，超出后该站点的标记合并为全站标记 |
