@@ -195,6 +195,9 @@ type MinuteStats struct {
 	// WAFRules counts the CRS rules that matched, by rule id (the heaviest
 	// 20 of the minute).
 	WAFRules map[string]uint64 `json:"waf_rules"`
+	// LoggedRules counts the matches of rules with the log action, by rule
+	// id (the heaviest 20 of the minute).
+	LoggedRules map[string]uint64 `json:"logged_rules"`
 }
 
 // Client talks to the control socket.

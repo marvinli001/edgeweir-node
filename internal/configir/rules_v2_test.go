@@ -496,6 +496,12 @@ func TestCanonicalizeV0130(t *testing.T) {
 	}
 }
 
+func TestSupportedFeaturesRuleLog(t *testing.T) {
+	if !slices.Contains(SupportedFeatures, FeatureRuleLog) || FeatureRuleLog != "rule-log-v1" {
+		t.Fatalf("SupportedFeatures lacks rule-log-v1: %v", SupportedFeatures)
+	}
+}
+
 func TestSupportedFeaturesRulesV2(t *testing.T) {
 	if !slices.Contains(SupportedFeatures, FeatureRulesV2) {
 		t.Fatalf("SupportedFeatures lacks %s", FeatureRulesV2)

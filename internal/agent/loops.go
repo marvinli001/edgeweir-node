@@ -320,6 +320,7 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			TopUrls:       topCounters(m.TopURLs),
 			TopIps:        topCounters(m.TopIPs),
 			WafRules:      wafRules(m.WAFRules),
+			LoggedRules:   loggedRules(m.LoggedRules),
 		})
 	}
 	return out
@@ -431,6 +432,29 @@ func wafRules(input map[string]uint64) []*nodev1.TopCounter {
 	out := topCounters(valid)
 	if len(out) > maxWAFRules {
 		out = out[:maxWAFRules]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// maxLoggedRules bounds MinuteStats.logged_rules (the data plane keeps the
+// heaviest 20 per site and minute as well).
+const maxLoggedRules = 20
+
+// loggedRules converts the match counts of log rules; values that are not
+// rule ids are dropped.
+func loggedRules(input map[string]uint64) []*nodev1.TopCounter {
+	valid := make(map[string]uint64, len(input))
+	for id, count := range input {
+		if configir.ValidID(id) && count > 0 {
+			valid[id] = count
+		}
+	}
+	out := topCounters(valid)
+	if len(out) > maxLoggedRules {
+		out = out[:maxLoggedRules]
 	}
 	if len(out) == 0 {
 		return nil

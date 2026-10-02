@@ -241,7 +241,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -278,6 +278,11 @@ const (
 	FeatureProbeHealth = "probe-health-v1"
 	FeatureMetrics     = "metrics-v1"
 )
+
+// FeatureRuleLog (proto v0.18.0): the matches of rules with the log action
+// are counted per rule and minute and reported in MinuteStats.logged_rules.
+// The console only reads the counts; no configuration requires it.
+const FeatureRuleLog = "rule-log-v1"
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.

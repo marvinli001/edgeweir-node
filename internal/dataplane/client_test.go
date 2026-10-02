@@ -71,9 +71,10 @@ func TestClientAgainstFakeSocket(t *testing.T) {
 	if err != nil || len(stats) != 0 {
 		t.Fatalf("empty drain = %v, %v", stats, err)
 	}
-	srv.AddStats(dataplane.MinuteStats{Minute: 1800000000, SiteID: "s1", Requests: 3, StatusCodes: map[string]uint64{"200": 3}})
+	srv.AddStats(dataplane.MinuteStats{Minute: 1800000000, SiteID: "s1", Requests: 3, StatusCodes: map[string]uint64{"200": 3},
+		LoggedRules: map[string]uint64{"r1": 2}})
 	stats, err = c.DrainStats(ctx, false)
-	if err != nil || len(stats) != 1 || stats[0].StatusCodes["200"] != 3 {
+	if err != nil || len(stats) != 1 || stats[0].StatusCodes["200"] != 3 || stats[0].LoggedRules["r1"] != 2 {
 		t.Fatalf("drain = %+v, %v", stats, err)
 	}
 }
