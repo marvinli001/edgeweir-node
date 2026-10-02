@@ -145,8 +145,7 @@ func TestAgentSitemapPrefetch(t *testing.T) {
 // TestAgentSitemapIndex: a gzipped sitemapindex is followed one level:
 // children on other hosts are not fetched, a child that is an index is not
 // followed, a missing child fails the task (sitemap_failed) while the
-// URLs of the others are prefetched; max_urls stops the fetching. Sitemap
-// tasks run after the purges of their batch.
+// URLs of the others are prefetched; max_urls stops the fetching.
 func TestAgentSitemapIndex(t *testing.T) {
 	edge := &sitemapEdge{docs: map[string][]byte{
 		"/index.xml.gz": gz(t, sitemapIndex(
@@ -167,11 +166,13 @@ func TestAgentSitemapIndex(t *testing.T) {
 		sitemapTask("s-index", "site-a", "http://site-a.test/index.xml.gz", 0),
 		purgeTask("p1", time.Now(), urlTarget("site-a", "/x")))
 	res := waitResults(t, e.console, 2)
-	if res[0].GetTaskId() != "p1" {
-		t.Fatalf("%s ran first, want the purge", res[0].GetTaskId())
+	// The purge runs on its own lane (or first in a shared batch).
+	i := slices.IndexFunc(res, func(r *nodev1.ReportTaskResultRequest) bool { return r.GetTaskId() == "s-index" })
+	if i < 0 || res[1-i].GetTaskId() != "p1" || res[1-i].GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED {
+		t.Fatalf("results = %v", res)
 	}
 	want := map[string]string{"url": "http://site-a.test/missing.xml", "reason": "status", "status": "404"}
-	if r := res[1]; r.GetState() != nodev1.TaskState_TASK_STATE_FAILED || r.GetSucceeded() != 3 || r.GetFailed() != 0 ||
+	if r := res[i]; r.GetState() != nodev1.TaskState_TASK_STATE_FAILED || r.GetSucceeded() != 3 || r.GetFailed() != 0 ||
 		r.GetErrorCode() != "sitemap_failed" || !maps.Equal(r.GetErrorParams(), want) ||
 		!strings.HasPrefix(r.GetMessage(), "sitemap http://site-a.test/missing.xml: HTTP 404") {
 		t.Fatalf("result = %v", r)

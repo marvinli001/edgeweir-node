@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -60,13 +61,39 @@ func TestAgentRunsPurgesBeforePrefetches(t *testing.T) {
 	e.console.AddTasks(true,
 		prefetchTask("prefetch-1", "http://site-a.test/1", "http://site-a.test/2"),
 		purgeTask("purge-1", time.Now(), urlTarget("site-a", "/x")))
-	// Both are found through the heartbeat (tasks_pending) in one pull.
+	// Both are found through the heartbeat (tasks_pending): the purge runs
+	// on its own lane, or first in a shared batch.
 	res := waitResults(t, e.console, 2)
 	if res[0].GetTaskId() != "purge-1" || res[1].GetTaskId() != "prefetch-1" {
 		t.Fatalf("results in order %s, %s; want the purge first", res[0].GetTaskId(), res[1].GetTaskId())
 	}
 	if res[1].GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || res[1].GetSucceeded() != 2 {
 		t.Fatalf("prefetch = %v", res[1])
+	}
+}
+
+// TestAgentPurgesDoNotWaitForPrefetches (P1-62): a purge created while an
+// earlier batch of prefetches still runs is pulled on the purge lane
+// (purge_only) and done long before the prefetches end.
+func TestAgentPurgesDoNotWaitForPrefetches(t *testing.T) {
+	edge, requests := slowEdge(t, 2*time.Second)
+	e := startEnrolledConfig(t, "lane", atEdge(edge, "", func(c *agent.Config) {
+		c.TaskPollInterval = time.Hour
+		c.PrefetchConcurrency = 1
+	}), edgeConfig())
+	e.console.AddTask(prefetchTask("prefetch-slow", "http://site-a.test/1", "http://site-a.test/2"), false)
+	eventually(t, "prefetch started", func() bool { return requests.Load() == 1 })
+	start := time.Now()
+	e.console.AddTask(purgeTask("purge-late", time.Now(), urlTarget("site-a", "/x")), false)
+	res := waitResults(t, e.console, 1)[0]
+	if res.GetTaskId() != "purge-late" || time.Since(start) > time.Second {
+		t.Fatalf("first result %s after %v; want the purge at once", res.GetTaskId(), time.Since(start))
+	}
+	if !slices.Contains(e.console.TaskPulls(), true) {
+		t.Fatalf("no purge_only pull: %v", e.console.TaskPulls())
+	}
+	if r := waitResults(t, e.console, 2)[1]; r.GetTaskId() != "prefetch-slow" || r.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED {
+		t.Fatalf("prefetch = %v", r)
 	}
 }
 

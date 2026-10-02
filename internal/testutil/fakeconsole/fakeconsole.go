@@ -87,6 +87,7 @@ type Console struct {
 	credentials        map[string]*nodev1.OriginCredential
 	credRequests       [][]string
 	pendingTasks       []*nodev1.NodeTask
+	taskPulls          []bool // purge_only of every PullTasks call
 	taskResults        []*nodev1.ReportTaskResultRequest
 	taskWatchers       map[chan struct{}]struct{}
 
@@ -593,13 +594,29 @@ func (c *Console) GetOriginCredentials(_ context.Context, req *connect.Request[n
 func (c *Console) PullTasks(_ context.Context, req *connect.Request[nodev1.PullTasksRequest]) (*connect.Response[nodev1.PullTasksResponse], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n := len(c.pendingTasks)
-	if m := int(req.Msg.GetMaxTasks()); m > 0 && m < n {
-		n = m
+	max := len(c.pendingTasks)
+	if m := int(req.Msg.GetMaxTasks()); m > 0 && m < max {
+		max = m
 	}
-	out := c.pendingTasks[:n]
-	c.pendingTasks = slices.Clone(c.pendingTasks[n:])
+	var out, rest []*nodev1.NodeTask
+	for _, task := range c.pendingTasks {
+		_, purge := task.GetKind().(*nodev1.NodeTask_Purge)
+		if len(out) < max && (purge || !req.Msg.GetPurgeOnly()) {
+			out = append(out, task)
+		} else {
+			rest = append(rest, task)
+		}
+	}
+	c.pendingTasks = rest
+	c.taskPulls = append(c.taskPulls, req.Msg.GetPurgeOnly())
 	return connect.NewResponse(&nodev1.PullTasksResponse{Tasks: out}), nil
+}
+
+// TaskPulls returns purge_only of every PullTasks call so far.
+func (c *Console) TaskPulls() []bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.taskPulls)
 }
 
 // ReportTaskResult implements NodeService.

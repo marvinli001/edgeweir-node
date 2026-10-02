@@ -274,6 +274,7 @@ type Agent struct {
 	syncCh       chan struct{}
 	reportCh     chan struct{}
 	taskCh       chan struct{}
+	purgeCh      chan struct{} // wakes purgeLoop
 
 	// Dynamic bans (bans.go). banMu serializes changes of the applied
 	// state and writes of bans to the data plane.
@@ -345,6 +346,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		syncCh:       make(chan struct{}, 1),
 		reportCh:     make(chan struct{}, 1),
 		taskCh:       make(chan struct{}, 1),
+		purgeCh:      make(chan struct{}, 1),
 
 		bans:           bans.New(),
 		banDroppedSeen: map[string]time.Time{},
@@ -492,6 +494,7 @@ func (a *Agent) Run(parent context.Context) error {
 	})
 	spawn("logs", a.logsLoop)
 	spawn("tasks", a.taskLoop)
+	spawn("purges", a.purgeLoop)
 	spawn("bans", a.bansLoop)
 	spawn("autobans", a.autoBansLoop)
 	spawn("security", a.securityLoop)

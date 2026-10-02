@@ -28,7 +28,9 @@ import (
 // sitemaps, which share a time budget counted from the pull
 // (PrefetchBudget, below the console's five minutes before it hands a task
 // out again). URLs not done when the budget runs out are reported as
-// failed.
+// failed. Purges also have a lane of their own (purgeLoop, purge_only
+// pulls): one created while a batch of prefetches or an upgrade runs does
+// not wait for it.
 
 const (
 	maxTasksPerPull  = 10
@@ -38,9 +40,11 @@ const (
 )
 
 func (a *Agent) triggerTasks() {
-	select {
-	case a.taskCh <- struct{}{}:
-	default:
+	for _, ch := range []chan struct{}{a.taskCh, a.purgeCh} {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -61,12 +65,37 @@ func (a *Agent) taskLoop(ctx context.Context) {
 	}
 }
 
+// purgeLoop pulls and runs purge tasks only (PullTasksRequest.purge_only)
+// when tasks are announced and about every TaskPollInterval, next to
+// taskLoop. A console that ignores purge_only hands out any task here;
+// they run here then, in the same order as in taskLoop.
+func (a *Agent) purgeLoop(ctx context.Context) {
+	for {
+		a.pullAndRun(ctx, true)
+		t := time.NewTimer(jittered(a.cfg.TaskPollInterval))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		case <-a.purgeCh:
+			t.Stop()
+		}
+	}
+}
+
 func (a *Agent) runTasks(ctx context.Context) {
 	a.flushResults(ctx)
 	a.flushUpgradeResult(ctx)
+	a.pullAndRun(ctx, false)
+}
+
+// pullAndRun pulls tasks (purges only for the purge lane) and runs them,
+// up to maxPullRounds batches.
+func (a *Agent) pullAndRun(ctx context.Context, purgeOnly bool) {
 	for range maxPullRounds {
 		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
-		resp, err := a.channel.Client().PullTasks(cctx, connect.NewRequest(&nodev1.PullTasksRequest{MaxTasks: maxTasksPerPull}))
+		resp, err := a.channel.Client().PullTasks(cctx, connect.NewRequest(&nodev1.PullTasksRequest{MaxTasks: maxTasksPerPull, PurgeOnly: purgeOnly}))
 		cancel()
 		if err != nil {
 			if ctx.Err() == nil {
