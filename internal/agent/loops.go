@@ -26,7 +26,7 @@ import (
 func (a *Agent) logRPCError(msg string, err error) {
 	if controlplane.IsAuthError(err) {
 		a.log.Error(msg+": the console rejected this node's credentials (node deleted or certificate revoked/expired?); "+
-			"still serving the last-known-good configuration; re-enroll with `edgeweir-node enroll --force` if needed", "err", err)
+			"still serving the last-known-good configuration; if needed, stop the agent, re-enroll with `edgeweir-node enroll --force` and start it again", "err", err)
 		return
 	}
 	a.log.Warn(msg, "err", err)
@@ -285,6 +285,12 @@ func (a *Agent) doRenew(ctx context.Context) error {
 	keyPEM, err := pki.MarshalPrivateKeyPEM(key)
 	if err != nil {
 		return err
+	}
+	// The node may have been enrolled again meanwhile: never put the old
+	// node's certificate next to the new identity (identityLoop restarts
+	// the agent with it).
+	if a.identityChanged() {
+		return errIdentityChanged
 	}
 	if err := a.ids.SwapCertificate(keyPEM, []byte(resp.Msg.GetCertificatePem())); err != nil {
 		return err

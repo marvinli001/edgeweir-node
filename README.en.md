@@ -185,7 +185,7 @@ edgeweir-node version
 | `--token` | none | One-time token; visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
 | `--server-name` | host of `--server` | TLS server name to verify |
 | `--state-dir` | `/var/lib/edgeweir-node` | State directory |
-| `--force` | off | Replace an existing identity (re-enroll) |
+| `--force` | off | Replace an existing identity (re-enroll); refused while `run` runs, stop the node first (e.g. `systemctl stop edgeweir-node`) |
 | `--timeout` | `30s` | Enrollment RPC timeout |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |

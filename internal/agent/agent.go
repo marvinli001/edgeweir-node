@@ -112,6 +112,10 @@ type Config struct {
 	TestTimeout        time.Duration // `nginx -t` of a new nginx.conf, default 60s
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
+	// IdentityInterval: identity.json is compared with the identity in use
+	// this often; a new one (re-enrolled) stops the agent so that it starts
+	// again with it (default 10s).
+	IdentityInterval time.Duration
 
 	// PurgeMarkersPerSite bounds a site's URL and prefix purge markers,
 	// PurgeTagsPerSite its tag markers; beyond either the site's markers
@@ -186,6 +190,7 @@ func (c *Config) setDefaults() {
 	def(&c.TestTimeout, time.Minute)
 	def(&c.RPCTimeout, 30*time.Second)
 	def(&c.TaskPollInterval, 30*time.Second)
+	def(&c.IdentityInterval, 10*time.Second)
 	def(&c.PrefetchTimeout, time.Minute)
 	def(&c.PrefetchBudget, 4*time.Minute)
 	def(&c.AutoBanInterval, 5*time.Second)
@@ -365,11 +370,24 @@ func kernelManager(exec nft.Executor, log *slog.Logger) *nft.Manager {
 	return nft.NewManager(exec, log)
 }
 
-// Run runs the agent until ctx is cancelled.
-func (a *Agent) Run(ctx context.Context) error {
+// errIdentityChanged stops the agent when identity.json no longer names the
+// identity it uses (re-enrolled): the supervisor or systemd starts it again
+// with the new one.
+var errIdentityChanged = errors.New("the node identity changed (re-enrolled); restarting with the new identity")
+
+// Run runs the agent until ctx is cancelled, or until the node identity
+// changes on disk (errIdentityChanged).
+func (a *Agent) Run(parent context.Context) error {
+	ctx, stop := context.WithCancelCause(parent)
+	defer stop(nil)
 	if err := a.prepareDirs(); err != nil {
 		return err
 	}
+	unlock, err := a.lockRun(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := a.loadHealthCertificate(); err != nil {
 		return err
 	}
@@ -462,6 +480,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// first RPC.
 	a.syncKernel(ctx)
 
+	spawn("identity", func(ctx context.Context) { a.identityLoop(ctx, stop) })
 	spawn("sync", a.syncLoop)
 	spawn("watch", a.watchLoop)
 	spawn("poll", a.pollLoop)
@@ -483,13 +502,69 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.triggerBans()
 
 	<-ctx.Done()
-	a.log.Info("shutting down")
+	cause := context.Cause(ctx)
+	if errors.Is(cause, errIdentityChanged) {
+		a.log.Error("stopping", "err", cause)
+	} else {
+		a.log.Info("shutting down")
+		cause = nil
+	}
 	select {
 	case <-statsStopped:
 	case <-time.After(15 * time.Second):
 		a.log.Warn("statistics were not saved in time; stopping nginx anyway")
 	}
-	return nil
+	return cause
+}
+
+// lockRun takes the state directory's run lock (identity.Store.LockRun),
+// waiting up to 30 seconds for a forced enrollment or an agent that is
+// stopping.
+func (a *Agent) lockRun(ctx context.Context) (func(), error) {
+	deadline := time.Now().Add(30 * time.Second)
+	for logged := false; ; logged = true {
+		unlock, err := a.ids.LockRun()
+		if !errors.Is(err, identity.ErrRunning) || time.Now().After(deadline) {
+			return unlock, err
+		}
+		if !logged {
+			a.log.Warn("the state directory is in use (another agent, or an enrollment); waiting", "state_dir", a.cfg.StateDir)
+		}
+		if !sleepCtx(ctx, time.Second) {
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// identityLoop stops the agent (stop with errIdentityChanged) once
+// identity.json names another identity than the one in use.
+func (a *Agent) identityLoop(ctx context.Context, stop context.CancelCauseFunc) {
+	t := time.NewTicker(a.cfg.IdentityInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if a.identityChanged() {
+			stop(errIdentityChanged)
+			return
+		}
+	}
+}
+
+// identityChanged reports whether identity.json is readable and names
+// another identity than the channel's (an unreadable one is being written,
+// or damaged: the channel reports that on its own).
+func (a *Agent) identityChanged() bool {
+	cur, err := a.ids.ReadIdentity()
+	if err != nil {
+		return false
+	}
+	used := a.channel.Identity().Identity
+	return cur.NodeID != used.NodeID || cur.ClusterID != used.ClusterID || cur.ServerURL != used.ServerURL ||
+		cur.ServerName != used.ServerName || cur.CASHA256 != used.CASHA256 || !cur.EnrolledAt.Equal(used.EnrolledAt)
 }
 
 // openChannel loads the identity, retrying while it is unreadable (e.g.
@@ -500,7 +575,7 @@ func (a *Agent) openChannel(ctx context.Context) (*controlplane.Channel, error) 
 		if err == nil {
 			return ch, nil
 		}
-		a.log.Error("cannot load node identity; retrying (re-enroll with `edgeweir-node enroll --force` if this persists)", "err", err)
+		a.log.Error("cannot load node identity; retrying (if this persists, stop the agent and re-enroll with `edgeweir-node enroll --force`)", "err", err)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

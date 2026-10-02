@@ -29,6 +29,13 @@ import (
 // ErrAlreadyEnrolled is returned when an identity exists and Force is off.
 var ErrAlreadyEnrolled = errors.New("node is already enrolled (use --force to replace the identity)")
 
+// ErrAgentRunning is returned by a forced enrollment while an agent runs
+// with the state directory: the agent keeps the identity it loaded, and a
+// certificate renewal could write the old node's certificate next to the
+// new key.
+var ErrAgentRunning = errors.New("edgeweir-node run is using this state directory; stop it first " +
+	"(e.g. systemctl stop edgeweir-node), enroll --force, then start it again")
+
 // ErrProbeAlreadyEnrolled is returned when a probe identity exists.
 var ErrProbeAlreadyEnrolled = errors.New("probe is already enrolled")
 
@@ -187,6 +194,19 @@ func run(ctx context.Context, c common, store identity.Store, hostname string, s
 			return nil, ErrProbeAlreadyEnrolled
 		}
 		return nil, ErrAlreadyEnrolled
+	}
+	// A first enrollment is what a waiting agent expects; replacing the
+	// identity of a running one is not. The lock is held until the new
+	// identity is saved: an agent that starts meanwhile waits for it.
+	if c.force && store.Enrolled() && !store.Probe {
+		release, err := store.LockRun()
+		if errors.Is(err, identity.ErrRunning) {
+			return nil, ErrAgentRunning
+		}
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	// Fail before burning the single-use token if the state directory is
 	// not writable.

@@ -104,9 +104,19 @@ func TestEnrollWritesIdentity(t *testing.T) {
 	if _, err := enroll.Run(context.Background(), opts(url, "tok-2", c.CA.Pin(), dir)); !errors.Is(err, enroll.ErrAlreadyEnrolled) {
 		t.Fatalf("second enroll: err = %v, want ErrAlreadyEnrolled", err)
 	}
-	// With --force the identity is replaced with a new key.
+	// Not while an agent runs with the state directory (it holds the run
+	// lock): the token is not used.
 	o := opts(url, "tok-2", c.CA.Pin(), dir)
 	o.Force = true
+	unlock, err := identity.Store{Dir: dir}.LockRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enroll.Run(context.Background(), o); !errors.Is(err, enroll.ErrAgentRunning) {
+		t.Fatalf("forced enroll with a running agent: err = %v, want ErrAgentRunning", err)
+	}
+	unlock()
+	// With --force the identity is replaced with a new key.
 	if _, err := enroll.Run(context.Background(), o); err != nil {
 		t.Fatalf("forced enroll: %v", err)
 	}

@@ -5,6 +5,7 @@
 //	node.crt       node client certificate issued by the internal CA
 //	ca.crt         internal CA certificate (verified against the pin)
 //	identity.json  node id, cluster id, name and console address
+//	run.lock       held (flock) by `edgeweir-node run` while it runs
 //
 // identity.json is written last and is the "enrolled" marker; the other
 // files are always complete when it exists. Every file is replaced
@@ -40,6 +41,8 @@ const (
 	IdentityFile = "identity.json"
 	// ConfigDir holds the last-known-good configuration (see configstore).
 	ConfigDir = "config"
+	// RunLockFile is locked by a running agent (LockRun).
+	RunLockFile = "run.lock"
 
 	// The probe layout (Store.Probe).
 	ProbeKeyFile      = "probe.key"
@@ -52,6 +55,10 @@ var ErrNotEnrolled = errors.New("node is not enrolled")
 
 // ErrProbeNotEnrolled is returned by Load when probe.json does not exist.
 var ErrProbeNotEnrolled = errors.New("probe is not enrolled")
+
+// ErrRunning is returned by LockRun when an agent already runs with the
+// state directory.
+var ErrRunning = errors.New("an edgeweir-node agent is running with this state directory")
 
 // Identity is the non-secret enrollment metadata: the node fields for a
 // node, the probe fields for a probe.

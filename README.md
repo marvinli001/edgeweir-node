@@ -185,7 +185,7 @@ edgeweir-node version
 | `--token` | 无 | 一次性 token；出现在进程列表中，优先用 `EDGEWEIR_TOKEN` 或 `--token-file` |
 | `--server-name` | `--server` 的主机名 | 校验的 TLS 服务器名 |
 | `--state-dir` | `/var/lib/edgeweir-node` | 状态目录 |
-| `--force` | 关 | 替换已有身份（重新注册） |
+| `--force` | 关 | 替换已有身份（重新注册）；`run` 运行时拒绝，先停止节点（如 `systemctl stop edgeweir-node`） |
 | `--timeout` | `30s` | 注册 RPC 超时 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
