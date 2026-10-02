@@ -2633,7 +2633,12 @@ func (x *GetOriginCredentialsResponse) GetCredentials() []*OriginCredential {
 type PullTasksRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Upper bound of tasks to return; 0 means the console's default.
-	MaxTasks      uint32 `protobuf:"varint,1,opt,name=max_tasks,json=maxTasks,proto3" json:"max_tasks,omitempty"`
+	MaxTasks uint32 `protobuf:"varint,1,opt,name=max_tasks,json=maxTasks,proto3" json:"max_tasks,omitempty"`
+	// Only purge tasks, oldest first (no upgrade): the node pulls them on a
+	// lane of their own, so that a purge never waits behind the prefetches
+	// and upgrades it already pulled. Added in v0.17.0; older consoles
+	// ignore it.
+	PurgeOnly     bool `protobuf:"varint,2,opt,name=purge_only,json=purgeOnly,proto3" json:"purge_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2673,6 +2678,13 @@ func (x *PullTasksRequest) GetMaxTasks() uint32 {
 		return x.MaxTasks
 	}
 	return 0
+}
+
+func (x *PullTasksRequest) GetPurgeOnly() bool {
+	if x != nil {
+		return x.PurgeOnly
+	}
+	return false
 }
 
 // PullTasksResponse carries pending tasks, oldest first.
@@ -3944,7 +3956,8 @@ func (x *GetBansResponse) GetLiftedOwnBans() []*Ban {
 type AutoBan struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	SiteId string                 `protobuf:"bytes,1,opt,name=site_id,json=siteId,proto3" json:"site_id,omitempty"`
-	// A single address: "/32" or "/128".
+	// What the node banned: an IPv4 address ("/32") or an IPv6 /64 (since
+	// v0.17.0; earlier nodes banned single IPv6 addresses, "/128").
 	Cidr      string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
@@ -4301,14 +4314,16 @@ type SecurityEvent struct {
 	PreviousLevel string `protobuf:"bytes,6,opt,name=previous_level,json=previousLevel,proto3" json:"previous_level,omitempty"`
 	// Path of a PATH_LEVEL event (no query string).
 	Path string `protobuf:"bytes,7,opt,name=path,proto3" json:"path,omitempty"`
-	// Address of an IP_BANNED event.
+	// Address of an IP_BANNED event: an IPv4 address or, since v0.17.0, an
+	// IPv6 /64 ("2001:db8:1:2::/64"; CC counts IPv6 clients by their /64).
 	Address string `protobuf:"bytes,8,opt,name=address,proto3" json:"address,omitempty"`
 	// Trigger: site_qps, url_qps, ip_qps, origin_error_rate or cooldown, with
 	// the observed value and the threshold.
 	Metric    string  `protobuf:"bytes,9,opt,name=metric,proto3" json:"metric,omitempty"`
 	Observed  float64 `protobuf:"fixed64,10,opt,name=observed,proto3" json:"observed,omitempty"`
 	Threshold float64 `protobuf:"fixed64,11,opt,name=threshold,proto3" json:"threshold,omitempty"`
-	// Heaviest addresses and paths of the window (bounded, approximate).
+	// Heaviest addresses (IPv4 addresses and IPv6 /64, as in address) and
+	// paths of the window (bounded, approximate).
 	TopIps        []*TopCounter `protobuf:"bytes,12,rep,name=top_ips,json=topIps,proto3" json:"top_ips,omitempty"`
 	TopPaths      []*TopCounter `protobuf:"bytes,13,rep,name=top_paths,json=topPaths,proto3" json:"top_paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -4698,9 +4713,11 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\raccess_key_id\x18\x03 \x01(\tR\vaccessKeyId\x12*\n" +
 	"\x11secret_access_key\x18\x04 \x01(\tR\x0fsecretAccessKey\"d\n" +
 	"\x1cGetOriginCredentialsResponse\x12D\n" +
-	"\vcredentials\x18\x01 \x03(\v2\".edgeweir.node.v1.OriginCredentialR\vcredentials\"/\n" +
+	"\vcredentials\x18\x01 \x03(\v2\".edgeweir.node.v1.OriginCredentialR\vcredentials\"N\n" +
 	"\x10PullTasksRequest\x12\x1b\n" +
-	"\tmax_tasks\x18\x01 \x01(\rR\bmaxTasks\"E\n" +
+	"\tmax_tasks\x18\x01 \x01(\rR\bmaxTasks\x12\x1d\n" +
+	"\n" +
+	"purge_only\x18\x02 \x01(\bR\tpurgeOnly\"E\n" +
 	"\x11PullTasksResponse\x120\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x1a.edgeweir.node.v1.NodeTaskR\x05tasks\"\xce\x02\n" +
 	"\bNodeTask\x12\x0e\n" +
