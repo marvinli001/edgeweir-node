@@ -266,6 +266,17 @@ test("lb: pinned requests leave the round-robin state to the others", function()
   end
 end)
 
+test("WebSocket connections idle up to an hour unless a rule says otherwise", function()
+  local origin = require("edgeweir.origin")
+  local conn = { connect_timeout_ms = 10000, send_timeout_ms = 60000, read_timeout_ms = 60000 }
+  local c, s, r = origin.timeouts(conn, {}, false)
+  eq(c, 10); eq(s, 60); eq(r, 60)
+  c, s, r = origin.timeouts(conn, {}, true)
+  eq(c, 10); eq(s, 3600); eq(r, 3600)
+  c, s, r = origin.timeouts(conn, { read = 300000, connect = 2000 }, true)
+  eq(c, 2); eq(s, 3600); eq(r, 300, "a config rule's read timeout")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

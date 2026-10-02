@@ -307,9 +307,7 @@ function _M.balance()
     ngx_balancer.set_more_tries(#ctx.cands - 1)
   end
   local conn = ctx.site.conn
-  local ov = ctx.override or NO_OVERRIDE
-  ngx_balancer.set_timeouts((ov.connect or conn.connect_timeout_ms) / 1000, (ov.send or conn.send_timeout_ms) / 1000,
-    (ov.read or conn.read_timeout_ms) / 1000)
+  ngx_balancer.set_timeouts(_M.timeouts(conn, ctx.override or NO_OVERRIDE, ctx.upgrade))
   -- Unverified TLS connections are never pooled: a site that verifies must
   -- not reuse a connection another site opened without verification.
   if conn.keepalive and not ctx.upgrade and (o.scheme ~= "https" or ctx.site.tls_verify) then
@@ -368,6 +366,24 @@ local function stale_capable(chain, authorized)
     end
   end
   return false
+end
+
+-- WEBSOCKET_IDLE_MS is how long an upgraded connection (WebSocket) may be
+-- idle: its read and send timeouts are its idle timeouts, and the site's
+-- (for responses, 60 s by default) would close quiet ones. The edge's local
+-- hop allows as long (proxy_read_timeout 3600s).
+_M.WEBSOCKET_IDLE_MS = 3600000
+
+-- timeouts returns the connect, send and read timeouts in seconds of an
+-- attempt: the site's connection settings, config rules' overrides (ov)
+-- first; upgraded connections idle up to WEBSOCKET_IDLE_MS unless a rule
+-- sets the timeout.
+function _M.timeouts(conn, ov, upgrade)
+  local send, read = conn.send_timeout_ms, conn.read_timeout_ms
+  if upgrade then
+    send, read = _M.WEBSOCKET_IDLE_MS, _M.WEBSOCKET_IDLE_MS
+  end
+  return (ov.connect or conn.connect_timeout_ms) / 1000, (ov.send or send) / 1000, (ov.read or read) / 1000
 end
 
 -- defer_to_stale reports whether a response of the origin layer must be
