@@ -25,11 +25,32 @@ import (
 
 func (a *Agent) logRPCError(msg string, err error) {
 	if controlplane.IsAuthError(err) {
+		if notAfter, expired := identityExpired(a.connectedCh.Load(), time.Now()); expired {
+			a.log.Error(msg+": this node's client certificate expired at "+notAfter.UTC().Format(time.RFC3339)+
+				" and the console refuses it; still serving the last-known-good configuration; "+
+				"stop the agent, re-enroll with a new token (`edgeweir-node enroll --force`) and start it again",
+				"err", err, "not_after", notAfter)
+			return
+		}
 		a.log.Error(msg+": the console rejected this node's credentials (node deleted or certificate revoked/expired?); "+
 			"still serving the last-known-good configuration; if needed, stop the agent, re-enroll with `edgeweir-node enroll --force` and start it again", "err", err)
 		return
 	}
 	a.log.Warn(msg, "err", err)
+}
+
+// identityExpired reports whether the client certificate of the channel's
+// identity is past its NotAfter at now (renewal never happened, e.g. the
+// node was offline for its whole remaining lifetime), and when it expired.
+func identityExpired(ch *controlplane.Channel, now time.Time) (time.Time, bool) {
+	if ch == nil {
+		return time.Time{}, false
+	}
+	id := ch.Identity()
+	if id == nil || id.Certificate == nil {
+		return time.Time{}, false
+	}
+	return id.Certificate.NotAfter, now.After(id.Certificate.NotAfter)
 }
 
 // watchLoop keeps a WatchConfig stream open, reconnecting with jittered
