@@ -610,7 +610,12 @@ func (a *Agent) prepareDirs() error {
 	if err := chownToUser(a.cfg.Render.User, filepath.Join(prefix, "tmp"), a.cfg.Render.CacheDir); err != nil {
 		return err
 	}
-	return nil
+	// Workers connect to the GeoIP, origin-layer and layer-4 relay sockets
+	// and write temp files under the prefix (inside the 0700 state
+	// directory by default).
+	p := a.cfg.Render.WithDefaults()
+	return letWorkersIn(a.cfg.Render.User, filepath.Join(prefix, "tmp"), a.cfg.Render.CacheDir,
+		filepath.Dir(p.GeoIPSocket), filepath.Dir(p.OriginSocket), filepath.Dir(p.OriginSocketNoVerify), filepath.Dir(p.L4Socket))
 }
 
 func (a *Agent) buildOptions() configir.Options {
