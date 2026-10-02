@@ -68,6 +68,7 @@
 | `internal/hostinfo` | 上报给控制台的 `NodeInfo`（主机名、非回环非链路本地地址、版本），以及渲染用的本机探测：是否有全局 IPv6（resolver 是否查 AAAA）、能否监听 IPv6、打开文件数硬上限（`worker_rlimit_nofile`） |
 | `internal/bans` | 控制台动态封禁的状态：校验 `GetBans` 页、应用（reset、upsert、removed_ids）、持久化 `bans.json`、按数据面键分组（slot）、差量与容量排序 |
 | `internal/nft` | 内核封禁：管理 `table inet edgeweir`，生成并以 `nft -f -` 执行事务脚本，去除重叠元素；执行器接口 `nft.Executor`（测试用假的执行器） |
+| `internal/retry` | 暂时性失败的重试：指数退避（起始间隔、上限）、总预算、单次尝试的超时；标记为永久的错误立即返回 |
 | `internal/fsutil` | 崩溃安全的文件操作：`WriteFileAtomic`（临时文件 → fsync → rename → fsync 目录）、`Rename`、`SyncDir`；所有持久化写入都用它 |
 | `internal/version` | 构建信息（版本、commit、提交时间），由 `-ldflags -X` 注入，`edgeweir-node version` 和 `NodeInfo.agent_version` 使用 |
 | `internal/testutil`、`internal/pki/pkitest` | 只用于测试：假控制台（内存中的 NodeService，也用于容器冒烟测试）、假数据面（控制 API）、手动时钟（`fakeclock`）、临时内部 CA、合成 MMDB（`geofixture`，`test/geoip` 用它生成 e2e 夹具） |
