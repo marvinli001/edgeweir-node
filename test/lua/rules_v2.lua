@@ -472,6 +472,38 @@ test("config rules switch the site's Under Attack", function()
   eq(challenge.required(s, 0, false), 1, "the platform's stays")
 end)
 
+test("domains waiting for the certificate are served over HTTP (tls-pending-domains-v1)", function()
+  local s = site({
+    certificate_id = "cert-a",
+    tls = { force_https = true, hsts_max_age = 60 },
+    domains = {
+      { name = "a.test" }, { name = "new.a.test", tls_pending = true },
+      { name = "w.test", wildcard = true, tls_pending = true }, { name = "x.w.test" },
+    },
+  })
+  eq(policy.tls_pending(s, "a.test"), false)
+  eq(policy.tls_pending(s, "new.a.test"), true)
+  eq(policy.tls_pending(s, "y.w.test"), true, "below the waiting wildcard")
+  eq(policy.tls_pending(s, "x.w.test"), false, "an exact name wins over the wildcard")
+  eq(policy.tls_pending(s, "w.test"), false, "a wildcard does not cover its own name")
+  eq(policy.tls_pending(s, nil), false)
+  eq(access(s, { host = "a.test", uri = "/p" }).status, 301)
+  eq(access(s, { host = "a.test", uri = "/p" }).location, "https://a.test/p")
+  eq(access(s, { host = "new.a.test", uri = "/p" }), nil, "no redirect to an HTTPS it has not")
+  eq(access(s, { host = "y.w.test", uri = "/p" }), nil)
+  -- A config rule forcing HTTPS does not redirect it either.
+  local forced = site({
+    certificate_id = "cert-a",
+    rules = { { id = "r1", phase = "config", expression = TRUE, action = { kind = "config", force_https = true } } },
+    domains = { { name = "a.test" }, { name = "new.a.test", tls_pending = true } },
+  })
+  eq(access(forced, { host = "new.a.test", uri = "/" }), nil)
+  eq(access(forced, { host = "a.test", uri = "/" }).status, 301)
+  -- Sites without waiting domains carry nothing.
+  eq(site({})._tls_pending, nil)
+  eq(policy.tls_pending(site({}), "a.test"), false)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

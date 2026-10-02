@@ -62,6 +62,37 @@ function _M.prepare_bulk(list)
   return out
 end
 
+-- prepare_tls_pending returns the site's domains that its certificate does
+-- not cover yet (tls_pending, proto v0.19.0, feature
+-- tls-pending-domains-v1): exact names, parents of wildcards, and every
+-- exact name of the site (an exact name wins over a wildcard); nil when
+-- there are none.
+function _M.prepare_tls_pending(domains)
+  local pending, any = { exact = {}, wild = {}, hosts = {} }, false
+  for _, d in ipairs(domains or {}) do
+    if type(d) == "table" and type(d.name) == "string" then
+      local wildcard = d.wildcard == true
+      if not wildcard then pending.hosts[d.name] = true end
+      if d.tls_pending == true then
+        any = true
+        pending[wildcard and "wild" or "exact"][d.name] = true
+      end
+    end
+  end
+  return any and pending or nil
+end
+
+-- tls_pending tells whether host (lowercase) reaches the site through a
+-- domain that waits for the certificate: it is served over HTTP only, with
+-- no TLS handshake and no HTTPS redirect.
+function _M.tls_pending(site, host)
+  local pending = site and site._tls_pending
+  if not pending or type(host) ~= "string" then return false end
+  if pending.hosts[host] then return pending.exact[host] == true end
+  local dot = find(host, ".", 1, true)
+  return dot ~= nil and pending.wild[sub(host, dot + 1)] == true
+end
+
 -- bulk_lookup returns the entry of table bulk for host and path: the
 -- "host/path" entry first, then the "/path" one.
 function _M.bulk_lookup(bulk, host, path)
@@ -354,7 +385,7 @@ function _M.access(site, headers)
       end
     end
   end
-  if ctx.force_https and ngx.var.scheme ~= "https" then
+  if ctx.force_https and ngx.var.scheme ~= "https" and not _M.tls_pending(site, ngx.var.host) then
     if not site.certificate_id or site.certificate_id == "" then return { status = 503 } end
     return { status = 301, location = "https://" .. ngx.var.host .. ngx.var.request_uri }
   end

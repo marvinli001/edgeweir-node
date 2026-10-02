@@ -184,6 +184,7 @@ function _M.prepare(s, cfg)
   s._config = cfg or policy.prepare_config({})
   s._rule_groups = policy.prepare_rules(s.rules, s._config.lists)
   s._bulk = policy.prepare_bulk(s.bulk_redirects)
+  s._tls_pending = policy.prepare_tls_pending(s.domains)
   -- GeoIP is looked up and JA4 computed at the handshake only for sites
   -- whose rules (conditions, value expressions, cache rule conditions,
   -- rate limit keys) read them.

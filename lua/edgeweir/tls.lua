@@ -1,10 +1,12 @@
 -- edgeweir.tls: certificates of the TLS listeners. A site's certificate
 -- for its domains; the node's health certificate for SNI
 -- health.edgeweir.invalid and handshakes without SNI
--- (edgeweir.probehealth); any other name aborts the handshake.
+-- (edgeweir.probehealth); any other name, and a domain its site's
+-- certificate does not cover yet (tls_pending), aborts the handshake.
 local ssl = require("ngx.ssl")
 local hello = require("ngx.ssl.clienthello")
 local store = require("edgeweir.store")
+local policy = require("edgeweir.policy")
 local ja4 = require("edgeweir.ja4")
 local probehealth = require("edgeweir.probehealth")
 local cache = require("resty.lrucache").new(1000)
@@ -16,8 +18,9 @@ function _M.client_hello()
     if not probehealth.material(store.config()) then return ngx.exit(ngx.ERROR) end
     return
   end
-  local site = store.lookup_host(string.lower(name))
-  if not site or not site.certificate then return ngx.exit(ngx.ERROR) end
+  local host = string.lower(name)
+  local site = store.lookup_host(host)
+  if not site or not site.certificate or policy.tls_pending(site, host) then return ngx.exit(ngx.ERROR) end
   -- JA4 only for sites that read it; never fails the handshake.
   if site._ja4 then
     local ok, err = pcall(ja4.client_hello)
@@ -35,8 +38,9 @@ function _M.certificate()
   if probehealth.is_health_sni(name) then
     material = probehealth.material(store.config())
   else
-    site = store.lookup_host(string.lower(name))
-    material = site and site.certificate
+    local host = string.lower(name)
+    site = store.lookup_host(host)
+    material = site and not policy.tls_pending(site, host) and site.certificate
   end
   if not material then return ngx.exit(ngx.ERROR) end
   local parsed = cache:get(material.fingerprint)
