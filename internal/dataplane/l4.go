@@ -112,12 +112,16 @@ func (c *Client) PutL4(ctx context.Context, t *L4Table) (*L4Status, error) {
 }
 
 // DrainL4Stats returns and deletes the completed per-minute counters of
-// the layer-4 applications.
-func (c *Client) DrainL4Stats(ctx context.Context) ([]L4MinuteStats, error) {
+// the layer-4 applications; with all, the current minute's too.
+func (c *Client) DrainL4Stats(ctx context.Context, all bool) ([]L4MinuteStats, error) {
 	var out struct {
 		Stats json.RawMessage `json:"stats"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/v1/l4/stats/drain", nil, &out); err != nil {
+	var body any
+	if all {
+		body = drainAll
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/l4/stats/drain", body, &out); err != nil {
 		return nil, err
 	}
 	raw := bytes.TrimSpace(out.Stats)

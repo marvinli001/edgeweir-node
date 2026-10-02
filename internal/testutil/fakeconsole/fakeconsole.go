@@ -63,31 +63,32 @@ type Console struct {
 	CA   *pkitest.CA
 	opts Options
 
-	mu               sync.Mutex
-	tokens           map[string]bool
-	revisions        []*nodev1.NodeConfig
-	watchers         map[chan struct{}]struct{}
-	statuses         []*nodev1.ReportStatusRequest
-	getConfigs       []GetConfigCall
-	stats            []*nodev1.MinuteStats
-	l4Stats          []*nodev1.L4MinuteStats
-	watermarks       []Watermark
-	statsSequence    uint64
-	statsAckFailures int
-	statsSequences   []uint64
-	corruptNextDiff  bool
-	pinned           uint64 // serve this revision as the latest (0: the newest)
-	renewNext        bool
-	refuseReports    bool
-	renewals         int
-	enrollments      int
-	mtlsCalls        map[string]int
-	watchStreams     int
-	credentials      map[string]*nodev1.OriginCredential
-	credRequests     [][]string
-	pendingTasks     []*nodev1.NodeTask
-	taskResults      []*nodev1.ReportTaskResultRequest
-	taskWatchers     map[chan struct{}]struct{}
+	mu                 sync.Mutex
+	tokens             map[string]bool
+	revisions          []*nodev1.NodeConfig
+	watchers           map[chan struct{}]struct{}
+	statuses           []*nodev1.ReportStatusRequest
+	getConfigs         []GetConfigCall
+	stats              []*nodev1.MinuteStats
+	l4Stats            []*nodev1.L4MinuteStats
+	watermarks         []Watermark
+	statsSequence      uint64
+	statsQueryFailures int
+	statsAckFailures   int
+	statsSequences     []uint64
+	corruptNextDiff    bool
+	pinned             uint64 // serve this revision as the latest (0: the newest)
+	renewNext          bool
+	refuseReports      bool
+	renewals           int
+	enrollments        int
+	mtlsCalls          map[string]int
+	watchStreams       int
+	credentials        map[string]*nodev1.OriginCredential
+	credRequests       [][]string
+	pendingTasks       []*nodev1.NodeTask
+	taskResults        []*nodev1.ReportTaskResultRequest
+	taskWatchers       map[chan struct{}]struct{}
 
 	// Dynamic bans: the latest state of every ban id with its sequence.
 	bans           map[string]*banRow
@@ -635,6 +636,11 @@ func (c *Console) ReportStats(_ context.Context, req *connect.Request[nodev1.Rep
 func (c *Console) ReportStatsV2(ctx context.Context, req *connect.Request[nodev1.ReportStatsV2Request]) (*connect.Response[nodev1.ReportStatsV2Response], error) {
 	// Layer-4 buckets share the batch (and its sequence) with the sites'.
 	c.mu.Lock()
+	if req.Msg.BatchSequence == 0 && req.Msg.CompleteUntil == nil && c.statsQueryFailures > 0 {
+		c.statsQueryFailures--
+		c.mu.Unlock()
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test cursor query failure"))
+	}
 	if req.Msg.BatchSequence > c.statsSequence {
 		for _, s := range req.Msg.L4Stats {
 			c.l4Stats = append(c.l4Stats, proto.CloneOf(s))
@@ -655,6 +661,15 @@ func (c *Console) ReportStatsV2(ctx context.Context, req *connect.Request[nodev1
 		c.mu.Unlock()
 	}
 	return connect.NewResponse(&nodev1.ReportStatsV2Response{Accepted: result.Msg.Accepted, BatchSequence: result.Msg.BatchSequence}), nil
+}
+
+// FailStatsQueries makes the next count statistics cursor queries fail
+// (an empty ReportStatsV2 without a watermark), as while the console is
+// unreachable.
+func (c *Console) FailStatsQueries(count int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.statsQueryFailures = count
 }
 
 func (c *Console) FailStatsAcknowledgements(count int) {

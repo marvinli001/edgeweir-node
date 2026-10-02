@@ -59,16 +59,16 @@ func TestDrainStatsWaitsForBothDrains(t *testing.T) {
 	dp.AddL4Stats(dataplane.L4MinuteStats{Minute: 1800000000, AppID: "app-a", Connections: 1})
 	ctx := context.Background()
 	// No applications in the plan: no stream subsystem to drain.
-	if _, l4, complete := a.drainStats(ctx); !complete || len(l4) != 0 {
+	if _, l4, complete := a.drainStats(ctx, false); !complete || len(l4) != 0 {
 		t.Fatalf("without applications: %v %v", l4, complete)
 	}
 	a.plan = &configir.Plan{L4Apps: []configir.L4App{{ID: "app-a"}}}
 	dp.FailNextL4(1)
-	if _, _, complete := a.drainStats(ctx); complete {
+	if _, _, complete := a.drainStats(ctx, false); complete {
 		t.Fatal("a failed layer-4 drain counts as complete")
 	}
 	dp.AddStats(dataplane.MinuteStats{Minute: 1800000000, SiteID: "site-a", Requests: 1})
-	sites, l4, complete := a.drainStats(ctx)
+	sites, l4, complete := a.drainStats(ctx, false)
 	if !complete || len(sites) != 1 || len(l4) != 1 || l4[0].GetAppId() != "app-a" {
 		t.Fatalf("drain: %v %v %v", sites, l4, complete)
 	}

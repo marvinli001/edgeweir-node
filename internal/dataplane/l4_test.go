@@ -61,11 +61,11 @@ func TestL4ClientAgainstFakeSocket(t *testing.T) {
 	if st.InSync(&other) {
 		t.Fatal("in sync with another table")
 	}
-	if stats, err := c.DrainL4Stats(ctx); err != nil || len(stats) != 0 {
+	if stats, err := c.DrainL4Stats(ctx, false); err != nil || len(stats) != 0 {
 		t.Fatalf("empty drain %v %v", stats, err)
 	}
 	srv.AddL4Stats(dataplane.L4MinuteStats{Minute: 60, AppID: "app-a", Connections: 2, BytesSent: 9})
-	stats, err := c.DrainL4Stats(ctx)
+	stats, err := c.DrainL4Stats(ctx, false)
 	if err != nil || len(stats) != 1 || stats[0].Connections != 2 || stats[0].BytesSent != 9 {
 		t.Fatalf("drain %v %v", stats, err)
 	}

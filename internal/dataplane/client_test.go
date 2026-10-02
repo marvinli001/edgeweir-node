@@ -67,12 +67,12 @@ func TestClientAgainstFakeSocket(t *testing.T) {
 		t.Fatalf("err = %v, want APIError 500", err)
 	}
 
-	stats, err := c.DrainStats(ctx)
+	stats, err := c.DrainStats(ctx, false)
 	if err != nil || len(stats) != 0 {
 		t.Fatalf("empty drain = %v, %v", stats, err)
 	}
 	srv.AddStats(dataplane.MinuteStats{Minute: 1800000000, SiteID: "s1", Requests: 3, StatusCodes: map[string]uint64{"200": 3}})
-	stats, err = c.DrainStats(ctx)
+	stats, err = c.DrainStats(ctx, false)
 	if err != nil || len(stats) != 1 || stats[0].StatusCodes["200"] != 3 {
 		t.Fatalf("drain = %+v, %v", stats, err)
 	}

@@ -344,6 +344,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logs = nil
 		reply(w, 200, map[string]any{"logs": out})
 	case r.URL.Path == "/v1/stats/drain" && r.Method == http.MethodPost:
+		var body struct {
+			All bool `json:"all"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.All {
+			s.events = append(s.events, "stats:drain-all")
+		}
 		out := s.pending
 		s.pending = nil
 		if len(out) == 0 {

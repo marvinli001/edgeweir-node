@@ -47,11 +47,22 @@ type fakeEngine struct {
 	features  []string
 	probes    int
 	failProbe bool
+	// onStop runs when the engine is told to stop nginx.
+	onStop func()
 }
 
 func newFakeEngine() *fakeEngine { return &fakeEngine{started: make(chan struct{}, 1)} }
 
-func (e *fakeEngine) Run(ctx context.Context) error { <-ctx.Done(); return nil }
+func (e *fakeEngine) Run(ctx context.Context) error {
+	<-ctx.Done()
+	e.mu.Lock()
+	onStop := e.onStop
+	e.mu.Unlock()
+	if onStop != nil {
+		onStop()
+	}
+	return nil
+}
 
 func (e *fakeEngine) ModuleFeatures(context.Context) ([]string, error) {
 	e.mu.Lock()

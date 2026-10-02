@@ -64,7 +64,7 @@ type Engine interface {
 type DataPlane interface {
 	Status(ctx context.Context) (*dataplane.Status, error)
 	PutSites(ctx context.Context, t *dataplane.SiteTable) (*dataplane.Status, error)
-	DrainStats(ctx context.Context) ([]dataplane.MinuteStats, error)
+	DrainStats(ctx context.Context, all bool) ([]dataplane.MinuteStats, error)
 	PutPurge(ctx context.Context, t *dataplane.PurgeTable) (*dataplane.PurgeStatus, error)
 	AddPurge(ctx context.Context, t *dataplane.PurgeTable) (*dataplane.PurgeStatus, error)
 	OriginHealth(ctx context.Context) ([]dataplane.OriginHealth, error)
@@ -82,7 +82,7 @@ type DataPlane interface {
 	// Layer-4 applications (the stream subsystem, through the control API).
 	L4Status(ctx context.Context) (*dataplane.L4Status, error)
 	PutL4(ctx context.Context, t *dataplane.L4Table) (*dataplane.L4Status, error)
-	DrainL4Stats(ctx context.Context) ([]dataplane.L4MinuteStats, error)
+	DrainL4Stats(ctx context.Context, all bool) ([]dataplane.L4MinuteStats, error)
 }
 
 // Config configures the agent.
@@ -414,8 +414,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	defer wg.Wait()
 
-	spawn("engine", func(ctx context.Context) {
-		if err := a.engine.Run(ctx); err != nil {
+	// nginx outlives the other loops: its statistics counters are saved to
+	// disk (statsLoop) before it stops. Deferred after wg.Wait, so this
+	// runs first.
+	engineCtx, stopEngine := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopEngine()
+	spawn("engine", func(context.Context) {
+		if err := a.engine.Run(engineCtx); err != nil {
 			a.log.Error("engine supervisor stopped", "err", err)
 		}
 	})
@@ -460,7 +465,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	spawn("watch", a.watchLoop)
 	spawn("poll", a.pollLoop)
 	spawn("report", a.reportLoop)
-	spawn("stats", a.statsLoop)
+	statsStopped := make(chan struct{})
+	spawn("stats", func(ctx context.Context) {
+		defer close(statsStopped)
+		a.statsLoop(ctx)
+	})
 	spawn("logs", a.logsLoop)
 	spawn("tasks", a.taskLoop)
 	spawn("bans", a.bansLoop)
@@ -474,6 +483,11 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	a.log.Info("shutting down")
+	select {
+	case <-statsStopped:
+	case <-time.After(15 * time.Second):
+		a.log.Warn("statistics were not saved in time; stopping nginx anyway")
+	}
 	return nil
 }
 

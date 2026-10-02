@@ -358,12 +358,21 @@ func (c *Client) OriginHealth(ctx context.Context) ([]OriginHealth, error) {
 	return list, nil
 }
 
-// DrainStats returns and deletes the completed per-minute counters.
-func (c *Client) DrainStats(ctx context.Context) ([]MinuteStats, error) {
+// drainAll is the body of a drain that takes the current minute too.
+var drainAll = map[string]bool{"all": true}
+
+// DrainStats returns and deletes the completed per-minute counters; with
+// all, the current minute's too (nginx is about to stop and would lose
+// them).
+func (c *Client) DrainStats(ctx context.Context, all bool) ([]MinuteStats, error) {
 	var out struct {
 		Stats json.RawMessage `json:"stats"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/v1/stats/drain", nil, &out); err != nil {
+	var body any
+	if all {
+		body = drainAll
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/stats/drain", body, &out); err != nil {
 		return nil, err
 	}
 	// lua-cjson encodes an empty table as {}: treat it as an empty list.
