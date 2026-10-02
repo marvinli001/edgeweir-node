@@ -39,7 +39,8 @@
 --
 -- Matching uses the site's current cache key policy: the host is ignored
 -- when the key excludes it, and query strings are compared after the same
--- normalization as the key (edgeweir.cachekey.normalize_query). Marker
+-- normalization as the key, percent-decoded (edgeweir.cachekey.purge_query:
+-- the console re-encodes what was typed, clients encode as they like). Marker
 -- paths arrive percent-encoded as requested and are normalized like
 -- nginx's $uri (edgeweir.cachekey.normalize_path), which is what requests
 -- are matched with: a prefix purge of "/static/" covers "/%73tatic/x".
@@ -394,10 +395,10 @@ function _M.epoch(site_id, key, host, path, args)
 
   local urls = cached("u|" .. site_id .. "|" .. path, ver)
   if #urls > 0 then
-    local q = cachekey.normalize_query(args, key)
+    local q = cachekey.purge_query(args, key)
     for i = 1, #urls do
       local m = urls[i]
-      if m[3] > epoch and (any_host or m[1] == host) and cachekey.normalize_query(m[2], key) == q then
+      if m[3] > epoch and (any_host or m[1] == host) and cachekey.purge_query(m[2], key) == q then
         epoch = m[3]
       end
     end

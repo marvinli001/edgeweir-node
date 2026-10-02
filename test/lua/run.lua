@@ -698,6 +698,30 @@ test("purge markers match encoded variants of their paths", function()
   assert(purge.replace({ id = "empty-enc", markers = {} }))
 end)
 
+test("purge markers match query strings in any percent-encoding", function()
+  local key = cachekey.prepare({ query = "all" })
+  -- The console sends what the WHATWG URL parser makes of the input.
+  assert(purge.replace({ id = "q", markers = {
+    { site_id = "q1", type = "url", host = "q.test", path = "/s", query = "q=%3Cb%3E&t=%E4%B8%AD", epoch = 100 },
+    { site_id = "q1", type = "url", host = "q.test", path = "/a", query = "a%26b=1", epoch = 200 },
+  } }))
+  eq(purge.epoch("q1", key, "q.test", "/s", "q=<b>&t=%e4%b8%ad"), 100, "raw characters and lowercase hex")
+  eq(purge.epoch("q1", key, "q.test", "/s", "q=%3Cb%3E&t=%E4%B8%AD"), 100)
+  eq(purge.epoch("q1", key, "q.test", "/s", "t=%E4%B8%AD&q=<b>"), 0, "order still counts without sort_query")
+  eq(purge.epoch("q1", key, "q.test", "/s", "q=<b>"), 0)
+  eq(purge.epoch("q1", key, "q.test", "/s", "q=%3Cb%3E+"), 0, "+ is not a space")
+  eq(purge.epoch("q1", key, "q.test", "/a", "a%26b=1"), 200)
+  -- Decoding happens per segment, sorting after it.
+  local sorted = cachekey.prepare({ query = "all", sort_query = true })
+  assert(purge.replace({ id = "q2", markers = {
+    { site_id = "q2", type = "url", host = "q.test", path = "/s", query = "b=1&a=2", epoch = 300 },
+  } }))
+  eq(purge.epoch("q2", sorted, "q.test", "/s", "%62=1&a=2"), 300, "%62 sorts as b")
+  local include = cachekey.prepare({ query = "include", query_params = { "v" } })
+  eq(purge.epoch("q2", include, "q.test", "/s", "utm=1"), 300, "parameters outside the key are one object")
+  assert(purge.replace({ id = "q3", markers = {} }))
+end)
+
 test("purge status comes from counters and follows every change", function()
   local d = ngx.shared.edgeweir_purge
   local st = assert(purge.replace({ id = "c1", markers = {

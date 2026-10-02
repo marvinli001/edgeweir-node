@@ -125,6 +125,30 @@ function _M.normalize_query(args, key)
   return concat(parts, "&")
 end
 
+-- purge_query is the form in which purge markers compare query strings
+-- (edgeweir.purge): normalize_query with every segment percent-decoded
+-- before sorting. A URL purge then also covers the spellings of its query
+-- that differ only in percent-encoding ("q=%E4%B8%AD" and the console's
+-- re-encoding of what was typed, "%3c" and "<", "%41" and "A"); the key
+-- itself keeps the raw query, so this may purge more variants than the
+-- operator named, never fewer.
+function _M.purge_query(args, key)
+  if not args or args == "" or key.query == "ignore" then
+    return ""
+  end
+  local include = key.query == "include"
+  local parts = {}
+  for segment in gmatch(args, "[^&]+") do
+    if not include or key._params[param_name(segment)] or key._params[unescape(param_name(segment))] then
+      parts[#parts + 1] = gsub(segment, "%%(%x%x)", decode_hex)
+    end
+  end
+  if key.sort_query then
+    sort(parts)
+  end
+  return concat(parts, "&")
+end
+
 -- device returns "m" for mobile user agents and "d" otherwise.
 function _M.device(user_agent)
   if user_agent and re_find(user_agent, MOBILE_RE, "jo") then
