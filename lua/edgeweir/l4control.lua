@@ -14,6 +14,7 @@
 --   PUT  /v1/l4              replace the layer-4 table (400 invalid, 409
 --                            another update in progress, 507 no memory)
 --   POST /v1/l4/stats/drain  return and delete the completed minutes
+--                            ({"all": true}: the current minute too)
 --                            {stats: [{minute, app_id, connections,
 --                            refused, peak_concurrent, bytes_received,
 --                            bytes_sent}]}
@@ -50,7 +51,10 @@ function _M.dispatch(method, path, body)
     if method ~= "POST" then
       return 405, { error = "method not allowed" }
     end
-    return 200, { stats = l4.drain() }
+    -- {"all": true} takes the current minute too (before nginx stops).
+    local doc = cjson.decode(body or "")
+    local all = type(doc) == "table" and doc.all == true
+    return 200, { stats = l4.drain(all and ngx.time() + 60 or nil) }
   end
   return 404, { error = "not found" }
 end

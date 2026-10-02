@@ -7,6 +7,7 @@
 --                             connections_active, ...}
 --   PUT  /v1/sites            replace the whole site table atomically
 --   POST /v1/stats/drain      return and delete completed per-minute counters
+--                             ({"all": true}: the current minute too)
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
 --   POST /v1/purge            merge purge markers {id, markers}
 --   GET  /v1/origins/health   origins with recorded failures (passive check)
@@ -169,7 +170,10 @@ function _M.handle()
     if method ~= "POST" then
       return reply(405, { error = "method not allowed" })
     end
-    return reply(200, { stats = stats.drain() })
+    -- {"all": true} takes the current minute too (before nginx stops).
+    local doc = cjson.decode(read_body() or "")
+    local all = type(doc) == "table" and doc.all == true
+    return reply(200, { stats = stats.drain(all and ngx.time() + 60 or nil) })
   end
 
   if uri == "/v1/purge" then
