@@ -175,6 +175,31 @@ test("delta removals delete only the ban with the same id", function()
   eq(st.entries, 1)
 end)
 
+test("release deletes own bans the console lifted, unless they expire later", function()
+  put("1", { ban("c1", "203.0.113.7/32", "site", "c", nil, "site-a") })
+  assert(bans.add_auto("site-a", "192.0.2.50", 600))
+  assert(bans.add_auto("site-a", "192.0.2.51", 600))
+  assert(bans.add_auto("site-b", "2001:db8::7", 600))
+  local now = ngx.now()
+  local n = assert(bans.release({
+    { site_id = "site-a", cidr = "192.0.2.50/32", expires_at = now + 600 },
+    -- Lifted before this ban was renewed: it expires later and stays.
+    { site_id = "site-a", cidr = "192.0.2.51/32", expires_at = now + 300 },
+    { site_id = "site-b", cidr = "2001:db8::7/128", expires_at = now + 600 },
+    -- Console bans and unknown addresses are left alone.
+    { site_id = "site-a", cidr = "203.0.113.7/32", expires_at = now + 7200 },
+    { site_id = "site-a", cidr = "192.0.2.99/32", expires_at = now + 600 },
+  }))
+  eq(n, 2)
+  eq(bans.match("site-a", "192.0.2.50"), nil)
+  eq(bans.match("site-b", "2001:db8::7"), nil)
+  eq(bans.match("site-a", "192.0.2.51"), "a")
+  eq(select(2, bans.match("site-a", "203.0.113.7")), "c1")
+  eq(bans.status().entries, 2)
+  local _, err, code = bans.release({ { site_id = "site-a", cidr = "192.0.2.0/24", expires_at = now } })
+  eq(code, 400); assert(err:find("cidr"), err)
+end)
+
 test("capacity evicts own bans, oldest first, before console bans", function()
   bans.capacity = 3
   assert(bans.add_auto("site-a", "192.0.2.1", 600))

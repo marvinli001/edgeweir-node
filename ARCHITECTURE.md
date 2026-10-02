@@ -250,7 +250,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - **持久化**：`bans.json`（0600，原子写入）保存集群 id、序号和条目。agent 启动时先读取、剔除到期条目，在连接控制台之前装入数据面和内核；文件损坏时从空集合开始，等控制台重新下发。
 - **推送**：同一（范围、站点、CIDR）的条目合并为数据面的一个条目（slot），代表 id 优先取手动封禁，否则取最晚到期的自动封禁，到期时间取最晚的一个。数据面持有的序号等于 agent 之前的序号时 `POST /v1/bans` 增量（先删后写）；否则（nginx 重启、reset、写入失败后、变化超过 10000 条）`PUT /v1/bans` 全量替换，顺序为手动在前（从旧到新）、自动按创建时间从新到旧，超过 `--ban-capacity` 的最早自动条目不发送并计数。数据面检查（每 5s）发现序号不符就全量重推。
 - **写不下的手动封禁**：数据面把它们记为未生效并在 `GET /v1/bans` 报告，agent 每分钟重试一次（未生效条目都列得出 id 时增量重写，否则全量替换）。
-- **本机自动封禁**：Lua 写入本地字典并排入上报队列（最多 10000 条），agent 每 5 秒 `POST /v1/bans/auto/drain`（每次最多 1000 条），把地址规范化为单地址 CIDR 后经 `ReportBans` 上报；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。
+- **本机自动封禁**：Lua 写入本地字典并排入上报队列（最多 10000 条），agent 每 5 秒 `POST /v1/bans/auto/drain`（每次最多 1000 条），把地址规范化为单地址 CIDR 后经 `ReportBans` 上报；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。未共享的自动封禁在控制台解封后，`GetBans` 的增量页在 `lifted_own_bans` 中带回，agent 经 `POST /v1/bans/release` 删除本机条目，失败时随之后每次拉取重试，直到到期。
 - **状态回报**：`ReportStatus.bans`（`BanStatus`）带数据面已应用的序号、条目数、容量、未生效的手动封禁（最多 100 个 id 与总数）、内核条目数，以及因容量丢弃的自动封禁数（数据面淘汰的与 agent 没有发送的，自 agent 启动起）。
 - **能力**：`bans-v1` 总是上报；`kernel-ban-v1` 只在 nftables 表可用时上报（§3.13）。数据面的保存与查找见 §3.12。
 
@@ -261,7 +261,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.9 CC 事件
 
-agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了继续取），事件 id 由数据面生成（`<启动随机数>-<序号>`），转换后经 `ReportSecurityEvents` 上报（每批最多 500 条，id 幂等）；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。控制台不支持时只记一次日志。`edgeweir-node security` 打印数据面的挑战与 CC 状态（不取出事件）。
+agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了继续取），事件 id 由数据面生成（`<启动随机数>-<序号>`），转换后经 `ReportSecurityEvents` 上报（每批最多 500 条，id 幂等）；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。未共享的自动封禁在控制台解封后，`GetBans` 的增量页在 `lifted_own_bans` 中带回，agent 经 `POST /v1/bans/release` 删除本机条目，失败时随之后每次拉取重试，直到到期。控制台不支持时只记一次日志。`edgeweir-node security` 打印数据面的挑战与 CC 状态（不取出事件）。
 
 ### 2.10 主动健康检查
 
@@ -470,6 +470,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 | `PUT /v1/bans` | 全量替换控制台条目 `{sequence, bans: [{id, cidr, scope, site_id, kind, expires_at}]}`，本机自动封禁保留；内容非法 400，另一次写入进行中 409 |
 | `POST /v1/bans` | 增量 `{base, sequence, upsert, remove}`：数据面持有的序号不等于 `base` 时 409；`remove` 只删除 id 相同的控制台条目 |
 | `POST /v1/bans/auto/drain` | 返回并删除最多 1000 条待上报的本机自动封禁 |
+| `POST /v1/bans/release` | 删除控制台解封的本机自动封禁 `{bans: [{site_id, cidr, expires_at}]}`；到期晚于 `expires_at` 的（解封后再次封禁）保留 |
 | `GET /v1/challenge` | `{keys_id, current, keys: [id], captchas, captchas_id, nonce_overflow}`；nginx 重启后为空 |
 | `PUT /v1/challenge/keys` | 替换挑战密钥 `{id, current, keys: [{id, secret}]}`（secret 为 base64，16–256 字节；`current` 必须在 `keys` 里或为空）；非法 400，内存不足 507 |
 | `PUT /v1/challenge/captchas` | 替换验证码池 `{id, images: [{answer, png}]}`（最多 1024 张，png 为 base64，≤ 64 KiB）；非法 400，内存不足 507 |

@@ -50,6 +50,8 @@ type Server struct {
 	unapplied   map[string]bool
 	autoEvicted uint64
 	autoBans    []dataplane.AutoBan
+	released    []dataplane.OwnBanRelease
+	failRelease int
 	banCalls    []string
 	failBans    int
 
@@ -250,6 +252,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, st)
 	case r.URL.Path == "/v1/bans" && (r.Method == http.MethodPut || r.Method == http.MethodPost):
 		s.serveBansLocked(w, r)
+	case r.URL.Path == "/v1/bans/release" && r.Method == http.MethodPost:
+		if s.failRelease > 0 {
+			s.failRelease--
+			reply(w, 409, map[string]string{"error": "another ban update is in progress"})
+			return
+		}
+		var body struct {
+			Bans []dataplane.OwnBanRelease `json:"bans"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		s.released = append(s.released, body.Bans...)
+		reply(w, 200, map[string]int{"released": len(body.Bans)})
 	case r.URL.Path == "/v1/bans/auto/drain" && r.Method == http.MethodPost:
 		out := s.autoBans
 		if len(out) > 1000 {
@@ -462,6 +479,21 @@ func (s *Server) FailNextBans(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failBans = n
+}
+
+// Released returns every own ban the agent asked to delete
+// (POST /v1/bans/release).
+func (s *Server) Released() []dataplane.OwnBanRelease {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.released)
+}
+
+// FailNextReleases makes the next n POST /v1/bans/release fail.
+func (s *Server) FailNextReleases(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failRelease = n
 }
 
 // AddAutoBans queues own bans for the next drains.

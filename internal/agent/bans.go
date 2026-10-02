@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/marvinli001/edgeweir-node/internal/bans"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
@@ -133,6 +134,7 @@ func (a *Agent) syncBans(ctx context.Context) {
 		after = 0 // enrolled into another cluster: start over
 	}
 	reset, pages := false, 0
+	var lifted []*nodev1.Ban
 	for pages < maxBanPages {
 		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
 		resp, err := a.channel.Client().GetBans(cctx, connect.NewRequest(&nodev1.GetBansRequest{AfterSequence: after, Limit: banPageSize}))
@@ -157,6 +159,7 @@ func (a *Agent) syncBans(ctx context.Context) {
 		for _, err := range next.Apply(msg, time.Now()) {
 			a.log.Warn("ignoring an invalid ban from the console", "err", err)
 		}
+		lifted = append(lifted, msg.GetLiftedOwnBans()...)
 		if !msg.GetMore() {
 			break
 		}
@@ -166,10 +169,44 @@ func (a *Agent) syncBans(ctx context.Context) {
 		}
 		after = msg.GetSequence()
 	}
-	if pages == 0 {
+	if pages > 0 {
+		a.installBans(ctx, next, reset)
+	}
+	a.releaseOwnBans(ctx, lifted)
+}
+
+// releaseOwnBans deletes in the data plane the node's own bans that the
+// console lifted without ever sharing them (lifted_own_bans): the data
+// plane keeps one that expires later (banned again after the lift).
+// Deletions that fail are retried with every later fetch until the bans
+// expire. Runs in bansLoop only.
+func (a *Agent) releaseOwnBans(ctx context.Context, lifted []*nodev1.Ban) {
+	now := time.Now()
+	for _, b := range lifted {
+		prefix, err := netip.ParsePrefix(b.GetCidr())
+		expires := b.GetExpiresAt().AsTime()
+		if err != nil || !prefix.IsSingleIP() || !configir.ValidID(b.GetSiteId()) || b.GetExpiresAt() == nil {
+			a.log.Warn("ignoring an invalid lifted ban from the console", "id", b.GetId(), "cidr", b.GetCidr())
+			continue
+		}
+		a.banReleases = append(a.banReleases, dataplane.OwnBanRelease{SiteID: b.GetSiteId(), CIDR: prefix.String(),
+			ExpiresAt: float64(expires.UnixMilli()) / 1000})
+	}
+	a.banReleases = slices.DeleteFunc(a.banReleases, func(r dataplane.OwnBanRelease) bool {
+		return r.ExpiresAt <= float64(now.Unix())
+	})
+	if len(a.banReleases) == 0 {
 		return
 	}
-	a.installBans(ctx, next, reset)
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	held, err := a.dp.ReleaseOwnBans(cctx, a.banReleases)
+	if err != nil {
+		a.log.Warn("cannot delete own bans the console lifted; retrying", "bans", len(a.banReleases), "err", err)
+		return
+	}
+	a.log.Info("own bans lifted in the console deleted", "lifted", len(a.banReleases), "held", held)
+	a.banReleases = nil
 }
 
 // installBans makes next the applied state: persist, push to the data

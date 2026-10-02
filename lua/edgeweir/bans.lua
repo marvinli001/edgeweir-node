@@ -2,8 +2,8 @@
 --
 -- Console bans arrive from the agent through the control API (PUT replaces
 -- the whole set, POST applies a delta); the node's own automatic bans are
--- added with add_auto() and queued for the agent to report. Nothing here
--- reloads nginx.
+-- added with add_auto() and queued for the agent to report, and deleted
+-- with release() when the console lifts them. Nothing here reloads nginx.
 --
 -- lua_shared_dict "edgeweir_bans" (size: the agent's --ban-dict-mb):
 --
@@ -754,6 +754,50 @@ function _M.add_auto(site_id, ip, ttl, trigger)
     dict:rpush("#r", rec)
   end
   return result, err
+end
+
+-- release deletes own bans the console lifted:
+-- list = [{site_id, cidr, expires_at}], single addresses. An own ban there
+-- is deleted only if it expires no later than expires_at (one second of
+-- slack for rounding): an own ban of the address made after the lift
+-- lasts longer and stays. Console bans are not touched. Returns how many
+-- were deleted, or nil, an error and a status.
+function _M.release(list)
+  if type(list) ~= "table" then
+    return nil, "bans must be an array", 400
+  end
+  local items = {}
+  for i = 1, #list do
+    local b = list[i]
+    if type(b) ~= "table" or not valid_id(b.site_id) then
+      return nil, "#" .. i .. ": invalid site_id", 400
+    end
+    local p = ipaddr.parse_prefix(b.cidr)
+    if not p or p.len ~= #p.bytes * 8 then
+      return nil, "#" .. i .. ": invalid cidr", 400
+    end
+    local expires = tonumber(b.expires_at)
+    if not expires then
+      return nil, "#" .. i .. ": invalid expires_at", 400
+    end
+    items[i] = { key = key_for(b.site_id, p.bytes, p.len), expires = expires }
+  end
+  local dict = shdict()
+  local ok, lerr, code = lock(dict)
+  if not ok then
+    return nil, lerr, code
+  end
+  local n = 0
+  for i = 1, #items do
+    local kind, _, expires = parse_value(dict:get(items[i].key))
+    if kind == "a" and expires and expires <= items[i].expires + 1 then
+      dict:delete(items[i].key)
+      account(dict, expires, -1)
+      n = n + 1
+    end
+  end
+  dict:delete("#lock")
+  return n
 end
 
 -- drain returns and removes up to max (default 1000) queued own bans.

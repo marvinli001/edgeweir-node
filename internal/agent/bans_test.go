@@ -277,3 +277,35 @@ func TestBansSnapshotPages(t *testing.T) {
 		t.Fatalf("GetBans after_sequence per call = %v, want 0 then advancing pages", afters)
 	}
 }
+
+// TestBansLiftedOwnBansAreReleased: an own ban the console lifted without
+// sharing it is deleted in the data plane, retried after a failure;
+// expired or invalid ones are not sent.
+func TestBansLiftedOwnBansAreReleased(t *testing.T) {
+	e := startEnrolled(t, "bans-lift", func(c *agent.Config) { c.PollInterval = 100 * time.Millisecond },
+		demoSite("site-a", "site-a.test"))
+	// Lifts arrive in delta pages: the node holds a sequence first.
+	first := e.console.AddBan(platformBan("p1", "198.51.100.0/24"))
+	eventually(t, "first ban applied", func() bool { return e.dp.BanSequence() == first })
+	e.dp.FailNextReleases(1)
+	own := consoleBan("own-1", "192.0.2.9/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Minute)
+	expired := consoleBan("own-2", "192.0.2.10/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Hour)
+	expired.ExpiresAt = timestamppb.New(time.Now().Add(-time.Second))
+	invalid := consoleBan("own-3", "192.0.2.0/24", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Minute)
+	e.console.LiftOwnBan(expired)
+	e.console.LiftOwnBan(invalid)
+	seq := e.console.LiftOwnBan(own)
+	eventually(t, "lifted own ban deleted after a retry", func() bool { return len(e.dp.Released()) == 1 })
+	got := e.dp.Released()[0]
+	if got.SiteID != "site-a" || got.CIDR != "192.0.2.9/32" ||
+		got.ExpiresAt != float64(own.GetExpiresAt().AsTime().UnixMilli())/1000 {
+		t.Fatalf("released = %+v", got)
+	}
+	eventually(t, "sequence applied", func() bool { return e.dp.BanSequence() == seq })
+	// Done once: later fetches send nothing again.
+	calls := len(e.console.GetBansCalls())
+	eventually(t, "more polls", func() bool { return len(e.console.GetBansCalls()) >= calls+3 })
+	if n := len(e.dp.Released()); n != 1 {
+		t.Fatalf("released %d times", n)
+	}
+}

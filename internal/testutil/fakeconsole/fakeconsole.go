@@ -715,6 +715,8 @@ type banRow struct {
 	ban     *nodev1.Ban
 	seq     uint64
 	removed bool
+	// own: an unshared automatic ban of the node, lifted (lifted_own_bans).
+	own bool
 }
 
 // AddBan stores (or replaces, by id) an active ban under a new sequence
@@ -736,6 +738,18 @@ func (c *Console) RemoveBan(id string) uint64 {
 	if row, ok := c.bans[id]; ok {
 		row.removed, row.seq = true, c.banSeq
 	}
+	seq := c.banSeq
+	c.mu.Unlock()
+	c.notifyBans()
+	return seq
+}
+
+// LiftOwnBan lifts an automatic ban of the node that was never shared
+// (GetBans returns it in lifted_own_bans) and announces it.
+func (c *Console) LiftOwnBan(b *nodev1.Ban) uint64 {
+	c.mu.Lock()
+	c.banSeq++
+	c.bans[b.GetId()] = &banRow{ban: proto.CloneOf(b), seq: c.banSeq, removed: true, own: true}
 	seq := c.banSeq
 	c.mu.Unlock()
 	c.notifyBans()
@@ -826,7 +840,9 @@ func (c *Console) GetBans(_ context.Context, req *connect.Request[nodev1.GetBans
 		resp.Sequence = rows[limit-1].seq
 	}
 	for _, row := range rows {
-		if row.removed {
+		if row.own {
+			resp.LiftedOwnBans = append(resp.LiftedOwnBans, proto.CloneOf(row.ban))
+		} else if row.removed {
 			resp.RemovedIds = append(resp.RemovedIds, row.ban.GetId())
 		} else {
 			resp.Bans = append(resp.Bans, proto.CloneOf(row.ban))

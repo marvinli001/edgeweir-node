@@ -194,3 +194,31 @@ func (c *Client) ListBans(ctx context.Context) (*BanStatus, []BanEntry, error) {
 	}
 	return &st, list, nil
 }
+
+// OwnBanRelease names an own ban the console lifted, for POST
+// /v1/bans/release: the data plane deletes the node's own ban of the site
+// and address unless it expires later than ExpiresAt.
+type OwnBanRelease struct {
+	SiteID string `json:"site_id"`
+	// CIDR is a single address ("/32" or "/128").
+	CIDR string `json:"cidr"`
+	// ExpiresAt is the console's expiry in Unix seconds (millisecond precision).
+	ExpiresAt float64 `json:"expires_at"`
+}
+
+// ReleaseOwnBans deletes the node's own bans the console lifted and
+// returns how many the data plane held.
+func (c *Client) ReleaseOwnBans(ctx context.Context, list []OwnBanRelease) (int, error) {
+	if list == nil {
+		list = []OwnBanRelease{}
+	}
+	var out struct {
+		Released int `json:"released"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/v1/bans/release", struct {
+		Bans []OwnBanRelease `json:"bans"`
+	}{list}, &out); err != nil {
+		return 0, err
+	}
+	return out.Released, nil
+}

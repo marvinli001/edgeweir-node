@@ -16,6 +16,7 @@
 --   PUT  /v1/bans             replace the console bans {sequence, bans}
 --   POST /v1/bans             apply a delta {base, sequence, upsert, remove}
 --   POST /v1/bans/auto/drain  return and delete up to 1000 queued own bans
+--   POST /v1/bans/release     delete own bans the console lifted {bans}
 --   GET  /v1/challenge        challenge keys and captcha pool status
 --   PUT  /v1/challenge/keys   replace the challenge keys {id, current, keys}
 --   PUT  /v1/challenge/captchas  replace the captcha pool {id, images}
@@ -232,6 +233,28 @@ function _M.handle()
     ngx.log(ngx.NOTICE, "edgeweir: bans ", method == "PUT" and "replaced" or "updated", ": sequence ",
       res.sequence, ", ", res.entries, " held, ", res.unapplied, " unapplied")
     return reply(200, res)
+  end
+
+  if uri == "/v1/bans/release" then
+    if method ~= "POST" then
+      return reply(405, { error = "method not allowed" })
+    end
+    local body, err = read_body()
+    if not body then
+      return reply(400, { error = "read body: " .. tostring(err) })
+    end
+    local doc, derr = cjson.decode(body)
+    if type(doc) ~= "table" then
+      return reply(400, { error = "invalid JSON: " .. tostring(derr) })
+    end
+    local n, rerr, code = bans.release(doc.bans)
+    if not n then
+      return reply(code or 500, { error = rerr })
+    end
+    if n > 0 then
+      ngx.log(ngx.NOTICE, "edgeweir: own bans lifted by the console: ", n)
+    end
+    return reply(200, { released = n })
   end
 
   if uri == "/v1/bans/auto/drain" then

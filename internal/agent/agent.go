@@ -72,6 +72,7 @@ type DataPlane interface {
 	PutBans(ctx context.Context, t *dataplane.BanTable) (*dataplane.BanStatus, error)
 	AddBans(ctx context.Context, d *dataplane.BanDelta) (*dataplane.BanStatus, error)
 	DrainAutoBans(ctx context.Context) ([]dataplane.AutoBan, error)
+	ReleaseOwnBans(ctx context.Context, list []dataplane.OwnBanRelease) (int, error)
 	ChallengeStatus(ctx context.Context) (*dataplane.ChallengeStatus, error)
 	PutChallengeKeys(ctx context.Context, k *dataplane.ChallengeKeys) (*dataplane.ChallengeStatus, error)
 	PutCaptchas(ctx context.Context, p *dataplane.CaptchaPool) (*dataplane.ChallengeStatus, error)
@@ -281,8 +282,9 @@ type Agent struct {
 	banDropped     uint64                     // automatic bans left out for capacity
 	banDroppedSeen map[string]time.Time       // ... counted once each
 	banCh          chan struct{}
-	banUnsupported sync.Once    // logs an older console once
-	nft            *nft.Manager // nil without kernel bans
+	banReleases    []dataplane.OwnBanRelease // own bans the console lifted, not deleted yet (bansLoop only)
+	banUnsupported sync.Once                 // logs an older console once
+	nft            *nft.Manager              // nil without kernel bans
 	kernelCh       chan struct{}
 
 	addrMu            sync.Mutex
