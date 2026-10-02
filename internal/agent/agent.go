@@ -109,6 +109,7 @@ type Config struct {
 	WatchBackoffMax    time.Duration // default 30s
 	PushTimeout        time.Duration // retry budget for pushing a site table, default 15s
 	ReloadTimeout      time.Duration // wait for workers running a new nginx.conf, default 15s
+	TestTimeout        time.Duration // `nginx -t` of a new nginx.conf, default 60s
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
 
@@ -182,6 +183,7 @@ func (c *Config) setDefaults() {
 	def(&c.WatchBackoffMax, 30*time.Second)
 	def(&c.PushTimeout, 15*time.Second)
 	def(&c.ReloadTimeout, 15*time.Second)
+	def(&c.TestTimeout, time.Minute)
 	def(&c.RPCTimeout, 30*time.Second)
 	def(&c.TaskPollInterval, 30*time.Second)
 	def(&c.PrefetchTimeout, time.Minute)
@@ -295,6 +297,7 @@ type Agent struct {
 	challengePushMu     sync.Mutex
 	captchaID           string
 	captchaCh           chan struct{}
+	ocspCh              chan struct{}
 	keysFetchedAt       time.Time // data plane loop only
 	securityUnsupported sync.Once
 
@@ -346,6 +349,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 
 		challengeKeys: map[string][]byte{},
 		captchaCh:     make(chan struct{}, 1),
+		ocspCh:        make(chan struct{}, 1),
 
 		activeCh:    make(chan struct{}, 1),
 		activeMarks: true,

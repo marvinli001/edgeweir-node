@@ -169,3 +169,29 @@ func TestAgentDoesNotRetryRejectedRevision(t *testing.T) {
 	e.console.Publish(structural(8081))
 	eventually(t, "the next revision is tried", func() bool { n, _, _ := e.eng.counts(); return n > tests })
 }
+
+// TestAgentRetriesAnInterruptedTest (P1-60): `nginx -t` cut short by its
+// timeout says nothing about the configuration: the revision is retried
+// with the next poll instead of being rejected for five minutes.
+func TestAgentRetriesAnInterruptedTest(t *testing.T) {
+	e := startEnrolled(t, "interrupted", func(c *agent.Config) {
+		c.PollInterval = 100 * time.Millisecond
+		c.TestTimeout = 100 * time.Millisecond
+	}, demoSite("site-a", "site-a.test"))
+	e.eng.mu.Lock()
+	e.eng.hangTests = true
+	e.eng.mu.Unlock()
+	c := baseConfig(demoSite("site-a", "site-a.test"))
+	c.Listeners = append(c.Listeners, &nodev1.Listener{Port: 8080, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP})
+	rev := e.console.Publish(c)
+	eventually(t, "revision 2 failed", statusWith(e.console, e.rev, nodev1.ApplyState_APPLY_STATE_FAILED))
+	if msg := e.console.LastStatus().GetMessage(); !strings.Contains(msg, "interrupted: context deadline exceeded") {
+		t.Fatalf("message = %q", msg)
+	}
+	tests, _, _ := e.eng.counts()
+	eventually(t, "tested again", func() bool { n, _, _ := e.eng.counts(); return n >= tests+2 })
+	e.eng.mu.Lock()
+	e.eng.hangTests = false
+	e.eng.mu.Unlock()
+	eventually(t, "revision 2 applied", statusWith(e.console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
+}

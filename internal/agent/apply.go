@@ -20,13 +20,32 @@ import (
 
 // permanentError marks failures that will recur for the same configuration
 // (hash mismatch, validation, nginx -t); such revisions are not retried
-// until a new revision appears or rejectRetryAfter has passed.
+// until a new revision appears or rejectRetryAfter has passed. Timeouts and
+// cancellations of the agent's own (the apply's budget, a shutdown) never
+// are: they say nothing about the configuration.
 type permanentError struct{ err error }
 
 func (e *permanentError) Error() string { return e.err.Error() }
 func (e *permanentError) Unwrap() error { return e.err }
 
 const rejectRetryAfter = 5 * time.Minute
+
+// permanentUnless wraps err as permanent unless ctx ended (deadline or
+// cancellation): then the step was cut short and is retried.
+func permanentUnless(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w (interrupted: %w)", err, ctx.Err())
+	}
+	return &permanentError{err}
+}
+
+// applyTimeout bounds one apply: the console RPCs for credentials,
+// challenge keys and certificates, `nginx -t`, the reload and the pushes,
+// each within its own timeout. It starts after the configuration was
+// fetched.
+func (a *Agent) applyTimeout() time.Duration {
+	return 3*a.cfg.RPCTimeout + a.cfg.TestTimeout + a.cfg.ReloadTimeout + 4*a.cfg.PushTimeout + 30*time.Second
+}
 
 // applyPlan makes the data plane serve plan:
 //   - render nginx.conf; if it changed (structural change: listeners, cache
@@ -100,15 +119,21 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 		if err := fsutil.WriteFileAtomic(next, conf, 0o644); err != nil {
 			return err
 		}
-		if err := a.engine.Test(ctx, next); err != nil {
+		tctx, cancel := context.WithTimeout(ctx, a.cfg.TestTimeout)
+		err := a.engine.Test(tctx, next)
+		if err != nil {
+			err = permanentUnless(tctx, err)
+		}
+		cancel()
+		if err != nil {
 			_ = os.Remove(next)
-			return &permanentError{err}
+			return err
 		}
 		if err := fsutil.Rename(next, a.cfg.ConfPath); err != nil {
 			return err
 		}
 		touched = true
-		err := a.engine.Reload(ctx)
+		err = a.engine.Reload(ctx)
 		if err == nil {
 			err = a.waitForConf(ctx, render.ConfID(conf))
 		}
@@ -120,7 +145,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 					a.log.Error("cannot restore the previous nginx.conf", "err", rerr)
 				}
 			}
-			return &permanentError{err}
+			return permanentUnless(ctx, err)
 		}
 		a.log.Info("nginx configuration installed and reloaded",
 			"listeners", len(plan.Listeners), "cache_zones", len(plan.CacheZones), "conf", a.cfg.ConfPath)
@@ -432,16 +457,19 @@ func (a *Agent) syncLoop(ctx context.Context) {
 			return
 		case <-a.syncCh:
 		}
-		cctx, cancel := context.WithTimeout(ctx, 2*a.cfg.RPCTimeout)
-		cfg, err := a.fetch(cctx)
+		fctx, cancel := context.WithTimeout(ctx, 2*a.cfg.RPCTimeout)
+		cfg, err := a.fetch(fctx)
+		cancel()
 		if err != nil {
 			if ctx.Err() == nil {
 				a.logRPCError("GetConfig failed", err)
 			}
-			cancel()
 			continue
 		}
-		a.consider(cctx, cfg)
+		// The apply has a budget of its own: a slow fetch never cuts short
+		// `nginx -t`, the reload or the pushes.
+		actx, cancel := context.WithTimeout(ctx, a.applyTimeout())
+		a.consider(actx, cfg)
 		cancel()
 	}
 }
@@ -548,9 +576,8 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		a.fail(cfg, key, err)
 		return
 	}
-	ocspCtx, ocspCancel := context.WithTimeout(ctx, 30*time.Second)
-	a.refreshOCSP(ocspCtx, plan)
-	ocspCancel()
+	// OCSP responses the node holds are stapled; ocspLoop fetches the
+	// missing and stale ones after the apply.
 	if err := a.attachCertificates(plan); err != nil {
 		a.fail(cfg, key, err)
 		return
@@ -588,6 +615,7 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.pruneChallengeKeys(cfg, previousConfig)
 	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings))
 	a.triggerKernel() // platform allow lists may have changed
+	a.triggerOCSP()
 	a.triggerReport()
 }
 

@@ -41,6 +41,9 @@ type fakeEngine struct {
 	dp            *fakedataplane.Server
 	ignoreReloads bool
 	failTests     bool // `nginx -t` rejects every configuration
+	// hangTests makes `nginx -t` run until its context ends (then it fails
+	// like a killed process).
+	hangTests bool
 	// features are the engine's static modules (ModuleFeatures); probes
 	// counts configuration tests of the ModSecurity probe, failProbe
 	// makes them fail.
@@ -73,13 +76,20 @@ func (e *fakeEngine) Version(context.Context) (string, error) {
 	return "1.31.1.1", nil
 }
 
-func (e *fakeEngine) Test(_ context.Context, conf string) error {
+func (e *fakeEngine) Test(ctx context.Context, conf string) error {
 	b, err := os.ReadFile(conf)
 	if err != nil {
 		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.hangTests && !strings.HasSuffix(conf, "modsecurity-probe.nginx.conf") {
+		e.tests++
+		e.mu.Unlock()
+		<-ctx.Done()
+		e.mu.Lock()
+		return errors.New("nginx configuration test failed: signal: killed")
+	}
 	if strings.HasSuffix(conf, "modsecurity-probe.nginx.conf") {
 		e.probes++
 		if e.failProbe {

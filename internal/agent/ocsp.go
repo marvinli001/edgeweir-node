@@ -170,6 +170,17 @@ func (a *Agent) refreshOCSP(ctx context.Context, plan *configir.Plan) bool {
 	return changed
 }
 
+func (a *Agent) triggerOCSP() {
+	select {
+	case a.ocspCh <- struct{}{}:
+	default:
+	}
+}
+
+// ocspLoop refreshes the OCSP responses of the plan in effect every five
+// minutes and after every apply (never during one: a slow responder must
+// not hold up the configuration) and pushes the site table when one
+// changed.
 func (a *Agent) ocspLoop(ctx context.Context) {
 	for {
 		a.mu.Lock()
@@ -200,8 +211,14 @@ func (a *Agent) ocspLoop(ctx context.Context) {
 				a.activationMu.Unlock()
 			}
 		}
-		if !sleepCtx(ctx, 5*time.Minute) {
+		t := time.NewTimer(5 * time.Minute)
+		select {
+		case <-ctx.Done():
+			t.Stop()
 			return
+		case <-t.C:
+		case <-a.ocspCh:
+			t.Stop()
 		}
 	}
 }
