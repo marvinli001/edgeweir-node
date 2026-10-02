@@ -60,6 +60,54 @@ func (a *Agent) flushUpgradeResult(ctx context.Context) {
 		a.log.Warn("cannot persist upgrade result acknowledgement", "err", err)
 	}
 }
+
+// heartbeat is the outcome of the last accepted heartbeat, for the
+// supervisor's health checks.
+type heartbeat struct {
+	at      time.Time
+	healthy bool // applied, data plane healthy, up to date
+	every   time.Duration
+}
+
+// noteHeartbeat records a heartbeat's outcome and tells the supervisor at
+// once.
+func (a *Agent) noteHeartbeat(ctx context.Context, healthy bool, every time.Duration) {
+	if a.cfg.SupervisorSocket == "" {
+		return
+	}
+	a.mu.Lock()
+	a.lastBeat = heartbeat{at: time.Now(), healthy: healthy, every: every}
+	a.mu.Unlock()
+	a.supervisorHealthy(ctx, healthy)
+}
+
+// supervisorHealthLoop tells the supervisor every five seconds whether the
+// node is healthy: the last heartbeat (no older than two report intervals)
+// said so and the data plane still is. An upgrade trial needs healthy
+// reports at least 10 s apart within 90 s, whatever the console's report
+// interval (up to five minutes).
+func (a *Agent) supervisorHealthLoop(ctx context.Context) {
+	if a.cfg.SupervisorSocket == "" {
+		return
+	}
+	t := time.NewTicker(a.cfg.SupervisorHealthInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		a.mu.Lock()
+		beat, dp := a.lastBeat, a.dpHealthy
+		a.mu.Unlock()
+		if beat.at.IsZero() {
+			continue
+		}
+		a.supervisorHealthy(ctx, beat.healthy && dp && time.Since(beat.at) <= 2*beat.every+30*time.Second)
+	}
+}
+
 func (a *Agent) supervisorHealthy(ctx context.Context, healthy bool) {
 	if a.cfg.SupervisorSocket == "" {
 		return

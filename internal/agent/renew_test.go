@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,4 +140,75 @@ func TestRenewalKeepsANewIdentity(t *testing.T) {
 	if after, err := os.ReadFile(filepath.Join(e.h.stateDir, identity.KeyFile)); err != nil || !bytes.Equal(after, key) {
 		t.Fatalf("node.key replaced after the identity changed (%v)", err)
 	}
+}
+
+// TestSupervisorHearsHealthBetweenHeartbeats (P1-62): an upgrade trial
+// needs healthy reports at least 10 s apart within 90 s; with the console's
+// report interval at five minutes the agent still tells the supervisor
+// every few seconds.
+func TestSupervisorHearsHealthBetweenHeartbeats(t *testing.T) {
+	var mu sync.Mutex
+	var healthy int
+	sock := filepath.Join(edgeSocketDir(t), "upgrade.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/health":
+			var h struct{ Healthy bool }
+			_ = json.NewDecoder(r.Body).Decode(&h)
+			mu.Lock()
+			if h.Healthy {
+				healthy++
+			}
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/result":
+			_, _ = w.Write([]byte(`null`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	console, err := fakeconsole.New(fakeconsole.Options{NodeID: "node-h", ClusterID: "cl-h", ReportInterval: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsSrv := console.StartTLS(t)
+	root := t.TempDir()
+	h := &harness{t: t, console: console, url: tlsSrv.URL, stateDir: filepath.Join(root, "state"), root: root}
+	rev := console.Publish(baseConfig(demoSite("site-h", "h.test")))
+	dp := fakedataplane.Start(t)
+	cfg := h.agentConfig(dp.Socket)
+	cfg.SupervisorSocket = sock
+	cfg.SupervisorHealthInterval = 100 * time.Millisecond
+	startAgent(t, cfg, newFakeEngine(), dataplane.NewClient(dp.Socket))
+	console.AddToken("h-token")
+	if _, err := enroll.Run(context.Background(), enroll.Options{
+		ServerURL: tlsSrv.URL, Token: "h-token", CASHA256: console.CA.Pin(), StateDir: h.stateDir, Logger: testLogger(t),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "configuration applied", statusWith(console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
+	reports := len(console.Statuses())
+	eventually(t, "healthy reports between heartbeats", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return healthy >= 5
+	})
+	if n := len(console.Statuses()); n > reports+1 {
+		t.Fatalf("%d heartbeats meanwhile; the console asked for one every five minutes", n-reports)
+	}
+}
+
+// edgeSocketDir returns a directory for unix sockets (short paths).
+func edgeSocketDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Dir(edgeSocket(t))
 }

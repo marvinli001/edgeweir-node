@@ -209,11 +209,12 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		return interval
 	}
 	a.markConnected()
-	a.supervisorHealthy(ctx, req.GetState() == nodev1.ApplyState_APPLY_STATE_APPLIED && req.GetDataPlaneHealthy() && resp.Msg.GetLatestRevision() == req.GetAppliedRevision())
 	a.log.Debug("status reported", "applied_revision", req.GetAppliedRevision(), "state", req.GetState().String())
 	if s := resp.Msg.GetReportIntervalSeconds(); s > 0 {
 		interval = min(max(time.Duration(s)*time.Second, time.Second), 5*time.Minute)
 	}
+	a.noteHeartbeat(ctx, req.GetState() == nodev1.ApplyState_APPLY_STATE_APPLIED && req.GetDataPlaneHealthy() &&
+		resp.Msg.GetLatestRevision() == req.GetAppliedRevision(), interval)
 	if resp.Msg.GetLatestRevision() > a.appliedRevision() {
 		a.triggerSync()
 	}

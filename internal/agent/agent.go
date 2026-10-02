@@ -112,6 +112,9 @@ type Config struct {
 	TestTimeout        time.Duration // `nginx -t` of a new nginx.conf, default 60s
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
+	// SupervisorHealthInterval: the supervisor hears how the node is this
+	// often (default 5s; see supervisorHealthLoop).
+	SupervisorHealthInterval time.Duration
 	// IdentityInterval: identity.json is compared with the identity in use
 	// this often; a new one (re-enrolled) stops the agent so that it starts
 	// again with it (default 10s).
@@ -191,6 +194,7 @@ func (c *Config) setDefaults() {
 	def(&c.RPCTimeout, 30*time.Second)
 	def(&c.TaskPollInterval, 30*time.Second)
 	def(&c.IdentityInterval, 10*time.Second)
+	def(&c.SupervisorHealthInterval, 5*time.Second)
 	def(&c.PrefetchTimeout, time.Minute)
 	def(&c.PrefetchBudget, 4*time.Minute)
 	def(&c.AutoBanInterval, 5*time.Second)
@@ -262,6 +266,7 @@ type Agent struct {
 	state        nodev1.ApplyState
 	message      string
 	dpHealthy    bool
+	lastBeat     heartbeat // for the supervisor (upgrades.go)
 	rejectedKey  string
 	rejectedAt   time.Time
 	lastRenew    time.Time
@@ -495,6 +500,7 @@ func (a *Agent) Run(parent context.Context) error {
 	spawn("logs", a.logsLoop)
 	spawn("tasks", a.taskLoop)
 	spawn("purges", a.purgeLoop)
+	spawn("supervisor", a.supervisorHealthLoop)
 	spawn("bans", a.bansLoop)
 	spawn("autobans", a.autoBansLoop)
 	spawn("security", a.securityLoop)
