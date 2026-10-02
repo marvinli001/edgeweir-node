@@ -11,6 +11,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
+	"github.com/marvinli001/edgeweir-node/internal/retry"
 )
 
 // purgeFile persists the purge markers: they must outlive nginx and agent
@@ -184,23 +185,10 @@ func (a *Agent) fullPurgeTable() (*dataplane.PurgeTable, *dataplane.PurgeTable) 
 	return a.purge.table(), a.purge.compact()
 }
 
-// syncPurgeWithRetry is syncPurge with the retry budget of site pushes
-// (nginx may still be starting).
+// syncPurgeWithRetry is syncPurge with the retries of site pushes (nginx
+// may still be starting; see retryWrite).
 func (a *Agent) syncPurgeWithRetry(ctx context.Context) error {
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := a.syncPurge(cctx)
-		cancel()
-		if err == nil || time.Now().After(deadline) {
-			return err
-		}
-		if !sleepCtx(ctx, delay) {
-			return ctx.Err()
-		}
-		delay = min(delay*2, 2*time.Second)
-	}
+	return a.retryWrite(ctx, 10*time.Second, a.syncPurge)
 }
 
 // syncPurge installs the full marker set unless the data plane already has
@@ -243,7 +231,8 @@ func (a *Agent) syncPurge(ctx context.Context) error {
 		a.collapsePurgeSites(sites)
 	}
 	if _, ferr := a.dp.PutPurge(ctx, fallback); ferr != nil {
-		return fmt.Errorf("install purge markers: %w (site-level fallback: %v)", err, ferr)
+		// The fallback's failure tells whether a retry can help.
+		return fmt.Errorf("install purge markers: %v (site-level fallback: %w)", err, ferr)
 	}
 	a.mu.Lock()
 	a.purgeRetryAt = time.Now().Add(purgeFallbackRetry)
@@ -254,33 +243,23 @@ func (a *Agent) syncPurge(ctx context.Context) error {
 }
 
 // pushMarkers merges markers into the data plane, retrying transient
-// failures within the push timeout. When they do not fit, the full set is
+// failures (see retryWrite). When they do not fit, the full set is
 // installed instead (with the per-site fallback).
 func (a *Agent) pushMarkers(ctx context.Context, t *dataplane.PurgeTable) error {
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := a.retryWrite(ctx, 10*time.Second, func(ctx context.Context) error {
 		a.purgeMu.Lock()
-		_, err := a.dp.AddPurge(cctx, t)
-		a.purgeMu.Unlock()
-		cancel()
-		if err == nil {
-			a.log.Info("purge markers added to data plane", "markers", len(t.Markers), "id", t.ID)
-			return nil
-		}
-		var apiErr *dataplane.APIError
-		if errors.As(err, &apiErr) && (apiErr.Status == 507 || apiErr.Status == 400) {
-			cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			return a.syncPurge(cctx)
-		}
-		if time.Now().After(deadline) {
-			return err
-		}
-		if !sleepCtx(ctx, delay) {
-			return ctx.Err()
-		}
-		delay = min(delay*2, 2*time.Second)
+		defer a.purgeMu.Unlock()
+		_, err := a.dp.AddPurge(ctx, t)
+		return err
+	})
+	if err == nil {
+		a.log.Info("purge markers added to data plane", "markers", len(t.Markers), "id", t.ID)
+		return nil
 	}
+	if retry.IsPermanent(err) {
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		return a.syncPurge(cctx)
+	}
+	return err
 }

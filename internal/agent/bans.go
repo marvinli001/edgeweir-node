@@ -358,25 +358,15 @@ func (a *Agent) setBanStatus(st *dataplane.BanStatus) {
 // pushBansWithRetry installs the stored bans at startup (nginx may still
 // be starting); the data plane loop keeps trying afterwards.
 func (a *Agent) pushBansWithRetry(ctx context.Context) {
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
+	err := a.retryWrite(ctx, 0, func(ctx context.Context) error {
 		a.banMu.Lock()
+		defer a.banMu.Unlock()
 		// The data plane's content is unknown (banSent is nil): the whole
 		// set goes in.
-		err := a.pushBansLocked(ctx)
-		a.banMu.Unlock()
-		if err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			a.log.Warn("cannot install the stored bans yet; retrying in the background", "err", err)
-			return
-		}
-		if !sleepCtx(ctx, delay) {
-			return
-		}
-		delay = min(delay*2, 2*time.Second)
+		return a.pushBansLocked(ctx)
+	})
+	if err != nil && err != ctx.Err() {
+		a.log.Warn("cannot install the stored bans yet; retrying in the background", "err", err)
 	}
 }
 

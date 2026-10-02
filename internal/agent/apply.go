@@ -16,6 +16,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/render"
+	"github.com/marvinli001/edgeweir-node/internal/retry"
 )
 
 // permanentError marks failures that will recur for the same configuration
@@ -258,36 +259,55 @@ func (a *Agent) pushLocked(ctx context.Context, table *dataplane.SiteTable) erro
 	return nil
 }
 
-// pushWithRetry retries transient failures (nginx still starting) within
-// the push timeout.
+// pushWithRetry pushes the site table, retrying while nginx starts (see
+// retryWrite).
 func (a *Agent) pushWithRetry(ctx context.Context, table *dataplane.SiteTable) error {
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := a.push(cctx, table)
-		cancel()
-		if err == nil {
-			return nil
+	err := a.retryWrite(ctx, 10*time.Second, func(ctx context.Context) error { return a.push(ctx, table) })
+	return a.tablePushError(ctx, err, "site table",
+		fmt.Sprintf("site store (--sites-dict-mb %d)", a.cfg.Render.WithDefaults().SitesDictMB))
+}
+
+// retryWrite runs a data plane write until it succeeds, the data plane
+// refuses it for good (see refused), PushTimeout has passed or ctx ends
+// (nginx may still be starting): the pause starts at 100ms and doubles up
+// to 2s. attempt bounds each write (0: the write sets its own timeouts).
+// When ctx ends while it waits, it returns ctx.Err() itself.
+func (a *Agent) retryWrite(ctx context.Context, attempt time.Duration, write func(context.Context) error) error {
+	p := retry.Policy{Budget: a.cfg.PushTimeout, Delay: 100 * time.Millisecond, MaxDelay: 2 * time.Second, Attempt: attempt}
+	return retry.Do(ctx, p, func(ctx context.Context) error {
+		err := write(ctx)
+		if refused(err) {
+			return retry.Permanent(err)
 		}
-		var apiErr *dataplane.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == 400 {
-			return &permanentError{fmt.Errorf("data plane rejected the site table: %w", err)}
-		}
-		if errors.As(err, &apiErr) && apiErr.Status == 507 {
-			// It will not fit on a retry either.
-			return &permanentError{fmt.Errorf("the site table does not fit the data plane's site store (--sites-dict-mb %d): %w",
-				a.cfg.Render.WithDefaults().SitesDictMB, err)}
-		}
-		if time.Now().After(deadline) {
-			a.setDataPlaneHealthy(false)
-			return fmt.Errorf("push site table: %w", err)
-		}
-		if !sleepCtx(ctx, delay) {
-			return ctx.Err()
-		}
-		delay = min(delay*2, 2*time.Second)
+		return err
+	})
+}
+
+// refused reports whether the data plane refused a write that would fail
+// the same way again: an invalid document (400), one too large to send
+// (413) or one its store cannot hold (507).
+func refused(err error) bool {
+	var apiErr *dataplane.APIError
+	return errors.As(err, &apiErr) && (apiErr.Status == 400 || apiErr.Status == 413 || apiErr.Status == 507)
+}
+
+// tablePushError is the apply's error for a failed push of a table (what)
+// to a data plane store: a table the data plane refused or cannot hold is
+// a permanent failure of the revision; one that kept failing until the
+// budget ran out leaves the data plane unhealthy.
+func (a *Agent) tablePushError(ctx context.Context, err error, what, store string) error {
+	var apiErr *dataplane.APIError
+	switch {
+	case err == nil || err == ctx.Err():
+		return err
+	case retry.IsPermanent(err) && errors.As(err, &apiErr) && apiErr.Status == 507:
+		// It will not fit on a retry either.
+		return &permanentError{fmt.Errorf("the %s does not fit the data plane's %s: %w", what, store, err)}
+	case retry.IsPermanent(err):
+		return &permanentError{fmt.Errorf("data plane rejected the %s: %w", what, err)}
 	}
+	a.setDataPlaneHealthy(false)
+	return fmt.Errorf("push %s: %w", what, err)
 }
 
 // pushL4 installs the layer-4 table (serialized with the site table).
@@ -302,35 +322,12 @@ func (a *Agent) pushL4(ctx context.Context, t *dataplane.L4Table) error {
 	return nil
 }
 
-// pushL4WithRetry retries transient failures (the stream subsystem of a
-// starting nginx) within the push timeout.
+// pushL4WithRetry pushes the layer-4 table, retrying while the stream
+// subsystem of a starting nginx comes up (see retryWrite).
 func (a *Agent) pushL4WithRetry(ctx context.Context, t *dataplane.L4Table) error {
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := a.pushL4(cctx, t)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		var apiErr *dataplane.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == 400 {
-			return &permanentError{fmt.Errorf("data plane rejected the layer-4 table: %w", err)}
-		}
-		if errors.As(err, &apiErr) && apiErr.Status == 507 {
-			return &permanentError{fmt.Errorf("the layer-4 table does not fit the data plane's store (--l4-dict-mb %d): %w",
-				a.cfg.Render.WithDefaults().L4DictMB, err)}
-		}
-		if time.Now().After(deadline) {
-			a.setDataPlaneHealthy(false)
-			return fmt.Errorf("push layer-4 table: %w", err)
-		}
-		if !sleepCtx(ctx, delay) {
-			return ctx.Err()
-		}
-		delay = min(delay*2, 2*time.Second)
-	}
+	err := a.retryWrite(ctx, 10*time.Second, func(ctx context.Context) error { return a.pushL4(ctx, t) })
+	return a.tablePushError(ctx, err, "layer-4 table",
+		fmt.Sprintf("store (--l4-dict-mb %d)", a.cfg.Render.WithDefaults().L4DictMB))
 }
 
 // reconcileL4 pushes the desired layer-4 table again when the stream

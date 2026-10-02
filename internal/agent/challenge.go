@@ -307,21 +307,9 @@ func (a *Agent) pushChallengeKeysWithRetry(ctx context.Context, plan *configir.P
 	if len(plan.ChallengeKeys) == 0 {
 		return
 	}
-	deadline := time.Now().Add(a.cfg.PushTimeout)
-	delay := 100 * time.Millisecond
-	for {
-		err := a.pushChallengeKeys(ctx, plan)
-		if err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			a.log.Warn("cannot install challenge keys before the site table; retrying in the background", "err", err)
-			return
-		}
-		if !sleepCtx(ctx, delay) {
-			return
-		}
-		delay = min(delay*2, 2*time.Second)
+	err := a.retryWrite(ctx, 0, func(ctx context.Context) error { return a.pushChallengeKeys(ctx, plan) })
+	if err != nil && err != ctx.Err() {
+		a.log.Warn("cannot install challenge keys before the site table; retrying in the background", "err", err)
 	}
 }
 
