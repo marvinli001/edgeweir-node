@@ -3,7 +3,9 @@
 -- access(): answers the probes' health endpoint before anything else and
 -- keeps connections with the health SNI to it (edgeweir.probehealth),
 -- rejects requests that already passed this node (CDN-Loop,
--- 508), resolves the site by Host (404 for unknown hosts), rejects banned
+-- 508), answers the HTTP-01 challenges of the node's certificates (others
+-- go to the origin uncached and unchallenged), resolves the site by Host
+-- (404 for unknown hosts), rejects banned
 -- client addresses (403 ip-banned, edgeweir.bans), handles
 -- WebSocket upgrades, evaluates the request conditions of the cache rules
 -- and prepares the variables used by proxy_cache in nginx.conf: the cache
@@ -219,8 +221,11 @@ local function access()
         return ngx.exit(ngx.HTTP_OK)
       end
     end
-    return deny(404, "challenge-not-found", "challenge not found")
   end
+  -- Other HTTP-01 tokens belong to the origin's own certificates: they go
+  -- there, never cached and never challenged (validation servers cannot
+  -- solve challenges).
+  local acme = token ~= nil
   local site, ver = store.lookup_host(host)
   if not site then
     -- Offline hosts (disabled and suspended sites) and unknown hosts get
@@ -281,7 +286,7 @@ local function access()
     return deny(result.status, result.code or "policy-denied", result.message or "request denied")
   end
   local under_attack = pctx and pctx.under_attack
-  if (site._guard or under_attack == true) and not exempt and not is_local then
+  if (site._guard or under_attack == true) and not exempt and not is_local and not acme then
     local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
     local level, kind = challenge.required(site, cc_level, under_attack)
     if level > 0 and challenge.pass_level(site) < level then
@@ -321,7 +326,7 @@ local function access()
   end
 
   local method = ngx.req.get_method()
-  if method ~= "GET" and method ~= "HEAD" then
+  if (method ~= "GET" and method ~= "HEAD") or acme then
     var.edgeweir_range_mode = "pass"
     return true
   end
