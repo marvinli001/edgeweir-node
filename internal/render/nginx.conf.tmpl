@@ -130,14 +130,16 @@ http {
     }
 
     # Edge -> origin layer (local unix sockets). The variant without TLS
-    # verification serves sites that turned it off.
+    # verification serves sites that turned it off. No keep-alive: when a
+    # request on a reused connection fails, nginx tries it again on another
+    # one (each try a new trip to the origin), and the origin layer closes
+    # the connection on purpose when the edge should serve a stale copy
+    # (stale-if-error, edgeweir.origin).
     upstream edgeweir_origin_verify {
         server unix:{{ .OriginSocket }};
-        keepalive 64;
     }
     upstream edgeweir_origin_noverify {
         server unix:{{ .OriginSocketNoVerify }};
-        keepalive 64;
     }
 
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools

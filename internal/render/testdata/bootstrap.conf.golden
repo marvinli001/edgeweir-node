@@ -51,7 +51,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "7d4c5aef56d92986",
+            conf_id = "a59832847b7e332a",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -104,14 +104,16 @@ http {
     }
 
     # Edge -> origin layer (local unix sockets). The variant without TLS
-    # verification serves sites that turned it off.
+    # verification serves sites that turned it off. No keep-alive: when a
+    # request on a reused connection fails, nginx tries it again on another
+    # one (each try a new trip to the origin), and the origin layer closes
+    # the connection on purpose when the edge should serve a stale copy
+    # (stale-if-error, edgeweir.origin).
     upstream edgeweir_origin_verify {
         server unix:/run/edgeweir-node/origin.sock;
-        keepalive 64;
     }
     upstream edgeweir_origin_noverify {
         server unix:/run/edgeweir-node/origin-noverify.sock;
-        keepalive 64;
     }
 
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools
