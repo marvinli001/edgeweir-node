@@ -407,11 +407,18 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			}
 			var names []string
 			for _, domain := range site.Domains {
+				// No HTTPS for a domain the certificate does not cover yet.
+				if l.TLS && domain.TLSPending {
+					continue
+				}
 				name := domain.Name
 				if domain.Wildcard {
 					name = "*." + name
 				}
 				names = append(names, name)
+			}
+			if len(names) == 0 {
+				continue
 			}
 			custom := s
 			custom.Listen = make([]string, len(s.Listen))

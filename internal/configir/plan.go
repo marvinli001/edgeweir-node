@@ -241,7 +241,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -284,6 +284,14 @@ const (
 // The console only reads the counts; no configuration requires it.
 const FeatureRuleLog = "rule-log-v1"
 
+// FeatureTLSPendingDomains (proto v0.19.0): a domain with tls_pending is
+// one the site's certificate does not cover yet. It is served over HTTP
+// only: the TLS handshake for it is refused, and requests for it are
+// neither redirected to HTTPS nor answered with HSTS. The console sends
+// such domains (and requires the feature) only to clusters whose active
+// nodes all announce it.
+const FeatureTLSPendingDomains = "tls-pending-domains-v1"
+
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
 type HealthCheck struct {
@@ -323,6 +331,9 @@ type CacheKey struct {
 type Domain struct {
 	Name     string `json:"name"`
 	Wildcard bool   `json:"wildcard,omitempty"`
+	// TLSPending: not covered by the site's certificate yet, served over
+	// HTTP only (FeatureTLSPendingDomains). Never set without a certificate.
+	TLSPending bool `json:"tls_pending,omitempty"`
 }
 
 // Origin is an upstream server.
@@ -722,7 +733,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 				continue
 			}
 			claimed[key] = id
-			site.Domains = append(site.Domains, Domain{Name: name, Wildcard: d.GetWildcard()})
+			site.Domains = append(site.Domains, Domain{Name: name, Wildcard: d.GetWildcard(), TLSPending: d.GetTlsPending() && site.CertificateID != ""})
 		}
 		if len(site.Domains) == 0 {
 			warn("site %s skipped: no valid domain", id)

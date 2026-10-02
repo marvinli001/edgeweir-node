@@ -125,6 +125,10 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 			return err
 		}
 		for _, domain := range site.Domains {
+			// Served over HTTP until a new certificate covers it.
+			if domain.TLSPending {
+				continue
+			}
 			name := domain.Name
 			if domain.Wildcard {
 				matched := false
