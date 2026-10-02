@@ -297,6 +297,8 @@ local function run_group(group, site, ctx, phase, namespace)
         if challenge.pass_level(site) < level then return { challenge = a.challenge, level = level } end
       end
       if a.kind == "log" then
+        -- Counted per rule and minute for the console (feature rule-log-v1).
+        require("edgeweir.stats").logged(site.id, rule.id)
         -- IDs only: expressions, URL, headers and client addresses are never logged.
         local key = "log:" .. site.id .. ":" .. rule.id
         if ngx.shared.edgeweir_policy_logs:safe_add(key, true, 60) then

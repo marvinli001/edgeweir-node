@@ -2,7 +2,8 @@
 --
 -- log() runs in the log phase of the edge layer and increments counters in
 -- lua_shared_dict "edgeweir_stats" under "<minute>|<site id>|<metric>"
--- (not for the agent's prefetches on the local listeners).
+-- (not for the agent's prefetches on the local listeners). logged() counts
+-- the matches of rules with the log action (edgeweir.policy, access phase).
 -- drain() returns and deletes all completed minutes; the agent calls it
 -- through the control API every minute and uploads the buckets with
 -- ReportStats. Undrained counters expire after two hours.
@@ -19,6 +20,19 @@ local MISS = { MISS = true, EXPIRED = true }
 
 -- MAX_WAF_RULES bounds the CRS rules of a site's minute (heaviest first).
 _M.MAX_WAF_RULES = 20
+-- MAX_LOGGED_RULES bounds the log rules of a site's minute (heaviest first).
+_M.MAX_LOGGED_RULES = 20
+
+-- logged counts a match of a rule with the log action for the site's minute
+-- (metric "l<rule id>", reported as MinuteStats.logged_rules). Requests on
+-- the local listeners (the agent's prefetches) are not counted.
+function _M.logged(site_id, rule_id)
+  if ngx.var.edgeweir_local == "1" then
+    return
+  end
+  local minute = floor(ngx.time() / 60) * 60
+  ngx.shared.edgeweir_stats:incr(minute .. "|" .. site_id .. "|l" .. rule_id, 1, 0, TTL)
+end
 
 -- log(waf_location): waf_location in the edge layer's CRS locations, where
 -- the request context comes back first and matched CRS rules are counted.
@@ -109,6 +123,10 @@ function _M.drain(now)
           local id = sub(metric, 2)
           b.waf_rules = b.waf_rules or {}
           b.waf_rules[id] = (b.waf_rules[id] or 0) + v
+        elseif sub(metric, 1, 1) == "l" then
+          local id = sub(metric, 2)
+          b.logged_rules = b.logged_rules or {}
+          b.logged_rules[id] = (b.logged_rules[id] or 0) + v
         end
       end
     end
@@ -124,10 +142,12 @@ function _M.drain(now)
     for value, count in pairs(record.urls or {}) do bucket.top_urls[value] = (bucket.top_urls[value] or 0) + count end
     for value, count in pairs(record.ips or {}) do bucket.top_ips[value] = (bucket.top_ips[value] or 0) + count end
   end
+  -- Rule counters only where a rule matched; the Top-K summaries always.
+  local limits = { waf_rules = _M.MAX_WAF_RULES, logged_rules = _M.MAX_LOGGED_RULES }
   for _, bucket in ipairs(list) do
-    for _, field in ipairs({"top_urls", "top_ips", "waf_rules"}) do
-      if field ~= "waf_rules" or bucket[field] then
-        local limit = field == "waf_rules" and _M.MAX_WAF_RULES or 50
+    for _, field in ipairs({"top_urls", "top_ips", "waf_rules", "logged_rules"}) do
+      if not limits[field] or bucket[field] then
+        local limit = limits[field] or 50
         local sorted = {}; for value,count in pairs(bucket[field] or {}) do sorted[#sorted+1] = {value=value,count=count} end
         table.sort(sorted,function(a,b) return a.count>b.count or (a.count==b.count and a.value<b.value) end)
         local selected = {}; for i=1,math.min(limit,#sorted) do selected[sorted[i].value] = sorted[i].count end

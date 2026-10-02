@@ -4,7 +4,8 @@
 -- phase, cache rule conditions and browser TTLs.
 --
 --   resty -I lua --shdict 'edgeweir_sites 1m' --shdict 'edgeweir_meta 1m' \
---         --shdict 'edgeweir_health 1m' --shdict 'edgeweir_policy_logs 1m' test/lua/rules_v2.lua
+--         --shdict 'edgeweir_health 1m' --shdict 'edgeweir_policy_logs 1m' \
+--         --shdict 'edgeweir_stats 1m' --shdict 'edgeweir_topstats 1m' test/lua/rules_v2.lua
 local policy = require("edgeweir.policy")
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
@@ -60,6 +61,7 @@ local function with_request(req, fn)
     if k == "host" then return req.host or "a.test" end
     if k == "scheme" then return req.scheme or "http" end
     if k == "remote_addr" then return "192.0.2.1" end
+    if k == "edgeweir_local" then return req.is_local and "1" or "" end
   end })
   local fake = setmetatable({
     ctx = {}, var = var, header = state.header, status = req.status or 200,
@@ -411,6 +413,50 @@ test("store: field flags, bulk redirects and invalid pushes", function()
   eq(err, "invalid site policy")
   st, err = push({ bulk_redirects = { { source = "/a", target = "/b", status = 301 } } })
   assert(st, err)
+end)
+
+test("log rules count their matches per rule and minute, never on the local listeners", function()
+  local stats = require("edgeweir.stats")
+  ngx.shared.edgeweir_stats:flush_all()
+  local s = site({ rules = {
+    { id = "seen", phase = "waf-custom", expression = path_is("/x"), action = { kind = "log" } },
+    { id = "other", phase = "waf-custom", expression = path_is("/y"), action = { kind = "log" } },
+  } }, { { id = "global", phase = "waf-custom", expression = TRUE, action = { kind = "log" } } })
+  access(s, { uri = "/x" })
+  access(s, { uri = "/x" })
+  access(s, { uri = "/z" })
+  access(s, { uri = "/x", is_local = true })
+  -- Summed over the buckets, in case a minute ended in between.
+  local counts, buckets = {}, 0
+  for _, b in ipairs(stats.drain(ngx.time() + 60)) do
+    if b.site_id == "s1" then
+      buckets = buckets + 1
+      eq(b.waf_rules, nil)
+      for id, n in pairs(b.logged_rules or {}) do counts[id] = (counts[id] or 0) + n end
+    end
+  end
+  assert(buckets > 0, "no bucket for the site")
+  eq(counts.seen, 2)
+  eq(counts.global, 3, "platform log rules count for the site")
+  eq(counts.other, nil, "rules that never matched are absent")
+  eq(#stats.drain(ngx.time() + 60), 0, "drained")
+end)
+
+test("logged rules keep the heaviest of a minute", function()
+  local stats = require("edgeweir.stats")
+  local dict = ngx.shared.edgeweir_stats
+  dict:flush_all()
+  local minute = math.floor(ngx.time() / 60) * 60 - 60
+  for i = 1, stats.MAX_LOGGED_RULES + 5 do
+    dict:set(minute .. "|s2|lr" .. string.format("%02d", i), i)
+  end
+  local bucket = stats.drain(ngx.time())[1]
+  eq(bucket.site_id, "s2")
+  local n = 0
+  for _ in pairs(bucket.logged_rules) do n = n + 1 end
+  eq(n, stats.MAX_LOGGED_RULES, "bounded")
+  eq(bucket.logged_rules["r25"], 25)
+  eq(bucket.logged_rules["r05"], nil, "the lightest are dropped")
 end)
 
 test("config rules switch the site's Under Attack", function()
