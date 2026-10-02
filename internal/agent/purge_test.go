@@ -221,10 +221,14 @@ func TestAgentPurgesByHostAndTag(t *testing.T) {
 		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_HOST, Host: "Site-A.test"},
 		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: "Product-42"},
 		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_TAG, Tag: "a,b"},
+		// A pattern matches no request: it fails instead of doing nothing.
+		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_HOST, Host: "*.site-a.test"},
+		&nodev1.PurgeTarget{SiteId: "site-a", Type: nodev1.PurgeType_PURGE_TYPE_URL, Host: "*.site-a.test", Path: "/x"},
 	), false)
 	res := waitResults(t, e.console, 1)[0]
-	if res.GetState() != nodev1.TaskState_TASK_STATE_FAILED || res.GetSucceeded() != 2 || res.GetFailed() != 1 ||
-		res.GetErrorCode() != "purge_failed" || !strings.Contains(res.GetMessage(), `invalid tag target "a,b"`) {
+	if res.GetState() != nodev1.TaskState_TASK_STATE_FAILED || res.GetSucceeded() != 2 || res.GetFailed() != 3 ||
+		res.GetErrorCode() != "purge_failed" || !strings.Contains(res.GetMessage(), `invalid tag target "a,b"`) ||
+		!strings.Contains(res.GetMessage(), `invalid host target "*.site-a.test"`) || !strings.Contains(res.GetMessage(), `invalid url target "*.site-a.test""/x"`) {
 		t.Fatalf("result = %v", res)
 	}
 	epoch := e.dp.Markers()[0].Epoch

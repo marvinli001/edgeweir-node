@@ -240,7 +240,8 @@ func purgeMarkers(p *nodev1.PurgeTask, epoch int64) ([]dataplane.PurgeMarker, []
 }
 
 // purgeMarker converts one purge target; the reason is empty when it is
-// valid.
+// valid. Hosts must be host names: a pattern such as "*.example.com" would
+// match no request, the purge would do nothing and report success.
 func purgeMarker(t *nodev1.PurgeTarget, epoch int64) (dataplane.PurgeMarker, string) {
 	m := dataplane.PurgeMarker{SiteID: t.GetSiteId(), Epoch: epoch}
 	host := strings.ToLower(t.GetHost())
@@ -255,13 +256,16 @@ func purgeMarker(t *nodev1.PurgeTarget, epoch int64) (dataplane.PurgeMarker, str
 		} else {
 			m.Query = t.GetQuery()
 		}
-		if host == "" || !strings.HasPrefix(m.Path, "/") {
+		if !configir.ValidHostname(host) || !strings.HasPrefix(m.Path, "/") {
 			return m, fmt.Sprintf("invalid %s target %q%q", m.Type, host, m.Path)
 		}
 	case nodev1.PurgeType_PURGE_TYPE_HOST:
 		m.Type, m.Host, m.Path = "prefix", host, "/"
 		if host == "" {
 			return m, "invalid host target: no host"
+		}
+		if !configir.ValidHostname(host) {
+			return m, fmt.Sprintf("invalid host target %q", host)
 		}
 	case nodev1.PurgeType_PURGE_TYPE_SITE:
 		m.Type = "site"
