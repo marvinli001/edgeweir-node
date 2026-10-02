@@ -412,7 +412,7 @@ func (a *Agent) executeSitemap(ctx context.Context, task *nodev1.NodeTask, s *no
 	items := make([]prefetchItem, 0, len(urls)*len(variants))
 	for _, u := range urls {
 		for _, v := range variants {
-			items = append(items, prefetchItem{url: u, variant: v})
+			items = append(items, prefetchItem{site: s.GetSiteId(), url: u, variant: v})
 		}
 	}
 	res := a.prefetchAll(ctx, task, client, items, deadline)

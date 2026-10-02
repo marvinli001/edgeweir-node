@@ -656,7 +656,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		Prefix:       prefix,
 		Conf:         conf,
 		Managed:      *manage,
-		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket, params.L4Socket},
+		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket},
 		Logger:       log,
 	})
 	var kernel nft.Executor

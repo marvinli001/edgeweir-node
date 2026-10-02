@@ -118,8 +118,8 @@ type Config struct {
 	PurgeMarkersPerSite int
 	PurgeTagsPerSite    int
 
-	// Prefetch tasks request URLs from the node's own edge listener.
-	PrefetchHost        string        // default 127.0.0.1
+	// Prefetch tasks request URLs through the node's local edge listeners
+	// (Render.EdgeSocket, Render.EdgeTLSSocket).
 	PrefetchConcurrency int           // default 4
 	PrefetchTimeout     time.Duration // per URL, default 60s
 	// PrefetchBudget bounds the prefetches of one pulled batch, counted
@@ -197,9 +197,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.BanCapacity <= 0 {
 		c.BanCapacity = render.DefaultBanCapacity
-	}
-	if c.PrefetchHost == "" {
-		c.PrefetchHost = "127.0.0.1"
 	}
 	if c.PrefetchConcurrency <= 0 {
 		c.PrefetchConcurrency = 4
@@ -521,6 +518,7 @@ func (a *Agent) prepareDirs() error {
 		{a.cfg.Render.CacheDir, 0o750},
 		{filepath.Dir(a.cfg.Render.ControlSocket), 0o750},
 		{filepath.Dir(a.cfg.Render.WithDefaults().EdgeSocket), 0o750},
+		{filepath.Dir(a.cfg.Render.WithDefaults().EdgeTLSSocket), 0o750},
 		{filepath.Dir(a.cfg.Render.WithDefaults().L4Socket), 0o750},
 		{filepath.Dir(a.cfg.Render.OriginSocket), 0o750},
 		{filepath.Dir(a.cfg.ConfPath), 0o750},

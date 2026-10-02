@@ -46,10 +46,14 @@ type Params struct {
 	CacheDir string
 	// ControlSocket is the unix socket of the control API.
 	ControlSocket string
-	// EdgeSocket is the local edge listener for the agent's prefetch
-	// requests (default: edge.sock next to ControlSocket).
-	EdgeSocket  string
-	GeoIPSocket string
+	// EdgeSocket and EdgeTLSSocket are the local edge listeners (plain
+	// and TLS) of the agent's prefetch requests (default: edge.sock next
+	// to ControlSocket, edge-tls.sock next to EdgeSocket). Requests there
+	// skip bans, CC, challenges, access-denying rules and statistics
+	// (edgeweir.router).
+	EdgeSocket    string
+	EdgeTLSSocket string
+	GeoIPSocket   string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
 	// OriginSocketNoVerify is the unix socket of the origin layer for sites
@@ -188,6 +192,9 @@ func (p Params) WithDefaults() Params {
 	if p.EdgeSocket == "" && p.ControlSocket != "" {
 		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
 	}
+	if p.EdgeTLSSocket == "" && p.EdgeSocket != "" {
+		p.EdgeTLSSocket = filepath.Join(filepath.Dir(p.EdgeSocket), "edge-tls.sock")
+	}
 	if p.L4Socket == "" && p.ControlSocket != "" {
 		p.L4Socket = filepath.Join(filepath.Dir(p.ControlSocket), "l4.sock")
 	}
@@ -215,6 +222,7 @@ func (p Params) validate() error {
 		"control socket": p.ControlSocket, "origin socket": p.OriginSocket, "resolv.conf": p.ResolvConf,
 		"origin socket without verification": p.OriginSocketNoVerify,
 		"edge socket":                        p.EdgeSocket,
+		"TLS edge socket":                    p.EdgeTLSSocket,
 		"GeoIP socket":                       p.GeoIPSocket,
 		"layer-4 control socket":             p.L4Socket,
 	} {
@@ -227,6 +235,9 @@ func (p Params) validate() error {
 	}
 	if p.OriginSocket == p.OriginSocketNoVerify {
 		return errors.New("the origin sockets with and without TLS verification must differ")
+	}
+	if p.EdgeSocket == p.EdgeTLSSocket {
+		return errors.New("the plain and the TLS edge sockets must differ")
 	}
 	for name, v := range map[string]string{"worker_processes": p.WorkerProcesses, "error log level": p.ErrorLogLevel} {
 		if !safeWord.MatchString(v) {
@@ -342,7 +353,7 @@ type edgeServer struct {
 	HTTP3         bool
 	HTTP2         bool
 	ProxyProtocol bool
-	Local         bool // the agent's unix socket listener
+	Local         bool // the agent's unix socket listeners
 	TLS           bool
 	ServerName    string
 	Gzip          bool
@@ -363,7 +374,9 @@ type edgeServer struct {
 
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
+	hasTLS := false
 	for _, l := range plan.Listeners {
+		hasTLS = hasTLS || l.TLS
 		suffix := " default_server"
 		if l.TLS {
 			suffix += " ssl"
@@ -417,7 +430,13 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			out = append(out, custom)
 		}
 	}
-	return append(out, edgeServer{Listen: []string{"unix:" + p.EdgeSocket + " default_server"}, Local: true, ServerName: "_"})
+	out = append(out, edgeServer{Listen: []string{"unix:" + p.EdgeSocket + " default_server"}, Local: true, ServerName: "_"})
+	if hasTLS {
+		// https URLs: the certificate of the site that serves the host (SNI),
+		// as on the public HTTPS listeners.
+		out = append(out, edgeServer{Listen: []string{"unix:" + p.EdgeTLSSocket + " default_server ssl"}, Local: true, TLS: true, ServerName: "_"})
+	}
+	return out
 }
 
 type originLayer struct {

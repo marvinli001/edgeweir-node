@@ -54,7 +54,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "e661536f729b5959",
+            conf_id = "a672fe5fe10adb18",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -243,15 +243,16 @@ http {
         }
     }
 
-    # Edge layer: one server per listener, plus a local one on a unix socket
-    # that the agent's prefetch requests use when no listener is plain HTTP
-    # without the PROXY protocol.
+    # Edge layer: one server per listener, plus the local ones on unix
+    # sockets (plain, and TLS when a listener is) for the agent's prefetch
+    # requests.
     server {
         listen 80 default_server;
         listen [::]:80 default_server;
         server_name _;
 
         location / {
+            set $edgeweir_local "";
             set $edgeweir_site "";
             set $edgeweir_cache_zone "edgeweir_default";
             set $edgeweir_cache_key "";
@@ -321,12 +322,18 @@ http {
         }
     }
 
-    # Local edge listener (agent prefetches; never PROXY protocol).
+    # Local edge listener: agent prefetches only. edgeweir.router skips
+    # bans, CC, challenges, access-denying rules and the CRS there, and
+    # edgeweir.stats does not count them; origins see the address the agent
+    # names (127.0.0.1).
     server {
         listen unix:/run/edgeweir-node/edge.sock default_server;
+        set_real_ip_from unix:;
+        real_ip_header X-Edgeweir-Prefetch-Addr;
         server_name _;
 
         location / {
+            set $edgeweir_local "1";
             set $edgeweir_site "";
             set $edgeweir_cache_zone "edgeweir_default";
             set $edgeweir_cache_key "";
@@ -416,7 +423,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "e661536f729b5959",
+            conf_id = "a672fe5fe10adb18",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }

@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,16 +17,12 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
-// slowEdge imitates the node's edge listener for prefetches, answering
-// after delay; it returns the port and a request counter.
-func slowEdge(t *testing.T, delay time.Duration) (uint32, *atomic.Int32) {
+// slowEdge imitates the node's local edge listener for prefetches,
+// answering after delay; it returns the socket and a request counter.
+func slowEdge(t *testing.T, delay time.Duration) (string, *atomic.Int32) {
 	t.Helper()
 	var n atomic.Int32
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	path := listenEdge(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n.Add(1)
 		select {
 		case <-time.After(delay):
@@ -38,11 +33,8 @@ func slowEdge(t *testing.T, delay time.Duration) (uint32, *atomic.Int32) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		_, _ = w.Write([]byte("body"))
-	}))
-	srv.Listener = ln
-	srv.Start()
-	t.Cleanup(srv.Close)
-	return uint32(ln.Addr().(*net.TCPAddr).Port), &n
+	}), nil)
+	return path, &n
 }
 
 func prefetchTask(id string, urls ...string) *nodev1.NodeTask {
@@ -53,20 +45,18 @@ func prefetchTask(id string, urls ...string) *nodev1.NodeTask {
 	return &nodev1.NodeTask{Id: id, CreatedAt: timestamppb.Now(), Kind: &nodev1.NodeTask_Prefetch{Prefetch: p}}
 }
 
-func edgeConfig(port uint32) *nodev1.NodeConfig {
-	c := baseConfig(demoSite("site-a", "site-a.test"))
-	c.Listeners[0].Port = port
-	return c
+func edgeConfig() *nodev1.NodeConfig {
+	return baseConfig(demoSite("site-a", "site-a.test"))
 }
 
 // TestAgentRunsPurgesBeforePrefetches (N-M7): in one pulled batch the
 // purge runs first although the slow prefetch was queued before it.
 func TestAgentRunsPurgesBeforePrefetches(t *testing.T) {
-	port, _ := slowEdge(t, 300*time.Millisecond)
-	e := startEnrolledConfig(t, "order", func(c *agent.Config) {
+	edge, _ := slowEdge(t, 300*time.Millisecond)
+	e := startEnrolledConfig(t, "order", atEdge(edge, "", func(c *agent.Config) {
 		c.TaskPollInterval = time.Hour
 		c.PrefetchConcurrency = 1
-	}, edgeConfig(port))
+	}), edgeConfig())
 	e.console.AddTasks(true,
 		prefetchTask("prefetch-1", "http://site-a.test/1", "http://site-a.test/2"),
 		purgeTask("purge-1", time.Now(), urlTarget("site-a", "/x")))
@@ -83,11 +73,11 @@ func TestAgentRunsPurgesBeforePrefetches(t *testing.T) {
 // TestAgentPrefetchTimeBudget (N-M7): a prefetch stops when the batch's
 // budget runs out and reports the URLs it did not finish as failed.
 func TestAgentPrefetchTimeBudget(t *testing.T) {
-	port, requests := slowEdge(t, 2*time.Second)
-	e := startEnrolledConfig(t, "budget", func(c *agent.Config) {
+	edge, requests := slowEdge(t, 2*time.Second)
+	e := startEnrolledConfig(t, "budget", atEdge(edge, "", func(c *agent.Config) {
 		c.PrefetchBudget = 400 * time.Millisecond
 		c.PrefetchConcurrency = 1
-	}, edgeConfig(port))
+	}), edgeConfig())
 	start := time.Now()
 	e.console.AddTask(prefetchTask("prefetch-slow", "http://site-a.test/1", "http://site-a.test/2", "http://site-a.test/3"), false)
 	res := waitResults(t, e.console, 1)[0]
@@ -107,8 +97,8 @@ func TestAgentPrefetchTimeBudget(t *testing.T) {
 // TestAgentPrefetchFailureCodes (CP-M9): the first failed URL and its reason
 // travel as error_code prefetch_failed with parameters.
 func TestAgentPrefetchFailureCodes(t *testing.T) {
-	port, _ := slowEdge(t, 0)
-	e := startEnrolledConfig(t, "codes", nil, edgeConfig(port))
+	edge, _ := slowEdge(t, 0)
+	e := startEnrolledConfig(t, "codes", atEdge(edge, ""), edgeConfig())
 	e.console.AddTask(prefetchTask("p-status", "http://site-a.test/ok", "http://site-a.test/status/1", "http://site-a.test/status/2"), false)
 	res := waitResults(t, e.console, 1)[0]
 	want := map[string]string{"failed": "2", "total": "3", "url": "http://site-a.test/status/1", "reason": "status", "status": "503"}
@@ -127,15 +117,9 @@ func TestAgentPrefetchFailureCodes(t *testing.T) {
 	}
 }
 
-// TestAgentPrefetchConnectFailed: nothing listens on the node's edge port.
+// TestAgentPrefetchConnectFailed: nothing listens on the local edge socket.
 func TestAgentPrefetchConnectFailed(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := uint32(ln.Addr().(*net.TCPAddr).Port)
-	_ = ln.Close()
-	e := startEnrolledConfig(t, "refused", nil, edgeConfig(port))
+	e := startEnrolledConfig(t, "refused", atEdge(edgeSocket(t), ""), edgeConfig())
 	e.console.AddTask(prefetchTask("p-refused", "http://site-a.test/x"), false)
 	res := waitResults(t, e.console, 1)[0]
 	if res.GetErrorCode() != "prefetch_failed" || res.GetErrorParams()["reason"] != "connect_failed" {
@@ -165,50 +149,29 @@ func TestAgentReportsUnsupportedTasks(t *testing.T) {
 	}
 }
 
-// TestAgentPrefetchAvoidsIncompatibleListeners: a listener that
-// expects TLS or the PROXY protocol would reject the agent's requests; prefetches
-// use a plain listener, or the local edge socket when there is none.
-func TestAgentPrefetchAvoidsIncompatibleListeners(t *testing.T) {
-	for _, mode := range []string{"proxy", "tls"} {
-		t.Run(mode, func(t *testing.T) {
-			configure := func(c *nodev1.NodeConfig) {
-				if mode == "proxy" {
-					c.Listeners[0].ProxyProtocol = true
-				} else {
-					c.Listeners[0].Protocol = nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS
-				}
-			}
-			plainPort, plainHits := slowEdge(t, 0)
-			cfg := edgeConfig(1) // port 1: an incompatible listener; no plain HTTP server
-			configure(cfg)
-			cfg.Listeners = append(cfg.Listeners, &nodev1.Listener{Port: plainPort, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP})
-			e := startEnrolledConfig(t, "pp1", nil, cfg)
-			e.console.AddTask(prefetchTask("p-plain", "http://site-a.test/a"), false)
-			if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || plainHits.Load() != 1 {
-				t.Fatalf("prefetch via the plain listener: %v (hits %d)", res, plainHits.Load())
-			}
-
-			// No compatible TCP listener: use the local edge socket.
-			only := edgeConfig(1)
-			configure(only)
-			e = startEnrolledConfig(t, "pp2", nil, only)
-			sock := filepath.Join(filepath.Dir(e.dp.Socket), "edge.sock")
-			ln, err := net.Listen("unix", sock)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var socketHits atomic.Int32
-			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				socketHits.Add(1)
-				_, _ = w.Write([]byte("ok"))
-			}))
-			srv.Listener = ln
-			srv.Start()
-			t.Cleanup(srv.Close)
-			e.console.AddTask(prefetchTask("p-socket", "http://site-a.test/b"), false)
-			if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || socketHits.Load() != 1 {
-				t.Fatalf("prefetch via the edge socket: %v (hits %d)", res, socketHits.Load())
-			}
-		})
+// TestAgentPrefetchUsesTheLocalSocket: prefetches never go to the public
+// listeners (where bans, CC and challenges apply), plain HTTP ones
+// included, but to the local edge socket.
+func TestAgentPrefetchUsesTheLocalSocket(t *testing.T) {
+	var publicHits atomic.Int32
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		publicHits.Add(1)
+		_, _ = w.Write([]byte("public"))
+	}))
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+	cfg := edgeConfig()
+	cfg.Listeners[0].Port = uint32(ln.Addr().(*net.TCPAddr).Port)
+	cfg.Listeners = append(cfg.Listeners, &nodev1.Listener{Port: 8080, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP, ProxyProtocol: true})
+	edge, hits := slowEdge(t, 0)
+	e := startEnrolledConfig(t, "local", atEdge(edge, ""), cfg)
+	e.console.AddTask(prefetchTask("p-local", "http://site-a.test/a"), false)
+	if res := waitResults(t, e.console, 1)[0]; res.GetState() != nodev1.TaskState_TASK_STATE_SUCCEEDED || hits.Load() != 1 || publicHits.Load() != 0 {
+		t.Fatalf("prefetch: %v (local %d, public %d)", res, hits.Load(), publicHits.Load())
 	}
 }

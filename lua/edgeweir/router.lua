@@ -24,6 +24,12 @@
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
 -- origin for uncompressed responses (edgeweir.compress).
 --
+-- The local listeners ($edgeweir_local) serve the agent's prefetches, the
+-- operator's own requests: bans, CC, challenges, rules that deny and the
+-- CRS do not apply there (redirects do), and edgeweir.stats does not count
+-- them. Their responses that the edge made itself (no cache or origin
+-- involved: redirects, error pages) carry X-Edgeweir-Edge-Response.
+--
 -- Purged objects: the key epoch combines the URL, prefix and site markers
 -- (edgeweir.purge) with the tag markers of the object's Cache-Tag
 -- (edgeweir.cachetags) for sites that have tag markers. Denials with a
@@ -188,6 +194,7 @@ local function access()
   local headers = strip_internal_headers()
 
   local var = ngx.var
+  local is_local = var.edgeweir_local == "1"
   -- Loop detection (RFC 8586) comes before any origin or cache work: an
   -- origin that points back at this node (directly or through other CDNs
   -- that keep the header) would otherwise recurse until connections run
@@ -228,7 +235,7 @@ local function access()
   end
   -- Dynamic bans: platform scope, then the site's; addresses on a
   -- platform allow list are never banned.
-  if bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
+  if not is_local and bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   local original_path = var.uri
@@ -237,7 +244,7 @@ local function access()
   -- CC counts every request of the site (edgeweir.cc), clients by their
   -- IPv4 address or IPv6 /64.
   local cc_n, cc_w, cc_now, cc_addr
-  if site._cc then
+  if site._cc and not is_local then
     cc_addr = ipaddr.client_network(var.remote_addr)
     cc_n, cc_w, cc_now = cc.count(site, cc_addr, original_path)
   end
@@ -267,14 +274,14 @@ local function access()
   if cc_n and cc_on and not exempt and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
-  if result then
+  if result and not (is_local and not result.location) then
     if result.challenge then return run_challenge(site, result.challenge, result.level) end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
     return deny(result.status, result.code or "policy-denied", result.message or "request denied")
   end
   local under_attack = pctx and pctx.under_attack
-  if (site._guard or under_attack == true) and not exempt then
+  if (site._guard or under_attack == true) and not exempt and not is_local then
     local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
     local level, kind = challenge.required(site, cc_level, under_attack)
     if level > 0 and challenge.pass_level(site) < level then
@@ -377,7 +384,7 @@ function _M.access()
   end
   if access() then
     local site = ngx.ctx.edgeweir_site
-    if site and site.waf then
+    if site and site.waf and var.edgeweir_local ~= "1" then
       return waf.enter(site)
     end
   end
@@ -440,6 +447,9 @@ function _M.header_filter(waf_location)
   -- cache, slices and background updates included (subrequests share the
   -- main request's variables but not its ngx.ctx).
   local cs = var.upstream_cache_status
+  if var.edgeweir_local == "1" and (cs == nil or cs == "") then
+    h["X-Edgeweir-Edge-Response"] = "1"
+  end
   if (cs == "MISS" or cs == "EXPIRED") and var.edgeweir_no_cache == "0" then
     cachetags.record(var.edgeweir_site, var.edgeweir_cache_key, var.upstream_http_cache_tag, store.config().tag_ttl)
   end

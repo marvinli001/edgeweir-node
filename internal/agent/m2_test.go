@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -68,28 +66,17 @@ func TestAgentCredentialsTasksAndHealth(t *testing.T) {
 	root := t.TempDir()
 	h := &harness{t: t, console: console, url: srv.URL, stateDir: filepath.Join(root, "state"), root: root}
 
-	// The prefetch target: a listener whose port the configuration uses.
+	// The prefetch target: the local edge socket.
 	edge := &edgeListener{}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	edgeSrv := httptest.NewUnstartedServer(edge)
-	edgeSrv.Listener = ln
-	edgeSrv.Start()
-	t.Cleanup(edgeSrv.Close)
-	port := uint32(ln.Addr().(*net.TCPAddr).Port)
-	config := func(sites ...*nodev1.Site) *nodev1.NodeConfig {
-		c := baseConfig(sites...)
-		c.Listeners[0].Port = port
-		return c
-	}
+	edgeSocketPath := listenEdge(t, edge, nil)
+	config := baseConfig
 
 	console.SetCredential(&nodev1.OriginCredential{Id: "cred-1", Version: 1, AccessKeyId: "AKID1", SecretAccessKey: "secret-1"})
 	rev1 := console.Publish(config(demoSite("site-a", "a.test"), s3Site("site-s3", "s3.test", "cred-1", 1)))
 	dp := fakedataplane.Start(t)
 	eng := newFakeEngine()
 	cfg := h.agentConfig(dp.Socket)
+	cfg.Render.EdgeSocket = edgeSocketPath
 	cfg.TaskPollInterval = time.Hour // tasks must arrive via the watch event or the heartbeat
 	startAgent(t, cfg, eng, dataplane.NewClient(dp.Socket))
 

@@ -6,9 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/render"
 )
 
 type sitemapEntry struct {
@@ -199,11 +198,8 @@ func TestFetchSitemapLimits(t *testing.T) {
 		conn, _, _ := w.(http.Hijacker).Hijack()
 		_ = conn.Close()
 	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	port := uint32(srv.Listener.Addr().(*net.TCPAddr).Port)
-	a := &Agent{cfg: Config{PrefetchHost: "127.0.0.1", PrefetchConcurrency: 1, PrefetchTimeout: time.Minute},
-		plan: &configir.Plan{Listeners: []configir.Listener{{Port: port}}}}
+	a := &Agent{cfg: Config{Render: render.Params{EdgeSocket: serveUnix(t, mux, nil)}, PrefetchConcurrency: 1, PrefetchTimeout: time.Minute},
+		plan: &configir.Plan{Listeners: []configir.Listener{{Port: 80}}}}
 	c := a.newPrefetchClient()
 	defer c.CloseIdleConnections()
 	lim := sitemapLimits{timeout: 300 * time.Millisecond, bytes: 1024}

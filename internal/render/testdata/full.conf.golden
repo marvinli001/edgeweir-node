@@ -53,7 +53,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "f186ab47855f97e8",
+            conf_id = "b1d5a6b4124f66f7",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -243,9 +243,9 @@ http {
         }
     }
 
-    # Edge layer: one server per listener, plus a local one on a unix socket
-    # that the agent's prefetch requests use when no listener is plain HTTP
-    # without the PROXY protocol.
+    # Edge layer: one server per listener, plus the local ones on unix
+    # sockets (plain, and TLS when a listener is) for the agent's prefetch
+    # requests.
     server {
         listen 80 default_server;
         listen [::]:80 default_server;
@@ -253,6 +253,7 @@ http {
         server_name _;
 
         location / {
+            set $edgeweir_local "";
             set $edgeweir_site "";
             set $edgeweir_cache_zone "hot";
             set $edgeweir_cache_key "";
@@ -333,6 +334,7 @@ http {
         server_name _;
 
         location / {
+            set $edgeweir_local "";
             set $edgeweir_site "";
             set $edgeweir_cache_zone "hot";
             set $edgeweir_cache_key "";
@@ -402,12 +404,18 @@ http {
         }
     }
 
-    # Local edge listener (agent prefetches; never PROXY protocol).
+    # Local edge listener: agent prefetches only. edgeweir.router skips
+    # bans, CC, challenges, access-denying rules and the CRS there, and
+    # edgeweir.stats does not count them; origins see the address the agent
+    # names (127.0.0.1).
     server {
         listen unix:/run/edgeweir-node/edge.sock default_server;
+        set_real_ip_from unix:;
+        real_ip_header X-Edgeweir-Prefetch-Addr;
         server_name _;
 
         location / {
+            set $edgeweir_local "1";
             set $edgeweir_site "";
             set $edgeweir_cache_zone "hot";
             set $edgeweir_cache_key "";

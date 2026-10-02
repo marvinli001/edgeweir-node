@@ -18,12 +18,32 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/version"
 )
 
-// Prefetches request URLs through the node's own edge listeners, so that
-// the responses land in the cache exactly as for a client. A device
-// variant is a User-Agent: sites whose cache key separates devices
-// (CacheKeyPolicy.device_type) cache one object per class, and
+// Prefetches request URLs through the node's local edge listeners (unix
+// sockets, plain and TLS), so that the responses land in the cache exactly
+// as for a client. Those listeners serve the agent only: its requests are
+// never banned, counted by CC, challenged, denied by rules or counted in
+// the statistics (edgeweir.router), and origins see them from 127.0.0.1.
+//
+// A device variant is a User-Agent: sites whose cache key separates
+// devices (CacheKeyPolicy.device_type) cache one object per class, and
 // edgeweir.cachekey classifies a request as mobile when its User-Agent
-// matches MOBILE_RE. The mobile User-Agent still names the agent.
+// matches MOBILE_RE. The mobile User-Agent still names the agent. Requests
+// accept the encodings browsers do, so that sites whose origin compresses
+// cache the variant browsers ask for.
+//
+// The cache key holds the scheme: an http URL of a site that has a
+// certificate is prefetched over https as well, and a redirect the edge
+// itself answers to the https form of the URL (HTTPS only) is followed.
+// Any other redirect the edge itself makes fails (nothing was cached);
+// redirects of the origin are cached as they are.
+
+// prefetchAcceptEncoding is the Accept-Encoding of prefetch requests:
+// what current browsers send.
+const prefetchAcceptEncoding = "gzip, deflate, br, zstd"
+
+// edgeResponseHeader marks responses of the local listeners that the edge
+// made itself, without the cache or the origin (edgeweir.router).
+const edgeResponseHeader = "X-Edgeweir-Edge-Response"
 
 // prefetchUserAgent returns the User-Agent of a device variant (false for
 // a variant this node does not know).
@@ -48,43 +68,38 @@ func variantName(v nodev1.DeviceVariant) string {
 	return "variant " + strconv.Itoa(int(v))
 }
 
-// prefetchTargets returns where prefetch requests go. Plain http URLs: the
-// first listener that speaks HTTP without the PROXY protocol (at
-// PrefetchHost), else the local edge socket (a PROXY protocol listener
-// would reject the agent's requests). https URLs: the first HTTPS listener
-// without the PROXY protocol, "" when there is none.
-func (a *Agent) prefetchTargets() (network, addr, tlsAddr string) {
+// prefetchTargets returns the local edge sockets prefetch requests go to:
+// plain, and TLS ("" while no listener speaks HTTPS: nginx.conf has no
+// local TLS listener then), and the sites that have a certificate.
+func (a *Agent) prefetchTargets() (plain, tlsSocket string, httpsSites map[string]bool) {
+	params := a.cfg.Render.WithDefaults()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	port, tlsPort := a.cfg.DefaultPort, uint32(0)
-	if a.plan != nil && len(a.plan.Listeners) > 0 {
-		port = 0
-		for _, l := range a.plan.Listeners {
-			switch {
-			case l.ProxyProtocol:
-			case l.TLS:
-				if tlsPort == 0 {
-					tlsPort = l.Port
-				}
-			case port == 0:
-				port = l.Port
-			}
+	httpsSites = map[string]bool{}
+	if a.plan == nil {
+		return params.EdgeSocket, "", httpsSites
+	}
+	for _, l := range a.plan.Listeners {
+		if l.TLS {
+			tlsSocket = params.EdgeTLSSocket
 		}
 	}
-	if tlsPort != 0 {
-		tlsAddr = net.JoinHostPort(a.cfg.PrefetchHost, strconv.Itoa(int(tlsPort)))
+	for _, s := range a.plan.Sites {
+		if s.TLS != nil && s.CertificateID != "" {
+			httpsSites[s.ID] = true
+		}
 	}
-	if port == 0 {
-		return "unix", a.cfg.Render.WithDefaults().EdgeSocket, tlsAddr
-	}
-	return "tcp", net.JoinHostPort(a.cfg.PrefetchHost, strconv.Itoa(int(port))), tlsAddr
+	return params.EdgeSocket, tlsSocket, httpsSites
 }
 
-// prefetchClient requests URLs through the node's edge listeners.
+// prefetchClient requests URLs through the node's local edge listeners.
 type prefetchClient struct {
 	*http.Client
 	// https is set when https URLs have a listener to go to.
 	https bool
+	// httpsSites are the sites whose http URLs are prefetched over https
+	// as well.
+	httpsSites map[string]bool
 }
 
 // listenerTLSError is a failed TLS handshake with the node's own HTTPS
@@ -97,26 +112,26 @@ func (e *listenerTLSError) Error() string {
 func (e *listenerTLSError) Unwrap() error { return e.err }
 
 // newPrefetchClient returns a client for the current listeners: plain
-// requests go to the plain listener or the edge socket, https requests
-// over TLS to the HTTPS listener (SNI and Host are the URL's host).
-// Redirects are cached as they are, never followed.
+// requests go to the local edge socket, https requests over TLS to the
+// local TLS socket (SNI and Host are the URL's host). Redirects are never
+// followed by the client (see prefetchOne).
 func (a *Agent) newPrefetchClient() *prefetchClient {
-	network, addr, tlsAddr := a.prefetchTargets()
+	plain, tlsSocket, httpsSites := a.prefetchTargets()
 	var d net.Dialer
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return d.DialContext(ctx, network, addr)
+			return d.DialContext(ctx, "unix", plain)
 		},
 		DisableCompression:  true,
 		MaxIdleConnsPerHost: a.cfg.PrefetchConcurrency,
 	}
-	if tlsAddr != "" {
+	if tlsSocket != "" {
 		tr.DialTLSContext = func(ctx context.Context, _, hostport string) (net.Conn, error) {
 			host, _, err := net.SplitHostPort(hostport)
 			if err != nil {
 				return nil, err
 			}
-			raw, err := d.DialContext(ctx, "tcp", tlsAddr)
+			raw, err := d.DialContext(ctx, "unix", tlsSocket)
 			if err != nil {
 				return nil, err
 			}
@@ -124,7 +139,7 @@ func (a *Agent) newPrefetchClient() *prefetchClient {
 				ServerName: host,
 				// The node's own listener: it presents the certificate of
 				// the site that serves the host; nothing to verify.
-				InsecureSkipVerify: true, //nolint:gosec // the node's own listener
+				InsecureSkipVerify: true, //nolint:gosec // the node's own local listener
 				NextProtos:         []string{"http/1.1"},
 			})
 			if err := conn.HandshakeContext(ctx); err != nil {
@@ -140,7 +155,8 @@ func (a *Agent) newPrefetchClient() *prefetchClient {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport:     tr,
 		},
-		https: tlsAddr != "",
+		https:      tlsSocket != "",
+		httpsSites: httpsSites,
 	}
 }
 
@@ -153,11 +169,17 @@ func (c *prefetchClient) get(ctx context.Context, u *url.URL, userAgent string) 
 	}
 	req.Host = u.Hostname()
 	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept-Encoding", prefetchAcceptEncoding)
+	// The address origins see (X-Real-IP, X-Forwarded-For): the local
+	// listeners take it as the client address (real_ip_header).
+	req.Header.Set("X-Edgeweir-Prefetch-Addr", "127.0.0.1")
 	return c.Do(req)
 }
 
-// prefetchItem is one prefetch request: a URL and a device variant.
+// prefetchItem is one prefetch request: a URL of a site and a device
+// variant.
 type prefetchItem struct {
+	site    string
 	url     string
 	variant nodev1.DeviceVariant
 }
@@ -176,13 +198,15 @@ type prefetchOutcome struct {
 	err    string // empty on success
 	reason string // status, connect_failed, timeout, https_unsupported, other
 	status int    // HTTP status when reason is "status"
+	// redirect is the Location of a redirect the edge made itself.
+	redirect string
 }
 
 // executePrefetch requests every target (URL and device variant).
 func (a *Agent) executePrefetch(ctx context.Context, task *nodev1.NodeTask, p *nodev1.PrefetchTask, deadline time.Time) *nodev1.ReportTaskResultRequest {
 	items := make([]prefetchItem, 0, len(p.GetTargets()))
 	for _, t := range p.GetTargets() {
-		items = append(items, prefetchItem{url: t.GetUrl(), variant: t.GetVariant()})
+		items = append(items, prefetchItem{site: t.GetSiteId(), url: t.GetUrl(), variant: t.GetVariant()})
 	}
 	client := a.newPrefetchClient()
 	defer client.CloseIdleConnections()
@@ -262,6 +286,35 @@ func prefetchOne(ctx context.Context, client *prefetchClient, it prefetchItem) p
 	if !ok {
 		return prefetchOutcome{done: true, err: "unsupported device variant", reason: "other"}
 	}
+	if u.Scheme == "https" {
+		return fetchOne(ctx, client, u, userAgent)
+	}
+	secure := *u
+	secure.Scheme = "https"
+	o := fetchOne(ctx, client, u, userAgent)
+	if o.redirect != "" {
+		// The edge answered the http URL itself: only its HTTPS redirect
+		// leads to what visitors get.
+		if !sameURL(o.redirect, &secure) {
+			return prefetchOutcome{done: true, err: fmt.Sprintf("HTTP %d: the edge redirects to %s", o.status, o.redirect),
+				reason: "status", status: o.status}
+		}
+		return fetchOne(ctx, client, &secure, userAgent)
+	}
+	if o.err != "" || !client.https || !client.httpsSites[it.site] {
+		return o
+	}
+	// Visitors over https use another cache key.
+	o = fetchOne(ctx, client, &secure, userAgent)
+	if o.err != "" && o.done {
+		o.err = secure.String() + ": " + o.err
+	}
+	return o
+}
+
+// fetchOne requests u once. A redirect the edge made itself is a failure
+// with its Location in redirect.
+func fetchOne(ctx context.Context, client *prefetchClient, u *url.URL, userAgent string) prefetchOutcome {
 	if u.Scheme == "https" && !client.https {
 		return prefetchOutcome{done: true, err: "HTTPS prefetch needs an HTTPS listener on the node", reason: "https_unsupported"}
 	}
@@ -278,7 +331,30 @@ func prefetchOne(ctx context.Context, client *prefetchClient, it prefetchItem) p
 	if resp.StatusCode >= 400 {
 		return prefetchOutcome{done: true, err: "HTTP " + strconv.Itoa(resp.StatusCode), reason: "status", status: resp.StatusCode}
 	}
+	if resp.StatusCode >= 300 && resp.Header.Get(edgeResponseHeader) != "" {
+		return prefetchOutcome{done: true, err: "HTTP " + strconv.Itoa(resp.StatusCode) + " from the edge", reason: "status",
+			status: resp.StatusCode, redirect: resp.Header.Get("Location")}
+	}
 	return prefetchOutcome{done: true}
+}
+
+// sameURL reports whether location names u: the same scheme, host (any
+// case, default port omitted) and request URI.
+func sameURL(location string, u *url.URL) bool {
+	l, err := url.Parse(location)
+	if err != nil || l.Scheme != u.Scheme || l.RequestURI() != u.RequestURI() {
+		return false
+	}
+	port := func(x *url.URL) string {
+		if p := x.Port(); p != "" {
+			return p
+		}
+		if x.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	return strings.EqualFold(l.Hostname(), u.Hostname()) && port(l) == port(u)
 }
 
 // failedOutcome classifies a transport error; a request cut off by the

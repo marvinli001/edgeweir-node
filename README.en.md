@@ -214,7 +214,7 @@ edgeweir-node version
 | `--control-socket` | `/run/edgeweir-node/control.sock` | Data-plane control API socket |
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket |
 | `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Origin layer socket without TLS verification |
-| `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches when every listener uses the PROXY protocol |
+| `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches only (`edge-tls.sock` next to it is its TLS twin, while a listener speaks HTTPS); bans, CC, challenges and denying rules do not apply there, nothing is counted in the statistics |
 | `--l4-socket` | `l4.sock` next to the control socket | Control relay of the stream subsystem; the control API forwards layer-4 requests to it |
 | `--trusted-ca` | system bundle | CA bundle for HTTPS origins (proxying and active health checks) |
 | `--resolv-conf` | `/etc/resolv.conf` | Source of the nginx resolvers |

@@ -214,7 +214,7 @@ edgeweir-node version
 | `--control-socket` | `/run/edgeweir-node/control.sock` | 数据面控制 API socket |
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层 socket |
 | `--origin-socket-noverify` | 回源 socket 同目录的 `origin-noverify.sock` | 不校验 TLS 的回源层 socket |
-| `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 本地边缘监听，所有监听启用 PROXY protocol 时供预热使用 |
+| `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 预热专用的本地边缘监听（同目录的 `edge-tls.sock` 是其 TLS 版本，有 HTTPS 监听时启用）；不受封禁、CC、挑战与拒绝规则影响，不计入统计 |
 | `--l4-socket` | 控制 socket 同目录的 `l4.sock` | stream 子系统的控制中继；控制 API 把四层应用的请求转给它 |
 | `--trusted-ca` | 系统 CA bundle | HTTPS 源站证书的校验 CA（回源与主动健康检查） |
 | `--resolv-conf` | `/etc/resolv.conf` | nginx resolver 来源 |

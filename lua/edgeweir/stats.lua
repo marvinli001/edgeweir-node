@@ -1,7 +1,8 @@
 -- edgeweir.stats: per-site, per-minute traffic counters.
 --
 -- log() runs in the log phase of the edge layer and increments counters in
--- lua_shared_dict "edgeweir_stats" under "<minute>|<site id>|<metric>".
+-- lua_shared_dict "edgeweir_stats" under "<minute>|<site id>|<metric>"
+-- (not for the agent's prefetches on the local listeners).
 -- drain() returns and deletes all completed minutes; the agent calls it
 -- through the control API every minute and uploads the buckets with
 -- ReportStats. Undrained counters expire after two hours.
@@ -30,7 +31,8 @@ function _M.log(waf_location)
   end
   local var = ngx.var
   local site = var.edgeweir_site
-  if not site or site == "" then
+  -- Prefetches (the local listeners) are not traffic of the site.
+  if not site or site == "" or var.edgeweir_local == "1" then
     return
   end
   require("edgeweir.accesslogs").log(waf_ids, waf_blocked)

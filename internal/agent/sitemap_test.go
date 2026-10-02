@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"maps"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -98,13 +97,11 @@ func sitemapTask(id, site, url string, maxURLs uint32, variants ...nodev1.Device
 }
 
 // sitemapConfig serves site-a on site-a.test and *.site-a.test, site-b on
-// b.site-a.test, with the edge listener on port.
-func sitemapConfig(port uint32) *nodev1.NodeConfig {
+// b.site-a.test.
+func sitemapConfig() *nodev1.NodeConfig {
 	a := demoSite("site-a", "site-a.test")
 	a.Domains = append(a.Domains, &nodev1.Domain{Name: "site-a.test", Wildcard: true})
-	c := baseConfig(a, demoSite("site-b", "b.site-a.test"))
-	c.Listeners[0].Port = port
-	return c
+	return baseConfig(a, demoSite("site-b", "b.site-a.test"))
 }
 
 // TestAgentSitemapPrefetch: the sitemap is fetched through the edge with
@@ -123,7 +120,7 @@ func TestAgentSitemapPrefetch(t *testing.T) {
 		"ftp://site-a.test/7",
 		"  http://site-a.test/8?q=1&amp;r=2\n  ",
 	)}}
-	e := startEnrolledConfig(t, "sitemap", nil, sitemapConfig(listenEdge(t, edge, nil)))
+	e := startEnrolledConfig(t, "sitemap", atEdge(listenEdge(t, edge, nil), ""), sitemapConfig())
 	if !hasFeature(e.console.LastStatus(), "prefetch-v2") {
 		t.Fatalf("prefetch-v2 not announced: %v", e.console.LastStatus().GetInfo().GetSupportedFeatures())
 	}
@@ -164,8 +161,8 @@ func TestAgentSitemapIndex(t *testing.T) {
 		"/child-2.xml.gz": gz(t, urlset("http://site-a.test/c2a", "http://site-a.test/c1a")),
 		"/nested.xml":     sitemapIndex("http://site-a.test/child-1.xml"),
 	}}
-	e := startEnrolledConfig(t, "sitemapindex", func(c *agent.Config) { c.TaskPollInterval = time.Hour },
-		sitemapConfig(listenEdge(t, edge, nil)))
+	e := startEnrolledConfig(t, "sitemapindex", atEdge(listenEdge(t, edge, nil), "", func(c *agent.Config) { c.TaskPollInterval = time.Hour }),
+		sitemapConfig())
 	e.console.AddTasks(true,
 		sitemapTask("s-index", "site-a", "http://site-a.test/index.xml.gz", 0),
 		purgeTask("p1", time.Now(), urlTarget("site-a", "/x")))
@@ -215,7 +212,7 @@ func TestAgentSitemapFailures(t *testing.T) {
 		"/cut.xml":     []byte(`<urlset><url><loc>http://site-a.test/1</loc></url>`),
 		"/empty.xml":   urlset("http://other.test/1", "http://b.site-a.test/2"),
 	}}
-	e := startEnrolledConfig(t, "sitemapfail", nil, sitemapConfig(listenEdge(t, edge, nil)))
+	e := startEnrolledConfig(t, "sitemapfail", atEdge(listenEdge(t, edge, nil), ""), sitemapConfig())
 	for i, c := range []struct {
 		site, url, code string
 		params          map[string]string
@@ -248,25 +245,19 @@ func TestAgentSitemapFailures(t *testing.T) {
 	}
 }
 
-// TestAgentSitemapConnectFailedAndTimeout: nothing listens on the edge
-// port (connect_failed); a sitemap that does not arrive within the batch's
-// time budget (timeout).
+// TestAgentSitemapConnectFailedAndTimeout: nothing listens on the local
+// edge socket (connect_failed); a sitemap that does not arrive within the
+// batch's time budget (timeout).
 func TestAgentSitemapConnectFailedAndTimeout(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := uint32(ln.Addr().(*net.TCPAddr).Port)
-	_ = ln.Close()
-	e := startEnrolledConfig(t, "sitemaprefused", nil, sitemapConfig(closed))
+	e := startEnrolledConfig(t, "sitemaprefused", atEdge(edgeSocket(t), ""), sitemapConfig())
 	e.console.AddTask(sitemapTask("s-refused", "site-a", "http://site-a.test/sitemap.xml", 0), false)
 	if r := waitResults(t, e.console, 1)[0]; r.GetErrorCode() != "sitemap_failed" || r.GetErrorParams()["reason"] != "connect_failed" {
 		t.Fatalf("refused: %v", r)
 	}
 
 	edge := &sitemapEdge{}
-	e = startEnrolledConfig(t, "sitemapslow", func(c *agent.Config) { c.PrefetchBudget = 400 * time.Millisecond },
-		sitemapConfig(listenEdge(t, edge, nil)))
+	e = startEnrolledConfig(t, "sitemapslow", atEdge(listenEdge(t, edge, nil), "", func(c *agent.Config) { c.PrefetchBudget = 400 * time.Millisecond }),
+		sitemapConfig())
 	start := time.Now()
 	e.console.AddTask(sitemapTask("s-slow", "site-a", "http://site-a.test/slow.xml", 0), false)
 	r := waitResults(t, e.console, 1)[0]
