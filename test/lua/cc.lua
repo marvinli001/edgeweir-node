@@ -305,6 +305,24 @@ test("an address over its rate is banned once", function()
   assert(not cc.check_ip(s, "198.51.100.24", n, w, now))
 end)
 
+test("an IPv6 client counts and is banned by its /64", function()
+  local ipaddr = require("edgeweir.ipaddr")
+  local s = site({ window = 5, ip_qps = 5, ip_ban = 120 })
+  local denied = 0
+  for i = 1, 40 do
+    T = T + 0.01
+    -- A new address of the same /64 for every request.
+    local addr = ipaddr.client_network(string.format("2001:db8:7:8:%x::1", i))
+    local n, w, now = cc.count(s, addr, "/")
+    if cc.check_ip(s, addr, n, w, now) then denied = denied + 1 end
+  end
+  eq(denied, 15, "the /64 is one address")
+  eq(bans.match("site-a", "2001:db8:7:8:ffff::9"), "a", "the ban holds the /64")
+  local reported = bans.drain(10)
+  eq(#reported, 1); eq(reported[1].ip, "2001:db8:7:8::"); eq(reported[1].prefix_len, 64)
+  eq(events("ip_banned")[1].address, "2001:db8:7:8::/64")
+end)
+
 test("the previous window counts for addresses past half their limit", function()
   local s = site({ window = 10, ip_qps = 2 })
   -- 19 requests at the end of one window, then 11 at the start of the next.

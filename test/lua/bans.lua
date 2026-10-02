@@ -185,7 +185,8 @@ test("release deletes own bans the console lifted, unless they expire later", fu
     { site_id = "site-a", cidr = "192.0.2.50/32", expires_at = now + 600 },
     -- Lifted before this ban was renewed: it expires later and stays.
     { site_id = "site-a", cidr = "192.0.2.51/32", expires_at = now + 300 },
-    { site_id = "site-b", cidr = "2001:db8::7/128", expires_at = now + 600 },
+    -- An IPv6 own ban holds the /64.
+    { site_id = "site-b", cidr = "2001:db8::/64", expires_at = now + 600 },
     -- Console bans and unknown addresses are left alone.
     { site_id = "site-a", cidr = "203.0.113.7/32", expires_at = now + 7200 },
     { site_id = "site-a", cidr = "192.0.2.99/32", expires_at = now + 600 },
@@ -193,6 +194,7 @@ test("release deletes own bans the console lifted, unless they expire later", fu
   eq(n, 2)
   eq(bans.match("site-a", "192.0.2.50"), nil)
   eq(bans.match("site-b", "2001:db8::7"), nil)
+  eq(bans.match("site-b", "2001:db8::8"), nil)
   eq(bans.match("site-a", "192.0.2.51"), "a")
   eq(select(2, bans.match("site-a", "203.0.113.7")), "c1")
   eq(bans.status().entries, 2)
@@ -262,11 +264,31 @@ test("own bans are queued for reporting and drained", function()
   eq(first[1].metric, "ip_qps"); eq(first[1].observed, 250); eq(first[1].window_seconds, 10)
   eq(first[1].reason, "cc_ip_rate")
   assert(first[1].expires_at - first[1].created_at == 60)
-  eq(first[2].prefix_len, 128)
+  eq(first[2].ip, "2001:db8::"); eq(first[2].prefix_len, 64)
   local rest = bans.drain()
   eq(#rest, 1)
   eq(cjson.encode(bans.drain()), "[]", "empty drain encodes as an array")
   eq(bans.match("site-b", "2001:db8::7"), "a")
+  eq(bans.match("site-b", "2001:db8::ffff:1"), "a", "another address of the /64")
+  eq(bans.match("site-b", "2001:db8:0:1::7"), nil, "the next /64")
+end)
+
+test("own bans hold an IPv4 address or an IPv6 /64, never loopback", function()
+  assert(bans.add_auto("site-a", "2001:db8:aa:bb::/64", 60))
+  assert(bans.add_auto("site-a", "2001:db8:aa:bb:1::1", 60), "the same /64 again")
+  assert(bans.add_auto("site-a", "::ffff:192.0.2.9", 60), "IPv4-mapped: the IPv4 address")
+  eq(bans.status(true).entries, 2)
+  local list = bans.drain()
+  eq(list[1].ip, "2001:db8:aa:bb::"); eq(list[1].prefix_len, 64)
+  eq(list[3].ip, "192.0.2.9"); eq(list[3].prefix_len, 32)
+  eq(bans.match("site-a", "2001:db8:aa:bb:ffff::2"), "a")
+  eq(bans.match("site-a", "192.0.2.9"), "a")
+  for _, addr in ipairs({ "127.0.0.1", "127.1.2.3", "0.0.0.0", "::1", "::", "::ffff:127.0.0.1" }) do
+    local ok, err = bans.add_auto("site-a", addr, 60)
+    eq(ok, nil, addr); eq(err, "protected address", addr)
+  end
+  eq(bans.add_auto("site-a", "2001:db8::/48", 60), nil, "only a /64")
+  eq(bans.add_auto("site-a", "192.0.2.0/24", 60), nil, "only an address")
 end)
 
 test("add_auto validates its input and extends an own ban", function()

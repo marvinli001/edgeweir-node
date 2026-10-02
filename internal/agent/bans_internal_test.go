@@ -78,10 +78,24 @@ func TestConvertAutoBan(t *testing.T) {
 		b.GetCreatedAt().AsTime().UnixMilli() != 1790000000500 || b.GetExpiresAt().AsTime().Unix() != 1790000060 {
 		t.Fatalf("converted = %v, %v", b, ok)
 	}
+	// An IPv6 client is banned by its /64; IPv4 by its address.
+	for _, c := range []struct {
+		ip   string
+		bits int
+		want string
+	}{{"2001:db8:1:2::", 64, "2001:db8:1:2::/64"}, {"192.0.2.1", 32, "192.0.2.1/32"}, {"192.0.2.1", 0, "192.0.2.1/32"}} {
+		b, ok := convertAutoBan(dataplane.AutoBan{SiteID: "site-a", IP: c.ip, PrefixLen: c.bits, ExpiresAt: 1})
+		if !ok || b.GetCidr() != c.want {
+			t.Errorf("%s/%d converted = %v, %v; want %s", c.ip, c.bits, b, ok, c.want)
+		}
+	}
 	for _, bad := range []dataplane.AutoBan{
 		{SiteID: "site-a", IP: "not-an-ip", ExpiresAt: 1},
 		{SiteID: "site a", IP: "192.0.2.1", ExpiresAt: 1},
 		{SiteID: "site-a", IP: "192.0.2.1"},
+		{SiteID: "site-a", IP: "192.0.2.0", PrefixLen: 24, ExpiresAt: 1},
+		{SiteID: "site-a", IP: "2001:db8::", PrefixLen: 48, ExpiresAt: 1},
+		{SiteID: "site-a", IP: "2001:db8::1", PrefixLen: 64, ExpiresAt: 1}, // host bits
 	} {
 		if _, ok := convertAutoBan(bad); ok {
 			t.Errorf("accepted %+v", bad)

@@ -234,14 +234,16 @@ local function access()
   local original_path = var.uri
   ngx.ctx.edgeweir_original_path = original_path
   var.edgeweir_site = site.id
-  -- CC counts every request of the site (edgeweir.cc).
-  local cc_n, cc_w, cc_now
+  -- CC counts every request of the site (edgeweir.cc), clients by their
+  -- IPv4 address or IPv6 /64.
+  local cc_n, cc_w, cc_now, cc_addr
   if site._cc then
-    cc_n, cc_w, cc_now = cc.count(site, var.remote_addr, original_path)
+    cc_addr = ipaddr.client_network(var.remote_addr)
+    cc_n, cc_w, cc_now = cc.count(site, cc_addr, original_path)
   end
   -- The reserved prefix is answered here and never reaches the origin.
   if sub(original_path, 1, 11) == "/.edgeweir/" then
-    if cc_n and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, var.remote_addr, cc_n, cc_w, cc_now) then
+    if cc_n and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
     end
     local rok, err = pcall(challenge.reserved, site)
@@ -262,7 +264,7 @@ local function access()
   local exempt = pctx and (pctx.allowed or pctx.platform_allowed)
   -- Config rules may turn CC off for the request (it is still counted).
   local cc_on = not (pctx and pctx.cc_enabled == false)
-  if cc_n and cc_on and not exempt and cc.check_ip(site, var.remote_addr, cc_n, cc_w, cc_now) then
+  if cc_n and cc_on and not exempt and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   if result then

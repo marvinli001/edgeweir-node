@@ -13,7 +13,7 @@
 --        automatic) or a (this node's own); the TTL is the remaining
 --        lifetime, so expired bans disappear by themselves
 --   #len|<scope>  prefix lengths of the scope's console bans ("4/32,6/48")
---   #loc|<scope>  the scope has (had) own bans (always /32 and /128)
+--   #loc|<scope>  the scope has (had) own bans (always /32 and /64)
 --   #ver          bumped when a length list changes; workers cache the
 --                 lists per version
 --   #seq          console sequence of the set (decimal, zero-padded to 20
@@ -692,18 +692,60 @@ end
 -- ---------------------------------------------------------------------
 -- The node's own bans.
 
--- add_auto bans a single client address on a site for ttl seconds and
--- queues it for reporting. trigger = {reason, metric, observed, threshold,
--- window_seconds}. An address a console ban already holds is only
--- reported. Returns true, or nil and an error ("full" when no room is left
--- without evicting a console ban).
-function _M.add_auto(site_id, ip, ttl, trigger)
+-- own_network returns the text, masked bytes and length of what an own ban
+-- of client holds: an IPv4 address (/32) or an IPv6 /64. client is an
+-- address (an IPv6 one stands for its /64) or such a prefix
+-- ("2001:db8:1:2::/64"; "/128" from older reports is taken as given).
+local function own_network(client)
+  if not find(client or "", "/", 1, true) then
+    local text, bytes, len = ipaddr.client_network(client)
+    if not text then
+      return nil
+    end
+    return match(text, "^[^/]+"), bytes, len
+  end
+  local p = ipaddr.parse_prefix(client)
+  if not p or not (p.len == 32 and #p.bytes == 4) and not (#p.bytes == 16 and (p.len == 64 or p.len == 128)) then
+    return nil
+  end
+  if p.len == 64 then
+    for i = 9, 16 do
+      p.bytes[i] = 0
+    end
+  end
+  return ipaddr.format(p.bytes), p.bytes, p.len
+end
+
+-- protected reports networks the node never bans on its own: loopback and
+-- unspecified IPv4 addresses and ::/64 (::1, ::), the node's own traffic.
+local function protected(bytes)
+  if #bytes == 4 then
+    return bytes[1] == 127 or (bytes[1] == 0 and bytes[2] == 0 and bytes[3] == 0 and bytes[4] == 0)
+  end
+  for i = 1, 8 do
+    if bytes[i] ~= 0 then
+      return false
+    end
+  end
+  return true
+end
+
+-- add_auto bans a client on a site for ttl seconds and queues it for
+-- reporting: an IPv4 address or an IPv6 /64 (see own_network). trigger =
+-- {reason, metric, observed, threshold, window_seconds}. A network a
+-- console ban already holds is only reported; loopback and unspecified
+-- ones are refused. Returns true, or nil and an error ("full" when no room
+-- is left without evicting a console ban).
+function _M.add_auto(site_id, client, ttl, trigger)
   if not valid_id(site_id) then
     return nil, "invalid site id"
   end
-  local bytes = ipaddr.parse(ip)
-  if not bytes then
+  local ip, bytes, len = own_network(client)
+  if not ip then
     return nil, "invalid address"
+  end
+  if protected(bytes) then
+    return nil, "protected address"
   end
   ttl = tonumber(ttl)
   if not ttl or ttl < 1 or ttl > MAX_TTL then
@@ -715,7 +757,6 @@ function _M.add_auto(site_id, ip, ttl, trigger)
   local dict = shdict()
   ensure(dict)
   local now = _M.clock()
-  local len = #bytes * 8
   local key = key_for(site_id, bytes, len)
   local expires = now + ttl
   local rec = cjson.encode({
@@ -757,7 +798,8 @@ function _M.add_auto(site_id, ip, ttl, trigger)
 end
 
 -- release deletes own bans the console lifted:
--- list = [{site_id, cidr, expires_at}], single addresses. An own ban there
+-- list = [{site_id, cidr, expires_at}], IPv4 addresses or IPv6 /64 (or
+-- /128 of older own bans). An own ban there
 -- is deleted only if it expires no later than expires_at (one second of
 -- slack for rounding): an own ban of the address made after the lift
 -- lasts longer and stays. Console bans are not touched. Returns how many
@@ -772,15 +814,15 @@ function _M.release(list)
     if type(b) ~= "table" or not valid_id(b.site_id) then
       return nil, "#" .. i .. ": invalid site_id", 400
     end
-    local p = ipaddr.parse_prefix(b.cidr)
-    if not p or p.len ~= #p.bytes * 8 then
+    local ip, bytes, len = own_network(type(b.cidr) == "string" and find(b.cidr, "/", 1, true) and b.cidr or "")
+    if not ip then
       return nil, "#" .. i .. ": invalid cidr", 400
     end
     local expires = tonumber(b.expires_at)
     if not expires then
       return nil, "#" .. i .. ": invalid expires_at", 400
     end
-    items[i] = { key = key_for(b.site_id, p.bytes, p.len), expires = expires }
+    items[i] = { key = key_for(b.site_id, bytes, len), expires = expires }
   end
   local dict = shdict()
   local ok, lerr, code = lock(dict)
@@ -852,7 +894,7 @@ local function lengths(dict, scope)
     end
     if own then
       add_len(c, "4", 32)
-      add_len(c, "6", 128)
+      add_len(c, "6", 64)
     end
   end
   cache[scope] = c

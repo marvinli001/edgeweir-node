@@ -55,7 +55,8 @@ type BanStatus struct {
 	PendingReports int    `json:"pending_reports"`
 }
 
-// AutoBan is a ban the node created itself, from POST /v1/bans/auto/drain.
+// AutoBan is a ban the node created itself, from POST /v1/bans/auto/drain:
+// an IPv4 address (PrefixLen 32) or an IPv6 /64 (IP is the network).
 type AutoBan struct {
 	SiteID        string  `json:"site_id"`
 	IP            string  `json:"ip"`
@@ -200,7 +201,8 @@ func (c *Client) ListBans(ctx context.Context) (*BanStatus, []BanEntry, error) {
 // and address unless it expires later than ExpiresAt.
 type OwnBanRelease struct {
 	SiteID string `json:"site_id"`
-	// CIDR is a single address ("/32" or "/128").
+	// CIDR is what the own ban holds: an IPv4 address ("/32") or an IPv6
+	// /64 ("/128" for own bans of older nodes).
 	CIDR string `json:"cidr"`
 	// ExpiresAt is the console's expiry in Unix seconds (millisecond precision).
 	ExpiresAt float64 `json:"expires_at"`

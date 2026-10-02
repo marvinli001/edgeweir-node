@@ -185,7 +185,7 @@ func (a *Agent) releaseOwnBans(ctx context.Context, lifted []*nodev1.Ban) {
 	for _, b := range lifted {
 		prefix, err := netip.ParsePrefix(b.GetCidr())
 		expires := b.GetExpiresAt().AsTime()
-		if err != nil || !prefix.IsSingleIP() || !configir.ValidID(b.GetSiteId()) || b.GetExpiresAt() == nil {
+		if err != nil || !ownBanPrefix(prefix) || !configir.ValidID(b.GetSiteId()) || b.GetExpiresAt() == nil {
 			a.log.Warn("ignoring an invalid lifted ban from the console", "id", b.GetId(), "cidr", b.GetCidr())
 			continue
 		}
@@ -632,21 +632,44 @@ func unixTime(s float64) time.Time {
 	return time.Unix(int64(sec), int64(frac*1e9)).UTC()
 }
 
-// convertAutoBan turns a drained own ban into its report; the address is
-// written as a canonical single-address CIDR.
+// ownBanPrefix reports whether p is what an own ban holds: an IPv4
+// address, an IPv6 /64 (edgeweir.ipaddr.client_network) or, from nodes
+// before the /64, an IPv6 address; host bits zero.
+func ownBanPrefix(p netip.Prefix) bool {
+	if !p.IsValid() || p.Addr().Zone() != "" || p.Masked() != p {
+		return false
+	}
+	if p.Addr().Is4() {
+		return p.Bits() == 32
+	}
+	return !p.Addr().Is4In6() && (p.Bits() == 64 || p.Bits() == 128)
+}
+
+// convertAutoBan turns a drained own ban into its report: the address and
+// prefix length the data plane banned, as a canonical CIDR.
 func convertAutoBan(b dataplane.AutoBan) (*nodev1.AutoBan, bool) {
 	ip, err := netip.ParseAddr(b.IP)
 	if err != nil || !bans.ValidID(b.SiteID) || b.ExpiresAt <= 0 {
 		return nil, false
 	}
-	ip = ip.Unmap().WithZone("")
+	bits := b.PrefixLen
+	if ip.Is4In6() {
+		ip, bits = ip.Unmap(), bits-96
+	}
+	if bits <= 0 {
+		bits = ip.BitLen()
+	}
+	prefix := netip.PrefixFrom(ip.WithZone(""), bits)
+	if !ownBanPrefix(prefix) {
+		return nil, false
+	}
 	reason := b.Reason
 	if reason == "" {
 		reason = "cc_ip_rate"
 	}
 	return &nodev1.AutoBan{
 		SiteId:        b.SiteID,
-		Cidr:          netip.PrefixFrom(ip, ip.BitLen()).String(),
+		Cidr:          prefix.String(),
 		CreatedAt:     timestamppb.New(unixTime(b.CreatedAt)),
 		ExpiresAt:     timestamppb.New(unixTime(b.ExpiresAt)),
 		Reason:        reason,

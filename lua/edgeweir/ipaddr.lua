@@ -182,6 +182,68 @@ function _M.embedded_ipv4(a)
   return nil
 end
 
+-- format returns the canonical text of address bytes: dotted IPv4, or
+-- IPv6 in lowercase with the first longest run of two or more zero groups
+-- compressed (RFC 5952).
+function _M.format(a)
+  if #a == 4 then
+    return a[1] .. "." .. a[2] .. "." .. a[3] .. "." .. a[4]
+  end
+  local g = {}
+  for i = 1, 8 do
+    g[i] = a[2 * i - 1] * 256 + a[2 * i]
+  end
+  local best, best_len, run, run_len = 0, 0, 0, 0
+  for i = 1, 8 do
+    if g[i] == 0 then
+      if run_len == 0 then run = i end
+      run_len = run_len + 1
+      if run_len > best_len then best, best_len = run, run_len end
+    else
+      run_len = 0
+    end
+  end
+  local parts = {}
+  local i = 1
+  while i <= 8 do
+    if best_len >= 2 and i == best then
+      parts[#parts + 1] = (i == 1) and ":" or ""
+      i = i + best_len
+      if i > 8 then parts[#parts + 1] = "" end
+    else
+      parts[#parts + 1] = string.format("%x", g[i])
+      i = i + 1
+    end
+  end
+  return table.concat(parts, ":")
+end
+
+-- client_network returns the network a client address is counted and
+-- banned by on its own (edgeweir.cc, edgeweir.bans): the IPv4 address
+-- (IPv4-mapped IPv6 too) or the IPv6 /64, as text ("192.0.2.7",
+-- "2001:db8:1:2::/64"), bytes (masked) and prefix length. nil when addr is
+-- not an address. A /64 is what one IPv6 client usually holds.
+function _M.client_network(addr)
+  local a = _M.parse(addr)
+  if not a then
+    return nil
+  end
+  if #a == 16 and a[11] == 0xff and a[12] == 0xff then
+    local mapped = true
+    for i = 1, 10 do
+      if a[i] ~= 0 then mapped = false break end
+    end
+    if mapped then a = { a[13], a[14], a[15], a[16] } end
+  end
+  if #a == 4 then
+    return _M.format(a), a, 32
+  end
+  for i = 9, 16 do
+    a[i] = 0
+  end
+  return _M.format(a) .. "/64", a, 64
+end
+
 local forbidden_prefixes = {}
 for i = 1, #FORBIDDEN do
   forbidden_prefixes[i] = assert(_M.parse_prefix(FORBIDDEN[i]))

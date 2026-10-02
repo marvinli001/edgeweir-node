@@ -292,20 +292,23 @@ func TestBansLiftedOwnBansAreReleased(t *testing.T) {
 	expired := consoleBan("own-2", "192.0.2.10/32", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Hour)
 	expired.ExpiresAt = timestamppb.New(time.Now().Add(-time.Second))
 	invalid := consoleBan("own-3", "192.0.2.0/24", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Minute)
+	// IPv6 clients are banned by their /64.
+	own6 := consoleBan("own-4", "2001:db8:5:6::/64", nodev1.BanScope_BAN_SCOPE_SITE, "site-a", nodev1.BanSource_BAN_SOURCE_AUTO, -time.Minute)
 	e.console.LiftOwnBan(expired)
 	e.console.LiftOwnBan(invalid)
+	e.console.LiftOwnBan(own6)
 	seq := e.console.LiftOwnBan(own)
-	eventually(t, "lifted own ban deleted after a retry", func() bool { return len(e.dp.Released()) == 1 })
-	got := e.dp.Released()[0]
-	if got.SiteID != "site-a" || got.CIDR != "192.0.2.9/32" ||
-		got.ExpiresAt != float64(own.GetExpiresAt().AsTime().UnixMilli())/1000 {
+	eventually(t, "lifted own bans deleted after a retry", func() bool { return len(e.dp.Released()) == 2 })
+	got := e.dp.Released()
+	if got[0].SiteID != "site-a" || got[0].CIDR != "2001:db8:5:6::/64" || got[1].CIDR != "192.0.2.9/32" ||
+		got[1].ExpiresAt != float64(own.GetExpiresAt().AsTime().UnixMilli())/1000 {
 		t.Fatalf("released = %+v", got)
 	}
 	eventually(t, "sequence applied", func() bool { return e.dp.BanSequence() == seq })
 	// Done once: later fetches send nothing again.
 	calls := len(e.console.GetBansCalls())
 	eventually(t, "more polls", func() bool { return len(e.console.GetBansCalls()) >= calls+3 })
-	if n := len(e.dp.Released()); n != 1 {
+	if n := len(e.dp.Released()); n != 2 {
 		t.Fatalf("released %d times", n)
 	}
 }

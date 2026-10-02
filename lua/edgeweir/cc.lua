@@ -11,11 +11,16 @@
 --   ip_qps         the address is banned for ip_ban seconds
 --                  (edgeweir.bans.add_auto, reason cc_ip_rate), once per ban
 --
+-- An address is a client's IPv4 address or IPv6 /64
+-- (edgeweir.ipaddr.client_network: "2001:db8:1:2::/64"): one client that
+-- holds a /64 and takes a new address for every request is still one
+-- address here, and it cannot fill the store with addresses.
+--
 -- Counting (lua_shared_dict edgeweir_cc, two adjacent windows weighted as
 -- a sliding window: prev * (1 - elapsed/W) + current):
 --
 --   s|<site>|<w>          requests of the site in window w (access phase)
---   i|<site>|<ip>|<w>     requests of one address (access phase)
+--   i|<site>|<ip>|<w>     requests of one address or /64 (access phase)
 --   o|<site>|<w>, e|...   origin requests and errors (log phase)
 --   p|<site>|<w>|<path>   requests of a candidate path (flushed each second)
 --
@@ -129,7 +134,8 @@ local function usable_path(path)
   return path and #path <= 512 and not find(path, "[%c?]")
 end
 
--- count accounts one request of a site with CC (access phase). Returns the
+-- count accounts one request of a site with CC (access phase); addr is the
+-- client's network (edgeweir.ipaddr.client_network). Returns the
 -- address's count in its window, the window and the time when the
 -- per-address trigger is on (for check_ip), else nil.
 function _M.count(site, addr, path)
