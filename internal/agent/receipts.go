@@ -54,6 +54,7 @@ func (a *Agent) receiptFor(revision uint64, hash string) string {
 
 // Save before applying. Active and previous receipts remain available on a bad
 // candidate/disk failure, and the supervisor backs this file up with the LKG.
+// Unchanged receipts (every poll of an up-to-date node) are not written again.
 func (a *Agent) rememberReceipt(resp *nodev1.GetConfigResponse) error {
 	if resp.GetRevisionReceipt() == "" {
 		return nil
@@ -73,6 +74,7 @@ func (a *Agent) rememberReceipt(resp *nodev1.GetConfigResponse) error {
 		return nil
 	}
 	state := a.readReceipts()
+	before := state
 	current := a.appliedConfig()
 	active := state.forConfig(current.GetRevision(), current.GetContentHash())
 	if active.Token != "" {
@@ -85,6 +87,9 @@ func (a *Agent) rememberReceipt(resp *nodev1.GetConfigResponse) error {
 		state.NodeID = a.channel.Identity().NodeID
 	}
 	state.Candidate = revisionReceipt{Revision: revision, Hash: hash, Token: resp.RevisionReceipt}
+	if state == before {
+		return nil
+	}
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
