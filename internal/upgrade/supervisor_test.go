@@ -3,6 +3,7 @@ package upgrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	"io"
 	"log/slog"
@@ -28,6 +29,15 @@ func TestMain(m *testing.M) {
 		if v == "fail" {
 			_ = os.WriteFile(filepath.Join(filepath.Dir(socket), "config", "current.binpb"), []byte("bad candidate"), 0600)
 			os.Exit(42)
+		}
+		if v == "usage" || v == "crash" {
+			f, _ := os.OpenFile(filepath.Join(filepath.Dir(socket), "starts"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			_, _ = f.WriteString("start\n")
+			_ = f.Close()
+			if v == "usage" {
+				os.Exit(2)
+			}
+			os.Exit(1)
 		}
 		client := NewClient(socket)
 		for {
@@ -232,5 +242,41 @@ func TestNewBaseInstallationSupersedesOldActiveBundle(t *testing.T) {
 	}
 	if j.Active.Dir != "" || j.Previous.Version != "0.2.0" || j.BaseDigest == "" {
 		t.Fatalf("old bundle shadowed the new base installation: %+v", j)
+	}
+}
+
+// TestUsageExitStopsTheSupervisor (P1-62): a node that exits with status 2
+// (invalid flags or local settings) is not started again every two
+// seconds; the supervisor stops with ErrUsage.
+func TestUsageExitStopsTheSupervisor(t *testing.T) {
+	opts, _ := fixture(t)
+	_ = os.WriteFile(filepath.Join(opts.LuaDir, "version"), []byte("usage"), 0600)
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), opts) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUsage) {
+			t.Fatalf("Run = %v, want ErrUsage", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor kept restarting the node")
+	}
+	if raw, _ := os.ReadFile(filepath.Join(opts.Trust.StateDir, "starts")); strings.Count(string(raw), "start") != 1 {
+		t.Fatalf("node started %d times", strings.Count(string(raw), "start"))
+	}
+}
+
+// TestCrashingNodeIsRestartedWithBackoff (P1-62): a node that keeps exiting
+// right after its start is restarted after 2 s, then 4 s, ... (at most a
+// minute), not every 2 s.
+func TestCrashingNodeIsRestartedWithBackoff(t *testing.T) {
+	opts, client := fixture(t)
+	_ = os.WriteFile(filepath.Join(opts.LuaDir, "version"), []byte("crash"), 0600)
+	stop := launch(t, opts, client)
+	time.Sleep(7500 * time.Millisecond)
+	stop()
+	// Starts at 0 s, 2 s and 6 s, each up to 250 ms later (every 2 s: also at 4 s).
+	if raw, _ := os.ReadFile(filepath.Join(opts.Trust.StateDir, "starts")); strings.Count(string(raw), "start") != 3 {
+		t.Fatalf("node started %d times in 7.5 s", strings.Count(string(raw), "start"))
 	}
 }

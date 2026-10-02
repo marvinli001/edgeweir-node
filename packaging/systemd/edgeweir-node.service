@@ -51,6 +51,8 @@ EnvironmentFile=-/etc/default/edgeweir-node
 ExecStart=/usr/bin/edgeweir-node supervise --manage-nginx
 Restart=always
 RestartSec=2s
+# Status 2: invalid flags or local settings; starting again cannot help.
+RestartPreventExitStatus=2
 # SIGTERM goes to the agent, which stops OpenResty gracefully; anything
 # left after the timeout is killed.
 KillMode=mixed

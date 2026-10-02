@@ -219,7 +219,9 @@ func (p Params) WithDefaults() Params {
 	return p
 }
 
-func (p Params) validate() error {
+// Validate checks the settings Render needs (after WithDefaults): paths,
+// names, sizes and resolvers.
+func (p Params) Validate() error {
 	for name, v := range map[string]string{
 		"nginx prefix": p.Prefix, "lua dir": p.LuaDir, "cache dir": p.CacheDir,
 		"control socket": p.ControlSocket, "origin socket": p.OriginSocket, "resolv.conf": p.ResolvConf,
@@ -450,7 +452,7 @@ type originLayer struct {
 // Render returns nginx.conf for plan.
 func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	p = p.WithDefaults()
-	if err := p.validate(); err != nil {
+	if err := p.Validate(); err != nil {
 		return nil, err
 	}
 	if plan == nil || len(plan.Listeners) == 0 || len(plan.CacheZones) == 0 {

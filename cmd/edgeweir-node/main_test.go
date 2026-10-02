@@ -100,6 +100,21 @@ func TestRealMain(t *testing.T) {
 	if code := realMain([]string{"run", "--listen-ipv6", "sometimes"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("run with invalid tristate: code=%d", code)
 	}
+	// Settings only nginx.conf needs are checked at startup too (they used
+	// to fail at the first render), in supervise mode before any child.
+	for _, c := range []struct{ args []string }{
+		{[]string{"run", "--resolver", "not an address"}},
+		{[]string{"run", "--l4-dict-mb", "70000"}},
+		{[]string{"run", "--stats-dict-mb", "70000"}},
+		{[]string{"run", "--nginx-user", "Bad User!"}},
+		{[]string{"run", "--cache-dir", "/var/cache/with space"}},
+		{[]string{"supervise", "--manage-nginx", "--resolver", "not an address"}},
+	} {
+		errOut.Reset()
+		if code := realMain(c.args, io.Discard, &errOut); code != 2 || !strings.Contains(errOut.String(), "run: ") {
+			t.Fatalf("%v: code=%d stderr=%q", c.args, code, errOut.String())
+		}
+	}
 	if code := realMain([]string{"healthcheck", "--control-socket", "/nonexistent/control.sock", "--timeout", "100ms"}, io.Discard, io.Discard); code != 1 {
 		t.Fatalf("healthcheck against missing socket: code=%d", code)
 	}

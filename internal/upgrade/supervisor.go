@@ -64,6 +64,20 @@ type Supervisor struct {
 	exit                    <-chan error
 	healthFirst, healthLast time.Time
 	healthPID               int
+	// startedAt is when the child started; restartDelay grows while it
+	// keeps exiting within a minute.
+	startedAt    time.Time
+	restartDelay time.Duration
+}
+
+// ErrUsage stops the supervisor when the node exits with status 2: its
+// flags or local settings are wrong, and starting it again cannot help.
+var ErrUsage = errors.New("edgeweir-node run exited with status 2 (invalid flags or local settings); not restarting it")
+
+// usageExit reports whether a child's exit was status 2.
+func usageExit(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 2
 }
 
 func Socket(stateDir string) string { return filepath.Join(stateDir, "upgrade.sock") }
@@ -307,13 +321,27 @@ func Run(ctx context.Context, opts Options) error {
 				}
 			} else {
 				select {
-				case <-s.exit:
+				case err := <-s.exit:
 					s.exit = nil
+					if usageExit(err) {
+						s.mu.Unlock()
+						opts.Log.Error("node exited with a usage error", "err", err)
+						return ErrUsage
+					}
+					// 2 s, doubling up to a minute while the node keeps
+					// failing within a minute of its start.
+					if time.Since(s.startedAt) > time.Minute || s.restartDelay == 0 {
+						s.restartDelay = 2 * time.Second
+					} else {
+						s.restartDelay = min(2*s.restartDelay, time.Minute)
+					}
+					delay := s.restartDelay
 					s.mu.Unlock()
+					opts.Log.Warn("node exited; restarting", "err", err, "after", delay.String())
 					select {
 					case <-ctx.Done():
 						return nil
-					case <-time.After(2 * time.Second):
+					case <-time.After(delay):
 					}
 					s.mu.Lock()
 					err = s.startLocked(s.state.Active)
@@ -349,6 +377,7 @@ func (s *Supervisor) startLocked(b Bundle) error {
 	go func() { result <- cmd.Wait() }()
 	s.child = cmd
 	s.exit = result
+	s.startedAt = time.Now()
 	s.healthPID = cmd.Process.Pid
 	s.healthFirst = time.Time{}
 	s.healthLast = time.Time{}

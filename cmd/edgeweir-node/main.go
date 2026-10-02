@@ -537,29 +537,6 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		return a
 	}
 	state := abs(*stateDir)
-	if supervised {
-		if !*manage {
-			fmt.Fprintln(stderr, "supervise requires --manage-nginx")
-			return 2
-		}
-		executable, err := os.Executable()
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		key := *upgradeKey
-		if key != "" {
-			key = abs(key)
-		}
-		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr})
-		if err != nil {
-			log.Error("supervisor stopped", "err", err)
-			return 1
-		}
-		return 0
-	}
 	prefix := *nginxPrefix
 	if prefix == "" {
 		prefix = filepath.Join(state, "nginx")
@@ -586,9 +563,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	if caBundle == "" {
 		caBundle = systemCABundle()
 	}
-	if caBundle == "" {
-		log.Warn("no CA bundle found (set --trusted-ca): HTTPS origins that require certificate verification will fail")
-	} else {
+	if caBundle != "" {
 		caBundle = abs(caBundle)
 	}
 	params := render.Params{
@@ -641,6 +616,43 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		params.L4Socket = abs(*l4Sock)
 	}
 	params = params.WithDefaults()
+	// Every local setting is checked now, not at the first render: a
+	// mistake ends the process with exit status 2 (the supervisor and the
+	// systemd unit do not restart it then).
+	if err := params.Validate(); err != nil {
+		fmt.Fprintln(stderr, "run:", err)
+		return 2
+	}
+	if supervised {
+		if !*manage {
+			fmt.Fprintln(stderr, "supervise requires --manage-nginx")
+			return 2
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		key := *upgradeKey
+		if key != "" {
+			key = abs(key)
+		}
+		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr})
+		if errors.Is(err, upgrade.ErrUsage) {
+			log.Error("supervisor stopped", "err", err)
+			return 2
+		}
+		if err != nil {
+			log.Error("supervisor stopped", "err", err)
+			return 1
+		}
+		return 0
+	}
+	if caBundle == "" {
+		log.Warn("no CA bundle found (set --trusted-ca): HTTPS origins that require certificate verification will fail")
+	}
 	if _, err := os.Stat(filepath.Join(params.LuaDir, "edgeweir", "init.lua")); err != nil {
 		log.Warn("Lua modules not found; nginx configuration tests will fail", "lua_dir", params.LuaDir, "err", err)
 	}
