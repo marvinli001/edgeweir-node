@@ -97,6 +97,7 @@
 //	POST /purge-host?site=&host=  queue a host purge task; answers its id
 //	POST /sitemap?site=&url=&max=&variants=desktop,mobile  queue a sitemap
 //	              prefetch task; answers its id
+//	POST /prefetch?site=&url=  queue a prefetch task of one URL; answers its id
 //	GET /task-result?id=  "<state> <error code> <succeeded> <failed>" of a
 //	              reported task ("-" for no code)
 //	POST /health?port=&status=  the status of the test origin's /health
@@ -743,6 +744,12 @@ func main() {
 			}
 		}
 		queue(w, "sitemap", &nodev1.NodeTask{Kind: &nodev1.NodeTask_Sitemap{Sitemap: task}})
+	})
+	mux.HandleFunc("POST /prefetch", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		queue(w, "prefetch", &nodev1.NodeTask{Kind: &nodev1.NodeTask_Prefetch{Prefetch: &nodev1.PrefetchTask{
+			Targets: []*nodev1.PrefetchTarget{{SiteId: q.Get("site"), Url: q.Get("url")}},
+		}}})
 	})
 	mux.HandleFunc("GET /task-result", func(w http.ResponseWriter, r *http.Request) {
 		for _, res := range c.TaskResults() {

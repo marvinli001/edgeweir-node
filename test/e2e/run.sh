@@ -2,7 +2,8 @@
 # Container smoke test for edgeweir-node:
 #   1. the node container serves 404 unknown-host before enrollment;
 #   2. `docker compose exec node edgeweir-node enroll ...` while `run` is
-#      running switches the node to mTLS and applies revision 1;
+#      running switches the node to mTLS and applies revision 1; OpenResty
+#      runs under the supervisor and keeps running when the agent restarts;
 #   3. demo.test is proxied to the whoami origin: first MISS, then HIT;
 #   4. origin address policy: special-purpose literals and DNS answers
 #      outside the allow list get 502, CDN-Loop is appended and loops get
@@ -129,6 +130,26 @@ pass "enrolled while run is running"
 wait_for "revision 1 applied" applied_is "1 APPLY_STATE_APPLIED"
 compose logs node | grep "switched to mTLS channel node_id=node-e2e" >/dev/null || fail "no 'switched to mTLS channel' log line"
 pass "revision 1 applied and reported over mTLS"
+
+# OpenResty runs under the supervisor (PID 1), not the agent: an agent that
+# stops (an upgrade, a crash) leaves it serving.
+proc_pid() { # cmdline regex -> pid and parent pid of the first match
+  compose exec -T node perl -e 'for my $d (glob "/proc/[0-9]*") { open my $f, "<", "$d/cmdline" or next; my $c = <$f> // "";
+    next unless $c =~ /$ARGV[0]/; open my $s, "<", "$d/status" or next; my ($pp) = map { /^PPid:\s+(\d+)/ ? $1 : () } <$s>;
+    $d =~ s{.*/}{}; print "$d $pp\n"; last }' "$1"
+}
+compose logs node | grep "OpenResty runs under the supervisor" >/dev/null || fail "the agent runs OpenResty itself"
+read -r master master_parent <<<"$(proc_pid '^nginx: master')"
+[ "$master_parent" = 1 ] || fail "nginx master $master has parent $master_parent, want the supervisor (1)"
+read -r agent _ <<<"$(proc_pid '^\S*edgeweir-node\0run')"
+compose exec -T node perl -e 'kill "TERM", $ARGV[0] or die "kill: $!"' "$agent"
+agent_back() { [ "$(compose logs node | grep -c 'supervisor started node')" -ge 2 ] && applied_is "1 APPLY_STATE_APPLIED"; }
+WAIT_SECS=30 wait_for "agent restarted by the supervisor" agent_back
+read -r master_after _ <<<"$(proc_pid '^nginx: master')"
+[ "$master_after" = "$master" ] || fail "nginx master changed from $master to $master_after when the agent restarted"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.test' "$NODE/e2e-agent-restart")
+[ "$code" = 200 ] || fail "demo.test after the agent restarted: $code"
+pass "OpenResty runs under the supervisor and keeps serving while the agent restarts"
 
 # Probe a different path so that "/" is still uncached below.
 wait_for "demo.test routed" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.test' $NODE/e2e-probe)\" = 200 ]"
@@ -305,6 +326,15 @@ resp=$(hdrs -X POST -H 'Host: ua.test' -d 'x=1' "$NODE/form")
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Host: ua.test' -A 'e2e-browser' -H "Cookie: $pass_cookie" -d 'x=1' "$NODE/form")
 [ "$code" = 200 ] || fail "POST with a pass returned $code"
 pass "Under Attack cookie302: 302 with a pass bound to site and User-Agent, POST without a pass 403"
+
+# HTTP-01 tokens that are not the node's go to the origin, uncached and
+# unchallenged (the origin's own certificates).
+for host in demo.test ua.test; do
+  resp=$(curl -s -D - -H "Host: $host" "$NODE/.well-known/acme-challenge/origin-token_1" | tr -d '\r')
+  [ "$(status_of <<<"$resp")" = 200 ] && grep -q "^Hostname:" <<<"$resp" && [ "$(header_of x-cache <<<"$resp")" = BYPASS ] ||
+    fail "foreign HTTP-01 token on $host: $(head -1 <<<"$resp") X-Cache $(header_of x-cache <<<"$resp")"
+done
+pass "HTTP-01 tokens of the origin reach the origin, uncached, also under Under Attack"
 
 verify() { # host token answer -> response headers
   hdrs -X POST -H "Host: $1" -A 'e2e-browser' --data-urlencode "t=$2" --data-urlencode "a=$3" --data-urlencode "r=/after?q=1" "$NODE/.edgeweir/challenge/verify"
@@ -688,6 +718,14 @@ for path in /page-1 /page-2 '/page-3?v=1'; do
 done
 CACHE=MISS cache_is smap.test /page-4 -A "$MOBILE_UA" || fail "a page the sitemap does not list was cached"
 pass "sitemap prefetch: gzipped index followed, both device variants cached"
+
+# Prefetches use the node's local listeners: Under Attack does not
+# challenge them (ua.test) and the object is cached for visitors with a
+# pass.
+task=$(curl -fsS -X POST "$HELPER/prefetch?site=site-ua&url=http://ua.test/prefetched")
+WAIT_SECS=30 wait_for "prefetch task $task" task_done "$task" 1
+CACHE=HIT cache_is ua.test /prefetched -A 'e2e-browser' -H "Cookie: $pass_cookie" || fail "the Under Attack prefetch was not cached"
+pass "prefetch under Under Attack: not challenged, cached"
 
 # Active health check: a failing /health takes o2 (port 8083) out of
 # rotation although it serves requests; a passing one brings it back.
