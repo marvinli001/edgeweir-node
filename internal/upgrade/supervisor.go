@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 )
 
@@ -52,6 +53,13 @@ type Options struct {
 	Output       io.Writer
 	TrialTimeout time.Duration
 	StableWindow time.Duration
+	// Engine is OpenResty the supervisor runs for its children (see
+	// engine.go); nil: each child runs it itself.
+	Engine *engine.Config
+	// AllowDowngrade lets an upgrade task install an older version than
+	// the active one (refused otherwise: an older signed release may have
+	// known flaws).
+	AllowDowngrade bool
 	// Test seams remain package-private and cannot be configured by the console.
 	prepare func(context.Context, Trust, Task) (Bundle, error)
 }
@@ -68,6 +76,7 @@ type Supervisor struct {
 	// keeps exiting within a minute.
 	startedAt    time.Time
 	restartDelay time.Duration
+	engine       supervisedEngine
 }
 
 // ErrUsage stops the supervisor when the node exits with status 2: its
@@ -241,6 +250,10 @@ func Run(ctx context.Context, opts Options) error {
 			opts.Log.Error("upgrade socket failed", "err", err)
 		}
 	}()
+	// Deferred first, so it runs after the child stopped (the child saves
+	// its statistics from OpenResty's counters on the way out).
+	s.startEngine()
+	defer s.stopEngine()
 	if err = s.start(s.state.Active); err != nil {
 		return err
 	}
@@ -265,6 +278,7 @@ func Run(ctx context.Context, opts Options) error {
 				}
 				s.mu.Unlock()
 				s.stop()
+				s.switchEngine(p.Previous, p.Candidate)
 				// Only configuration is restored on rollback. Never rewind enrollment keys,
 				// credentials, stats/log cursors or other identity-bearing mutable state.
 				err = s.backupConfig(p.Candidate)
@@ -296,6 +310,7 @@ func Run(ctx context.Context, opts Options) error {
 				if failed || time.Since(p.StartedAt) > opts.TrialTimeout {
 					s.mu.Unlock()
 					s.stop()
+					s.switchEngine(p.Candidate, p.Previous)
 					s.mu.Lock()
 					if err = s.rollback("candidate exited or did not pass the health window; previous version restored"); err == nil {
 						err = s.startLocked(s.state.Active)
@@ -487,6 +502,9 @@ func body(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.serveEngine(w, r) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/capabilities":
 		bin := s.opts.Trust.Cosign
@@ -495,7 +513,7 @@ func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err := exec.LookPath(bin)
 		enabled := err == nil && (s.opts.Trust.PublicKey == "" || fsutil.Exists(s.opts.Trust.PublicKey))
-		reply(w, 200, map[string]bool{"enabled": enabled})
+		reply(w, 200, map[string]bool{"enabled": enabled, "engine": s.opts.Engine != nil})
 	case r.Method == http.MethodPost && r.URL.Path == "/health":
 		var h struct {
 			PID     int    `json:"pid"`
@@ -582,6 +600,23 @@ func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.staging || s.state.Pending != nil || s.state.Result != nil {
 			s.mu.Unlock()
 			reply(w, 409, map[string]string{"error": "another upgrade is in progress"})
+			return
+		}
+		current := s.state.Active.Version
+		if s.state.Active.Dir == "" {
+			current = s.opts.Version
+		}
+		if c, ok := compareVersions(t.Version, current); ok && c < 0 && !s.opts.AllowDowngrade {
+			next := s.state
+			next.Result = &Result{TaskID: t.ID, Version: t.Version, FinishedAt: time.Now(),
+				Message: "refusing to downgrade from " + current + " to " + t.Version + " (--upgrade-allow-downgrade allows it on this node)"}
+			err := s.persist(next)
+			s.mu.Unlock()
+			if err != nil {
+				reply(w, 500, map[string]string{"error": "journal write failed"})
+			} else {
+				reply(w, 202, map[string]bool{"ok": true})
+			}
 			return
 		}
 		s.staging = true

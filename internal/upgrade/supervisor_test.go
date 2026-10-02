@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/marvinli001/edgeweir-node/internal/engine"
+	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 )
 
 // The real test executable doubles as an independently started agent process.
@@ -40,6 +44,15 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		client := NewClient(socket)
+		if os.Getenv("EDGEWEIR_UPGRADE_TEST_ENGINE") == "1" {
+			// Like the agent: OpenResty of the supervisor, started (or
+			// reloaded) once the configuration is installed.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if !client.Engine(ctx) || NewRemoteEngine(socket, nil).Reload(ctx) != nil {
+				os.Exit(43)
+			}
+			cancel()
+		}
 		for {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			_ = client.Healthy(ctx, v)
@@ -278,5 +291,181 @@ func TestCrashingNodeIsRestartedWithBackoff(t *testing.T) {
 	// Starts at 0 s, 2 s and 6 s, each up to 250 ms later (every 2 s: also at 4 s).
 	if raw, _ := os.ReadFile(filepath.Join(opts.Trust.StateDir, "starts")); strings.Count(string(raw), "start") != 3 {
 		t.Fatalf("node started %d times in 7.5 s", strings.Count(string(raw), "start"))
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+		ok   bool
+	}{
+		{"1.2.3", "1.2.3", 0, true},
+		{"1.2.3", "1.2.4", -1, true},
+		{"1.10.0", "1.9.9", 1, true},
+		{"2.0.0", "10.0.0", -1, true},
+		{"1.0.0-rc.1", "1.0.0", -1, true},
+		{"1.0.0-rc.2", "1.0.0-rc.10", -1, true},
+		{"1.0.0-alpha", "1.0.0-1", 1, true},
+		{"1.0.0-rc.1", "1.0.0-rc.1.1", -1, true},
+		{"dev", "1.0.0", 0, false},
+		{"1.0.0", "", 0, false},
+	} {
+		if got, ok := compareVersions(c.a, c.b); got != c.want || ok != c.ok {
+			t.Errorf("compareVersions(%q, %q) = %d, %v; want %d, %v", c.a, c.b, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestDowngradeIsRefused (P1-62): an upgrade task for an older version
+// than the active one fails unless the node allows downgrades.
+func TestDowngradeIsRefused(t *testing.T) {
+	opts, client := fixture(t)
+	stop := launch(t, opts, client)
+	id := "44444444-4444-4444-8444-444444444444"
+	if err := client.Stage(context.Background(), Task{ID: id, Version: "0.0.9"}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := client.Result(context.Background())
+	if err != nil || r == nil || r.TaskID != id || r.Success || !strings.Contains(r.Message, "refusing to downgrade from 0.1.0 to 0.0.9") {
+		t.Fatalf("result = %+v, %v", r, err)
+	}
+	stop()
+	opts.AllowDowngrade = true
+	stop = launch(t, opts, client)
+	defer stop()
+	if err := client.Ack(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	other := "55555555-5555-4555-8555-555555555555"
+	if err := client.Stage(context.Background(), Task{ID: other, Version: "0.0.9"}); err != nil {
+		t.Fatal(err)
+	}
+	wait(t, func() bool {
+		r, e := client.Result(context.Background())
+		return e == nil && r != nil && r.TaskID == other
+	})
+	if r, _ := client.Result(context.Background()); !r.Success {
+		t.Fatalf("allowed downgrade failed: %+v", r)
+	}
+}
+
+// fakeNginx writes an nginx stand-in that records its pid at start and
+// every SIGHUP, answers -t, and stops on SIGQUIT.
+func fakeNginx(t *testing.T, dir string) (bin string, pids func() []string, hups func() int) {
+	t.Helper()
+	bin = filepath.Join(dir, "nginx")
+	script := `#!/bin/sh
+for a in "$@"; do [ "$a" = "-t" ] && exit 0; done
+echo $$ >> "` + dir + `/pids"
+trap 'exit 0' QUIT TERM
+trap 'echo hup >> "` + dir + `/hups"' HUP
+while :; do sleep 0.05; done
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pids = func() []string {
+		raw, _ := os.ReadFile(filepath.Join(dir, "pids"))
+		return strings.Fields(string(raw))
+	}
+	hups = func() int {
+		raw, _ := os.ReadFile(filepath.Join(dir, "hups"))
+		return strings.Count(string(raw), "hup")
+	}
+	return bin, pids, hups
+}
+
+func alive(pid string) bool {
+	n, err := strconv.Atoi(pid)
+	if err != nil {
+		return false
+	}
+	return syscall.Kill(n, 0) == nil
+}
+
+// TestOpenRestyOutlivesTheNodeProcess (P1-62): the supervisor runs
+// OpenResty for its children. An upgrade trial and its commit reload the
+// same OpenResty; a rollback to an older version stops it first (that
+// version may run OpenResty itself) and the restored child starts it
+// again; the supervisor stops it last.
+func TestOpenRestyOutlivesTheNodeProcess(t *testing.T) {
+	opts, client := fixture(t)
+	t.Setenv("EDGEWEIR_UPGRADE_TEST_ENGINE", "1")
+	bin, pids, hups := fakeNginx(t, opts.Trust.StateDir)
+	opts.Engine = &engine.Config{Bin: bin, Prefix: opts.Trust.StateDir, Conf: filepath.Join(opts.Trust.StateDir, "nginx.conf"),
+		Managed: true, StopTimeout: 2 * time.Second, Logger: opts.Log}
+	stop := launch(t, opts, client)
+	wait(t, func() bool { return len(pids()) == 1 })
+	first := pids()[0]
+
+	up := "66666666-6666-4666-8666-666666666666"
+	if err := client.Stage(context.Background(), Task{ID: up, Version: "0.2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	wait(t, func() bool { r, e := client.Result(context.Background()); return e == nil && r != nil && r.Success })
+	if got := pids(); len(got) != 1 || !alive(first) || hups() < 1 {
+		t.Fatalf("after the upgrade: OpenResty pids %v (alive %v), reloads %d", got, alive(first), hups())
+	}
+	if err := client.Ack(context.Background(), up); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := "77777777-7777-4777-8777-777777777777"
+	if err := client.Stage(context.Background(), Task{ID: bad, Version: "0.3.0"}); err != nil {
+		t.Fatal(err)
+	}
+	wait(t, func() bool {
+		r, e := client.Result(context.Background())
+		return e == nil && r != nil && r.TaskID == bad
+	})
+	if r, _ := client.Result(context.Background()); !r.RolledBack {
+		t.Fatalf("result = %+v", r)
+	}
+	wait(t, func() bool { return len(pids()) == 2 })
+	second := pids()[1]
+	if alive(first) || !alive(second) {
+		t.Fatalf("rollback: first OpenResty alive %v, second %v", alive(first), alive(second))
+	}
+	stop()
+	if alive(second) {
+		t.Fatal("OpenResty still runs after the supervisor stopped")
+	}
+}
+
+// TestRemoteEngine: a child's engine tests and reloads through the
+// supervisor and hears when OpenResty restarted (its shared dicts are
+// empty then).
+func TestRemoteEngine(t *testing.T) {
+	opts, client := fixture(t)
+	t.Setenv("EDGEWEIR_UPGRADE_TEST_ENGINE", "1")
+	bin, pids, _ := fakeNginx(t, opts.Trust.StateDir)
+	opts.Engine = &engine.Config{Bin: bin, Prefix: opts.Trust.StateDir, Conf: filepath.Join(opts.Trust.StateDir, "nginx.conf"),
+		Managed: true, StopTimeout: 2 * time.Second, Logger: opts.Log}
+	launch(t, opts, client)
+	wait(t, func() bool { return len(pids()) == 1 })
+	remote := NewRemoteEngine(Socket(opts.Trust.StateDir), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = remote.Run(ctx) }()
+	if err := remote.Test(ctx, filepath.Join(opts.Trust.StateDir, "nginx.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Test(ctx, "relative.conf"); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("relative path: %v", err)
+	}
+	if err := remote.Reload(ctx); err != nil || !remote.Running() {
+		t.Fatalf("reload: %v, running %v", err, remote.Running())
+	}
+	time.Sleep(1500 * time.Millisecond) // Run has read the start count
+	pid, _ := strconv.Atoi(pids()[0])
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	select {
+	case <-remote.Started():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no Started after OpenResty restarted")
+	}
+	if len(pids()) != 2 {
+		t.Fatalf("pids %v", pids())
 	}
 }

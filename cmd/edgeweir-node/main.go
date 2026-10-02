@@ -438,6 +438,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		upgradeSource = fs.String("upgrade-source", upgrade.DefaultSource, "locally trusted release base URL (supervise mode)")
 		upgradeKey    = fs.String("upgrade-public-key", "", "operator-provided local release public key; default GitHub OIDC identity")
 		upgradeHTTP   = fs.Bool("upgrade-allow-http", false, "allow an explicitly configured plaintext test/air-gap mirror")
+		downgrade     = fs.Bool("upgrade-allow-downgrade", false, "let upgrade tasks install an older version than the running one (supervise mode)")
 		geoIPinfo     = fs.String("geoip-ipinfo", "auto", "IPinfo Lite MMDB path; auto uses the database bundled at build time if present, off disables it")
 		geoCity       = fs.String("geoip-city", "", "operator-provided City MMDB path")
 		geoASN        = fs.String("geoip-asn", "", "operator-provided ASN MMDB path")
@@ -639,7 +640,11 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		if key != "" {
 			key = abs(key)
 		}
-		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr})
+		// OpenResty runs under the supervisor: replacing the node process
+		// (an upgrade, a restart) does not restart it.
+		engineConfig := engineConfig(*nginxBin, prefix, conf, params, log)
+		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr,
+			Engine: &engineConfig, AllowDowngrade: *downgrade})
 		if errors.Is(err, upgrade.ErrUsage) {
 			log.Error("supervisor stopped", "err", err)
 			return 2
@@ -665,14 +670,18 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		"state_dir", state, "manage_nginx", *manage, "nginx_bin", *nginxBin, "nginx_prefix", prefix,
 		"control_socket", params.ControlSocket, "resolvers", strings.Join(rs, " "))
 
-	eng := engine.New(engine.Config{
-		Bin:          *nginxBin,
-		Prefix:       prefix,
-		Conf:         conf,
-		Managed:      *manage,
-		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket},
-		Logger:       log,
-	})
+	engineConfig := engineConfig(*nginxBin, prefix, conf, params, log)
+	engineConfig.Managed = *manage
+	local := engine.New(engineConfig)
+	var eng agent.Engine = local
+	if sock := os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"); sock != "" && *manage {
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if upgrade.NewClient(sock).Engine(cctx) {
+			log.Info("OpenResty runs under the supervisor")
+			eng = upgrade.NewRemoteEngine(sock, local)
+		}
+		cancel()
+	}
 	var kernel nft.Executor
 	if *kernelBans == "auto" {
 		kernel = nft.Command{Bin: *nftBin}
@@ -703,6 +712,18 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		return 1
 	}
 	return 0
+}
+
+// engineConfig is OpenResty's process configuration (managed).
+func engineConfig(bin, prefix, conf string, params render.Params, log *slog.Logger) engine.Config {
+	return engine.Config{
+		Bin:          bin,
+		Prefix:       prefix,
+		Conf:         conf,
+		Managed:      true,
+		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket},
+		Logger:       log,
+	}
 }
 
 func cmdHealthcheck(args []string, stderr io.Writer) int {

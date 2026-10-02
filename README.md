@@ -174,7 +174,7 @@ edgeweir-node version
 
 - 参数均可由环境变量 `EDGEWEIR_<参数名>` 设置（如 `--state-dir` → `EDGEWEIR_STATE_DIR`），命令行优先。
 - `run` 在注册完成前每 2 秒检查状态目录，可先于 `enroll` 启动。
-- `supervise` 在 `run` 之上提供签名升级、试运行与回滚。
+- `supervise` 在 `run` 之上提供签名升级、试运行与回滚，并由它运行 OpenResty：升级或重启 agent 进程不重启 OpenResty。升级任务不能安装比当前更旧的版本（`--upgrade-allow-downgrade` 放行）。
 - `probe` 运行区域探针：首次运行用一次性探针 token 注册（控制台不可达时退避重试），已注册后忽略 token；缺少注册参数时退出码 2。
 
 | `enroll` 参数 | 默认值 | 说明 |
@@ -230,6 +230,7 @@ edgeweir-node version
 | `--upgrade-source` | 官方 GitHub Release 下载地址 | 发布镜像地址，升级任务不可修改 |
 | `--upgrade-public-key` | 空 | 发布公钥；为空时固定官方 GitHub OIDC 身份 |
 | `--upgrade-allow-http` | `false` | 允许明文 HTTP 发布镜像（本地测试、隔离网络） |
+| `--upgrade-allow-downgrade` | `false` | 允许升级任务安装比当前更旧的版本（supervise 模式） |
 | `--sites-dict-mb` | `64` | 站点表存储（`lua_shared_dict edgeweir_sites`：当前与上一版站点表，含错误页模板），MiB |
 | `--stats-dict-mb` | `16` | 统计计数存储（`lua_shared_dict edgeweir_stats`：各站点每分钟计数，agent 取走前保存），MiB |
 | `--purge-dict-mb` | `32` | 清缓存标记存储（`lua_shared_dict edgeweir_purge`），MiB |

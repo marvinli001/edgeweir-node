@@ -174,7 +174,7 @@ edgeweir-node version
 
 - Every flag can be set as `EDGEWEIR_<FLAG>` (e.g. `--state-dir` → `EDGEWEIR_STATE_DIR`); command-line flags take precedence.
 - `run` polls the state directory every 2 s until enrolled and may start before `enroll`.
-- `supervise` adds signed upgrades, trials and rollback on top of `run`.
+- `supervise` adds signed upgrades, trials and rollback on top of `run`, and runs OpenResty itself: an upgrade or a restart of the agent process does not restart OpenResty. Upgrade tasks cannot install an older version than the running one (`--upgrade-allow-downgrade` allows it).
 - `probe` runs a regional probe: the first run enrolls with a one-time probe token (retrying while the console is unreachable), an enrolled probe ignores the token; missing enrollment settings exit with status 2.
 
 | `enroll` flag | Default | Description |
@@ -230,6 +230,7 @@ edgeweir-node version
 | `--upgrade-source` | official GitHub release download base | Release mirror; upgrade tasks cannot change it |
 | `--upgrade-public-key` | empty | Release public key; empty pins the official GitHub OIDC identity |
 | `--upgrade-allow-http` | `false` | Permit a plaintext HTTP mirror (local test, air-gapped) |
+| `--upgrade-allow-downgrade` | `false` | Let upgrade tasks install an older version than the running one (supervise mode) |
 | `--sites-dict-mb` | `64` | Site table store (`lua_shared_dict edgeweir_sites`: the current and the previous site table, error page templates included), MiB |
 | `--stats-dict-mb` | `16` | Statistics counters (`lua_shared_dict edgeweir_stats`: per site and minute until the agent drains them), MiB |
 | `--purge-dict-mb` | `32` | Purge marker store (`lua_shared_dict edgeweir_purge`), MiB |
