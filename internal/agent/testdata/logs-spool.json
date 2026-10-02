@@ -1,0 +1,1 @@
+{"node_id":"node-a","last":9,"batches":[{"sequence":8,"logs":[{"site_id":"site-a","client_ip":"192.0.2.1","bytes_sent":10,"duration_ms":3,"cache_status":"HIT","sample_rate":1}]},{"sequence":9,"logs":[{"site_id":"site-a","waf_rule_ids":[942100],"waf_blocked":true,"request_id":"r-1"}]}]}

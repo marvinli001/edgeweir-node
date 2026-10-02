@@ -2,16 +2,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
-	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -51,132 +47,37 @@ func (b statsBatch) firstMinute() time.Time {
 	return first
 }
 
-type statsSpool struct {
-	NodeID  string       `json:"node_id"`
-	Last    uint64       `json:"last"`
-	Batches []statsBatch `json:"batches"`
-	// Loose holds buckets drained before the console's cursor was read
-	// (no sequence yet); they are numbered after it.
-	Loose []statsBatch `json:"loose,omitempty"`
-	// LostFrom is the first minute of buckets dropped for the spool limits
-	// (Unix seconds, 0 for none): the watermark stays there for
-	// statsLossHold.
-	LostFrom int64 `json:"lost_from,omitempty"`
+func (b statsBatch) sequence() uint64 { return b.Sequence }
+
+func (b statsBatch) numbered(seq uint64) statsBatch { b.Sequence = seq; return b }
+
+func (a *Agent) statsSpool() *spool[statsBatch] {
+	return &spool[statsBatch]{a: a, path: filepath.Join(a.cfg.StateDir, "traffic-spool.json"), what: "statistics", rpc: "ReportStats",
+		maxBytes: maxStatsSpoolBytes, maxPending: maxStatsPending, batchSize: statsBatchSize}
 }
 
-func (s *statsSpool) pending() int {
-	n := 0
-	for _, b := range s.Batches {
-		n += b.size()
-	}
-	for _, b := range s.Loose {
-		n += b.size()
-	}
-	return n
-}
-
-// dropOldest drops the oldest unsent batch (sequenced ones first, they are
-// older) and records the first minute it held. It returns the buckets
-// dropped (0 when there was nothing).
-func (s *statsSpool) dropOldest() int {
-	var b statsBatch
-	switch {
-	case len(s.Batches) > 0:
-		b, s.Batches = s.Batches[0], s.Batches[1:]
-	case len(s.Loose) > 0:
-		b, s.Loose = s.Loose[0], s.Loose[1:]
-	default:
-		return 0
-	}
-	if first := b.firstMinute(); !first.IsZero() && (s.LostFrom == 0 || first.Unix() < s.LostFrom) {
-		s.LostFrom = first.Unix()
-	}
-	return b.size()
-}
-
-func (a *Agent) statsPath() string { return filepath.Join(a.cfg.StateDir, "traffic-spool.json") }
-
-// loadStatsSpool reads the spool from disk; one that is unreadable or of
-// another identity starts over.
-func (a *Agent) loadStatsSpool() *statsSpool {
+// loadStatsSpool reads the spool from disk; one that cannot be read
+// starts over.
+func (a *Agent) loadStatsSpool(sp *spool[statsBatch]) *spoolFile[statsBatch] {
 	id := a.channel.Identity().NodeID
-	state := &statsSpool{NodeID: id}
-	info, err := os.Stat(a.statsPath())
+	state, err := sp.load(id)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			a.log.Warn("cannot read the statistics spool; starting a new one", "err", err)
-		}
-		return state
-	}
-	if info.Size() > maxStatsSpoolBytes {
-		a.log.Warn("discarding an oversized statistics spool")
-		return state
-	}
-	raw, err := os.ReadFile(a.statsPath())
-	if err == nil {
-		err = json.Unmarshal(raw, state)
-	}
-	if err != nil || state.NodeID != id {
-		a.log.Warn("discarding unreadable or previous-identity statistics spool")
-		return &statsSpool{NodeID: id}
+		a.log.Warn("cannot read the statistics spool; starting a new one", "err", err)
+		return &spoolFile[statsBatch]{NodeID: id}
 	}
 	return state
 }
 
 // syncStatsSpool reads the console's cursor and drops the batches it
 // acknowledged; then the loose buckets are numbered after it.
-func (a *Agent) syncStatsSpool(ctx context.Context, state *statsSpool) error {
-	// Reading the authenticated cursor also recovers safely after a lost/corrupt
-	// local sequence file: fresh batches must never reuse an accepted sequence.
+func (a *Agent) syncStatsSpool(ctx context.Context, sp *spool[statsBatch], state *spoolFile[statsBatch]) error {
 	cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
 	defer cancel()
 	resp, err := a.channel.Client().ReportStatsV2(cctx, connect.NewRequest(&nodev1.ReportStatsV2Request{}))
 	if err != nil {
 		return err
 	}
-	cursor := resp.Msg.GetBatchSequence()
-	last := max(state.Last, cursor)
-	var remaining []statsBatch
-	previous := cursor
-	for _, batch := range state.Batches {
-		if batch.Sequence <= cursor {
-			continue
-		}
-		if batch.Sequence <= previous || batch.Sequence > last || batch.size() > statsBatchSize {
-			return fmt.Errorf("invalid statistics spool ordering")
-		}
-		remaining = append(remaining, batch)
-		previous = batch.Sequence
-	}
-	for _, batch := range state.Loose {
-		if last >= 9223372036854775807 {
-			return fmt.Errorf("statistics sequence exhausted")
-		}
-		last++
-		batch.Sequence = last
-		remaining = append(remaining, batch)
-	}
-	state.Last, state.Batches, state.Loose = last, remaining, nil
-	return a.saveStatsSpool(state)
-}
-
-func (a *Agent) saveStatsSpool(state *statsSpool) error {
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	for len(raw) > maxStatsSpoolBytes {
-		n := state.dropOldest()
-		if n == 0 {
-			break
-		}
-		a.log.Warn("dropping oldest unsent statistics batch: spool size limit", "buckets", n,
-			"lost_from", time.Unix(state.LostFrom, 0).UTC())
-		if raw, err = json.Marshal(state); err != nil {
-			return err
-		}
-	}
-	return fsutil.WriteFileAtomic(a.statsPath(), raw, 0600)
+	return sp.sync(state, resp.Msg.GetBatchSequence())
 }
 
 // statsLoop drains the data plane every StatsInterval into the spool on
@@ -199,7 +100,8 @@ func (a *Agent) saveStatsSpool(state *statsSpool) error {
 // only when both succeeded. After buckets were dropped for the spool
 // limits, the watermark stays at their first minute for statsLossHold.
 func (a *Agent) statsLoop(ctx context.Context) {
-	state := a.loadStatsSpool()
+	sp := a.statsSpool()
+	state := a.loadStatsSpool(sp)
 	synced := false
 	dirty := false
 	var drained, reported time.Time
@@ -208,12 +110,12 @@ func (a *Agent) statsLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			a.flushStats(state, synced)
+			a.flushStats(sp, state, synced)
 			return
 		case <-ticker.C:
 		}
 		if !synced {
-			if err := a.syncStatsSpool(ctx, state); err != nil {
+			if err := a.syncStatsSpool(ctx, sp, state); err != nil {
 				a.logRPCError("statistics spool initialization failed", err)
 			} else {
 				synced = true
@@ -225,7 +127,7 @@ func (a *Agent) statsLoop(ctx context.Context) {
 			if complete {
 				drained = boundary
 			}
-			if !a.spoolStats(state, synced, sites, l4) {
+			if !spoolStats(sp, state, synced, sites, l4) {
 				return
 			}
 			dirty = len(sites)+len(l4) > 0
@@ -235,7 +137,7 @@ func (a *Agent) statsLoop(ctx context.Context) {
 			state.LostFrom, dirty = 0, true
 		}
 		if dirty {
-			if err := a.saveStatsSpool(state); err != nil {
+			if err := sp.save(state); err != nil {
 				a.log.Error("statistics spool write failed; upload paused", "err", err)
 				continue
 			}
@@ -244,29 +146,15 @@ func (a *Agent) statsLoop(ctx context.Context) {
 		if !synced {
 			continue
 		}
-		for len(state.Batches) > 0 {
-			batch := state.Batches[0]
+		state = sp.upload(ctx, state, func(ctx context.Context, b statsBatch) (uint64, error) {
 			cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
-			resp, err := a.channel.Client().ReportStatsV2(cctx, connect.NewRequest(&nodev1.ReportStatsV2Request{Stats: batch.Stats, L4Stats: batch.L4, BatchSequence: batch.Sequence}))
-			cancel()
+			defer cancel()
+			resp, err := a.channel.Client().ReportStatsV2(cctx, connect.NewRequest(&nodev1.ReportStatsV2Request{Stats: b.Stats, L4Stats: b.L4, BatchSequence: b.Sequence}))
 			if err != nil {
-				if ctx.Err() == nil {
-					a.logRPCError("ReportStats failed; will retry the same batch", err)
-				}
-				break
+				return 0, err
 			}
-			if resp.Msg.GetBatchSequence() != batch.Sequence {
-				a.log.Warn("statistics acknowledgement sequence mismatch")
-				break
-			}
-			candidate := &statsSpool{NodeID: state.NodeID, Last: state.Last, Batches: state.Batches[1:], LostFrom: state.LostFrom}
-			if err := a.saveStatsSpool(candidate); err != nil {
-				a.log.Error("cannot persist statistics acknowledgement; batch will be retried", "err", err)
-				break
-			}
-			state = candidate
-			a.markConnected()
-		}
+			return resp.Msg.GetBatchSequence(), nil
+		})
 		watermark := drained
 		if state.LostFrom != 0 && time.Unix(state.LostFrom, 0).Before(watermark) {
 			watermark = time.Unix(state.LostFrom, 0).UTC()
@@ -286,46 +174,22 @@ func (a *Agent) statsLoop(ctx context.Context) {
 	}
 }
 
-// spoolStats adds drained buckets to the spool: numbered batches once the
-// console's cursor is known, loose ones before. Beyond maxStatsPending
-// buckets the oldest batches are dropped. It returns false when the
-// sequence is exhausted.
-func (a *Agent) spoolStats(state *statsSpool, synced bool, sites []*nodev1.MinuteStats, l4 []*nodev1.L4MinuteStats) bool {
-	if synced {
-		batches, ok := packStats(state.Last, sites, l4)
-		if !ok {
-			a.log.Error("statistics sequence exhausted")
-			return false
-		}
-		if len(batches) > 0 {
-			state.Batches = append(state.Batches, batches...)
-			state.Last = batches[len(batches)-1].Sequence
-		}
-	} else if batches, _ := packStats(0, sites, l4); len(batches) > 0 {
-		for i := range batches {
-			batches[i].Sequence = 0
-		}
-		state.Loose = append(state.Loose, batches...)
-	}
-	for state.pending() > maxStatsPending {
-		n := state.dropOldest()
-		a.log.Warn("dropping oldest unsent statistics batch: bucket limit", "buckets", n,
-			"lost_from", time.Unix(state.LostFrom, 0).UTC())
-	}
-	return true
+// spoolStats adds drained buckets to the spool (see spool.add).
+func spoolStats(sp *spool[statsBatch], state *spoolFile[statsBatch], synced bool, sites []*nodev1.MinuteStats, l4 []*nodev1.L4MinuteStats) bool {
+	return sp.add(state, synced, func(last uint64) ([]statsBatch, bool) { return packStats(last, sites, l4) })
 }
 
 // flushStats runs as the loop stops: every counter of the data plane, the
 // current minute's included, goes to the spool, since nginx stops next and
 // its counters with it. The next start uploads them.
-func (a *Agent) flushStats(state *statsSpool, synced bool) {
+func (a *Agent) flushStats(sp *spool[statsBatch], state *spoolFile[statsBatch], synced bool) {
 	fctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	sites, l4, _ := a.drainStats(fctx, true)
-	if !a.spoolStats(state, synced, sites, l4) {
+	if !spoolStats(sp, state, synced, sites, l4) {
 		return
 	}
-	if err := a.saveStatsSpool(state); err != nil {
+	if err := sp.save(state); err != nil {
 		a.log.Error("cannot save the last statistics before stopping", "err", err)
 		return
 	}
@@ -360,7 +224,7 @@ func (a *Agent) drainStats(ctx context.Context, all bool) (sites []*nodev1.Minut
 // overflow.
 func packStats(last uint64, sites []*nodev1.MinuteStats, l4 []*nodev1.L4MinuteStats) (batches []statsBatch, ok bool) {
 	for len(sites) > 0 || len(l4) > 0 {
-		if last >= 9223372036854775807 {
+		if last >= maxSpoolSequence {
 			return nil, false
 		}
 		n := min(statsBatchSize, len(sites))
