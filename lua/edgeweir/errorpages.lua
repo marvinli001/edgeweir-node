@@ -118,13 +118,13 @@ function _M.compile_pages(pages)
 end
 
 -- compile_platform compiles the platform's pages ({unknown_host,
--- site_disabled, site_suspended}); empty or missing ones stay nil.
+-- site_disabled}); empty or missing ones stay nil.
 function _M.compile_platform(pages)
   local out = {}
   if type(pages) ~= "table" then
     return out
   end
-  for _, name in ipairs({ "unknown_host", "site_disabled", "site_suspended" }) do
+  for _, name in ipairs({ "unknown_host", "site_disabled" }) do
     local template = pages[name]
     if type(template) == "string" and template ~= "" and #template <= _M.MAX_TEMPLATE then
       out[name] = _M.compile(template)
@@ -254,9 +254,9 @@ function _M.respond(status, code, site)
   return send(status, code, template(site, status), _M.edge_values(status))
 end
 
--- offline_reason returns the reason (disabled or suspended) of a host no
--- site serves when it is a domain of an offline site (exact, or a wildcard
--- on its parent domain like site domains), or nil. cfg is the site table's
+-- offline_reason returns the reason (disabled) of a host no site serves
+-- when it is a domain of an offline site (exact, or a wildcard on its
+-- parent domain like site domains), or nil. cfg is the site table's
 -- settings (edgeweir.store.config).
 function _M.offline_reason(cfg, host)
   local offline = cfg and cfg.offline
@@ -277,9 +277,7 @@ function _M.unknown_host(cfg, host)
   local reason = _M.offline_reason(cfg, host)
   local pages = cfg and cfg.platform_pages or {}
   local lang = language(ngx.var.http_accept_language)
-  if reason == "suspended" then
-    return send(503, "site-suspended", pages.site_suspended or _M.builtin(lang, "site-suspended"), _M.edge_values(503))
-  elseif reason == "disabled" then
+  if reason == "disabled" then
     return send(503, "site-disabled", pages.site_disabled or _M.builtin(lang, "site-disabled"), _M.edge_values(503))
   end
   return send(404, "unknown-host", pages.unknown_host or _M.builtin(lang, 404), _M.edge_values(404))

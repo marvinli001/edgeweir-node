@@ -432,14 +432,14 @@ end
 _M.DEFAULT_TAG_TTL = 3600
 
 -- offline_hosts indexes the offline hosts of a table: exact names and
--- wildcard suffixes to their reason (disabled or suspended).
+-- wildcard suffixes to their reason (disabled).
 local function offline_hosts(list)
   if type(list) ~= "table" or #list == 0 then
     return nil
   end
   local out = { exact = {}, wild = {} }
   for _, h in ipairs(list) do
-    if type(h) == "table" and type(h.name) == "string" and (h.reason == "disabled" or h.reason == "suspended") then
+    if type(h) == "table" and type(h.name) == "string" and h.reason == "disabled" then
       local t = h.wildcard == true and out.wild or out.exact
       if not t[h.name] then
         t[h.name] = h.reason

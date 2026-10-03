@@ -20,10 +20,10 @@ import (
 // the first site of the file (s2) keep_cache_tag, error pages (statuses
 // unsorted, UTF-8 templates with placeholders) that intercept origin
 // errors, and an origin pool with an active health check and session
-// affinity; challenge keys unsorted, the platform's error pages without
-// site_disabled, offline hosts out of order (one name exact and wildcard,
-// one name that extends another) and required_features unsorted with a
-// duplicate. The canonical form sorts the pages by status, the offline
+// affinity; challenge keys unsorted, the platform's error pages (unknown
+// host and disabled site), offline hosts out of order (one name exact and
+// wildcard, one name that extends another) and required_features unsorted
+// with a duplicate. The canonical form sorts the pages by status, the offline
 // hosts by (name, wildcard), the keys by id and the features as a set.
 func v0120Fields(m2 *nodev1.NodeConfig) *nodev1.NodeConfig {
 	c := proto.CloneOf(m2)
@@ -43,13 +43,13 @@ func v0120Fields(m2 *nodev1.NodeConfig) *nodev1.NodeConfig {
 	s.OriginPool.SessionAffinity = &nodev1.SessionAffinity{TtlSeconds: 3600}
 	c.ChallengeKeys = []*nodev1.ChallengeKeyRef{{Id: "k2", Role: "current"}, {Id: "k3", Role: "next"}, {Id: "k1", Role: "previous"}}
 	c.PlatformErrorPages = &nodev1.PlatformErrorPages{
-		UnknownHost:   "<h1>{{host}} is not served here</h1>",
-		SiteSuspended: "<h1>suspended</h1><p>{{request_id}}</p>",
+		UnknownHost:  "<h1>{{host}} is not served here</h1>",
+		SiteDisabled: "<h1>disabled</h1><p>{{request_id}}</p>",
 	}
 	c.OfflineHosts = []*nodev1.OfflineHost{
 		{Name: "old.test", Reason: "disabled"},
-		{Name: "away.test", Wildcard: true, Reason: "suspended"},
-		{Name: "away.test", Reason: "suspended"},
+		{Name: "away.test", Wildcard: true, Reason: "disabled"},
+		{Name: "away.test", Reason: "disabled"},
 		{Name: "away.test.example", Reason: "disabled"},
 	}
 	c.RequiredFeatures = []string{"session-affinity-v1", "error-pages-v1", "challenge-v1", "active-health-v1", "error-pages-v1"}
@@ -148,7 +148,9 @@ func TestContentHashVectorV0120(t *testing.T) {
 		!s2.ActiveHealth || s2.Affinity == nil || s2.Affinity.TTL != 3600 {
 		t.Fatalf("plan site s2 = %+v", s2)
 	}
-	if len(p.OfflineHosts) != 4 || p.PlatformErrorPages == nil || p.PlatformErrorPages.SiteDisabled != "" {
+	if len(p.OfflineHosts) != 4 || p.PlatformErrorPages == nil || *p.PlatformErrorPages != (PlatformErrorPages{
+		UnknownHost: "<h1>{{host}} is not served here</h1>", SiteDisabled: "<h1>disabled</h1><p>{{request_id}}</p>",
+	}) {
 		t.Fatalf("plan: offline %v, pages %+v", p.OfflineHosts, p.PlatformErrorPages)
 	}
 }
@@ -160,7 +162,7 @@ func TestCanonicalizeV0120(t *testing.T) {
 		Sites: []*nodev1.Site{s},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "b.test", Reason: "disabled"},
-			{Name: "a.test", Wildcard: true, Reason: "suspended"},
+			{Name: "a.test", Wildcard: true, Reason: "disabled"},
 			{Name: "a.test", Reason: "disabled"},
 			{Name: "a.b.test", Reason: "disabled"},
 		},
@@ -196,7 +198,7 @@ func TestApplyDiffCarriesPlatformPagesAndOfflineHosts(t *testing.T) {
 	base := withHash(t, &nodev1.NodeConfig{Revision: 1, ClusterId: "c1", Sites: []*nodev1.Site{site("site-a", "a.test")}})
 	target := &nodev1.NodeConfig{Revision: 2, ClusterId: "c1", Sites: []*nodev1.Site{site("site-a", "a.test")},
 		PlatformErrorPages: &nodev1.PlatformErrorPages{UnknownHost: "<p>gone</p>"},
-		OfflineHosts:       []*nodev1.OfflineHost{{Name: "z.test", Reason: "suspended"}, {Name: "b.test", Reason: "disabled"}},
+		OfflineHosts:       []*nodev1.OfflineHost{{Name: "z.test", Reason: "disabled"}, {Name: "b.test", Reason: "disabled"}},
 	}
 	target = withHash(t, target)
 	d := Diff(base, target)

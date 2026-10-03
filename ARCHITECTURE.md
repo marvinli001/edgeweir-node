@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.19.0`）里的 `edgeweir.node.v1`。
+本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.20.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -190,7 +190,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `Site.waf`（任一站点，含停用站点）：模式不是 `detect` / `block`，paranoia level 不在 1–4，异常分数阈值不在 1–1000，请求体检查上限超过 128 MiB，排除的规则超过 200 条、不在 900000–999999 或未排序去重 | 整个配置拒绝 |
 | 已发布站点使用本节点 OpenResty 没有的模块（Brotli、Zstandard、OWASP CRS：`brotli-v1`、`zstd-v1`、`modsecurity-v1`） | 整个配置拒绝，消息写明站点与缺少的能力 |
 | 站点错误页（任一站点，含停用站点）：状态码不是 403 / 429 / 502 / 503 / 504、同一状态码出现两次、模板为空或超过 65536 字节；平台错误页超过 65536 字节 | 整个配置拒绝（没有模板时忽略 `intercept_origin_errors`） |
-| 离线 Host 的原因不是 `disabled` / `suspended` | 整个配置拒绝 |
+| 离线 Host 的原因不是 `disabled` | 整个配置拒绝 |
 | 离线 Host 的名称非法（同域名规则）、单级顶级泛域名或重复 | 跳过该条并告警 |
 | 主动健康检查（任一站点）：路径不是以 `/` 开头的 1–1024 字节可打印 ASCII（不含空格）、方法不是 GET / HEAD、期望状态码不满足 100 ≤ min ≤ max ≤ 599、Host 非法、间隔不在 5–300 秒、超时不在 1–60 秒或超过间隔、阈值不在 1–10；会话保持有效期不在 60–604800 秒 | 整个配置拒绝（数值为 0 取默认值：路径 `/`、GET、200–399、间隔 30 秒、超时 5 秒、阈值 2 / 3、有效期 3600 秒） |
 | 已发布站点使用会话保持而配置没有挑战密钥 | 整个配置拒绝 |
@@ -326,7 +326,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               · /.well-known/acme-challenge/<token>：节点自己证书的 token 在这里应答；其他 token
                 属于源站自己的证书，照常回源，但不缓存、不挑战（验证服务器解不了挑战）
               · 按 Host 查站点：精确匹配 → 上一级域名的泛域名；查不到 → 离线 Host 503
-                site-disabled / site-suspended，否则 404 unknown-host（平台错误页，§3.19）
+                site-disabled，否则 404 unknown-host（平台错误页，§3.19）
               · 动态封禁：先平台范围、后站点范围；命中且不在平台 allow 名单 → 403 ip-banned
               · 开启 CC 的站点计数（§3.15，IPv4 按地址、IPv6 按 /64）；保留前缀 /.edgeweir/ 在这里应答，永不回源（§3.14）
               · 本地监听（$edgeweir_local，agent 的预热，§2.6）：不查封禁、不计 CC、不挑战，拒绝类规则与 CRS
@@ -520,9 +520,9 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
     "affinity": {"ttl": 3600}
   }],
   "tag_ttl": 86400,
-  "platform_error_pages": {"unknown_host": "…", "site_disabled": "…", "site_suspended": "…"},
+  "platform_error_pages": {"unknown_host": "…", "site_disabled": "…"},
   "offline_hosts": [{"name": "old.example.com", "reason": "disabled"},
-                    {"name": "example.org", "wildcard": true, "reason": "suspended"}],
+                    {"name": "example.org", "wildcard": true, "reason": "disabled"}],
   "health_certificate": {"chain_pem": "…", "private_key_pem": "…", "fingerprint": "…"}
 }
 ```

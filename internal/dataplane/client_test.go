@@ -285,8 +285,8 @@ func TestSiteTableG4Fields(t *testing.T) {
 			ActiveHealth:      true,
 			Affinity:          &configir.Affinity{TTL: 7200},
 		}, {ID: "s2"}},
-		PlatformErrorPages: &configir.PlatformErrorPages{SiteSuspended: "suspended"},
-		OfflineHosts:       []configir.OfflineHost{{Name: "old.test", Reason: "disabled"}, {Name: "gone.test", Wildcard: true, Reason: "suspended"}},
+		PlatformErrorPages: &configir.PlatformErrorPages{SiteDisabled: "disabled"},
+		OfflineHosts:       []configir.OfflineHost{{Name: "old.test", Reason: "disabled"}, {Name: "gone.test", Wildcard: true, Reason: "disabled"}},
 	}
 	table := dataplane.FromPlan(plan)
 	if table.TagTTL != 86400 {
@@ -303,8 +303,8 @@ func TestSiteTableG4Fields(t *testing.T) {
 		`"active_health":true`,
 		`"affinity":{"ttl":7200}`,
 		`"tag_ttl":86400`,
-		`"platform_error_pages":{"site_suspended":"suspended"}`,
-		`"offline_hosts":[{"name":"old.test","reason":"disabled"},{"name":"gone.test","wildcard":true,"reason":"suspended"}]`,
+		`"platform_error_pages":{"site_disabled":"disabled"}`,
+		`"offline_hosts":[{"name":"old.test","reason":"disabled"},{"name":"gone.test","wildcard":true,"reason":"disabled"}]`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("site table %s\nmissing %s", got, want)

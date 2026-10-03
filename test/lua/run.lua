@@ -1058,11 +1058,11 @@ test("store keeps the error page, affinity, active health and offline host setti
   local st, err = store.replace({
     revision = "50",
     tag_ttl = 86400,
-    platform_error_pages = { unknown_host = "<p>{{host}} unknown</p>", site_suspended = "" },
+    platform_error_pages = { unknown_host = "<p>{{host}} unknown</p>", site_disabled = "" },
     offline_hosts = {
       { name = "old.test", reason = "disabled" },
-      { name = "gone.test", wildcard = true, reason = "suspended" },
-      { name = "both.test", reason = "suspended" },
+      { name = "gone.test", wildcard = true, reason = "disabled" },
+      { name = "away.test", reason = "disabled" },
       { name = "bad.test", reason = "whatever" },
     },
     sites = {
@@ -1090,12 +1090,12 @@ test("store keeps the error page, affinity, active health and offline host setti
   eq(cfg.tag_ttl, 86400)
   local errorpages = require("edgeweir.errorpages")
   eq(errorpages.render(cfg.platform_pages.unknown_host, { host = "x.test" }), "<p>x.test unknown</p>")
-  eq(cfg.platform_pages.site_suspended, nil, "empty: built-in page")
+  eq(cfg.platform_pages.site_disabled, nil, "empty: built-in page")
   eq(errorpages.offline_reason(cfg, "old.test"), "disabled")
-  eq(errorpages.offline_reason(cfg, "a.gone.test"), "suspended", "wildcard on the parent domain")
+  eq(errorpages.offline_reason(cfg, "a.gone.test"), "disabled", "wildcard on the parent domain")
   eq(errorpages.offline_reason(cfg, "gone.test"), nil, "a wildcard does not cover its own name")
   eq(errorpages.offline_reason(cfg, "a.b.gone.test"), nil, "single label only")
-  eq(errorpages.offline_reason(cfg, "both.test"), "suspended")
+  eq(errorpages.offline_reason(cfg, "away.test"), "disabled")
   eq(errorpages.offline_reason(cfg, "bad.test"), nil, "unknown reasons are ignored")
   eq(errorpages.offline_reason(cfg, "new.test"), nil)
   -- A miss hands back the table version it looked in: the router reads

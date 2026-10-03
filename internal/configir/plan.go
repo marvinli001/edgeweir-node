@@ -117,8 +117,8 @@ type Plan struct {
 	// come from GetChallengeKeys.
 	ChallengeKeys []ChallengeKeyRef
 	// PlatformErrorPages are the platform's pages for unknown and offline
-	// hosts (nil: built-in pages); OfflineHosts the domains of disabled and
-	// suspended sites, answered with those pages.
+	// hosts (nil: built-in pages); OfflineHosts the domains of disabled
+	// sites, answered with those pages.
 	PlatformErrorPages *PlatformErrorPages
 	OfflineHosts       []OfflineHost
 	// L4Apps are the layer-4 (TCP / UDP) applications, sorted by id

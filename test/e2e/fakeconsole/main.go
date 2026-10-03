@@ -49,10 +49,11 @@
 // Every revision also carries the layer-4 applications of l4.go (their
 // origins run in this container too).
 //
-// The configuration names offline hosts (old.test disabled, *.gone.test
-// suspended) and a platform page for suspended sites. The listeners are
-// :80, :8081 (PROXY protocol) and :8443 (HTTPS, reached from this
-// container for the health certificate checks).
+// The configuration names the offline hosts of disabled sites (old.test,
+// *.gone.test), answered with the built-in page unless POST /disabled-page
+// publishes the platform's page for them. The listeners are :80, :8081
+// (PROXY protocol) and :8443 (HTTPS, reached from this container for the
+// health certificate checks).
 //
 // Every revision carries three challenge keys (e2e-key-1..3, current
 // e2e-key-2) that GetChallengeKeys hands out.
@@ -87,6 +88,9 @@
 //	              normal in the last ReportStatus
 //	POST /crs?enabled=false  publish the base sites without the OWASP CRS
 //	              (enabled=true: with it again); answers the revision
+//	POST /disabled-page?enabled=true  publish the base sites with the
+//	              platform's page for disabled sites (enabled=false: the
+//	              built-in page again); answers the revision
 //	GET /features supported features of the last ReportStatus, one per line
 //	GET /logs     "<site> <status> <path> <waf_blocked> <rule ids>" per
 //	              uploaded access log ("-" when no rule matched)
@@ -348,10 +352,9 @@ func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 		ChallengeKeys:    challengeKeys,
 		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4},
 		OfflineHosts: []*nodev1.OfflineHost{
-			{Name: "gone.test", Wildcard: true, Reason: "suspended"},
+			{Name: "gone.test", Wildcard: true, Reason: "disabled"},
 			{Name: "old.test", Reason: "disabled"},
 		},
-		PlatformErrorPages: &nodev1.PlatformErrorPages{SiteSuspended: "<h1>suspended {{host}} {{request_id}}</h1>"},
 		Listeners: []*nodev1.Listener{
 			{Port: 80, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
 			// Behind a load balancer that speaks the PROXY protocol.
@@ -869,6 +872,13 @@ func main() {
 				s.Waf = nil
 			}
 			cfg.RequiredFeatures = slices.DeleteFunc(cfg.RequiredFeatures, func(f string) bool { return f == "modsecurity-v1" })
+		}
+		fmt.Fprint(w, c.Publish(cfg))
+	})
+	mux.HandleFunc("POST /disabled-page", func(w http.ResponseWriter, r *http.Request) {
+		cfg := config(baseSites(*origin)...)
+		if r.URL.Query().Get("enabled") != "false" {
+			cfg.PlatformErrorPages = &nodev1.PlatformErrorPages{SiteDisabled: "<h1>disabled {{host}} {{request_id}}</h1>"}
 		}
 		fmt.Fprint(w, c.Publish(cfg))
 	})

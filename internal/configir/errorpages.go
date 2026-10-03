@@ -14,11 +14,9 @@ var ErrorPageStatuses = []uint32{403, 429, 502, 503, 504}
 // MaxErrorPageBytes bounds every error page template.
 const MaxErrorPageBytes = 65536
 
-// Offline host reasons (OfflineHost.reason).
-const (
-	OfflineDisabled  = "disabled"
-	OfflineSuspended = "suspended"
-)
+// OfflineDisabled is the offline host reason (OfflineHost.reason) of a
+// disabled site's domains.
+const OfflineDisabled = "disabled"
 
 // ErrorPages are a site's error page templates (site table field
 // "error_pages"; lua/edgeweir/errorpages.lua). Pages maps a status (403,
@@ -33,14 +31,13 @@ type ErrorPages struct {
 // and for offline hosts (site table field "platform_error_pages"); an empty
 // template uses the node's built-in page.
 type PlatformErrorPages struct {
-	UnknownHost   string `json:"unknown_host,omitempty"`
-	SiteDisabled  string `json:"site_disabled,omitempty"`
-	SiteSuspended string `json:"site_suspended,omitempty"`
+	UnknownHost  string `json:"unknown_host,omitempty"`
+	SiteDisabled string `json:"site_disabled,omitempty"`
 }
 
-// OfflineHost is a domain of a disabled or suspended site (site table
-// field "offline_hosts"): the data plane answers it with the platform's
-// page for the reason instead of the unknown host page.
+// OfflineHost is a domain of a disabled site (site table field
+// "offline_hosts"): the data plane answers it with the platform's page for
+// the reason instead of the unknown host page.
 type OfflineHost struct {
 	Name     string `json:"name"`
 	Wildcard bool   `json:"wildcard,omitempty"`
@@ -74,8 +71,8 @@ func buildErrorPages(e *nodev1.SiteErrorPages) (*ErrorPages, error) {
 // buildPlatformErrorPages validates the platform's error pages (0-65536
 // bytes each); nil when every template is empty.
 func buildPlatformErrorPages(p *nodev1.PlatformErrorPages) (*PlatformErrorPages, error) {
-	out := &PlatformErrorPages{UnknownHost: p.GetUnknownHost(), SiteDisabled: p.GetSiteDisabled(), SiteSuspended: p.GetSiteSuspended()}
-	for name, t := range map[string]string{"unknown host": out.UnknownHost, "disabled site": out.SiteDisabled, "suspended site": out.SiteSuspended} {
+	out := &PlatformErrorPages{UnknownHost: p.GetUnknownHost(), SiteDisabled: p.GetSiteDisabled()}
+	for name, t := range map[string]string{"unknown host": out.UnknownHost, "disabled site": out.SiteDisabled} {
 		if len(t) > MaxErrorPageBytes {
 			return nil, fmt.Errorf("%w: platform error page for the %s exceeds %d bytes", ErrRejected, name, MaxErrorPageBytes)
 		}
@@ -95,7 +92,7 @@ func buildOfflineHosts(hosts []*nodev1.OfflineHost) ([]OfflineHost, []string, er
 	var warnings []string
 	seen := map[string]bool{}
 	for _, h := range hosts {
-		if r := h.GetReason(); r != OfflineDisabled && r != OfflineSuspended {
+		if r := h.GetReason(); r != OfflineDisabled {
 			return nil, nil, fmt.Errorf("%w: offline host %q has unknown reason %q", ErrRejected, h.GetName(), r)
 		}
 		name := h.GetName()

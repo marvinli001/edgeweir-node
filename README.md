@@ -18,7 +18,7 @@
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
 | 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
 | 四层转发 | TCP / UDP 端口转发到源站：权重、备用源站、被动健康检查与连接失败重试，连接与空闲超时，放行 / 拦截名单，每节点并发与每秒新建上限；向源站发送 PROXY protocol v1 / v2，监听可接受 PROXY protocol；增删端口 reload 时已有连接不断开，其余变更热更新；按分钟统计连接、拒绝、并发峰值与字节数 |
-| 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用、暂停站点的平台页；`X-Request-Id` |
+| 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用站点的平台页；`X-Request-Id` |
 | 统计与日志 | 按站点与四层应用按分钟统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
 | 探针与主机指标 | 区域探针 `edgeweir-node probe`（不带 OpenResty）与节点兼任探针：按控制台给出的目标做 TCP、HTTP、HTTPS 探测，上报延迟与丢包；边缘监听的健康端点 `/.edgeweir/health`；心跳携带 CPU、负载、内存、出口带宽与活动连接数 |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |
@@ -34,14 +34,14 @@
 | OpenResty 数据面 | 路由、缓存、回源、策略执行、四层转发（stream）；经本地 unix socket 接收站点、源站、证书、规则与四层应用的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.19.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.20.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则、四层应用的端口、协议与 PROXY protocol 设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload，已有连接由旧 worker 服务到结束；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
 | --- | --- |
 | 缓存状态 | `X-Cache: MISS` / `HIT` / `BYPASS` |
 | 未知域名 | `404` 平台页或内置页，`X-Edgeweir-Error: unknown-host` |
-| 停用 / 暂停站点的域名 | `503` 平台页或内置页，`X-Edgeweir-Error: site-disabled` / `site-suspended` |
+| 停用站点的域名 | `503` 平台页或内置页，`X-Edgeweir-Error: site-disabled` |
 | 请求 ID | `X-Request-Id`：客户端的合法值或节点生成，错误页与采样日志使用同一个 |
 | `Cache-Tag` | 默认不转发给客户端（站点可保留），节点按它索引缓存对象 |
 | 回源环路 | 回源请求携带 `CDN-Loop`，环路返回 `508` |

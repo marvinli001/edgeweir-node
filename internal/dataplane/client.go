@@ -43,7 +43,7 @@ type SiteTable struct {
 	// that long after its last request).
 	TagTTL uint32 `json:"tag_ttl,omitempty"`
 	// PlatformErrorPages are the platform's pages for unknown and offline
-	// hosts; OfflineHosts the domains of disabled and suspended sites.
+	// hosts; OfflineHosts the domains of disabled sites.
 	PlatformErrorPages *configir.PlatformErrorPages `json:"platform_error_pages,omitempty"`
 	OfflineHosts       []configir.OfflineHost       `json:"offline_hosts,omitempty"`
 	// HealthCertificate is the node's self-signed certificate for SNI

@@ -409,6 +409,7 @@ case "$(tls_health 'sni=&host=demo.test&path=/.well-known/acme-challenge/x')" in
   *) fail "no-SNI connection reached a site: $(tls_health 'sni=&host=demo.test&path=/.well-known/acme-challenge/x')" ;; esac
 case "$(tls_health 'sni=unknown.test')" in handshake-failed*) ;; *) fail "unknown SNI completed a handshake" ;; esac
 key_mode=$(compose exec -T node stat -c '%a' /var/lib/edgeweir-node/health.key)
+case "$(tls_health 'sni=old.test')" in handshake-failed*) ;; *) fail "SNI of a disabled site completed a handshake" ;; esac
 [ "$key_mode" = 600 ] || fail "health.key mode $key_mode"
 pass "HTTPS health: self-signed health certificate for SNI health.edgeweir.invalid and no SNI, 421 for anything else"
 
@@ -635,9 +636,9 @@ tag_purge site-swr gen-2
 CACHE=MISS cache_is swr.test /gen || fail "a tag only the background update saw did not move the object"
 pass "background updates index their Cache-Tag"
 
-# Error pages: unknown and offline hosts (platform), origin failures
-# (built-in), intercepted origin errors (site), origin errors without a
-# page pass unchanged.
+# Error pages: unknown and offline hosts (built-in, then the platform's
+# page for disabled sites), origin failures (built-in), intercepted origin
+# errors (site), origin errors without a page pass unchanged.
 page_of() { # host path [curl args...] -> "<status> <x-edgeweir-error> <content-type> <cache-control>" then the body
   local host=$1 path=$2
   shift 2
@@ -654,8 +655,15 @@ r=$(page_of old.test /)
 [ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site disabled</h1>' <<<"$r" ||
   fail "disabled site page: $r"
 r=$(page_of www.gone.test / -H 'X-Request-Id: e2e-page-0002')
-[ "$(head -1 <<<"$r")" = "503 site-suspended text/html; charset=utf-8 no-store" ] &&
-  grep -q '<h1>suspended www.gone.test e2e-page-0002</h1>' <<<"$r" || fail "suspended site page (platform template): $r"
+r=$(page_of www.gone.test /)
+[ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site disabled</h1>' <<<"$r" ||
+  fail "disabled site page (wildcard offline host): $r"
+rev=$(curl -fsS -X POST "$HELPER/disabled-page?enabled=true")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] &&
+  grep -q '<h1>disabled www.gone.test e2e-page-0002</h1>' <<<"$r" || fail "disabled site page (platform template): $r"
+rev=$(curl -fsS -X POST "$HELPER/disabled-page?enabled=false")
+wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 r=$(page_of dead.test /x)
 [ "$(head -1 <<<"$r")" = "502 origin-unreachable text/html; charset=utf-8 no-store" ] && grep -q '<h1>Origin unreachable</h1>' <<<"$r" ||
   fail "origin failure page: $r"

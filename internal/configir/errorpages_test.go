@@ -61,29 +61,29 @@ func TestBuildPlatformErrorPagesAndOfflineHosts(t *testing.T) {
 	c := &nodev1.NodeConfig{
 		Sites: []*nodev1.Site{site("site-a", "a.test")},
 		PlatformErrorPages: &nodev1.PlatformErrorPages{
-			UnknownHost: "<p>{{host}}</p>", SiteSuspended: strings.Repeat("s", MaxErrorPageBytes),
+			UnknownHost: "<p>{{host}}</p>", SiteDisabled: strings.Repeat("d", MaxErrorPageBytes),
 		},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "old.test", Reason: "disabled"},
-			{Name: "example.org", Wildcard: true, Reason: "suspended"},
+			{Name: "example.org", Wildcard: true, Reason: "disabled"},
 			{Name: "Upper.test", Reason: "disabled"},
 			{Name: "bad_name.test", Reason: "disabled"},
 			{Name: "com", Wildcard: true, Reason: "disabled"},
-			{Name: "old.test", Reason: "suspended"},
-			{Name: "old.test", Wildcard: true, Reason: "suspended"},
+			{Name: "old.test", Reason: "disabled"},
+			{Name: "old.test", Wildcard: true, Reason: "disabled"},
 		},
 	}
 	p, err := Build(c, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *p.PlatformErrorPages != (PlatformErrorPages{UnknownHost: "<p>{{host}}</p>", SiteSuspended: strings.Repeat("s", MaxErrorPageBytes)}) {
+	if *p.PlatformErrorPages != (PlatformErrorPages{UnknownHost: "<p>{{host}}</p>", SiteDisabled: strings.Repeat("d", MaxErrorPageBytes)}) {
 		t.Fatalf("platform pages = %+v", p.PlatformErrorPages)
 	}
 	want := []OfflineHost{
 		{Name: "old.test", Reason: "disabled"},
-		{Name: "example.org", Wildcard: true, Reason: "suspended"},
-		{Name: "old.test", Wildcard: true, Reason: "suspended"},
+		{Name: "example.org", Wildcard: true, Reason: "disabled"},
+		{Name: "old.test", Wildcard: true, Reason: "disabled"},
 	}
 	if !slices.Equal(p.OfflineHosts, want) {
 		t.Fatalf("offline hosts = %+v, want %+v", p.OfflineHosts, want)

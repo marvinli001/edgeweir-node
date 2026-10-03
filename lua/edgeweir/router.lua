@@ -228,9 +228,9 @@ local function access()
   local acme = token ~= nil
   local site, ver = store.lookup_host(host)
   if not site then
-    -- Offline hosts (disabled and suspended sites) and unknown hosts get
-    -- the platform's pages (from the table version the lookup used: no
-    -- further shared dict read).
+    -- Offline hosts (disabled sites) and unknown hosts get the platform's
+    -- pages (from the table version the lookup used: no further shared
+    -- dict read).
     return errorpages.unknown_host(ver and store.config(ver), host)
   end
 

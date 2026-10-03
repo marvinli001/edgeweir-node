@@ -443,10 +443,10 @@ type NodeConfig struct {
 	// below; unset, or an empty template, uses the node's built-in page.
 	// Added in v0.12.0; older nodes ignore it (no feature required).
 	PlatformErrorPages *PlatformErrorPages `protobuf:"bytes,15,opt,name=platform_error_pages,json=platformErrorPages,proto3" json:"platform_error_pages,omitempty"`
-	// Domains of the cluster's sites that are disabled or suspended, sorted by
-	// (name, wildcard). Such sites are not in `sites`; nodes answer their
-	// hosts with the platform's page for the reason instead of the unknown
-	// host page. Added in v0.12.0; older nodes ignore it (no feature required).
+	// Domains of the cluster's disabled sites, sorted by (name, wildcard).
+	// Such sites are not in `sites`; nodes answer their hosts with the
+	// platform's page for the reason instead of the unknown host page.
+	// Added in v0.12.0; older nodes ignore it (no feature required).
 	OfflineHosts []*OfflineHost `protobuf:"bytes,16,rep,name=offline_hosts,json=offlineHosts,proto3" json:"offline_hosts,omitempty"`
 	// Layer-4 (TCP / UDP) applications of the cluster, sorted by id; inside an
 	// application origins by id and the list ids sorted and unique. Ports,
@@ -1616,9 +1616,7 @@ type PlatformErrorPages struct {
 	// Hosts no site of the cluster serves (status 404).
 	UnknownHost string `protobuf:"bytes,1,opt,name=unknown_host,json=unknownHost,proto3" json:"unknown_host,omitempty"`
 	// Offline hosts of disabled sites (status 503).
-	SiteDisabled string `protobuf:"bytes,2,opt,name=site_disabled,json=siteDisabled,proto3" json:"site_disabled,omitempty"`
-	// Offline hosts of suspended sites (status 503).
-	SiteSuspended string `protobuf:"bytes,3,opt,name=site_suspended,json=siteSuspended,proto3" json:"site_suspended,omitempty"`
+	SiteDisabled  string `protobuf:"bytes,2,opt,name=site_disabled,json=siteDisabled,proto3" json:"site_disabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1667,21 +1665,13 @@ func (x *PlatformErrorPages) GetSiteDisabled() string {
 	return ""
 }
 
-func (x *PlatformErrorPages) GetSiteSuspended() string {
-	if x != nil {
-		return x.SiteSuspended
-	}
-	return ""
-}
-
-// OfflineHost is a domain of a site that is disabled or suspended.
+// OfflineHost is a domain of a disabled site.
 type OfflineHost struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Lowercase host name; a wildcard stores its suffix like Domain.
 	Name     string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Wildcard bool   `protobuf:"varint,2,opt,name=wildcard,proto3" json:"wildcard,omitempty"`
-	// disabled or suspended (suspended when both apply); anything else
-	// rejects the configuration.
+	// disabled; anything else rejects the configuration.
 	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4298,11 +4288,10 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x17intercept_origin_errors\x18\x02 \x01(\bR\x15interceptOriginErrors\"?\n" +
 	"\tErrorPage\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\rR\x06status\x12\x1a\n" +
-	"\btemplate\x18\x02 \x01(\tR\btemplate\"\x83\x01\n" +
+	"\btemplate\x18\x02 \x01(\tR\btemplate\"b\n" +
 	"\x12PlatformErrorPages\x12!\n" +
 	"\funknown_host\x18\x01 \x01(\tR\vunknownHost\x12#\n" +
-	"\rsite_disabled\x18\x02 \x01(\tR\fsiteDisabled\x12%\n" +
-	"\x0esite_suspended\x18\x03 \x01(\tR\rsiteSuspended\"U\n" +
+	"\rsite_disabled\x18\x02 \x01(\tR\fsiteDisabledJ\x04\b\x03\x10\x04\"U\n" +
 	"\vOfflineHost\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bwildcard\x18\x02 \x01(\bR\bwildcard\x12\x16\n" +
