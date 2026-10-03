@@ -561,3 +561,80 @@ func TestRenderEdgeRequestIDsAndHiddenHeaders(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderErrorPages: nginx's own errors go to error pages in every edge
+// server (also from the CRS locations, which have no error_page of their
+// own) and in both origin layers: to the named location, or, for requests
+// without a URI yet, to an internal location no client path reaches. The
+// control API keeps nginx's answers.
+func TestRenderErrorPages(t *testing.T) {
+	p := params()
+	p.ModSecurityModule = "/usr/lib/edgeweir-openresty/modules/ngx_http_modsecurity_module.so"
+	plan := wafPlan()
+	plan.Listeners = append(plan.Listeners, configir.Listener{Port: 443, TLS: true})
+	got, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	if !strings.Contains(conf, "map $uri $edgeweir_error_page {\n        \"\"      /./edgeweir-error;\n        default @edgeweir_error;\n    }") {
+		t.Error("error page target map missing")
+	}
+	const (
+		edgeDirectives = "error_page 400 413 414 500 502 504 $edgeweir_error_page;\n" +
+			"        error_page 494 =494 $edgeweir_error_page;\n        error_page 497 =497 $edgeweir_error_page;\n"
+		originDirectives = "error_page 400 413 414 500 $edgeweir_error_page;\n        error_page 494 =494 $edgeweir_error_page;\n"
+	)
+	edgeServers := strings.Count(conf, `access_by_lua_block { require("edgeweir.router").access() }`)
+	if n := strings.Count(conf, edgeDirectives); n != edgeServers || n != 4 {
+		t.Errorf("%d of %d edge servers hand nginx's errors to error pages", n, edgeServers)
+	}
+	if n := strings.Count(conf, originDirectives); n != 2 {
+		t.Errorf("%d origin layers hand nginx's errors to error pages", n)
+	}
+	if n := len(regexp.MustCompile(`(?m)^\s*error_page\s`).FindAllString(conf, -1)); n != 3*edgeServers+2*2 {
+		t.Errorf("%d error_page directives: one set per server only (none in the CRS locations or the control API)", n)
+	}
+	control := section(t, conf, "listen unix:"+p.ControlSocket+";", "\n    }\n")
+	if strings.Contains(control, "error_page") || strings.Contains(control, "edgeweir_error") {
+		t.Error("the control API has error pages")
+	}
+	locs := locations(conf)
+	named, internal := locs["@edgeweir_error"], locs["= /./edgeweir-error"]
+	if len(named) != edgeServers+2 || len(internal) != edgeServers+2 {
+		t.Fatalf("%d named and %d internal error locations for %d servers", len(named), len(internal), edgeServers+2)
+	}
+	const (
+		edgeHandler   = `content_by_lua_block { require("edgeweir.router").error_page() }`
+		originHandler = `content_by_lua_block { require("edgeweir.origin").error_page() }`
+	)
+	for i, body := range append(slices.Clone(named), internal...) {
+		edge := strings.Contains(body, edgeHandler)
+		if edge == strings.Contains(body, originHandler) {
+			t.Fatalf("error location without one handler:\n%s", body)
+		}
+		if edge && !strings.Contains(body, "uninitialized_variable_warn off;") {
+			t.Error("an edge error location warns about the variables location / did not set")
+		}
+		// Only the edge's named location counts requests (from location /
+		// or a CRS location; requests without a URI have no site).
+		counts := strings.Contains(body, `log_by_lua_block { require("edgeweir.stats").log(true) }`)
+		if counts != (edge && i < len(named)) {
+			t.Errorf("error location counts requests: %v\n%s", counts, body)
+		}
+		if internalLoc := i >= len(named); internalLoc != strings.Contains(body, "internal;") {
+			t.Errorf("error location internal: %v\n%s", internalLoc, body)
+		}
+		for _, banned := range []string{"proxy_pass", "modsecurity on"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("error location has %q", banned)
+			}
+		}
+		if regexp.MustCompile(`(?m)^\s*error_page\s`).MatchString(body) {
+			t.Error("error location has its own error_page")
+		}
+	}
+	if n := strings.Count(strings.Join(named, ""), edgeHandler); n != edgeServers {
+		t.Errorf("%d edge named error locations for %d edge servers", n, edgeServers)
+	}
+}

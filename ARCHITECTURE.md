@@ -348,6 +348,8 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
             proxy_cache $edgeweir_cache_zone; key = cachekey.build(...) [+ slice 范围]
             proxy_cache_lock / background_update / revalidate；stale 由源站层设置的 Cache-Control 扩展决定
             add_header X-Cache $upstream_cache_status always；add_header X-Request-Id（§3.19）
+            error_page：nginx 自己的错误（400 / 413 / 414 / 494 / 497 / 500 / 502 / 504）交给 @edgeweir_error，
+              换成错误页（§3.19）
             proxy_hide_header X-Request-Id / Cache-Tag / X-Edgeweir-Affinity（缓存命中同样隐藏）
             header_filter_by_lua  edgeweir.router：还原 Cache-Control，记录 Cache-Tag 索引（含 slice
               与后台更新子请求），保留 Cache-Tag 的站点转发它，会话保持的 Set-Cookie（§3.20），
@@ -376,6 +378,8 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
                 （原 Cache-Control 放进 X-Edgeweir-CC，边缘层还原）
               · 边缘压缩的站点：未编码响应的 Vary 去掉 Accept-Encoding（§3.17）
             log_by_lua · 被动健康检查与错误码（§3.7）
+            error_page：nginx 自己的错误（400 / 413 / 414 / 494 / 500）交给 @edgeweir_error：
+              边缘可以 stale 时断开连接，否则换成错误页（§3.19）
                 │
                 ▼
               源站（请求头带 CDN-Loop）
@@ -383,7 +387,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error）、`X-Edgeweir-Origin`（Origin 规则的源站组、Host、SNI、端口与 config 规则的回源超时，§3.21），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`site-suspended`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`，以及 CRS 拦截的 `waf-blocked`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error）、`X-Edgeweir-Origin`（Origin 规则的源站组、Host、SNI、端口与 config 规则的回源超时，§3.21），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`，nginx 自己的错误的 `bad-request`、`header-too-large`、`uri-too-long`、`body-too-large`、`https-required`、`internal-error`（§3.19），以及 CRS 拦截的 `waf-blocked`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -679,7 +683,7 @@ table inet edgeweir {
 - **只在需要时加载**：没有站点运行 CRS 时 `nginx.conf` 不加载 ModSecurity 模块，也没有任何 ModSecurity 指令。有站点运行时，`nginx.conf` 在 main 层 `load_module`，在 http 层读入 agent 生成的 ModSecurity 配置一次（CRS 解析一次，所有位置共用），`modsecurity` 默认关闭；每个边缘 `server` 为用到的每个请求体上限加一个命名位置 `@edgeweir_waf_<上限>`，只在那里 `modsecurity on`，位置里设置该上限（`SecRequestBodyLimit`；上限为 0 时 `SecRequestBodyAccess Off`，请求体既不解析也不交给规则，phase 2 的规则照常检查请求行、查询参数和请求头，见 §5.1 的补丁），其余代理与缓存指令和 `location /` 相同。不运行 CRS 的站点从不进入这些位置，只多执行几个检查 ModSecurity 是否开启的 nginx 阶段处理函数。
 - **请求流程**：边缘层 access 阶段照常做完封禁、规则、挑战、CC 与缓存键，然后把运行 CRS 的站点的请求 `ngx.exec` 到对应位置，请求头 `X-Edgeweir-Waf: <站点>;<模式>;<paranoia>;<阈值>` 带上站点设置（客户端带来的 `X-Edgeweir-*` 已先被删除）。ModSecurity 在该位置的 rewrite 与 preaccess 阶段检查请求行、请求头和请求体，早于缓存查找，所以缓存命中的请求同样被检查。内部跳转会清空 `ngx.ctx`：请求上下文先存进 worker 内的表，`$edgeweir_ctx_ref` 记下引用，在 CRS 位置的 access、header filter 和 log 阶段取回（被拦截的请求到不了 access 阶段）；取回后删除 `X-Edgeweir-Waf`，回源层也清空它，源站看不到。
 - **生成的 ModSecurity 配置**（`conf/modsecurity-<哈希>.conf`，由 agent 从 IR 渲染）：ModSecurity v3 推荐设置（`SecRuleEngine On`、请求体处理器 XML / JSON、`SecRequestBodyLimitAction ProcessPartial`、参数数量上限、请求体与 multipart 解析错误时拒绝、`SecResponseBodyAccess Off`、`SecAuditEngine Off`、`unicode.mapping`），CRS 的 `crs-setup.conf`，读取 `X-Edgeweir-Waf` 的规则（设置 `tx.blocking_paranoia_level`、`tx.detection_paranoia_level`、`tx.inbound_anomaly_score_threshold`；`detect` 用 `ctl:ruleEngine=DetectionOnly`；值缺失或格式不对时保持 CRS 默认：paranoia 1、阈值 5、拦截），每个有排除规则的站点一条按站点 id 匹配的 `ctl:ruleRemoveById` 规则，最后是 CRS 规则。这些规则都在 CRS 之前的 phase 1 运行。本地规则 id 用 10000–10611，CRS 用 900000–999999。
-- **拦截**：`block` 模式下入站异常分数达到阈值时 CRS 的 949110 拒绝请求：`403`，`X-Edgeweir-Error: waf-blocked`，`Cache-Control: no-store`。请求体解析失败等 ModSecurity 推荐规则的拒绝同样带 `waf-blocked`。`detect` 模式下规则照常匹配、计分并记录，但不拒绝。
+- **拦截**：`block` 模式下入站异常分数达到阈值时 CRS 的 949110 拒绝请求：`403`，`X-Edgeweir-Error: waf-blocked`，`Cache-Control: no-store`。请求体解析失败等 ModSecurity 推荐规则的拒绝（400）同样带 `waf-blocked`，两者都是错误页（403 的站点模板或内置页，400 的内置页，§3.19）。`detect` 模式下规则照常匹配、计分并记录，但不拒绝。
 - **命中结果**：ModSecurity-nginx 加了一个补丁（上游 pull request #374 的回移），提供变量 `$modsecurity_triggered_rules`（匹配并记录的规则 id，按匹配顺序）与 `$modsecurity_intervention`（是否拦截）；规则 id 取自 libmodsecurity 3.0.17 的 `msc_get_rules_messages_rule_ids()`，不解析日志文本，也不写审计日志。边缘层 log 阶段读取它们：每个请求去重后最多 16 个 id，计入 `MinuteStats.waf_rules`（每站点每分钟按次数取最多的 20 条）和采样访问日志（`waf_rule_ids`、`waf_blocked`）。phase 5 的关联规则（980xxx）不计入。请求内容不落盘：ModSecurity 的审计日志关闭；它为每个被拦截的请求写一行 error 日志（含请求行与匹配规则），agent 不转发这些行，只每分钟汇总一次条数。
 - **变更**：模式、paranoia level、阈值在站点表里，热更新；加载与卸载模块、新的请求体上限、排除规则的变化会改变 `nginx.conf`（ModSecurity 配置的文件名含内容哈希），经 `nginx -t` 后 reload（§3.9）。刚 reload 而站点表尚未更新时，站点表里的请求体上限在新 `nginx.conf` 里可能没有对应位置：这时用现有最大的上限检查；新配置已经不再加载 ModSecurity 时不检查。
 - **开销**（本机 macOS arm64、Colima 4 vCPU 且与其他项目的约 45 个容器共用；节点容器 4 个 worker；oha 1.16.0 在同一 compose 网络内，并发 32、每轮 10 秒、缓存命中、约 400 字节的 whoami 响应，paranoia 1）：
@@ -696,12 +700,13 @@ table inet edgeweir {
 ### 3.19 错误页与请求 ID
 
 - **请求 ID**：`map $http_x_request_id $edgeweir_request_id`：客户端的 `X-Request-Id` 符合 `^[A-Za-z0-9._:-]{8,128}$` 时沿用，否则取 nginx 的 `$request_id`（32 个十六进制字符）。边缘层的每个响应带 `X-Request-Id`（`add_header ... always`，错误响应同样），发往回源层的请求带同一个值（回源层原样转给源站），源站自己的 `X-Request-Id` 不转给客户端（`proxy_hide_header`）。错误页与采样访问日志使用同一个 ID。
-- **适用范围**：节点生成的 403（封禁、规则与名单拒绝、CRS 拦截）、429（限速）、502、503、504（边缘层的 503、回源层的失败，包括 nginx 自己生成的回源失败）；站点开启 `intercept_origin_errors` 时，还有状态码有站点模板的源站响应。节点生成的其他响应（405、421、508，未知域名以外的 404，非 GET/HEAD 请求缺少通行凭证的 403 等）保持纯文本。模板取站点该状态码的模板，没有时用内置页。
-- **平台页**：查不到站点的 Host 先查离线 Host（精确域名，或上一级域名的泛域名，与站点域名规则相同）：停用站点 503 `site-disabled`、暂停站点 503 `site-suspended`，使用平台的 `site_disabled` / `site_suspended` 模板或内置页；其余 404 `unknown-host`，使用平台的 `unknown_host` 模板或内置页。离线 Host 在站点表里，按版本缓存为每个 worker 的查找表，伪造 Host 的洪泛不增加共享内存读取。
-- **模板**（纯函数）：每个站点表版本编译一次，`{{status}}`、`{{request_id}}`、`{{client_ip}}`、`{{host}}` 替换为 HTML 转义（`&<>"'`）后的值，其余内容（包括其他 `{{...}}`）原样发送，不解释模板内容。值：边缘层为 `$edgeweir_request_id`、`$remote_addr`、去掉端口的 Host；回源层为请求头 `X-Request-Id`、`X-Real-IP` 与 Host。
-- **内置页**：自包含的 HTML（内联 CSS，无外部 URL 与脚本，按 `prefers-color-scheme` 切换浅色 / 深色），按 `Accept-Language` 选中文或英文（与挑战页相同），显示状态码、简短标题和请求 ID。
+- **适用范围**：节点生成的 403（封禁、规则与名单拒绝、CRS 拦截）、429（限速）、502、503、504（边缘层的 503、回源层的失败，包括 nginx 自己生成的回源失败）；站点开启 `intercept_origin_errors` 时，还有状态码有站点模板的源站响应。nginx 自己拒绝或出错的请求（400、413、414、500，边缘层的 502 / 504）同样换成页面，见下文「nginx 自己的错误」。节点生成的其他响应（405、421、508，未知域名以外的 404，非 GET/HEAD 请求缺少通行凭证的 403 等）保持纯文本。模板取站点该状态码的模板，没有时用内置页。
+- **平台页**：查不到站点的 Host 先查离线 Host（精确域名，或上一级域名的泛域名，与站点域名规则相同）：停用站点 503 `site-disabled`，使用平台的 `site_disabled` 模板或内置页；其余 404 `unknown-host`，使用平台的 `unknown_host` 模板或内置页。离线 Host 在站点表里，按版本缓存为每个 worker 的查找表，伪造 Host 的洪泛不增加共享内存读取。
+- **模板**（纯函数）：每个站点表版本编译一次，`{{status}}`、`{{request_id}}`、`{{client_ip}}`、`{{host}}` 替换为 HTML 转义（`&<>"'`）后的值，其余内容（包括其他 `{{...}}`）原样发送，不解释模板内容。值：边缘层为 `$edgeweir_request_id`、`$remote_addr`、去掉端口的 Host（请求没有合法的 Host 时为空：nginx 这时报告兜底 server 的名字 `_`）；回源层为请求头 `X-Request-Id`、`X-Real-IP` 与 Host。
+- **内置页**：自包含的 HTML（内联 CSS 与 SVG，无外部 URL 与脚本，按 `prefers-color-scheme` 切换浅色 / 深色），按 `Accept-Language` 选中文或英文（与挑战页相同），显示状态码、访客 → 边缘节点 → 源站的链路（标出失败的一环：403 / 429 / 404 / 停用与边缘层的 503 在边缘节点，502 / 504 与 `origin-unreachable` 的 503 在源站）、简短标题、访客可以怎么做（429 / 5xx 带「重新加载」）、请求 ID、应答时间（UTC，内置页独有的 `{{time}}`，模板里原样保留）、域名与客户端地址（`<details>` 点击显示）。页面按语言与种类缓存在每个 worker，只含该种类用到的样式；动效只用 CSS，`prefers-reduced-motion` 时停止。
 - **响应头**：`Content-Type: text/html; charset=utf-8`、`Cache-Control: no-store`、准确的 `Content-Length`、`X-Edgeweir-Error: <代码>`；回源层的页面另带 `X-Accel-Expires: 0`，边缘层不缓存。替换源站响应时删除 `Content-Encoding`、`ETag`、`Last-Modified`、`Expires`。
 - **在哪里替换**：边缘层 access 阶段的拒绝直接输出页面。回源层自己的失败直接输出；nginx 生成的回源失败（最后一次尝试没有响应头：502 `origin-unreachable`、504 `origin-timeout`）和拦截的源站错误（`origin-error`）在 header filter 中换头、由 body filter 换掉响应体。body filter 只在回源层与 CRS 位置存在（CRS 拦截同样换成页面），边缘层的 `location /` 没有 body filter。可以 stale-if-error 时先断开连接，过期副本优先于任何错误页。
+- **nginx 自己的错误**：nginx 自己拒绝或出错的请求也换成页面，只有 502 / 504 会用站点的模板：格式错误的请求（请求行或请求头无法解析，缺少或非法的 Host，`bad-request`）与 CRS 以 400 拦截的请求（如解析不了的请求体，`waf-blocked`）400；请求头或 Cookie 过大（nginx 的 494，`header-too-large`）与发到 HTTPS 端口的明文 HTTP（nginx 的 497，`https-required`），与 nginx 一样应答 400；URI 过长 414（`uri-too-long`）；请求体超过 `client_max_body_size`（100m）413（`body-too-large`）；未捕获的 Lua 错误 500（`internal-error`）；边缘层到回源层的失败 502（`origin-unreachable`）/ 504（`origin-timeout`），即回源层断开连接而缓存没有可用的过期副本时（是否用过期副本在 nginx 生成应答之前决定）。400 / 413 / 414 / 494 / 497 的页面上失败的一环是访客（请求没有通过边缘节点：乱码、超过上限或未加密），不带「重新加载」；500 在边缘节点。`error_page` 把这些状态交给每个边缘层 server 与回源层 server 自己的命名位置 `@edgeweir_error`（494 / 497 用 `=494` / `=497` 原样交给处理函数）；请求行就失败的请求（格式错误、URI 过长）还没有 URI，nginx 不能把它们转进命名位置，`map $uri $edgeweir_error_page` 让它们改走内部位置 `/./edgeweir-error`（nginx 会消去请求路径里的 `.` 段，客户端到不了这个路径）。转入时 `ngx.ctx` 被清空：边缘层的 `router.error_page` 取回 CRS 位置暂存的上下文（`waf.restore`），否则按 `$edgeweir_site` 取站点，该位置的 log 阶段（`stats.log(true)`）像原来的位置一样计数，CRS 的 400 照样计入命中的规则与访问日志的 `waf_blocked`；回源层的 `origin.error_page` 按边缘层的请求头（`X-Edgeweir-Site`、`X-Edgeweir-Rules`、`X-Edgeweir-Cache-Status`）重建站点与缓存规则，边缘可以 stale-if-error 时同样先断开连接。这些页面不经过边缘层的 header filter（没有 HSTS、Alt-Svc、响应规则与压缩），`X-Request-Id` 由处理函数设置；HEAD 只有响应头（`Content-Length` 为页面长度）；子请求（slice、后台更新）保留 nginx 自己的应答。回源层的 502 / 504 仍由 header filter 换成页面，控制 API 没有 `error_page`。
 
 ### 3.20 会话保持
 

@@ -24,6 +24,9 @@
 --                  Cache-Control extensions (the original header travels in
 --                  X-Edgeweir-CC and the edge restores it).
 -- log():           passive health accounting from $upstream_status.
+-- error_page():    nginx's own errors in this layer (uncaught Lua errors,
+--                  requests nginx refuses): the stale copy first, as in
+--                  header_filter(), else an error page.
 --
 -- nginx never forwards X-Accel-* headers to clients.
 local ngx_balancer = require("ngx.balancer")
@@ -509,6 +512,33 @@ end
 -- body_filter sends the error page header_filter prepared.
 function _M.body_filter()
   return errorpages.body_filter()
+end
+
+-- error_page answers nginx's own errors in this layer (content phase of
+-- @edgeweir_error, or of /./edgeweir-error for requests without a URI
+-- yet): uncaught Lua errors (500) and requests nginx refuses (400, 413,
+-- 414, 494; the edge passes on only what it accepted, so these are rare).
+-- nginx's 502 and 504 stay with header_filter(). Like there, a 5xx closes
+-- the connection when the edge may serve its expired copy instead; the
+-- redirect emptied ngx.ctx, so the site and the rules come from the edge
+-- layer's request headers again.
+function _M.error_page()
+  local status = ngx.status
+  local var = ngx.var
+  local id = var.http_x_edgeweir_site
+  local site = id and id ~= "" and store.site_current(id) or nil
+  if _M.yields_to_stale(site, status, var.http_x_edgeweir_rules, var.http_x_edgeweir_cache_status,
+      var.http_authorization ~= nil) then
+    return ngx.exit(ngx.ERROR)
+  end
+  return errorpages.nginx_page(status, site, false, true)
+end
+
+-- yields_to_stale reports whether nginx's own error status of a request of
+-- site (nil: none) yields to the edge's expired copy (defer_to_stale), the
+-- rule chain rebuilt from rules_value, the edge layer's X-Edgeweir-Rules.
+function _M.yields_to_stale(site, status, rules_value, cache_status, authorized)
+  return site ~= nil and _M.defer_to_stale(status, cache_status, chain_from_header(site, rules_value), authorized)
 end
 
 -- classify returns the error code, its parameters and a text for a failed

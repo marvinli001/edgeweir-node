@@ -546,33 +546,55 @@ try{w=new Worker(']] .. _M.WORKER .. [[')}catch(e){w=null}
 if(w){w.onmessage=function(e){if(e.data&&typeof e.data.n==='number'){w.terminate();go(e.data.n)}};w.onerror=function(){w.terminate();slow(0)};w.postMessage({t:t,d:d})}else slow(0)})();
 ]]
 
-local STYLE = [[:root{color-scheme:light dark;--bg:#f5f6f8;--fg:#16181c;--mute:#5d636d;--card:#fff;--line:#e2e5e9;--accent:#2f6fed;--err:#c23a2b}
-@media (prefers-color-scheme:dark){:root{--bg:#0e1014;--fg:#e7e9ec;--mute:#9aa1ab;--card:#161a20;--line:#2a2f37;--accent:#6d9bff;--err:#ff7a6a}}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%}
-body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-main{width:100%;max-width:380px;padding:28px;background:var(--card);border:1px solid var(--line);border-radius:14px}
-h1{margin:0 0 18px;font-size:18px;font-weight:600}
-.bar{height:4px;overflow:hidden;border-radius:2px;background:var(--line)}
-.bar i{display:block;width:35%;height:100%;border-radius:2px;background:var(--accent);animation:run 1.2s ease-in-out infinite}
-@keyframes run{from{transform:translateX(-100%)}to{transform:translateX(290%)}}
-@media (prefers-reduced-motion:reduce){.bar i{width:100%;opacity:.45;animation:none}}
-img{display:block;width:100%;max-width:320px;height:auto;border:1px solid var(--line);border-radius:8px;background:#fff}
-label{display:block;margin:14px 0 6px;color:var(--mute);font-size:13px}
-input[type=text]{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:18px;letter-spacing:.2em;text-transform:uppercase}
-input[type=text]:focus{outline:2px solid var(--accent);outline-offset:1px}
-button{font:inherit;cursor:pointer}
-.go{width:100%;margin-top:14px;padding:10px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-weight:600}
-.alt{margin-top:12px;padding:0;border:0;background:none;color:var(--accent);font-size:13px;text-decoration:underline}
-.err{margin:0 0 14px;color:var(--err);font-size:13px}
-p{margin:14px 0 0;color:var(--mute);font-size:13px}
-footer{margin-top:22px;color:var(--mute);font-size:12px;font-variant-numeric:tabular-nums}
-]]
+-- STYLE: the instrument of the built-in error pages (edgeweir.errorpages):
+-- the dashed frame, the signal from the visitor through the edge node to
+-- the origin, held at the edge node while it checks the browser.
+local STYLE = [=[:root{color-scheme:light dark;--bg:#fff;--fg:#0a0a0a;--mu:#737373;--gr:#e5e5e5;--de:#cfcfcf;--sg:#2a78d6;--bd:#e7000b;--bt:#1447e6;--bf:#eff6ff;--lk:#1447e6;--h:1px;--e:cubic-bezier(.16,1,.3,1);--sa:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;--mo:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}]=]
+  .. [=[@media (prefers-color-scheme:dark){:root{--bg:#0a0a0a;--fg:#fafafa;--mu:#a1a1a1;--gr:#232323;--de:#3d3d3d;--sg:#3987e5;--bd:#ff6467;--bt:#193cb8;--bf:#eff6ff;--lk:#3987e5}}]=]
+  .. [=[@media (min-resolution:2dppx){:root{--h:.5px}}*{box-sizing:border-box}html,body{margin:0}]=]
+  .. [=[body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sa);-webkit-font-smoothing:antialiased}:focus-visible{outline:2px solid var(--sg);outline-offset:3px}]=]
+  .. [=[main{min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:56px 20px;overflow:hidden}]=]
+  .. [=[.f{position:relative;width:min(100%,760px)}.f:before,.f:after,.top:before,.top:after{content:"";position:absolute;pointer-events:none}]=]
+  .. [=[.f:before{inset:0 -100vw;border-block:var(--h) dashed var(--gr)}.f:after{inset:-100vh 0;border-inline:var(--h) dashed var(--gr)}]=]
+  .. [=[.top{position:relative;padding:40px 0 26px}.top:after{inset:auto -100vw 0;border-top:var(--h) dashed var(--gr)}]=]
+  .. [=[.top:before{inset:auto 0 0;height:5px;background:repeating-linear-gradient(90deg,var(--de) 0 var(--h),transparent 0 2.0833%)}]=]
+  .. [=[.d{position:absolute;width:7px;height:7px;margin:-3.5px;background:var(--bg);border:var(--h) solid var(--de);z-index:1}]=]
+  .. [=[.d1,.d3{top:0}.d2,.d4,.d5,.d6{top:100%}.d1,.d2,.d5{left:0}.d3,.d4,.d6{left:100%}]=]
+  .. [=[.tr{position:relative;height:56px}.df{position:absolute;width:0;height:0}.s{position:absolute;top:0;height:56px;width:33.333%}.s svg{display:block;width:100%;height:56px}]=]
+  .. [=[.sa{left:16.667%;animation:wp .7s .1s var(--e) both}.sb{left:50%;animation:wp .6s .8s var(--e) both}@keyframes wp{from{clip-path:inset(0 100% 0 0)}}]=]
+  .. [=[.ln{fill:none;stroke:var(--sg);stroke-width:1.5;stroke-linecap:round;vector-effect:non-scaling-stroke;animation:fl 1.6s linear infinite}@keyframes fl{to{translate:-24px}}]=]
+  .. [=[.hl line{stroke:var(--mu);stroke-dasharray:1 5;stroke-linecap:round;vector-effect:non-scaling-stroke}]=]
+  .. [=[.mk{position:absolute;inset:0;width:100%;height:56px;overflow:visible}.mk *{vector-effect:non-scaling-stroke}.dt{fill:var(--fg)}.rg{fill:var(--bg);stroke:var(--de)}]=]
+  .. [=[.bg,.bx{fill:var(--bg);stroke:var(--fg);stroke-width:1.5}.g{fill:none;stroke:var(--sg);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.m2 .bg{stroke:var(--sg)}]=]
+  .. [=[.sp{fill:none;stroke:var(--sg);stroke-width:1.5;stroke-linecap:round;stroke-dasharray:16 85;opacity:.6;transform-origin:0 0;animation:sp 1.1s linear infinite}@keyframes sp{to{rotate:360deg}}]=]
+  .. [=[.hops{list-style:none;margin:18px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);text-align:center}.hops li{display:grid;justify-items:center;min-width:0}]=]
+  .. [=[.hops b{font-weight:560;font-size:14px}.hops span{font-size:12.5px;color:var(--mu)}.hops .x span{color:var(--lk);font-weight:560}.hops .n b{color:var(--mu);font-weight:500}]=]
+  .. [=[.bot{display:grid;gap:24px 56px;padding:32px 4px 36px;animation:rs .7s .3s var(--e) both}@keyframes rs{from{opacity:0;translate:0 10px}}]=]
+  .. [=[@media (min-width:640px){.bot{grid-template-columns:minmax(0,1fr) auto;padding:40px 40px 44px}}]=]
+  .. [=[h1{margin:0;font-size:24px;line-height:1.2;font-weight:620;letter-spacing:-.02em;text-wrap:balance}]=]
+  .. [=[.bar{position:relative;height:2px;max-width:320px;margin-top:22px;overflow:hidden;background:var(--gr)}.bar i{position:absolute;inset:0 auto 0 0;width:35%;background:var(--sg);animation:run 1.2s var(--e) infinite}]=]
+  .. [=[@keyframes run{from{translate:-100%}to{translate:290%}}]=]
+  .. [=[img{display:block;width:100%;max-width:320px;height:auto;margin-top:20px;border:var(--h) solid var(--gr);border-radius:10px;background:#fff}]=]
+  .. [=[label{display:block;margin:16px 0 6px;color:var(--mu);font-size:12px}]=]
+  .. [=[input[type=text]{width:100%;max-width:320px;height:42px;padding:0 12px;border:1px solid var(--gr);border-radius:10px;background:transparent;color:inherit;font:18px/1 var(--mo);letter-spacing:.2em;text-transform:uppercase}]=]
+  .. [=[input[type=text]:focus{border-color:var(--sg);outline:none}button{font:inherit;cursor:pointer}]=]
+  .. [=[.go{display:inline-flex;align-items:center;height:36px;margin-top:16px;padding:0 16px;border:0;border-radius:999px;background:var(--bt);color:var(--bf);font-size:14px;font-weight:560}.go:hover{filter:brightness(1.1)}]=]
+  .. [=[.alt{display:block;margin-top:12px;padding:0;border:0;background:none;color:var(--lk);font-size:13px;text-decoration:underline;text-underline-offset:3px}]=]
+  .. [=[.err{margin:12px 0 0;color:var(--bd);font-size:13px}p{margin:14px 0 0;color:var(--mu);font-size:13px}]=]
+  .. [=[footer{align-self:end;color:var(--mu);font:12px/1.5 var(--mo);overflow-wrap:anywhere}]=]
+  .. [=[@media (prefers-reduced-motion:reduce){*,:before,:after{animation:none!important}.bar i{width:100%;opacity:.45}}]=]
+
+-- The signal: Edgeweir's wave, and the edge node's mark (its crest over the
+-- wave), as on the built-in error pages.
+local WAVE = "M-24 30.5" .. string.rep("c6 0 6-5 12-5s6 5 12 5", 17)
+local LOGO = "M-4.5 0l4.5-4.5 4.5 4.5M-5.5 4c1.4 0 1.4-1.3 2.75-1.3s1.4 1.3 2.75 1.3 1.4-1.3 2.75-1.3 1.4 1.3 2.75 1.3"
 
 local TEXT = {
   zh = {
     lang = "zh-CN", title = "安全检查", verify = "正在验证浏览器", captcha = "输入图中字符", code = "验证码",
     submit = "继续", alt = "改用计算验证", image = "验证码图片；无法识别时可改用计算验证",
     noscript = "请启用 JavaScript 后刷新页面。", wrong = "验证码不正确，请重试。", failed = "验证未通过，请重试。",
+    hops = { "你", "边缘节点", "源站" }, ok = "正常", checking = "正在验证", needed = "需要验证", waiting = "等待中",
   },
   en = {
     lang = "en", title = "Security check", verify = "Verifying your browser", captcha = "Enter the characters shown",
@@ -580,6 +602,7 @@ local TEXT = {
     image = "Captcha image; use the computation option if you cannot read it",
     noscript = "Enable JavaScript and reload the page.", wrong = "That code was not right. Try again.",
     failed = "Verification failed. Try again.",
+    hops = { "You", "Edge", "Origin" }, ok = "OK", checking = "Verifying", needed = "Check needed", waiting = "Waiting",
   },
 }
 
@@ -606,7 +629,17 @@ function _M.page(o)
   local out = {
     '<!doctype html><html lang="', t.lang, '"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">',
-    "<title>", t.title, '</title><style nonce="', o.nonce, '">', STYLE, "</style></head><body><main>",
+    "<title>", t.title, '</title><style nonce="', o.nonce, '">', STYLE, '</style></head><body><main><div class="f">',
+    '<i class="d d1"></i><i class="d d2"></i><i class="d d3"></i><i class="d d4"></i><div class="top"><i class="d d5"></i><i class="d d6"></i>',
+    '<div class="tr" aria-hidden="true"><svg class="df"><path id="w" d="', WAVE, '"/></svg>',
+    '<span class="s sa"><svg><use href="#w" class="ln"/></svg></span>',
+    '<span class="s sb hl"><svg><line x1="0" y1="28" x2="100%" y2="28"/></svg></span>',
+    '<svg class="mk"><svg x="16.667%" y="28" overflow="visible"><circle class="rg" r="9.5"/><circle class="dt" r="3.5"/></svg>',
+    '<svg x="50%" y="28" overflow="visible" class="m2"><circle class="sp" r="16"/><circle class="bg" r="11"/><path class="g" d="', LOGO, '"/></svg>',
+    '<svg x="83.333%" y="28" overflow="visible"><rect class="bx" x="-7" y="-7" width="14" height="14" rx="3"/></svg></svg></div>',
+    '<ol class="hops"><li><b>', t.hops[1], "</b><span>", t.ok, '</span></li><li class="x"><b>', t.hops[2], "</b><span>",
+    o.kind == "captcha" and t.needed or t.checking, '</span></li><li class="n"><b>', t.hops[3], "</b><span>", t.waiting,
+    '</span></li></ol></div><div class="bot"><div>',
   }
   local function add(...)
     for _, s in ipairs({ ... }) do out[#out + 1] = s end
@@ -633,7 +666,7 @@ function _M.page(o)
       "<noscript><p>", t.noscript, "</p></noscript>")
     script = SHA .. (o.kind == "pow" and POW_MAIN or JS_MAIN)
   end
-  add("<footer>Edgeweir", o.id and o.id ~= "" and (" · " .. esc(o.id)) or "", "</footer></main>")
+  add("</div><footer>Edgeweir", o.id and o.id ~= "" and (" · " .. esc(o.id)) or "", "</footer></div></div></main>")
   if script then add('<script nonce="', o.nonce, '">', script, "</script>") end
   add("</body></html>")
   return concat(out)

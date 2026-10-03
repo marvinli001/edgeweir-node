@@ -128,6 +128,16 @@ http {
         default $request_id;
         "~^[A-Za-z0-9._:-]{8,128}$" $http_x_request_id;
     }
+    # Where error_page hands nginx's own errors (error pages): the named
+    # location, or, for a request that failed in its request line
+    # (malformed, URI too long) and so has no URI yet, without which nginx
+    # cannot enter a named location, the internal location
+    # /./edgeweir-error. No client request reaches that path: nginx resolves
+    # the "." segments of every request's path.
+    map $uri $edgeweir_error_page {
+        ""      /./edgeweir-error;
+        default @edgeweir_error;
+    }
 
     # Edge -> origin layer (local unix sockets). The variant without TLS
     # verification serves sites that turned it off. No keep-alive: when a
@@ -172,6 +182,12 @@ http {
     # headers never reach the origin.
     server {
         listen unix:{{ .Socket }};
+        # nginx's own errors here (uncaught Lua errors, requests nginx
+        # refuses) get error pages, unless the edge may serve its stale copy
+        # (edgeweir.origin.error_page); nginx's 502 and 504 stay with the
+        # header filter.
+        error_page 400 413 414 500 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
 
         location / {
             set $edgeweir_upstream_scheme "http";
@@ -225,6 +241,14 @@ http {
             # upstream failures and of intercepted origin errors.
             body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
             log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.origin").error_page() }
         }
     }
 {{- end }}
@@ -306,6 +330,16 @@ http {
         real_ip_header X-Edgeweir-Prefetch-Addr;
 {{- end }}
         server_name {{ .ServerName }};
+        # nginx's own errors get error pages (edgeweir.router.error_page):
+        # malformed requests and CRS blocks with status 400, request headers
+        # (494) and URIs (414) that are too long, bodies over
+        # client_max_body_size (413), plain HTTP on an HTTPS port (497),
+        # uncaught Lua errors (500) and the origin layer's failures (502,
+        # 504) when the cache has no stale copy to serve. 494 and 497 reach
+        # the handler as they are; it answers them with 400 like nginx.
+        error_page 400 413 414 500 502 504 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+        error_page 497 =497 $edgeweir_error_page;
 
         location / {
             set $edgeweir_local "{{ if .Local }}1{{ end }}";
@@ -351,6 +385,21 @@ http {
             log_by_lua_block { require("edgeweir.stats").log(true) }
         }
 {{- end }}
+
+        # Error pages of nginx's own errors (error_page above), also of
+        # requests that came from a CRS location (log: counted as there).
+        # Variables location / sets are unset for requests that never got
+        # there.
+        location @edgeweir_error {
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+        location = /./edgeweir-error {
+            internal;
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+        }
     }
 {{- end }}
 }

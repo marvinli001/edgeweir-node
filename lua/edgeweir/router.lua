@@ -47,6 +47,10 @@
 -- rule that decided the response, runs the response phases
 -- (response-transform, compression) and chooses the response's content
 -- coding (edgeweir.compress).
+--
+-- error_page(): answers nginx's own errors with error pages (error_page in
+-- nginx.conf): malformed requests, too large requests, plain HTTP on an
+-- HTTPS port, uncaught Lua errors and failures towards the origin layer.
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
@@ -528,6 +532,36 @@ end
 -- only: the edge layer's location / has no body filter).
 function _M.body_filter()
   return errorpages.body_filter()
+end
+
+-- error_page answers nginx's own errors (content phase of @edgeweir_error,
+-- or of /./edgeweir-error for requests without a URI yet): malformed
+-- requests and CRS blocks with status 400, request headers (494) and URIs
+-- (414) that are too long, bodies over client_max_body_size (413), plain
+-- HTTP on an HTTPS port (497), uncaught Lua errors (500) and the origin
+-- layer's failures (502, 504) when the cache had no stale copy to serve.
+-- The redirect emptied ngx.ctx: a CRS location's context comes back
+-- (edgeweir.waf), else the site of $edgeweir_site, so that the location's
+-- log phase (edgeweir.stats) counts the request like the location it came
+-- from. Subrequests (slices, background updates) keep nginx's own answer.
+function _M.error_page()
+  local status = ngx.status
+  if ngx.is_subrequest then
+    return ngx.exit(status)
+  end
+  waf.restore()
+  local ctx = ngx.ctx
+  local var = ngx.var
+  local site = ctx.edgeweir_site
+  if not site then
+    local id = var.edgeweir_site
+    site = id and id ~= "" and store.site_current(id) or nil
+    ctx.edgeweir_site = site
+  end
+  if var.edgeweir_local == "1" and (var.upstream_cache_status or "") == "" then
+    ngx.header["X-Edgeweir-Edge-Response"] = "1"
+  end
+  return errorpages.nginx_page(status, site, ctx.edgeweir_waf == true and var.modsecurity_intervention == "1", false)
 end
 
 return _M

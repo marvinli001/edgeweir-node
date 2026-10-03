@@ -30,7 +30,8 @@
 #      when only a slice subrequest or a background update saw the tag;
 #      request ids; error pages (built-in, site and platform pages, offline
 #      and unknown hosts, origin failures, intercepted origin errors, CRS
-#      blocks, bans); session affinity;
+#      blocks, bans, requests nginx refuses, CRS 400s, HEAD); session
+#      affinity;
 #  12. tasks from the console: purges by Cache-Tag and by host, a sitemap
 #      prefetch (gzipped index, both device variants); an active health
 #      check takes a failing origin out of rotation and brings it back;
@@ -408,8 +409,8 @@ case "$(tls_health 'sni=health.edgeweir.invalid&path=/')" in "health.edgeweir.in
 case "$(tls_health 'sni=&host=demo.test&path=/.well-known/acme-challenge/x')" in "health.edgeweir.invalid 421 "*) ;;
   *) fail "no-SNI connection reached a site: $(tls_health 'sni=&host=demo.test&path=/.well-known/acme-challenge/x')" ;; esac
 case "$(tls_health 'sni=unknown.test')" in handshake-failed*) ;; *) fail "unknown SNI completed a handshake" ;; esac
-key_mode=$(compose exec -T node stat -c '%a' /var/lib/edgeweir-node/health.key)
 case "$(tls_health 'sni=old.test')" in handshake-failed*) ;; *) fail "SNI of a disabled site completed a handshake" ;; esac
+key_mode=$(compose exec -T node stat -c '%a' /var/lib/edgeweir-node/health.key)
 [ "$key_mode" = 600 ] || fail "health.key mode $key_mode"
 pass "HTTPS health: self-signed health certificate for SNI health.edgeweir.invalid and no SNI, 421 for anything else"
 
@@ -648,18 +649,18 @@ page_of() { # host path [curl args...] -> "<status> <x-edgeweir-error> <content-
 }
 r=$(page_of nowhere.test / -H 'X-Request-Id: e2e-page-0001')
 [ "$(head -1 <<<"$r")" = "404 unknown-host text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site not found</h1>' <<<"$r" &&
-  grep -q 'Request ID e2e-page-0001' <<<"$r" || fail "unknown host page: $r"
+  grep -q '<dt>Request ID</dt><dd class="rid">e2e-page-0001</dd>' <<<"$r" || fail "unknown host page: $r"
 r=$(page_of nowhere.test / -H 'Accept-Language: zh-CN,zh;q=0.9')
 grep -q '<h1>站点不存在</h1>' <<<"$r" || fail "unknown host page in Chinese: $r"
 r=$(page_of old.test /)
 [ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site disabled</h1>' <<<"$r" ||
   fail "disabled site page: $r"
-r=$(page_of www.gone.test / -H 'X-Request-Id: e2e-page-0002')
 r=$(page_of www.gone.test /)
 [ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] && grep -q '<h1>Site disabled</h1>' <<<"$r" ||
   fail "disabled site page (wildcard offline host): $r"
 rev=$(curl -fsS -X POST "$HELPER/disabled-page?enabled=true")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+r=$(page_of www.gone.test / -H 'X-Request-Id: e2e-page-0002')
 [ "$(head -1 <<<"$r")" = "503 site-disabled text/html; charset=utf-8 no-store" ] &&
   grep -q '<h1>disabled www.gone.test e2e-page-0002</h1>' <<<"$r" || fail "disabled site page (platform template): $r"
 rev=$(curl -fsS -X POST "$HELPER/disabled-page?enabled=false")
@@ -679,6 +680,51 @@ curl -s -o /dev/null -H 'Host: pages.test' -H 'X-Request-Id: e2e-log-0001' "$NOD
 logged() { curl -fsS "$HELPER/request-ids" | grep -q '^site-pages 200 /logged e2e-log-0001$'; }
 WAIT_SECS=30 wait_for "request id in the access logs" logged
 pass "error pages: platform, built-in and site pages, intercepted origin errors; request id in the access logs"
+
+# nginx's own errors answer with built-in pages too: requests nginx refuses
+# (a TLS handshake or garbage on the plain port, an invalid Host, a URI,
+# headers or a body over the limits, plain HTTP on the HTTPS port) fail at
+# the visitor; a CRS 400 keeps waf-blocked and is logged like the CRS's
+# other blocks; HEAD gets the page's exact length and no body.
+raw() { # request (printf format) -> the response, CR removed
+  exec 3<>"/dev/tcp/127.0.0.1/${E2E_NODE_PORT:-28080}"
+  printf "$1" >&3
+  tr -d '\r' <&3
+  exec 3<&-
+}
+own_page() { # status code title hop (response on stdin) -> true for that built-in page
+  local r
+  r=$(cat)
+  [ "$(status_of <<<"$r")" = "$1" ] && [ "$(header_of x-edgeweir-error <<<"$r")" = "$2" ] &&
+    [ "$(header_of content-type <<<"$r")" = "text/html; charset=utf-8" ] && [ "$(header_of cache-control <<<"$r")" = no-store ] &&
+    grep -q "<h1>$3</h1>" <<<"$r" && grep -q "<li class=\"x\"><b>$4</b>" <<<"$r"
+}
+r=$(raw 'GARBAGE\r\n\r\n')
+own_page 400 bad-request "Bad request" You <<<"$r" || fail "malformed request line: $r"
+r=$(raw '\026\003\001\002\000\001\000\001\374\003\003')
+own_page 400 bad-request "Bad request" You <<<"$r" || fail "TLS handshake on the plain port: $r"
+r=$(raw 'GET / HTTP/1.1\r\nHost: a/b\r\n\r\n')
+own_page 400 bad-request "Bad request" You <<<"$r" && grep -q '<dt>Host</dt><dd></dd>' <<<"$r" || fail "invalid Host: $r"
+big=$(head -c 9000 /dev/zero | tr '\0' a)
+r=$(raw "GET /$big HTTP/1.1\r\nHost: demo.test\r\n\r\n")
+own_page 414 uri-too-long "URL too long" You <<<"$r" || fail "URI too long: $(head -12 <<<"$r")"
+r=$(curl -s -D - -X POST -H 'Host: demo.test' -H 'Content-Length: 209715200' "$NODE/upload" | tr -d '\r')
+own_page 413 body-too-large "Request too large" You <<<"$r" || fail "body too large: $r"
+r=$(page_of demo.test / -H 'X-Request-Id: e2e-big-0001' -H "Cookie: $big")
+[ "$(head -1 <<<"$r")" = "400 header-too-large text/html; charset=utf-8 no-store" ] &&
+  grep -q '<h1>Request header too large</h1>' <<<"$r" && grep -q '<li class="x"><b>You</b>' <<<"$r" || fail "header too large: $r"
+len=$(tr -d '\r' <"$TMPDIR_E2E/page.h" | header_of content-length)
+[ "$len" = "$(wc -c <"$TMPDIR_E2E/page.b" | tr -d ' ')" ] || fail "header too large: Content-Length $len for $(wc -c <"$TMPDIR_E2E/page.b") bytes"
+r=$(raw "HEAD / HTTP/1.1\r\nHost: demo.test\r\nX-Request-Id: e2e-big-0001\r\nCookie: $big\r\n\r\n")
+[ "$(status_of <<<"$r")" = 400 ] && [ "$(header_of content-length <<<"$r")" = "$len" ] && [ -z "$(sed '1,/^$/d' <<<"$r")" ] ||
+  fail "HEAD with too large a header: $r"
+r=$(client -s -D - -H 'Host: demo.test' -H 'Accept-Language: zh-CN' http://node:8443/ | tr -d '\r')
+own_page 400 https-required "需要使用 HTTPS" 你 <<<"$r" || fail "plain HTTP on the HTTPS port: $r"
+r=$(page_of crs-block.test /api -X POST -H 'Content-Type: application/json' --data '{bad')
+[ "$(head -1 <<<"$r")" = "400 waf-blocked text/html; charset=utf-8 no-store" ] && grep -q '<h1>Bad request</h1>' <<<"$r" ||
+  fail "CRS 400 (request body that does not parse): $r"
+WAIT_SECS=30 wait_for "CRS 400 in the access logs" logs_have '^site-crs-block 400 /api true [0-9,]*200002'
+pass "nginx's own errors: built-in pages for refused requests and CRS 400s, HEAD without a body"
 
 # Session affinity: the first response pins the client, the pin holds.
 r=$(hv aff.test /echo)
