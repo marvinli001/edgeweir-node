@@ -10,11 +10,12 @@
 -- inspected as well. The location repeats the edge layer's proxy and cache
 -- settings.
 --
--- An internal redirect clears ngx.ctx; stash() keeps the request's
+-- An internal redirect clears ngx.ctx; stash_ctx() keeps the request's
 -- context in a per-worker table under a reference held in the nginx
 -- variable $edgeweir_ctx_ref, and restore() puts it back (in the CRS
 -- location's access, header filter and log phases: a request ModSecurity
--- blocks never reaches the access phase).
+-- blocks never reaches the access phase). The gRPC location
+-- (edgeweir.router.grpc_enter) hands its requests over the same way.
 --
 -- The site's settings travel to ModSecurity in X-Edgeweir-Waf
 -- ("<site>;<mode>;<paranoia>;<threshold>", read by the generated rules;

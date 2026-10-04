@@ -34,10 +34,10 @@ function _M.logged(site_id, rule_id)
   ngx.shared.edgeweir_stats:incr(minute .. "|" .. site_id .. "|l" .. rule_id, 1, 0, TTL)
 end
 
--- log(waf_location): waf_location in the edge layer's CRS locations and in
--- its error page location (a request may come there from a CRS location),
--- where the request context comes back first and matched CRS rules are
--- counted.
+-- log(waf_location): waf_location in the edge layer's CRS and gRPC
+-- locations and in its error page location (a request may come there from
+-- either), where the request context comes back first and matched CRS
+-- rules are counted.
 function _M.log(waf_location)
   local waf_ids, waf_blocked
   if waf_location then

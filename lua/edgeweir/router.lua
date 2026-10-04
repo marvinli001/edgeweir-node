@@ -24,7 +24,11 @@
 --
 -- Sites that run the OWASP CRS continue in the edge layer's CRS location
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
--- origin for uncompressed responses (edgeweir.compress).
+-- origin for uncompressed responses (edgeweir.compress). The origin layer
+-- of a request follows the site's protocol towards the origins
+-- (origin_layer()): HTTP/1.1 or HTTP/2, HTTP/1.1 for WebSocket upgrades.
+-- gRPC requests of sites that proxy gRPC go to @edgeweir_grpc instead,
+-- past the cache and the CRS, over HTTP/2 to the origin end to end.
 --
 -- The local listeners ($edgeweir_local) serve the agent's prefetches, the
 -- operator's own requests: bans, CC, challenges, rules that deny and the
@@ -306,9 +310,6 @@ local function access()
 
   var.edgeweir_site = site.id
   var.edgeweir_cache_zone = site.cache_zone
-  if not site.tls_verify then
-    var.edgeweir_origin_layer = "edgeweir_origin_noverify"
-  end
   -- The edge compresses: the origin sends (and the cache keeps) identity.
   if compress.enabled(site) then
     var.edgeweir_strip_ae = "1"
@@ -324,10 +325,18 @@ local function access()
       return deny(ngx.HTTP_FORBIDDEN, "websocket-disabled", "websocket disabled")
     end
     -- Proxied as is, never cached.
+    var.edgeweir_origin_layer = _M.origin_layer(site, "websocket")
     var.edgeweir_upgrade = "websocket"
     var.edgeweir_connection = "upgrade"
     return true
   end
+  if site.grpc and _M.is_grpc(var.http_content_type) then
+    -- Never cached: _M.access hands it to @edgeweir_grpc.
+    var.edgeweir_origin_layer = _M.origin_layer(site, "grpc")
+    ngx.ctx.edgeweir_grpc = true
+    return true
+  end
+  var.edgeweir_origin_layer = _M.origin_layer(site)
 
   local method = ngx.req.get_method()
   if (method ~= "GET" and method ~= "HEAD") or acme then
@@ -392,11 +401,63 @@ function _M.access()
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
   if access() then
-    local site = ngx.ctx.edgeweir_site
+    local ctx = ngx.ctx
+    if ctx.edgeweir_grpc then
+      return _M.grpc_enter()
+    end
+    local site = ctx.edgeweir_site
     if site and site.waf and var.edgeweir_local ~= "1" then
       return waf.enter(site)
     end
   end
+end
+
+-- origin_layer returns the edge layer's upstream of the origin layer for a
+-- request of site (the value of $edgeweir_origin_layer, nginx.conf): with
+-- or without TLS verification, and by the protocol towards the origins.
+-- kind is "websocket" for WebSocket upgrades, which nginx proxies over
+-- HTTP/1.1 only, "grpc" for the gRPC requests of sites that proxy gRPC,
+-- nil for every other request.
+function _M.origin_layer(site, kind)
+  local layer = site.tls_verify and "edgeweir_origin_verify" or "edgeweir_origin_noverify"
+  if kind == "grpc" then
+    return layer .. "_grpc"
+  end
+  if site.origin_http2 and kind ~= "websocket" then
+    return layer .. "_h2"
+  end
+  return layer
+end
+
+-- is_grpc reports whether a Content-Type value names gRPC:
+-- application/grpc, optionally with a "+" suffix (+proto, +json) or
+-- parameters. gRPC-Web (application/grpc-web, -text) is not: it works over
+-- HTTP/1.1 and carries its trailers in the body.
+function _M.is_grpc(content_type)
+  if type(content_type) ~= "string" then
+    return false
+  end
+  local ct = lower(content_type)
+  if sub(ct, 1, 16) ~= "application/grpc" then
+    return false
+  end
+  local after = sub(ct, 17, 17)
+  return after == "" or after == "+" or after == ";" or after == " " or after == "\t"
+end
+
+-- grpc_enter hands a gRPC request to @edgeweir_grpc (nginx.conf) at the
+-- end of the access phase, past the CRS: ModSecurity reads a request's
+-- whole body before passing it on, which a streaming call never ends. The
+-- request context travels like a CRS request's (edgeweir.waf.stash_ctx).
+function _M.grpc_enter()
+  ngx.var.edgeweir_ctx_ref = waf.stash_ctx(ngx.ctx)
+  return ngx.exec("@edgeweir_grpc")
+end
+
+-- grpc_access runs in @edgeweir_grpc's access phase: the request context
+-- comes back.
+function _M.grpc_access()
+  waf.restore()
 end
 
 local function port_number(value)
@@ -446,9 +507,9 @@ end
 -- X-Edgeweir-Affinity header of another client's response).
 local FROM_CACHE = { HIT = true, STALE = true, UPDATING = true, REVALIDATED = true }
 
--- header_filter(waf_location): waf_location in the CRS locations, where the
--- request context must come back first (a request ModSecurity blocks never
--- reaches their access phase).
+-- header_filter(waf_location): waf_location in the CRS and gRPC locations,
+-- where the request context must come back first (a request ModSecurity
+-- blocks never reaches their access phase).
 function _M.header_filter(waf_location)
   local h = ngx.header
   local var = ngx.var
@@ -524,7 +585,10 @@ function _M.header_filter(waf_location)
       local ok = pcall(policy.response, site)
       if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
     end
-    compress.header_filter(site)
+    -- The gRPC location compresses nothing.
+    if not ngx.ctx.edgeweir_grpc then
+      compress.header_filter(site)
+    end
   end
 end
 

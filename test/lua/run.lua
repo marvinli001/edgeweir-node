@@ -959,6 +959,59 @@ test("router CDN-Loop detection and header value", function()
   eq(router.cdn_loop_value("a.example; v=1", id), "a.example; v=1, " .. id)
 end)
 
+test("router origin layer by protocol and request kind", function()
+  local h1 = store.prepare(site("l1", { { name = "l1.test" } }))
+  eq(h1.origin_http2, false)
+  eq(h1.grpc, false)
+  eq(router.origin_layer(h1), "edgeweir_origin_verify")
+  eq(router.origin_layer(h1, "websocket"), "edgeweir_origin_verify")
+  local noverify = store.prepare(site("l2", { { name = "l2.test" } }, { tls_verify = false }))
+  eq(router.origin_layer(noverify), "edgeweir_origin_noverify")
+  local h2 = store.prepare(site("l3", { { name = "l3.test" } }, { origin_http2 = true }))
+  eq(h2.origin_http2, true)
+  eq(h2.grpc, false)
+  eq(router.origin_layer(h2), "edgeweir_origin_verify_h2")
+  eq(router.origin_layer(h2, "websocket"), "edgeweir_origin_verify", "WebSocket upgrades stay on HTTP/1.1")
+  local grpc = store.prepare(site("l4", { { name = "l4.test" } }, { origin_http2 = true, grpc = true, tls_verify = false }))
+  eq(grpc.grpc, true)
+  eq(router.origin_layer(grpc), "edgeweir_origin_noverify_h2", "other requests of a gRPC site")
+  eq(router.origin_layer(grpc, "grpc"), "edgeweir_origin_noverify_grpc")
+  eq(store.prepare(site("l5", { { name = "l5.test" } }, { grpc = true })).grpc, false, "gRPC needs HTTP/2")
+end)
+
+test("router gRPC content types", function()
+  for _, ct in ipairs({ "application/grpc", "application/grpc+proto", "application/GRPC+json",
+    "application/grpc; charset=utf-8", "application/grpc ;x=1" }) do
+    eq(router.is_grpc(ct), true, ct)
+  end
+  for _, ct in ipairs({ "application/grpc-web", "application/grpc-web+proto", "application/grpc-web-text",
+    "application/grpcx", "application/json", "text/grpc", "" }) do
+    eq(router.is_grpc(ct), false, ct)
+  end
+  eq(router.is_grpc(nil), false)
+end)
+
+test("router hands gRPC requests over with their context", function()
+  local runtime = ngx
+  local target
+  local ctx = { edgeweir_grpc = true, edgeweir_site = { id = "g" } }
+  _G.ngx = setmetatable({ var = {}, ctx = ctx, exec = function(t) target = t end }, { __index = runtime })
+  local ok, err = pcall(router.grpc_enter)
+  local ref = ngx.var.edgeweir_ctx_ref
+  _G.ngx = runtime
+  assert(ok, err)
+  eq(target, "@edgeweir_grpc")
+  assert(ref and ref ~= "", "context reference")
+  -- The internal redirect emptied ngx.ctx; the access phase brings it back.
+  local after = setmetatable({ var = { edgeweir_ctx_ref = ref }, ctx = {} }, { __index = runtime })
+  _G.ngx = after
+  ok, err = pcall(router.grpc_access)
+  _G.ngx = runtime
+  assert(ok, err)
+  eq(after.ctx, ctx)
+  eq(after.var.edgeweir_ctx_ref, "", "taken once")
+end)
+
 test("stats.drain aggregates completed minutes", function()
   local dict = ngx.shared.edgeweir_stats
   local now = 1800000030 -- 30s into a minute

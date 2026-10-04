@@ -216,6 +216,9 @@ function _M.prepare(s, cfg)
   s.cache_generation = tostring(s.cache_generation or "0")
   s.tls_verify = s.tls_verify ~= false
   s.websocket = s.websocket ~= false
+  -- HTTP/2 towards the origins, gRPC proxied end to end (only with it).
+  s.origin_http2 = s.origin_http2 == true
+  s.grpc = s.grpc == true and s.origin_http2
   s.slice = s.slice == true
   s.keep_cache_tag = s.keep_cache_tag == true
   -- Active health checks (the agent's marks count for this site), session
