@@ -47,6 +47,8 @@
 //	                   (/gz-only gzip, /no-compress none, /no-gzip config
 //	                   gzip=false)
 //
+// The sites of HTTP/2 to origins and gRPC, and their origins, are in h2.go.
+//
 // Every revision also carries the layer-4 applications of l4.go (their
 // origins run in this container too).
 //
@@ -160,14 +162,10 @@ func tlsSite(id, domain, sni string) *nodev1.Site {
 	return s
 }
 
-// serveTLSOrigin serves an HTTPS origin whose certificate (for origin.test
-// only) is issued by a fresh CA, and writes that CA to caOut.
-func serveTLSOrigin(addr, caOut string) {
+// originCA issues the certificates of the HTTPS origins (for origin.test
+// only) and is written to caOut, which the node trusts.
+func originCA(caOut string) *pkitest.CA {
 	ca, err := pkitest.NewCA("Edgeweir e2e origin CA")
-	if err != nil {
-		log.Fatal(err)
-	}
-	cert, err := ca.IssueServer([]string{"origin.test"}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -175,6 +173,16 @@ func serveTLSOrigin(addr, caOut string) {
 		log.Fatal(err)
 	}
 	if err := os.Rename(caOut+".tmp", caOut); err != nil {
+		log.Fatal(err)
+	}
+	return ca
+}
+
+// serveTLSOrigin serves an HTTPS origin with a certificate of ca for
+// origin.test only.
+func serveTLSOrigin(addr string, ca *pkitest.CA) {
+	cert, err := ca.IssueServer([]string{"origin.test"}, nil)
+	if err != nil {
 		log.Fatal(err)
 	}
 	srv := &http.Server{
@@ -185,7 +193,7 @@ func serveTLSOrigin(addr, caOut string) {
 		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("HTTPS origin on %s, CA in %s", addr, caOut)
+	log.Printf("HTTPS origin on %s", addr)
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
@@ -369,7 +377,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "disabled"},
 			{Name: "old.test", Reason: "disabled"},
@@ -391,7 +399,7 @@ func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 
 // baseSites are published in every revision.
 func baseSites(origin string) []*nodev1.Site {
-	return []*nodev1.Site{
+	return append([]*nodev1.Site{
 		site("site-demo", "demo.test", origin, 80),
 		site("site-loop", "loop.test", "node", 80),
 		site("site-forbidden", "forbidden.test", "127.0.0.1", 80),
@@ -419,7 +427,7 @@ func baseSites(origin string) []*nodev1.Site {
 		sitemapSite(),
 		activeSite(),
 		rulesSite(origin),
-	}
+	}, h2Sites()...)
 }
 
 // Expression IR helpers for the rules-v2 sites.
@@ -697,7 +705,9 @@ func main() {
 	tlsOrigin := flag.String("origin-tls", ":8444", "HTTPS origin address")
 	caOut := flag.String("origin-ca-out", "/shared/origin-ca.pem", "where to write the HTTPS origin's CA certificate")
 	flag.Parse()
-	go serveTLSOrigin(*tlsOrigin, *caOut)
+	ca := originCA(*caOut)
+	go serveTLSOrigin(*tlsOrigin, ca)
+	serveH2Origins(ca)
 	go serveTestOrigin(":8082")
 	go serveTestOrigin(":8083")
 	serveL4Origins()
@@ -727,6 +737,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.CA.Pin()) })
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
+	mux.HandleFunc("GET /grpc", grpcCheck)
+	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)
+	mux.HandleFunc("GET /ws", wsCheck)
 	mux.HandleFunc("GET /origin-health", func(w http.ResponseWriter, _ *http.Request) {
 		for _, h := range c.LastStatus().GetOriginHealth() {
 			code := h.GetLastErrorCode()

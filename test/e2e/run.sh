@@ -40,22 +40,26 @@
 #      config rules (read timeout, sampled log, WebSocket, Under Attack),
 #      a cache rule condition with a browser TTL, compression rules and
 #      config gzip=false on a cached object;
-#  14. a new site reserves its partition; later existing-site changes stay hot;
-#  15. probes: GET /.edgeweir/health answers 200 ok for any Host on HTTP,
+#  14. HTTP/2 to origins (h2c, h2 over TLS, request bodies, WebSocket
+#      still HTTP/1.1, no fallback, health probes over HTTP/2) and gRPC end
+#      to end (unary, bidirectional streaming, error trailers, past the CRS,
+#      421 for h2c to a site without gRPC);
+#  15. a new site reserves its partition; later existing-site changes stay hot;
+#  16. probes: GET /.edgeweir/health answers 200 ok for any Host on HTTP,
 #      PROXY protocol and HTTPS (the health certificate for SNI
 #      health.edgeweir.invalid and without SNI, nothing but the health path
 #      on such connections), ahead of loops, bans and challenges; the node
 #      probes its peer (never itself) while the console lets it, and
 #      `edgeweir-node probe` enrolls and reports; heartbeats carry host
 #      metrics;
-#  16. layer-4 applications: TCP and UDP echo through the node's stream
+#  17. layer-4 applications: TCP and UDP echo through the node's stream
 #      servers, PROXY protocol v1 and v2 headers seen by the origin
 #      (nginx's own, and the relay passing on the client's address from
 #      the header it received), a block list and a connection limit
 #      refuse, a dead origin is retried past and held down, a long TCP
 #      connection survives the reload that adds a port, an origin change
 #      applies without a reload (E2E_STATS=1: their minute statistics);
-#  17. restarting the container serves the last-known-good config.
+#  18. restarting the container serves the last-known-good config.
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -853,6 +857,48 @@ curl -s -o /dev/null -H 'Host: rules.test' "$NODE/sampled"
 WAIT_SECS=30 wait_for "the sampled request in the access logs" sh -c "curl -fsS $HELPER/logs | grep -q '^site-rules 200 /sampled '"
 if curl -fsS "$HELPER/logs" | grep -q '^site-rules .* /unsampled '; then fail "a request of a site sampling nothing was logged"; fi
 pass "rules-v2: dynamic and bulk redirects, rewrite, origin group, Host, port and timeout, WebSocket, Under Attack, sampling, browser TTL"
+
+# HTTP/2 to origins (origin-http2-v1): with prior knowledge and over TLS
+# (ALPN h2), cached like any request, WebSocket still over HTTP/1.1, no
+# fallback for an origin without HTTP/2, health probes over HTTP/2.
+curl -fsS "$HELPER/features" | grep -qx origin-http2-v1 || fail "origin-http2-v1 not announced"
+r=$(curl -fsS -H 'Host: h2.test' "$NODE/proto")
+[ "$r" = "HTTP/2.0 h2.test -" ] || fail "h2.test: the origin saw '$r', want HTTP/2 with prior knowledge"
+[ "$(x_cache_path h2.test /proto)" = HIT ] || fail "h2.test: an HTTP/2 origin's response is not cached"
+r=$(curl -fsS -H 'Host: h2tls.test' "$NODE/proto")
+[ "$r" = "HTTP/2.0 h2tls.test h2" ] || fail "h2tls.test: the origin saw '$r', want HTTP/2 over TLS (ALPN h2)"
+# Request bodies: one with a length (over the edge's in-memory buffer) and
+# a chunked one.
+r=$(head -c 300000 /dev/zero | curl -fsS -H 'Host: h2.test' --data-binary @- "$NODE/body")
+[ "$r" = "HTTP/2.0 300000" ] || fail "POST with a body to an HTTP/2 origin: '$r'"
+r=$(head -c 70000 /dev/zero | curl -fsS -H 'Host: h2.test' -H 'Transfer-Encoding: chunked' --data-binary @- "$NODE/body")
+[ "$r" = "HTTP/2.0 70000" ] || fail "chunked POST to an HTTP/2 origin: '$r'"
+r=$(curl -fsS "$HELPER/ws?host=h2.test")
+[ "$r" = "ws HTTP/1.1 hello" ] || fail "WebSocket on an HTTP/2 site: '$r', want the origin to see HTTP/1.1"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: h2bad.test' "$NODE/proto")
+[ "$code" = 502 ] || fail "h2bad.test (origin without HTTP/2): $code, want 502"
+WAIT_SECS=30 wait_for "HTTP/2 health probes" sh -c "curl -fsS $HELPER/h2-probes | grep -q '^HTTP/2.0 [1-9]'"
+if curl -fsS "$HELPER/h2-probes" | grep -q '^HTTP/1.1 '; then fail "an HTTP/2 pool was probed over HTTP/1.1: $(curl -fsS "$HELPER/h2-probes")"; fi
+WAIT_SECS=30 wait_for "h2bad.test's origin reported failing" origin_health_has "^site-h2bad o1 connect_failed "
+pass "HTTP/2 to origins: h2c and h2 over TLS, cached, request bodies, WebSocket over HTTP/1.1, no fallback, health probes over HTTP/2"
+
+# gRPC end to end over h2c on the plain listener: unary, bidirectional
+# streaming (each message waits for the echo of the one before), error
+# trailers and a trailers-only response, to HTTP and TLS origins; the CRS
+# of grpc.test still inspects its other requests; h2c to a site without
+# gRPC is misdirected (421).
+r=$(curl -fsS "$HELPER/grpc?host=grpc.test")
+grep -qx 'unary 200 0 echo:hello proto=HTTP/2.0 host=grpc.test te=trailers alpn=-' <<<"$r" || fail "gRPC unary: $r"
+grep -qx 'bidi 3 0' <<<"$r" || fail "gRPC bidirectional streaming: $r"
+grep -qx 'fail 200 5 no such thing' <<<"$r" || fail "gRPC error trailers: $r"
+grep -qx 'unknown 200 12' <<<"$r" || fail "gRPC trailers-only response: $r"
+r=$(curl -fsS "$HELPER/grpc?host=grpctls.test")
+grep -qx 'unary 200 0 echo:hello proto=HTTP/2.0 host=grpctls.test te=trailers alpn=h2' <<<"$r" || fail "gRPC to a TLS origin: $r"
+grep -qx 'bidi 3 0' <<<"$r" || fail "gRPC bidirectional streaming to a TLS origin: $r"
+[ "$(crs grpc.test "$NODE/search?q=%3Cscript%3Ealert(5)%3C%2Fscript%3E")" = "403 - waf-blocked" ] || fail "grpc.test: the CRS does not inspect requests that are not gRPC"
+code=$(curl -s -o /dev/null -w '%{http_code}' --http2-prior-knowledge -H 'Host: compress.test' "$NODE/")
+[ "$code" = 421 ] || fail "h2c to a site without gRPC: $code, want 421"
+pass "gRPC end to end: unary, bidirectional streaming, error trailers and a trailers-only status over h2c, to HTTP and TLS origins; the CRS skips gRPC only"
 
 # Heartbeats carry host metrics (metrics-v1); the data plane reports its
 # connections.
