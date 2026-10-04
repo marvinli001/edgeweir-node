@@ -207,7 +207,7 @@ func parse(fs *flag.FlagSet, args []string) (ok bool, code int) {
 func cmdEnroll(args []string, stderr io.Writer) int {
 	fs := newFlagSet("enroll", stderr)
 	var (
-		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443 (required)")
+		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443, or wss://console.example.com for its WebSocket entry (required)")
 		token      = fs.String("token", "", "single-use enrollment token; visible in the process list, prefer the EDGEWEIR_TOKEN environment variable or --token-file")
 		tokenFile  = fs.String("token-file", "", "read the single-use enrollment token from this file (surrounding whitespace is ignored)")
 		caSHA256   = fs.String("ca-sha256", "", "SHA-256 of the console's internal CA certificate (DER, hex) from the install command (required)")
@@ -280,7 +280,7 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 func cmdProbe(args []string, stderr io.Writer) int {
 	fs := newFlagSet("probe", stderr)
 	var (
-		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443 (first run)")
+		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443, or wss://console.example.com for its WebSocket entry (first run)")
 		token      = fs.String("token", "", "single-use probe token (first run); visible in the process list, prefer the EDGEWEIR_TOKEN environment variable or --token-file")
 		tokenFile  = fs.String("token-file", "", "read the single-use probe token from this file (first run)")
 		caSHA256   = fs.String("ca-sha256", "", "SHA-256 of the console's internal CA certificate (DER, hex) (first run)")

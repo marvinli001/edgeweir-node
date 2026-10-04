@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	connectrpc.com/connect v1.21.0
+	github.com/coder/websocket v1.8.15
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/oschwald/maxminddb-golang/v2 v2.6.0
 	golang.org/x/crypto v0.50.0
