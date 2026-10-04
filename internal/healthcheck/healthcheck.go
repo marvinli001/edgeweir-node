@@ -22,11 +22,13 @@
 //     host, else the origin's host_header, else its address; HTTPS with
 //     SNI the origin's sni, else its host_header (without port), else its
 //     address, verified against the node's trust store unless the pool
-//     skips verification. Redirects are not followed, at most 64 KiB of
-//     the body is read, the whole probe gets the check's timeout. A
-//     status within the expected range is a success; failures are
-//     connect_failed, timeout, tls_failed and upstream_status {status},
-//     the codes of the passive check.
+//     skips verification. HTTP/1.1, or HTTP/2 for pools that send their
+//     requests over it (ALPN h2 over TLS, prior knowledge otherwise; an
+//     origin that does not negotiate h2 fails the probe). Redirects are
+//     not followed, at most 64 KiB of the body is read, the whole probe
+//     gets the check's timeout. A status within the expected range is a
+//     success; failures are connect_failed, timeout, tls_failed and
+//     upstream_status {status}, the codes of the passive check.
 //   - State: an origin starts healthy, becomes unhealthy after
 //     unhealthy_threshold consecutive failures and healthy again after
 //     healthy_threshold consecutive successes.
@@ -46,6 +48,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -164,6 +167,7 @@ type spec struct {
 	host     string // Host header
 	sni      string
 	insecure bool // the pool skips certificate verification
+	http2    bool // the pool sends its requests over HTTP/2
 }
 
 type check struct {
@@ -209,7 +213,7 @@ func specs(plan *configir.Plan) map[Key]spec {
 			if o.S3 != nil || o.Forbidden {
 				continue
 			}
-			sp := spec{check: *s.ActiveHealthCheck, scheme: o.Scheme, address: o.Address, port: o.Port, insecure: !s.TLSVerify}
+			sp := spec{check: *s.ActiveHealthCheck, scheme: o.Scheme, address: o.Address, port: o.Port, insecure: !s.TLSVerify, http2: s.OriginHTTP2}
 			sp.host = cmp.Or(sp.check.Host, o.HostHeader, hostOf(o.Address, o.Port, o.Scheme))
 			sp.sni = cmp.Or(o.SNI, hostname(o.HostHeader), o.Address)
 			out[Key{SiteID: s.ID, OriginID: o.ID}] = sp
@@ -483,12 +487,16 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+	alpn := "http/1.1"
+	if sp.http2 {
+		alpn = "h2"
+	}
 	if sp.scheme == configir.SchemeHTTPS {
 		tc := tls.Client(conn, &tls.Config{
 			ServerName:         sp.sni,
 			RootCAs:            c.opts.RootCAs,
 			InsecureSkipVerify: sp.insecure, //nolint:gosec // the pool's skip_tls_verify
-			NextProtos:         []string{"http/1.1"},
+			NextProtos:         []string{alpn},
 		})
 		if err := tc.HandshakeContext(ctx); err != nil {
 			if timedOut(ctx, err) {
@@ -496,24 +504,24 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 			}
 			return failure(CodeTLSFailed, nil, "TLS handshake: %v", err)
 		}
+		// The data plane offers h2 alone and has no fallback either.
+		if got := tc.ConnectionState().NegotiatedProtocol; sp.http2 && got != "h2" {
+			return failure(CodeConnectFailed, nil, "origin does not speak HTTP/2 (ALPN %q)", got)
+		}
 		conn = tc
 	}
-	// Method, path and Host were validated (configir): printable ASCII
-	// without spaces.
-	req := sp.check.Method + " " + sp.check.Path + " HTTP/1.1\r\nHost: " + sp.host +
-		"\r\nUser-Agent: edgeweir-node-healthcheck/" + version.Version + "\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-	if _, err := io.WriteString(conn, req); err != nil {
-		if timedOut(ctx, err) {
-			return timeout
-		}
-		return failure(CodeConnectFailed, nil, "send request: %v", err)
+	var resp *http.Response
+	var err error
+	if sp.http2 {
+		resp, err = roundTripHTTP2(ctx, conn, sp)
+	} else {
+		resp, err = roundTripHTTP1(conn, sp)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: sp.check.Method})
 	if err != nil {
 		if timedOut(ctx, err) {
 			return timeout
 		}
-		return failure(CodeConnectFailed, nil, "read response: %v", err)
+		return failure(CodeConnectFailed, nil, "%v", err)
 	}
 	// Closing the body would read it to the end; the deferred close of
 	// the connection ends it instead.
@@ -522,6 +530,57 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 		return failure(CodeUpstreamStatus, map[string]string{"status": strconv.Itoa(resp.StatusCode)}, "HTTP %d", resp.StatusCode)
 	}
 	return result{ok: true}
+}
+
+// userAgent is the User-Agent of the probes.
+var userAgent = "edgeweir-node-healthcheck/" + version.Version
+
+// roundTripHTTP1 sends the probe's request over conn with HTTP/1.1 and
+// reads the response header.
+func roundTripHTTP1(conn net.Conn, sp spec) (*http.Response, error) {
+	// Method, path and Host were validated (configir): printable ASCII
+	// without spaces.
+	req := sp.check.Method + " " + sp.check.Path + " HTTP/1.1\r\nHost: " + sp.host +
+		"\r\nUser-Agent: " + userAgent + "\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+	if _, err := io.WriteString(conn, req); err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: sp.check.Method})
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	return resp, nil
+}
+
+// roundTripHTTP2 sends the probe's request over conn (TLS with h2
+// negotiated, or plain for prior knowledge) with HTTP/2 and reads the
+// response header. The path goes out as it is (:path), the Host as
+// :authority.
+func roundTripHTTP2(ctx context.Context, conn net.Conn, sp spec) (*http.Response, error) {
+	var protocols http.Protocols
+	dial := func(context.Context, string, string) (net.Conn, error) { return conn, nil }
+	t := &http.Transport{Protocols: &protocols, DisableCompression: true}
+	scheme := "http"
+	if sp.scheme == configir.SchemeHTTPS {
+		scheme = "https"
+		protocols.SetHTTP2(true)
+		t.DialTLSContext = dial
+	} else {
+		protocols.SetUnencryptedHTTP2(true)
+		t.DialContext = dial
+	}
+	defer t.CloseIdleConnections()
+	req := (&http.Request{
+		Method: sp.check.Method,
+		URL:    &url.URL{Scheme: scheme, Host: sp.host, Opaque: sp.check.Path},
+		Header: http.Header{"User-Agent": {userAgent}, "Accept": {"*/*"}},
+		Host:   sp.host,
+	}).WithContext(ctx)
+	resp, err := t.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP/2 request: %w", err)
+	}
+	return resp, nil
 }
 
 // addresses returns the addresses a probe of host may connect to, or the

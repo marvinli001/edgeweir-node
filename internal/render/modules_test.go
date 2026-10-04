@@ -189,7 +189,8 @@ func TestRenderWithoutWAF(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := string(got)
-	for _, unwanted := range []string{"load_module", "modsecurity", "@edgeweir_waf_", "edgeweir_ctx_ref", "X-Edgeweir-Waf"} {
+	// $edgeweir_ctx_ref stays: the gRPC location takes the context over too.
+	for _, unwanted := range []string{"load_module", "modsecurity", "@edgeweir_waf_", "X-Edgeweir-Waf"} {
 		if strings.Contains(conf, unwanted) {
 			t.Errorf("nginx.conf without CRS sites contains %q", unwanted)
 		}

@@ -60,6 +60,16 @@ type Params struct {
 	// that skip TLS verification (default: origin-noverify.sock next to
 	// OriginSocket).
 	OriginSocketNoVerify string
+	// OriginSocketH2 and OriginSocketNoVerifyH2 are the origin layers of
+	// sites that send their requests to the origins over HTTP/2 (default:
+	// origin-h2.sock and origin-noverify-h2.sock next to OriginSocket).
+	OriginSocketH2         string
+	OriginSocketNoVerifyH2 string
+	// OriginSocketGRPC and OriginSocketNoVerifyGRPC are the origin layers
+	// of gRPC requests, which the edge reaches over HTTP/2 (default:
+	// origin-grpc.sock and origin-noverify-grpc.sock next to OriginSocket).
+	OriginSocketGRPC         string
+	OriginSocketNoVerifyGRPC string
 	// TrustedCA is the CA bundle used to verify HTTPS origins. Empty means
 	// none was found: origins that must be verified then fail closed.
 	TrustedCA string
@@ -204,8 +214,22 @@ func (p Params) WithDefaults() Params {
 	if p.L4DictMB == 0 {
 		p.L4DictMB = DefaultL4DictMB
 	}
-	if p.OriginSocketNoVerify == "" && p.OriginSocket != "" {
-		p.OriginSocketNoVerify = filepath.Join(filepath.Dir(p.OriginSocket), "origin-noverify.sock")
+	if p.OriginSocket != "" {
+		dir := filepath.Dir(p.OriginSocket)
+		for _, s := range []struct {
+			path *string
+			name string
+		}{
+			{&p.OriginSocketNoVerify, "origin-noverify.sock"},
+			{&p.OriginSocketH2, "origin-h2.sock"},
+			{&p.OriginSocketNoVerifyH2, "origin-noverify-h2.sock"},
+			{&p.OriginSocketGRPC, "origin-grpc.sock"},
+			{&p.OriginSocketNoVerifyGRPC, "origin-noverify-grpc.sock"},
+		} {
+			if *s.path == "" {
+				*s.path = filepath.Join(dir, s.name)
+			}
+		}
 	}
 	if len(p.Resolvers) == 0 {
 		p.Resolvers = []string{"127.0.0.1"}
@@ -225,11 +249,15 @@ func (p Params) Validate() error {
 	for name, v := range map[string]string{
 		"nginx prefix": p.Prefix, "lua dir": p.LuaDir, "cache dir": p.CacheDir,
 		"control socket": p.ControlSocket, "origin socket": p.OriginSocket, "resolv.conf": p.ResolvConf,
-		"origin socket without verification": p.OriginSocketNoVerify,
-		"edge socket":                        p.EdgeSocket,
-		"TLS edge socket":                    p.EdgeTLSSocket,
-		"GeoIP socket":                       p.GeoIPSocket,
-		"layer-4 control socket":             p.L4Socket,
+		"origin socket without verification":        p.OriginSocketNoVerify,
+		"HTTP/2 origin socket":                      p.OriginSocketH2,
+		"HTTP/2 origin socket without verification": p.OriginSocketNoVerifyH2,
+		"gRPC origin socket":                        p.OriginSocketGRPC,
+		"gRPC origin socket without verification":   p.OriginSocketNoVerifyGRPC,
+		"edge socket":                               p.EdgeSocket,
+		"TLS edge socket":                           p.EdgeTLSSocket,
+		"GeoIP socket":                              p.GeoIPSocket,
+		"layer-4 control socket":                    p.L4Socket,
 	} {
 		if !safePath.MatchString(v) {
 			return fmt.Errorf("%s %q must be an absolute path without spaces or special characters", name, v)
@@ -238,8 +266,12 @@ func (p Params) Validate() error {
 	if p.TrustedCA != "" && !safePath.MatchString(p.TrustedCA) {
 		return fmt.Errorf("trusted CA bundle %q must be an absolute path without spaces or special characters", p.TrustedCA)
 	}
-	if p.OriginSocket == p.OriginSocketNoVerify {
-		return errors.New("the origin sockets with and without TLS verification must differ")
+	seen := map[string]bool{}
+	for _, l := range originLayers(p) {
+		if seen[l.Socket] {
+			return errors.New("the origin layer sockets (with and without TLS verification, HTTP/1.1, HTTP/2 and gRPC) must differ")
+		}
+		seen[l.Socket] = true
 	}
 	if p.EdgeSocket == p.EdgeTLSSocket {
 		return errors.New("the plain and the TLS edge sockets must differ")
@@ -279,6 +311,7 @@ type data struct {
 	CacheZones   []configir.CacheZone
 	DefaultZone  string
 	OriginLayers []originLayer
+	Balancers    []string
 	// ModSecurityConf is the CRS configuration (ModSecurityConf) when a
 	// site runs the CRS; WAFBodyLimits are the request body limits of the
 	// edge layer's CRS locations.
@@ -377,9 +410,15 @@ type edgeServer struct {
 	ZstdTypes       string
 }
 
+// edgeServers returns the edge layer's servers. gRPC clients speak HTTP/2
+// only: while a site proxies gRPC, plain listeners also take HTTP/2 with
+// prior knowledge (h2c; nginx tells it from HTTP/1.1 by the connection
+// preface), and that site's servers enable HTTP/2 on every listener
+// (nginx answers 421 to HTTP/2 requests for a server without it).
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
 	hasTLS := false
+	grpc := slices.ContainsFunc(plan.Sites, func(s configir.Site) bool { return s.GRPC })
 	for _, l := range plan.Listeners {
 		hasTLS = hasTLS || l.TLS
 		suffix := " default_server"
@@ -389,7 +428,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 		if l.ProxyProtocol {
 			suffix += " proxy_protocol"
 		}
-		s := edgeServer{Listen: []string{fmt.Sprintf("%d%s", l.Port, suffix)}, HTTP2: l.HTTP2, ProxyProtocol: l.ProxyProtocol, TLS: l.TLS, ServerName: "_"}
+		s := edgeServer{Listen: []string{fmt.Sprintf("%d%s", l.Port, suffix)}, HTTP2: l.HTTP2 || (grpc && !l.TLS), ProxyProtocol: l.ProxyProtocol, TLS: l.TLS, ServerName: "_"}
 		if p.ListenIPv6 {
 			s.Listen = append(s.Listen, fmt.Sprintf("[::]:%d%s", l.Port, suffix))
 		}
@@ -426,7 +465,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				custom.Listen[i] = strings.ReplaceAll(listen, " default_server", "")
 			}
 			custom.ServerName = strings.Join(names, " ")
-			custom.HTTP2 = l.TLS && site.TLS.HTTP2
+			custom.HTTP2 = (l.TLS && site.TLS.HTTP2) || site.GRPC
 			custom.HTTP3 = l.TLS && site.TLS.HTTP3
 			custom.QUICListen = make([]string, len(s.QUICListen))
 			for i, listen := range s.QUICListen {
@@ -451,9 +490,53 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	return out
 }
 
+// Protocols of the origin layers towards the origins.
+const (
+	protocolHTTP1 = "http1"
+	protocolHTTP2 = "http2"
+	protocolGRPC  = "grpc"
+)
+
+// originLayer is one origin layer server: Name is the edge layer's
+// upstream of it (the value edgeweir.router puts in
+// $edgeweir_origin_layer), Verify whether it verifies HTTPS origins and
+// Protocol how it talks to the origins (and, for gRPC, how the edge
+// reaches it).
 type originLayer struct {
-	Socket string
-	Verify bool
+	Name     string
+	Socket   string
+	Verify   bool
+	Protocol string
+	// Balancer is the upstream (balancer_by_lua) of its requests to the
+	// origins: one per protocol.
+	Balancer string
+}
+
+// originLayers are the origin layer servers: with and without TLS
+// verification, for HTTP/1.1, HTTP/2 and gRPC towards the origins.
+func originLayers(p Params) []originLayer {
+	return []originLayer{
+		{Name: "edgeweir_origin_verify", Socket: p.OriginSocket, Verify: true, Protocol: protocolHTTP1, Balancer: balancers[0]},
+		{Name: "edgeweir_origin_noverify", Socket: p.OriginSocketNoVerify, Protocol: protocolHTTP1, Balancer: balancers[0]},
+		{Name: "edgeweir_origin_verify_h2", Socket: p.OriginSocketH2, Verify: true, Protocol: protocolHTTP2, Balancer: balancers[1]},
+		{Name: "edgeweir_origin_noverify_h2", Socket: p.OriginSocketNoVerifyH2, Protocol: protocolHTTP2, Balancer: balancers[1]},
+		{Name: "edgeweir_origin_verify_grpc", Socket: p.OriginSocketGRPC, Verify: true, Protocol: protocolGRPC, Balancer: balancers[2]},
+		{Name: "edgeweir_origin_noverify_grpc", Socket: p.OriginSocketNoVerifyGRPC, Protocol: protocolGRPC, Balancer: balancers[2]},
+	}
+}
+
+// balancers are the upstreams of the origin layers' requests to the
+// origins (HTTP/1.1, HTTP/2, gRPC).
+var balancers = []string{"edgeweir_balancer", "edgeweir_balancer_h2", "edgeweir_balancer_grpc"}
+
+// OriginLayerSockets are the unix sockets of the origin layer servers
+// (with defaults applied).
+func (p Params) OriginLayerSockets() []string {
+	var out []string
+	for _, l := range originLayers(p.WithDefaults()) {
+		out = append(out, l.Socket)
+	}
+	return out
 }
 
 // Render returns nginx.conf for plan.
@@ -499,12 +582,10 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		EdgeServers:       edgeServers(p, plan),
 		CacheZones:        plan.CacheZones,
 		DefaultZone:       plan.CacheZones[0].Name,
-		OriginLayers: []originLayer{
-			{Socket: p.OriginSocket, Verify: true},
-			{Socket: p.OriginSocketNoVerify, Verify: false},
-		},
-		ModSecurityConf: modsecConf,
-		WAFHeader:       WAFHeader,
+		OriginLayers:      originLayers(p),
+		Balancers:         balancers,
+		ModSecurityConf:   modsecConf,
+		WAFHeader:         WAFHeader,
 	}
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()

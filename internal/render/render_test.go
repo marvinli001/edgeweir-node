@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -118,6 +119,9 @@ func TestRenderRejectsUnsafeInput(t *testing.T) {
 		func(p *Params) { p.User = "root; daemon on" },
 		func(p *Params) { p.TrustedCA = "/etc/ssl/ca.pem; include /etc/passwd" },
 		func(p *Params) { p.OriginSocketNoVerify = p.OriginSocket },
+		func(p *Params) { p.OriginSocketH2 = p.OriginSocket },
+		func(p *Params) { p.OriginSocketNoVerifyGRPC = "/run/edgeweir-node/origin-h2.sock" },
+		func(p *Params) { p.OriginSocketGRPC = "/run/grpc sock" },
 		func(p *Params) { p.EdgeSocket = "/run/edge sock" },
 		func(p *Params) { p.PurgeDictMB = 100000 },
 		func(p *Params) { p.PurgeDictMB = -1 },
@@ -186,7 +190,12 @@ func TestRenderOriginLayersAndTrustStore(t *testing.T) {
 	for _, want := range []string{
 		"listen unix:/run/edgeweir-node/origin.sock;",
 		"listen unix:/run/edgeweir-node/origin-noverify.sock;",
+		"listen unix:/run/edgeweir-node/origin-h2.sock;",
+		"listen unix:/run/edgeweir-node/origin-noverify-h2.sock;",
+		"listen unix:/run/edgeweir-node/origin-grpc.sock;",
+		"listen unix:/run/edgeweir-node/origin-noverify-grpc.sock;",
 		"proxy_ssl_verify off;",
+		"grpc_ssl_verify off;",
 		`set $edgeweir_trust_store "missing";`,
 		"balancer_by_lua_block",
 		"lua_shared_dict edgeweir_purge 32m;",
@@ -196,9 +205,9 @@ func TestRenderOriginLayersAndTrustStore(t *testing.T) {
 			t.Errorf("nginx.conf lacks %q", want)
 		}
 	}
-	// Without a CA bundle the verifying layer must not claim to verify.
-	if strings.Contains(conf, "proxy_ssl_verify on;") {
-		t.Error("proxy_ssl_verify on without a trusted certificate")
+	// Without a CA bundle the verifying layers must not claim to verify.
+	if strings.Contains(conf, "proxy_ssl_verify on;") || strings.Contains(conf, "grpc_ssl_verify on;") {
+		t.Error("TLS verification on without a trusted certificate")
 	}
 	p.TrustedCA = "/etc/ssl/certs/ca-certificates.crt"
 	got, err = Render(p, configir.Bootstrap(80))
@@ -206,10 +215,13 @@ func TestRenderOriginLayersAndTrustStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf = string(got)
-	if strings.Count(conf, "proxy_ssl_verify on;") != 1 || strings.Count(conf, "proxy_ssl_verify off;") != 1 ||
-		!strings.Contains(conf, "proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") ||
-		!strings.Contains(conf, `set $edgeweir_trust_store "ok";`) {
-		t.Errorf("verifying origin layer not rendered as expected:\n%s", conf)
+	// HTTP/1.1 and HTTP/2 layers use the proxy module, gRPC layers grpc.
+	if strings.Count(conf, "proxy_ssl_verify on;") != 2 || strings.Count(conf, "proxy_ssl_verify off;") != 2 ||
+		strings.Count(conf, "grpc_ssl_verify on;") != 1 || strings.Count(conf, "grpc_ssl_verify off;") != 1 ||
+		strings.Count(conf, "proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") != 2 ||
+		strings.Count(conf, "grpc_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") != 1 ||
+		strings.Count(conf, `set $edgeweir_trust_store "ok";`) != 6 {
+		t.Errorf("verifying origin layers not rendered as expected:\n%s", conf)
 	}
 }
 
@@ -228,39 +240,240 @@ func TestRenderOriginTLSName(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := string(got)
-	balancer := section(t, conf, "upstream edgeweir_balancer {", "}")
-	if !strings.Contains(balancer, "keepalive 0;") {
-		t.Errorf("balancer upstream keeps nginx's default connection cache:\n%s", balancer)
-	}
-	layers := strings.Split(conf, "listen unix:")
-	var verify, noverify string
-	for _, l := range layers {
-		switch {
-		case strings.HasPrefix(l, "/run/edgeweir-node/origin.sock;"):
-			verify = l
-		case strings.HasPrefix(l, "/run/edgeweir-node/origin-noverify.sock;"):
-			noverify = l
+	for _, name := range []string{"edgeweir_balancer", "edgeweir_balancer_h2", "edgeweir_balancer_grpc"} {
+		balancer := section(t, conf, "upstream "+name+" {", "}")
+		if !strings.Contains(balancer, "keepalive 0;") {
+			t.Errorf("balancer upstream keeps nginx's default connection cache:\n%s", balancer)
 		}
 	}
-	for name, layer := range map[string]string{"verify": verify, "noverify": noverify} {
+	for _, l := range originLayers(p.WithDefaults()) {
+		layer := originLayerServer(t, conf, l.Socket)
+		module := "proxy"
+		if l.Protocol == protocolGRPC {
+			module = "grpc"
+		}
 		for _, want := range []string{
 			`set $edgeweir_ssl_name "";`,
-			"proxy_ssl_name $edgeweir_ssl_name;",
-			"proxy_ssl_server_name on;",
+			module + "_ssl_name $edgeweir_ssl_name;",
+			module + "_ssl_server_name on;",
 		} {
 			if !strings.Contains(layer, want) {
-				t.Errorf("%s origin layer lacks %q", name, want)
+				t.Errorf("origin layer %s lacks %q", l.Name, want)
+			}
+		}
+		wants := []string{module + "_ssl_verify off;"}
+		if l.Verify {
+			wants = []string{module + "_ssl_verify on;", module + "_ssl_trusted_certificate /etc/edgeweir/origin-ca.pem;"}
+		}
+		for _, want := range wants {
+			if !strings.Contains(layer, want) {
+				t.Errorf("origin layer %s lacks %q", l.Name, want)
 			}
 		}
 	}
-	for _, want := range []string{"proxy_ssl_verify on;", "proxy_ssl_trusted_certificate /etc/edgeweir/origin-ca.pem;"} {
-		if !strings.Contains(verify, want) {
-			t.Errorf("verifying origin layer lacks %q", want)
+}
+
+// TestOriginLayerSocketDefaults: the HTTP/2 and gRPC origin layers listen
+// next to the origin socket unless set; OriginLayerSockets lists all six
+// (the agent removes stale ones before nginx starts).
+func TestOriginLayerSocketDefaults(t *testing.T) {
+	p := params()
+	want := []string{
+		"/run/edgeweir-node/origin.sock", "/run/edgeweir-node/origin-noverify.sock",
+		"/run/edgeweir-node/origin-h2.sock", "/run/edgeweir-node/origin-noverify-h2.sock",
+		"/run/edgeweir-node/origin-grpc.sock", "/run/edgeweir-node/origin-noverify-grpc.sock",
+	}
+	if got := p.OriginLayerSockets(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("origin layer sockets = %v, want %v", got, want)
+	}
+	p.OriginSocketGRPC = "/srv/sockets/grpc.sock"
+	if got := p.OriginLayerSockets()[4]; got != "/srv/sockets/grpc.sock" {
+		t.Fatalf("explicit gRPC socket replaced: %s", got)
+	}
+}
+
+// TestRenderOriginLayerProtocols: the HTTP/1.1 layers proxy with
+// HTTP/1.1 (WebSocket upgrades included) through edgeweir_balancer, the
+// HTTP/2 layers with proxy_http_version 2 through edgeweir_balancer_h2 and
+// no hop-by-hop headers, and the gRPC layers accept HTTP/2 from the edge,
+// lift the body size limit and pass the requests on with grpc_pass
+// (grpcs for HTTPS origins) through edgeweir_balancer_grpc.
+func TestRenderOriginLayerProtocols(t *testing.T) {
+	p := params()
+	got, err := Render(p, configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	if !strings.Contains(conf, "map $edgeweir_upstream_scheme $edgeweir_grpc_scheme {\n        https   grpcs;\n        default grpc;\n    }") {
+		t.Error("gRPC scheme map missing")
+	}
+	for _, l := range originLayers(p.WithDefaults()) {
+		layer := originLayerServer(t, conf, l.Socket)
+		var wants, unwanted []string
+		switch l.Protocol {
+		case protocolHTTP1:
+			wants = []string{
+				"proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;",
+				"proxy_http_version 1.1;",
+				"proxy_set_header Connection $edgeweir_origin_connection;",
+				"proxy_set_header Upgrade $http_upgrade;",
+			}
+			unwanted = []string{"http2 on;", "grpc_", "client_max_body_size"}
+		case protocolHTTP2:
+			wants = []string{
+				"proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer_h2$edgeweir_upstream_uri;",
+				"proxy_http_version 2;",
+				"proxy_set_header Host $edgeweir_upstream_host;",
+			}
+			unwanted = []string{"http2 on;", "grpc_", "Connection", "Upgrade", "client_max_body_size"}
+		case protocolGRPC:
+			wants = []string{
+				"http2 on;",
+				"client_max_body_size 0;",
+				"grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc;",
+				"grpc_set_header Host $edgeweir_upstream_host;",
+				`grpc_set_header X-Edgeweir-Site "";`,
+				"grpc_next_upstream_tries 3;",
+			}
+			unwanted = []string{"proxy_", "Connection", "Upgrade"}
+		}
+		wants = append(wants, `access_by_lua_block { require("edgeweir.origin").access() }`,
+			`header_filter_by_lua_block { require("edgeweir.origin").header_filter() }`,
+			`log_by_lua_block { require("edgeweir.origin").log() }`)
+		for _, want := range wants {
+			if !strings.Contains(layer, want) {
+				t.Errorf("origin layer %s lacks %q", l.Name, want)
+			}
+		}
+		for _, u := range unwanted {
+			if strings.Contains(layer, u) {
+				t.Errorf("origin layer %s has %q", l.Name, u)
+			}
+		}
+		up := section(t, conf, "upstream "+l.Name+" {", "}")
+		if !strings.Contains(up, "server unix:"+l.Socket+";") {
+			t.Errorf("upstream %s does not reach its socket:\n%s", l.Name, up)
+		}
+		// Edge -> origin layer without keep-alive, but for gRPC: a failure
+		// on a reused connection would be retried as a second trip to the
+		// origin, also when the origin layer closes it for stale-if-error.
+		if keep := !strings.Contains(up, "keepalive 0;"); keep != (l.Protocol == protocolGRPC) {
+			t.Errorf("upstream %s keeps connections: %v", l.Name, keep)
 		}
 	}
-	if !strings.Contains(noverify, "proxy_ssl_verify off;") {
-		t.Error("origin layer without verification does not turn it off")
+}
+
+// TestRenderEdgeGRPC: every edge server hands gRPC requests to the origin
+// layer with grpc_pass from @edgeweir_grpc, which is never cached, lifts
+// the body size limit and turns off the compression its server enables;
+// every edge location / declares the context reference the hand-over
+// needs.
+func TestRenderEdgeGRPC(t *testing.T) {
+	got, err := Render(params(), compressionPlan())
+	if err != nil {
+		t.Fatal(err)
 	}
+	conf := string(got)
+	servers := strings.Count(conf, `access_by_lua_block { require("edgeweir.router").access() }`)
+	if n := strings.Count(conf, "            set $edgeweir_ctx_ref \"\";\n            access_by_lua_block { require(\"edgeweir.router\").access() }"); n != servers || n == 0 {
+		t.Errorf("%d of %d edge locations declare $edgeweir_ctx_ref", n, servers)
+	}
+	grpc := locations(conf)["@edgeweir_grpc"]
+	if len(grpc) != servers {
+		t.Fatalf("%d gRPC locations for %d edge servers", len(grpc), servers)
+	}
+	compressed := 0
+	for _, body := range grpc {
+		for _, want := range []string{
+			"client_max_body_size 0;",
+			`access_by_lua_block { require("edgeweir.router").grpc_access() }`,
+			"grpc_pass grpc://$edgeweir_origin_layer;",
+			"grpc_set_header Host $host;",
+			"grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+			"grpc_set_header CDN-Loop $edgeweir_cdn_loop;",
+			"grpc_set_header X-Edgeweir-Site $edgeweir_site;",
+			"grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;",
+			`header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }`,
+			`log_by_lua_block { require("edgeweir.stats").log(true) }`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("gRPC location lacks %q:\n%s", want, body)
+			}
+		}
+		for _, unwanted := range []string{"proxy_cache", "slice", "proxy_pass", "modsecurity"} {
+			if strings.Contains(body, unwanted) {
+				t.Errorf("gRPC location has %q", unwanted)
+			}
+		}
+		if strings.Contains(body, "gzip off;") && strings.Contains(body, "brotli off;") && strings.Contains(body, "zstd off;") {
+			compressed++
+		}
+	}
+	// The servers of all.test (one per listener) compress with all three.
+	if compressed != 2 {
+		t.Errorf("%d gRPC locations turn every coding off, want 2", compressed)
+	}
+}
+
+// TestRenderGRPCSitesTakeHTTP2: while a site proxies gRPC, the plain
+// listeners take h2c and that site's servers enable HTTP/2 on every
+// listener, whatever its HTTPS settings say; other servers keep theirs.
+func TestRenderGRPCSitesTakeHTTP2(t *testing.T) {
+	plan := &configir.Plan{
+		Listeners:  []configir.Listener{{Port: 80}, {Port: 443, TLS: true}},
+		CacheZones: []configir.CacheZone{{Name: "default", MaxSizeMB: 1024, KeysZoneMB: 16, InactiveSeconds: 3600}},
+		Sites: []configir.Site{
+			tlsSite("grpc", "grpc.test", configir.TLSOptions{}),
+			tlsSite("web", "web.test", configir.TLSOptions{}),
+		},
+	}
+	plan.Sites[0].OriginHTTP2, plan.Sites[0].GRPC = true, true
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2 := edgeHTTP2(string(got))
+	want := map[string]bool{
+		"80 _": true, "443 _": false,
+		"80 grpc.test": true, "443 grpc.test": true,
+		"80 web.test": false, "443 web.test": false,
+	}
+	if !maps.Equal(h2, want) {
+		t.Fatalf("HTTP/2 by listener and server = %v, want %v", h2, want)
+	}
+	plan.Sites[0].GRPC = false
+	if got, err = Render(params(), plan); err != nil {
+		t.Fatal(err)
+	}
+	for server, on := range edgeHTTP2(string(got)) {
+		if on {
+			t.Errorf("without gRPC sites, %s enables HTTP/2", server)
+		}
+	}
+}
+
+// edgeHTTP2 maps the public edge servers ("<port> <server_name>") to
+// whether they enable HTTP/2.
+func edgeHTTP2(conf string) map[string]bool {
+	out := map[string]bool{}
+	for _, block := range strings.Split(conf, "\n    server {\n")[1:] {
+		block, _, _ = strings.Cut(block, "\n    }\n")
+		listen := regexp.MustCompile(`(?m)^\s*listen (\d+)`).FindStringSubmatch(block)
+		name := regexp.MustCompile(`(?m)^\s*server_name ([^;]+);`).FindStringSubmatch(block)
+		if listen == nil || name == nil {
+			continue // unix sockets
+		}
+		out[listen[1]+" "+name[1]] = strings.Contains(block, "\n        http2 on;\n")
+	}
+	return out
+}
+
+// originLayerServer returns the server block of the origin layer that
+// listens on socket.
+func originLayerServer(t *testing.T, conf, socket string) string {
+	t.Helper()
+	return section(t, conf, "listen unix:"+socket+";", "\n    }\n")
 }
 
 // TestRenderOriginLayerUpstreamsKeepNoConnections: the edge layer's
@@ -545,16 +758,21 @@ func TestRenderEdgeRequestIDsAndHiddenHeaders(t *testing.T) {
 		}
 	}
 	waf := append(slices.Clone(locs["@edgeweir_waf_0"]), locs["@edgeweir_waf_131072"]...)
-	if len(edge) == 0 || len(origin) != 2 || len(waf) == 0 {
-		t.Fatalf("locations: %d edge, %d origin, %d CRS", len(edge), len(origin), len(waf))
+	grpc := locs["@edgeweir_grpc"]
+	if len(edge) == 0 || len(origin) != 6 || len(waf) == 0 || len(grpc) != len(edge) {
+		t.Fatalf("locations: %d edge, %d origin, %d CRS, %d gRPC", len(edge), len(origin), len(waf), len(grpc))
 	}
-	for _, body := range append(slices.Clone(edge), waf...) {
+	for _, body := range slices.Concat(edge, waf, grpc) {
+		module := "proxy"
+		if strings.Contains(body, "grpc_pass") {
+			module = "grpc"
+		}
 		for _, want := range []string{
 			"add_header X-Request-Id $edgeweir_request_id always;",
-			"proxy_set_header X-Request-Id $edgeweir_request_id;",
-			"proxy_hide_header X-Request-Id;",
-			"proxy_hide_header Cache-Tag;",
-			"proxy_hide_header X-Edgeweir-Affinity;",
+			module + "_set_header X-Request-Id $edgeweir_request_id;",
+			module + "_hide_header X-Request-Id;",
+			module + "_hide_header Cache-Tag;",
+			module + "_hide_header X-Edgeweir-Affinity;",
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("edge location lacks %q", want)
@@ -608,11 +826,11 @@ func TestRenderErrorPages(t *testing.T) {
 	if n := strings.Count(conf, edgeDirectives); n != edgeServers || n != 4 {
 		t.Errorf("%d of %d edge servers hand nginx's errors to error pages", n, edgeServers)
 	}
-	if n := strings.Count(conf, originDirectives); n != 2 {
+	if n := strings.Count(conf, originDirectives); n != 6 {
 		t.Errorf("%d origin layers hand nginx's errors to error pages", n)
 	}
-	if n := len(regexp.MustCompile(`(?m)^\s*error_page\s`).FindAllString(conf, -1)); n != 3*edgeServers+2*2 {
-		t.Errorf("%d error_page directives: one set per server only (none in the CRS locations or the control API)", n)
+	if n := len(regexp.MustCompile(`(?m)^\s*error_page\s`).FindAllString(conf, -1)); n != 3*edgeServers+2*6 {
+		t.Errorf("%d error_page directives: one set per server only (none in the CRS or gRPC locations or the control API)", n)
 	}
 	control := section(t, conf, "listen unix:"+p.ControlSocket+";", "\n    }\n")
 	if strings.Contains(control, "error_page") || strings.Contains(control, "edgeweir_error") {
@@ -620,8 +838,8 @@ func TestRenderErrorPages(t *testing.T) {
 	}
 	locs := locations(conf)
 	named, internal := locs["@edgeweir_error"], locs["= /./edgeweir-error"]
-	if len(named) != edgeServers+2 || len(internal) != edgeServers+2 {
-		t.Fatalf("%d named and %d internal error locations for %d servers", len(named), len(internal), edgeServers+2)
+	if len(named) != edgeServers+6 || len(internal) != edgeServers+6 {
+		t.Fatalf("%d named and %d internal error locations for %d servers", len(named), len(internal), edgeServers+6)
 	}
 	const (
 		edgeHandler   = `content_by_lua_block { require("edgeweir.router").error_page() }`

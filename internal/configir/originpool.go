@@ -141,3 +141,19 @@ func buildAffinity(a *nodev1.SessionAffinity) (*Affinity, error) {
 	}
 	return &Affinity{TTL: ttl}, nil
 }
+
+// originProtocol is a pool's protocol towards its origins: HTTP/2
+// (OriginPool.protocol) and gRPC proxied end to end (OriginPool.grpc).
+type originProtocol struct {
+	http2, grpc bool
+}
+
+// buildOriginProtocol validates a pool's protocol settings: gRPC needs
+// HTTP/2 towards the origins.
+func buildOriginProtocol(pool *nodev1.OriginPool) (originProtocol, error) {
+	out := originProtocol{http2: pool.GetProtocol() == nodev1.OriginProtocol_ORIGIN_PROTOCOL_HTTP2, grpc: pool.GetGrpc()}
+	if out.grpc && !out.http2 {
+		return originProtocol{}, fmt.Errorf("%w: gRPC requires HTTP/2 towards the origins", ErrRejected)
+	}
+	return out, nil
+}

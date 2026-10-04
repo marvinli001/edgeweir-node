@@ -54,7 +54,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "7e70a7ac5f40ba6f",
+            conf_id = "3504f521b6a40311",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -102,6 +102,12 @@ http {
         default upgrade;
         ""      "";
     }
+    # gRPC towards an origin (the gRPC origin layers): grpcs for HTTPS
+    # origins, plain HTTP/2 (h2c) otherwise.
+    map $edgeweir_upstream_scheme $edgeweir_grpc_scheme {
+        https   grpcs;
+        default grpc;
+    }
     # Request id of the edge layer (X-Request-Id, error pages, access logs):
     # the client's when it is valid, nginx's own otherwise.
     map $http_x_request_id $edgeweir_request_id {
@@ -119,14 +125,17 @@ http {
         default @edgeweir_error;
     }
 
-    # Edge -> origin layer (local unix sockets). The variant without TLS
-    # verification serves sites that turned it off. No keep-alive: when a
-    # request on a reused connection fails, nginx tries it again on another
-    # one (each try a new trip to the origin), and the origin layer closes
-    # the connection on purpose when the edge should serve a stale copy
-    # (stale-if-error, edgeweir.origin). nginx >= 1.29.7 caches upstream
-    # connections by default (`keepalive 32 local`); the zero value
-    # disables that cache.
+    # Edge -> origin layer (local unix sockets). The variants without TLS
+    # verification serve sites that turned it off; the _h2 variants send
+    # the requests to the origins over HTTP/2, the _grpc variants take the
+    # edge's gRPC requests over HTTP/2 (grpc_pass) and pass them on to the
+    # origins the same way. No keep-alive (nginx >= 1.29.7 would cache
+    # connections by default): when a request on a reused connection fails,
+    # nginx tries it again on another one (each try a new trip to the
+    # origin), and the origin layer closes the connection on purpose when
+    # the edge should serve a stale copy (stale-if-error, edgeweir.origin).
+    # The gRPC layers keep nginx's default cache: gRPC is never cached, so
+    # there is no stale copy, and its connections are HTTP/2 ones.
     upstream edgeweir_origin_verify {
         server unix:/run/edgeweir-node/origin.sock;
         keepalive 0;
@@ -134,6 +143,20 @@ http {
     upstream edgeweir_origin_noverify {
         server unix:/run/edgeweir-node/origin-noverify.sock;
         keepalive 0;
+    }
+    upstream edgeweir_origin_verify_h2 {
+        server unix:/run/edgeweir-node/origin-h2.sock;
+        keepalive 0;
+    }
+    upstream edgeweir_origin_noverify_h2 {
+        server unix:/run/edgeweir-node/origin-noverify-h2.sock;
+        keepalive 0;
+    }
+    upstream edgeweir_origin_verify_grpc {
+        server unix:/run/edgeweir-node/origin-grpc.sock;
+    }
+    upstream edgeweir_origin_noverify_grpc {
+        server unix:/run/edgeweir-node/origin-noverify-grpc.sock;
     }
 
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools
@@ -143,8 +166,21 @@ http {
     # TLS connection verified for one name would be reused for a request
     # that must verify another, and sites that disable keep-alive would be
     # pooled anyway. The zero value disables that cache; pooling stays with
-    # balancer.enable_keepalive, keyed by address, port and SNI.
+    # balancer.enable_keepalive, keyed by address, port and SNI. One
+    # upstream per protocol (HTTP/1.1, HTTP/2, gRPC): balancer_by_lua keeps
+    # the pools of each upstream apart, and a connection serves requests of
+    # its own protocol only.
     upstream edgeweir_balancer {
+        server 0.0.0.1;
+        keepalive 0;
+        balancer_by_lua_block { require("edgeweir.origin").balance() }
+    }
+    upstream edgeweir_balancer_h2 {
+        server 0.0.0.1;
+        keepalive 0;
+        balancer_by_lua_block { require("edgeweir.origin").balance() }
+    }
+    upstream edgeweir_balancer_grpc {
         server 0.0.0.1;
         keepalive 0;
         balancer_by_lua_block { require("edgeweir.origin").balance() }
@@ -198,8 +234,8 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
-            # (set in balancer_by_lua; the default, $proxy_host, would be
-            # "edgeweir_balancer").
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
             proxy_connect_timeout 10s;
@@ -260,8 +296,8 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
-            # (set in balancer_by_lua; the default, $proxy_host, would be
-            # "edgeweir_balancer").
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
@@ -270,6 +306,270 @@ http {
             proxy_read_timeout 60s;
             proxy_next_upstream error timeout http_502 http_503 http_504;
             proxy_next_upstream_tries 3;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+    }
+    # Origin layer: reachable only through its
+    # unix socket from the edge layer below; internal X-Edgeweir-* request
+    # headers never reach the origin.
+    # HTTP/2 to the origins.
+    server {
+        listen unix:/run/edgeweir-node/origin-h2.sock;
+        # nginx's own errors here (uncaught Lua errors, requests nginx
+        # refuses) get error pages, unless the edge may serve its stale copy
+        # (edgeweir.origin.error_page); nginx's 502 and 504 stay with the
+        # header filter.
+        error_page 400 413 414 500 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
+            # knowledge (h2c) otherwise. nginx sends Host as the "host"
+            # header field (no :authority with proxy_set_header Host).
+            proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer_h2$edgeweir_upstream_uri;
+            proxy_http_version 2;
+            proxy_set_header Host $edgeweir_upstream_host;
+            proxy_set_header Authorization $edgeweir_authorization;
+            proxy_set_header X-Amz-Date $edgeweir_amz_date;
+            proxy_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            proxy_set_header X-Edgeweir-Site "";
+            proxy_set_header X-Edgeweir-Rules "";
+            proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            proxy_next_upstream error timeout http_502 http_503 http_504;
+            proxy_next_upstream_tries 3;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+    }
+    # Origin layer without TLS verification: reachable only through its
+    # unix socket from the edge layer below; internal X-Edgeweir-* request
+    # headers never reach the origin.
+    # HTTP/2 to the origins.
+    server {
+        listen unix:/run/edgeweir-node/origin-noverify-h2.sock;
+        # nginx's own errors here (uncaught Lua errors, requests nginx
+        # refuses) get error pages, unless the edge may serve its stale copy
+        # (edgeweir.origin.error_page); nginx's 502 and 504 stay with the
+        # header filter.
+        error_page 400 413 414 500 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
+            # knowledge (h2c) otherwise. nginx sends Host as the "host"
+            # header field (no :authority with proxy_set_header Host).
+            proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer_h2$edgeweir_upstream_uri;
+            proxy_http_version 2;
+            proxy_set_header Host $edgeweir_upstream_host;
+            proxy_set_header Authorization $edgeweir_authorization;
+            proxy_set_header X-Amz-Date $edgeweir_amz_date;
+            proxy_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            proxy_set_header X-Edgeweir-Site "";
+            proxy_set_header X-Edgeweir-Rules "";
+            proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_ssl_verify off;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            proxy_next_upstream error timeout http_502 http_503 http_504;
+            proxy_next_upstream_tries 3;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+    }
+    # Origin layer: reachable only through its
+    # unix socket from the edge layer below; internal X-Edgeweir-* request
+    # headers never reach the origin.
+    # gRPC requests: HTTP/2 from the edge and to the origins.
+    server {
+        listen unix:/run/edgeweir-node/origin-grpc.sock;
+        # The edge's grpc_pass speaks HTTP/2 with prior knowledge. Streams
+        # have no body size limit: client_max_body_size counts all the data
+        # a stream ever sends.
+        http2 on;
+        client_max_body_size 0;
+        # nginx's own errors here (uncaught Lua errors, requests nginx
+        # refuses) get error pages, unless the edge may serve its stale copy
+        # (edgeweir.origin.error_page); nginx's 502 and 504 stay with the
+        # header filter.
+        error_page 400 413 414 500 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
+            # both ways, trailers passed on.
+            grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc;
+            grpc_set_header Host $edgeweir_upstream_host;
+            grpc_set_header Authorization $edgeweir_authorization;
+            grpc_set_header X-Amz-Date $edgeweir_amz_date;
+            grpc_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            grpc_set_header X-Edgeweir-Site "";
+            grpc_set_header X-Edgeweir-Rules "";
+            grpc_set_header X-Edgeweir-Cache-Status "";
+            grpc_set_header X-Edgeweir-Origin "";
+            grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            grpc_ssl_name $edgeweir_ssl_name;
+            grpc_ssl_server_name on;
+            grpc_connect_timeout 10s;
+            grpc_send_timeout 60s;
+            grpc_read_timeout 60s;
+            grpc_next_upstream error timeout http_502 http_503 http_504;
+            grpc_next_upstream_tries 3;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+    }
+    # Origin layer without TLS verification: reachable only through its
+    # unix socket from the edge layer below; internal X-Edgeweir-* request
+    # headers never reach the origin.
+    # gRPC requests: HTTP/2 from the edge and to the origins.
+    server {
+        listen unix:/run/edgeweir-node/origin-noverify-grpc.sock;
+        # The edge's grpc_pass speaks HTTP/2 with prior knowledge. Streams
+        # have no body size limit: client_max_body_size counts all the data
+        # a stream ever sends.
+        http2 on;
+        client_max_body_size 0;
+        # nginx's own errors here (uncaught Lua errors, requests nginx
+        # refuses) get error pages, unless the edge may serve its stale copy
+        # (edgeweir.origin.error_page); nginx's 502 and 504 stay with the
+        # header filter.
+        error_page 400 413 414 500 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
+            # both ways, trailers passed on.
+            grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc;
+            grpc_set_header Host $edgeweir_upstream_host;
+            grpc_set_header Authorization $edgeweir_authorization;
+            grpc_set_header X-Amz-Date $edgeweir_amz_date;
+            grpc_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            grpc_set_header X-Edgeweir-Site "";
+            grpc_set_header X-Edgeweir-Rules "";
+            grpc_set_header X-Edgeweir-Cache-Status "";
+            grpc_set_header X-Edgeweir-Origin "";
+            grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            grpc_ssl_name $edgeweir_ssl_name;
+            grpc_ssl_server_name on;
+            grpc_ssl_verify off;
+            grpc_connect_timeout 10s;
+            grpc_send_timeout 60s;
+            grpc_read_timeout 60s;
+            grpc_next_upstream error timeout http_502 http_503 http_504;
+            grpc_next_upstream_tries 3;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -320,6 +620,9 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            # The request context across the hand-over to a CRS or gRPC
+            # location (edgeweir.waf.stash_ctx).
+            set $edgeweir_ctx_ref "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -375,8 +678,38 @@ http {
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 
+        # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
+        # here at the end of its access phase, instead of the CRS location.
+        # HTTP/2 to the origin layer (grpc_pass, h2c), unbuffered both ways
+        # with trailers; never cached or compressed, and no body size limit
+        # (client_max_body_size counts all the data a stream ever sends).
+        location @edgeweir_grpc {
+            client_max_body_size 0;
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+            grpc_pass grpc://$edgeweir_origin_layer;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-Proto $scheme;
+            grpc_set_header CDN-Loop $edgeweir_cdn_loop;
+            grpc_set_header X-Edgeweir-Site $edgeweir_site;
+            grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            grpc_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer;
+            # these only bound the local hop.
+            grpc_send_timeout 3600s;
+            grpc_read_timeout 3600s;
+            grpc_hide_header X-Request-Id;
+            grpc_hide_header Cache-Tag;
+            grpc_hide_header X-Edgeweir-Affinity;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
         # Error pages of nginx's own errors (error_page above), also of
-        # requests that came from a CRS location (log: counted as there).
+        # requests that came from a CRS or gRPC location (log: counted as
+        # there).
         # Variables location / sets are unset for requests that never got
         # there.
         location @edgeweir_error {
@@ -426,6 +759,9 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            # The request context across the hand-over to a CRS or gRPC
+            # location (edgeweir.waf.stash_ctx).
+            set $edgeweir_ctx_ref "";
             access_by_lua_block { require("edgeweir.router").access() }
 
             slice 1m;
@@ -481,8 +817,38 @@ http {
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 
+        # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
+        # here at the end of its access phase, instead of the CRS location.
+        # HTTP/2 to the origin layer (grpc_pass, h2c), unbuffered both ways
+        # with trailers; never cached or compressed, and no body size limit
+        # (client_max_body_size counts all the data a stream ever sends).
+        location @edgeweir_grpc {
+            client_max_body_size 0;
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+            grpc_pass grpc://$edgeweir_origin_layer;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-Proto $scheme;
+            grpc_set_header CDN-Loop $edgeweir_cdn_loop;
+            grpc_set_header X-Edgeweir-Site $edgeweir_site;
+            grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            grpc_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer;
+            # these only bound the local hop.
+            grpc_send_timeout 3600s;
+            grpc_read_timeout 3600s;
+            grpc_hide_header X-Request-Id;
+            grpc_hide_header Cache-Tag;
+            grpc_hide_header X-Edgeweir-Affinity;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
         # Error pages of nginx's own errors (error_page above), also of
-        # requests that came from a CRS location (log: counted as there).
+        # requests that came from a CRS or gRPC location (log: counted as
+        # there).
         # Variables location / sets are unset for requests that never got
         # there.
         location @edgeweir_error {
@@ -517,7 +883,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "7e70a7ac5f40ba6f",
+            conf_id = "3504f521b6a40311",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }

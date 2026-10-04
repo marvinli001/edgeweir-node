@@ -721,7 +721,7 @@ func engineConfig(bin, prefix, conf string, params render.Params, log *slog.Logg
 		Prefix:       prefix,
 		Conf:         conf,
 		Managed:      true,
-		StaleSockets: []string{params.ControlSocket, params.OriginSocket, params.OriginSocketNoVerify, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket},
+		StaleSockets: append([]string{params.ControlSocket, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket}, params.OriginLayerSockets()...),
 		Logger:       log,
 	}
 }

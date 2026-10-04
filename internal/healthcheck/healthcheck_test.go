@@ -468,6 +468,124 @@ func TestProbeTLS(t *testing.T) {
 	}
 }
 
+// TestProbeHTTP2: the origins of pools that send their requests over
+// HTTP/2 are probed over HTTP/2, with prior knowledge for HTTP origins and
+// ALPN h2 for HTTPS ones, with the same method, path, Host (:authority)
+// and User-Agent as over HTTP/1.1. An origin that does not speak HTTP/2
+// fails the probe, as it fails the data plane's requests.
+func TestProbeHTTP2(t *testing.T) {
+	ca, err := pkitest.NewCA("origin CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := ca.IssueServer([]string{"origin.test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var seen []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Proto+" "+r.Method+" "+r.URL.RequestURI()+" "+r.Host+" "+r.UserAgent())
+		mu.Unlock()
+		if r.URL.Path == "/unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	quiet := log.New(io.Discard, "", 0) // refused protocols are expected
+	h2c := httptest.NewUnstartedServer(handler)
+	h2c.Config.Protocols = new(http.Protocols)
+	h2c.Config.Protocols.SetUnencryptedHTTP2(true)
+	h2c.Start()
+	t.Cleanup(h2c.Close)
+	h2 := httptest.NewUnstartedServer(handler)
+	h2.EnableHTTP2 = true
+	h2.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	h2.StartTLS()
+	t.Cleanup(h2.Close)
+	h1 := httptest.NewUnstartedServer(handler) // HTTPS with ALPN http/1.1 only
+	h1.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	h1.Config.ErrorLog = quiet
+	h1.StartTLS()
+	t.Cleanup(h1.Close)
+	plain := httptest.NewUnstartedServer(handler) // HTTP/1.1 only
+	plain.Config.ErrorLog = quiet
+	plain.Start()
+	t.Cleanup(plain.Close)
+	// HTTPS without ALPN: the handshake succeeds, nothing is negotiated.
+	noALPN, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = noALPN.Close() })
+	go func() {
+		for {
+			conn, err := noALPN.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(io.Discard, io.LimitReader(conn, 64))
+			}()
+		}
+	}()
+
+	var asked []string
+	var askedMu sync.Mutex
+	probe := func(addr string, o configir.Origin, f func(*configir.ActiveHealthCheck)) result {
+		mu.Lock()
+		seen = nil
+		mu.Unlock()
+		c := New(Options{Dialer: to(addr, &asked, &askedMu), RootCAs: ca.Pool()})
+		defer c.Close()
+		s := site("s", checkWith(f), o)
+		s.OriginHTTP2 = true
+		sp := onlySpec(t, &configir.Plan{Sites: []configir.Site{s}})
+		if !sp.http2 {
+			t.Fatal("spec without HTTP/2")
+		}
+		return c.probe(context.Background(), sp, policy())
+	}
+	saw := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(seen, " | ")
+	}
+	ua := "edgeweir-node-healthcheck/" + version.Version
+
+	o := origin("o", "93.184.216.34", 8080)
+	if r := probe(h2c.Listener.Addr().String(), o, nil); !r.ok || saw() != "HTTP/2.0 GET /healthz?deep=1 93.184.216.34:8080 "+ua {
+		t.Fatalf("h2c: %+v, origin saw %q", r, saw())
+	}
+	head := func(c *configir.ActiveHealthCheck) { c.Method, c.Path = "HEAD", "/" }
+	if r := probe(h2c.Listener.Addr().String(), o, head); !r.ok || saw() != "HTTP/2.0 HEAD / 93.184.216.34:8080 "+ua {
+		t.Fatalf("h2c HEAD: %+v, origin saw %q", r, saw())
+	}
+	unavailable := func(c *configir.ActiveHealthCheck) { c.Path = "/unavailable" }
+	if r := probe(h2c.Listener.Addr().String(), o, unavailable); r.code != CodeUpstreamStatus || r.params["status"] != "503" {
+		t.Fatalf("h2c 503: %+v", r)
+	}
+	if r := probe(plain.Listener.Addr().String(), o, nil); r.code != CodeConnectFailed || !strings.HasPrefix(r.err, "HTTP/2 request: ") {
+		t.Fatalf("HTTP/1.1-only origin: %+v", r)
+	}
+
+	tlsOrigin := origin("o", "93.184.216.34", 443)
+	tlsOrigin.Scheme, tlsOrigin.SNI, tlsOrigin.HostHeader = configir.SchemeHTTPS, "origin.test", "www.example.com"
+	if r := probe(h2.Listener.Addr().String(), tlsOrigin, nil); !r.ok || saw() != "HTTP/2.0 GET /healthz?deep=1 www.example.com "+ua {
+		t.Fatalf("h2: %+v, origin saw %q", r, saw())
+	}
+	if r := probe(h1.Listener.Addr().String(), tlsOrigin, nil); r.code != CodeTLSFailed || !strings.Contains(r.err, "application protocol") {
+		t.Fatalf("HTTPS origin with ALPN http/1.1 only: %+v", r)
+	}
+	if r := probe(noALPN.Addr().String(), tlsOrigin, nil); r.code != CodeConnectFailed || r.err != `origin does not speak HTTP/2 (ALPN "")` {
+		t.Fatalf("HTTPS origin without ALPN: %+v", r)
+	}
+	if saw() != "" {
+		t.Fatalf("requests reached origins without HTTP/2: %q", saw())
+	}
+}
+
 // harness is a checker on a manual clock whose probes reach a test origin
 // that answers /healthz with the status of the origin's id.
 type harness struct {

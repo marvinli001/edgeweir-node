@@ -623,8 +623,11 @@ func (a *Agent) prepareDirs() error {
 	// and write temp files under the prefix (inside the 0700 state
 	// directory by default).
 	p := a.cfg.Render.WithDefaults()
-	return letWorkersIn(a.cfg.Render.User, filepath.Join(prefix, "tmp"), a.cfg.Render.CacheDir,
-		filepath.Dir(p.GeoIPSocket), filepath.Dir(p.OriginSocket), filepath.Dir(p.OriginSocketNoVerify), filepath.Dir(p.L4Socket))
+	paths := []string{filepath.Join(prefix, "tmp"), a.cfg.Render.CacheDir, filepath.Dir(p.GeoIPSocket), filepath.Dir(p.L4Socket)}
+	for _, socket := range p.OriginLayerSockets() {
+		paths = append(paths, filepath.Dir(socket))
+	}
+	return letWorkersIn(a.cfg.Render.User, paths...)
 }
 
 func (a *Agent) buildOptions() configir.Options {

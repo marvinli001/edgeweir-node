@@ -1,6 +1,7 @@
 package configir
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -119,6 +120,62 @@ func TestBuildSessionAffinity(t *testing.T) {
 	c.Sites[0].Enabled = false
 	if _, err := Build(c, Options{}); err != nil {
 		t.Fatalf("disabled site with affinity and no keys: %v", err)
+	}
+}
+
+// TestBuildOriginProtocol: HTTP/2 towards the origins and gRPC reach the
+// site table (omitted for HTTP/1.1); gRPC without HTTP/2 and unknown
+// protocols reject the configuration, also for a disabled site.
+func TestBuildOriginProtocol(t *testing.T) {
+	protocolConfig := func(protocol nodev1.OriginProtocol, grpc bool) *nodev1.NodeConfig {
+		s := site("site-a", "a.test")
+		s.OriginPool.Protocol, s.OriginPool.Grpc = protocol, grpc
+		return &nodev1.NodeConfig{Sites: []*nodev1.Site{s}, RequiredFeatures: []string{FeatureOriginHTTP2}}
+	}
+	for _, tc := range []struct {
+		protocol    nodev1.OriginProtocol
+		grpc        bool
+		http2, json string
+	}{
+		{nodev1.OriginProtocol_ORIGIN_PROTOCOL_UNSPECIFIED, false, "", ""},
+		{nodev1.OriginProtocol_ORIGIN_PROTOCOL_HTTP1, false, "", ""},
+		{nodev1.OriginProtocol_ORIGIN_PROTOCOL_HTTP2, false, "h2", `"origin_http2":true`},
+		{nodev1.OriginProtocol_ORIGIN_PROTOCOL_HTTP2, true, "h2", `"origin_http2":true,"grpc":true`},
+	} {
+		p, err := Build(protocolConfig(tc.protocol, tc.grpc), Options{})
+		if err != nil {
+			t.Fatalf("%v grpc=%v: %v", tc.protocol, tc.grpc, err)
+		}
+		got := p.Sites[0]
+		if got.OriginHTTP2 != (tc.http2 != "") || got.GRPC != tc.grpc {
+			t.Errorf("%v grpc=%v: origin_http2=%v grpc=%v", tc.protocol, tc.grpc, got.OriginHTTP2, got.GRPC)
+		}
+		b, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.json == "" && (strings.Contains(string(b), "origin_http2") || strings.Contains(string(b), `"grpc"`)) {
+			t.Errorf("%v: HTTP/1.1 site table entry carries protocol fields: %s", tc.protocol, b)
+		}
+		if tc.json != "" && !strings.Contains(string(b), tc.json) {
+			t.Errorf("%v grpc=%v: site table entry lacks %s: %s", tc.protocol, tc.grpc, tc.json, b)
+		}
+	}
+	for _, protocol := range []nodev1.OriginProtocol{nodev1.OriginProtocol_ORIGIN_PROTOCOL_UNSPECIFIED, nodev1.OriginProtocol_ORIGIN_PROTOCOL_HTTP1} {
+		c := protocolConfig(protocol, true)
+		if _, err := Build(c, Options{}); !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "gRPC requires HTTP/2") {
+			t.Errorf("gRPC over %v: %v", protocol, err)
+		}
+		c.Sites[0].Enabled = false
+		if _, err := Build(c, Options{}); !errors.Is(err, ErrRejected) {
+			t.Errorf("disabled site, gRPC over %v: %v", protocol, err)
+		}
+	}
+	if _, err := Build(protocolConfig(nodev1.OriginProtocol(7), false), Options{}); !errors.Is(err, ErrRejected) {
+		t.Errorf("unknown protocol: %v", err)
+	}
+	if !slices.Contains(SupportedFeatures, FeatureOriginHTTP2) {
+		t.Errorf("SupportedFeatures lacks %s", FeatureOriginHTTP2)
 	}
 }
 

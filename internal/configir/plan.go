@@ -165,7 +165,13 @@ type Site struct {
 	// Slice fetches and caches cacheable GET/HEAD requests in 1 MiB slices.
 	Slice bool `json:"slice,omitempty"`
 	// WebSocket proxies WebSocket upgrades (default true).
-	WebSocket     bool               `json:"websocket"`
+	WebSocket bool `json:"websocket"`
+	// OriginHTTP2 sends the requests to the origins over HTTP/2 (feature
+	// origin-http2-v1); WebSocket upgrades keep HTTP/1.1.
+	OriginHTTP2 bool `json:"origin_http2,omitempty"`
+	// GRPC proxies gRPC requests over HTTP/2 end to end, unbuffered and
+	// never cached, without the CRS (requires OriginHTTP2).
+	GRPC          bool               `json:"grpc,omitempty"`
 	CertificateID string             `json:"certificate_id,omitempty"`
 	TLS           *TLSOptions        `json:"tls,omitempty"`
 	Certificate   *Certificate       `json:"certificate,omitempty"`
@@ -241,7 +247,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -291,6 +297,13 @@ const FeatureRuleLog = "rule-log-v1"
 // such domains (and requires the feature) only to clusters whose active
 // nodes all announce it.
 const FeatureTLSPendingDomains = "tls-pending-domains-v1"
+
+// FeatureOriginHTTP2 (proto v0.21.0): OriginPool.protocol HTTP/2 towards
+// the origins (h2 over TLS, h2c to HTTP origins) and OriginPool.grpc, gRPC
+// requests proxied over HTTP/2 end to end; the active health checks of
+// such pools probe over HTTP/2. The console requires it when a served site
+// uses either.
+const FeatureOriginHTTP2 = "origin-http2-v1"
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.
@@ -518,14 +531,15 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		return nil, err
 	}
 	// Every site's protection, CRS setting, error pages, active health
-	// check and session affinity are checked, disabled sites included: an
-	// unknown challenge type, CRS mode or error page status rejects the
-	// whole configuration.
+	// check, session affinity and origin protocol are checked, disabled
+	// sites included: an unknown challenge type, CRS mode or error page
+	// status, or gRPC without HTTP/2, rejects the whole configuration.
 	protections := map[string]*Protection{}
 	wafs := map[string]*WAF{}
 	pages := map[string]*ErrorPages{}
 	checks := map[string]*ActiveHealthCheck{}
 	affinities := map[string]*Affinity{}
+	protocols := map[string]originProtocol{}
 	for _, s := range c.GetSites() {
 		id := s.GetId()
 		if protections[id], err = buildProtection(s.GetProtection()); err != nil {
@@ -541,6 +555,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if affinities[id], err = buildAffinity(s.GetOriginPool().GetSessionAffinity()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if protocols[id], err = buildOriginProtocol(s.GetOriginPool()); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 	}
@@ -662,6 +679,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.ActiveHealthCheck = checks[id]
 		site.ActiveHealth = site.ActiveHealthCheck != nil
 		site.Affinity = affinities[id]
+		site.OriginHTTP2, site.GRPC = protocols[id].http2, protocols[id].grpc
 		// Affinity cookies are signed with the cluster's challenge keys.
 		if site.Affinity != nil && len(p.ChallengeKeys) == 0 {
 			return nil, fmt.Errorf("%w: site %q uses session affinity, but the configuration carries no challenge keys to sign its cookies", ErrRejected, id)
