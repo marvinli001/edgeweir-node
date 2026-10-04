@@ -51,7 +51,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "05026c678f88432e",
+            conf_id = "8ae6b3384a6c7107",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -118,12 +118,16 @@ http {
     # request on a reused connection fails, nginx tries it again on another
     # one (each try a new trip to the origin), and the origin layer closes
     # the connection on purpose when the edge should serve a stale copy
-    # (stale-if-error, edgeweir.origin).
+    # (stale-if-error, edgeweir.origin). nginx >= 1.29.7 caches upstream
+    # connections by default (`keepalive 32 local`); the zero value
+    # disables that cache.
     upstream edgeweir_origin_verify {
         server unix:/run/edgeweir-node/origin.sock;
+        keepalive 0;
     }
     upstream edgeweir_origin_noverify {
         server unix:/run/edgeweir-node/origin-noverify.sock;
+        keepalive 0;
     }
 
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools

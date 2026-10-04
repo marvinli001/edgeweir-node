@@ -144,12 +144,16 @@ http {
     # request on a reused connection fails, nginx tries it again on another
     # one (each try a new trip to the origin), and the origin layer closes
     # the connection on purpose when the edge should serve a stale copy
-    # (stale-if-error, edgeweir.origin).
+    # (stale-if-error, edgeweir.origin). nginx >= 1.29.7 caches upstream
+    # connections by default (`keepalive 32 local`); the zero value
+    # disables that cache.
     upstream edgeweir_origin_verify {
         server unix:{{ .OriginSocket }};
+        keepalive 0;
     }
     upstream edgeweir_origin_noverify {
         server unix:{{ .OriginSocketNoVerify }};
+        keepalive 0;
     }
 
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools

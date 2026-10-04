@@ -25,6 +25,7 @@
 //	keep.test       like tags.test, keeps Cache-Tag for clients
 //	slice.test      like tags.test, Range slices
 //	swr.test        like tags.test, cached 1 s, stale-while-revalidate 60 s
+//	sie.test        like tags.test, cached 1 s, stale-if-error 60 s
 //	pages.test      error pages for 403 and 503 that intercept origin errors
 //	                   (every request logged)
 //	dead.test       origin console:9 (nothing listens: 502)
@@ -105,6 +106,7 @@
 //	GET /task-result?id=  "<state> <error code> <succeeded> <failed>" of a
 //	              reported task ("-" for no code)
 //	POST /health?port=&status=  the status of the test origin's /health
+//	GET /flaky?port=  how many requests the test origin saw at /flaky
 //	GET /active-health  "<site> <origin> <healthy> <code>" per ACTIVE entry
 //	              of the last ReportStatus ("-" for no code)
 //	GET /tls-health?sni=&host=&path=  a TLS request to node:8443 with that
@@ -197,6 +199,9 @@ func serveTLSOrigin(addr, caOut string) {
 //	/status/<code>    answers <code> with an ETag
 //	/echo             "port <port> rid <X-Request-Id>"
 //	/health           the status set with the helper's POST /health (200)
+//	/flaky            "flaky <n>", n counting the requests (the helper's
+//	                  GET /flaky); 200 for the first, 500 for every later
+//	                  one
 //	/sitemap-index.xml.gz, /sitemap-a.xml, /sitemap-b.xml.gz  a gzipped
 //	                  sitemap index with a plain and a gzipped sitemap of
 //	                  smap.test (page-1, page-2, page-3?v=1) and URLs and a
@@ -222,6 +227,12 @@ func serveTestOrigin(addr string) {
 		switch {
 		case r.URL.Path == "/health":
 			w.WriteHeader(int(health.Load()))
+		case r.URL.Path == "/flaky":
+			n := flakyOf(port).Add(1)
+			if n > 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			fmt.Fprintf(w, "flaky %d\n", n)
 		case r.URL.Path == "/gen":
 			mu.Lock()
 			gens[r.URL.Path]++
@@ -265,6 +276,14 @@ func healthOf(port string) *atomic.Int32 {
 	h := v.(*atomic.Int32)
 	h.CompareAndSwap(0, http.StatusOK)
 	return h
+}
+
+// flakies counts the requests of each test origin's /flaky by port.
+var flakies sync.Map
+
+func flakyOf(port string) *atomic.Int32 {
+	v, _ := flakies.LoadOrStore(port, new(atomic.Int32))
+	return v.(*atomic.Int32)
 }
 
 // sitemaps are the sitemap documents of the test origins.
@@ -393,6 +412,7 @@ func baseSites(origin string) []*nodev1.Site {
 		keepSite(),
 		sliceSite(),
 		swrSite(),
+		sieSite(),
 		pagesSite(),
 		site("site-dead", "dead.test", "console", 9),
 		affinitySite(),
@@ -502,6 +522,15 @@ func swrSite() *nodev1.Site {
 	s := site("site-swr", "swr.test", "console", 8082)
 	s.CacheRules[0].EdgeTtlSeconds = 1
 	s.CacheRules[0].StaleWhileRevalidateSeconds = 60
+	return s
+}
+
+// sieSite keeps objects fresh for a second and serves them stale for a
+// minute when the origin fails (stale-if-error).
+func sieSite() *nodev1.Site {
+	s := site("site-sie", "sie.test", "console", 8082)
+	s.CacheRules[0].EdgeTtlSeconds = 1
+	s.CacheRules[0].StaleIfErrorSeconds = 60
 	return s
 }
 
@@ -770,6 +799,9 @@ func main() {
 			return
 		}
 		healthOf(r.URL.Query().Get("port")).Store(int32(code))
+	})
+	mux.HandleFunc("GET /flaky", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, flakyOf(r.URL.Query().Get("port")).Load())
 	})
 	mux.HandleFunc("GET /active-health", func(w http.ResponseWriter, _ *http.Request) {
 		for _, h := range c.LastStatus().GetOriginHealth() {

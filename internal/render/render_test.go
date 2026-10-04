@@ -263,6 +263,25 @@ func TestRenderOriginTLSName(t *testing.T) {
 	}
 }
 
+// TestRenderOriginLayerUpstreamsKeepNoConnections: the edge layer's
+// upstreams to the origin layer turn off nginx's default connection cache
+// (nginx >= 1.29.7). A request that fails on a cached connection is tried
+// again without using up a try, so a connection the origin layer closes on
+// purpose (stale-if-error) would cost another trip to the origin.
+func TestRenderOriginLayerUpstreamsKeepNoConnections(t *testing.T) {
+	got, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	for _, name := range []string{"edgeweir_origin_verify", "edgeweir_origin_noverify"} {
+		upstream := section(t, conf, "upstream "+name+" {", "}")
+		if !strings.Contains(upstream, "keepalive 0;") {
+			t.Errorf("%s keeps nginx's default connection cache:\n%s", name, upstream)
+		}
+	}
+}
+
 // section returns the text from start up to the first end after it.
 func section(t *testing.T, s, start, end string) string {
 	t.Helper()

@@ -28,10 +28,10 @@
 #  11. Cache-Tag: hidden unless the site keeps it (cache hits included), a
 #      tag purge through the control socket moves tagged objects only, also
 #      when only a slice subrequest or a background update saw the tag;
-#      request ids; error pages (built-in, site and platform pages, offline
-#      and unknown hosts, origin failures, intercepted origin errors, CRS
-#      blocks, bans, requests nginx refuses, CRS 400s, HEAD); session
-#      affinity;
+#      stale-if-error after one origin attempt; request ids; error pages
+#      (built-in, site and platform pages, offline and unknown hosts,
+#      origin failures, intercepted origin errors, CRS blocks, bans,
+#      requests nginx refuses, CRS 400s, HEAD); session affinity;
 #  12. tasks from the console: purges by Cache-Tag and by host, a sitemap
 #      prefetch (gzipped index, both device variants); an active health
 #      check takes a failing origin out of rotation and brings it back;
@@ -636,6 +636,21 @@ tag_purge site-swr gen-99
 tag_purge site-swr gen-2
 CACHE=MISS cache_is swr.test /gen || fail "a tag only the background update saw did not move the object"
 pass "background updates index their Cache-Tag"
+
+# stale-if-error: for an origin's 5xx the origin layer closes the
+# connection without a response and the edge serves its expired copy after
+# one attempt (each attempt is a trip to the origin). The edge keeps no idle
+# connections to the origin layer: nginx tries a request that failed on a
+# reused connection again on another one. /flaky answers its first request
+# and fails every later one. One client connection carries the three
+# requests, so they reach one worker, where the first two would leave an
+# idle connection to the origin layer; /slow outlasts the object's second
+# of freshness.
+r=$(curl -s -D - -H 'Host: sie.test' -o /dev/null "$NODE/flaky" -o /dev/null "$NODE/slow" -o /dev/null "$NODE/flaky" |
+  tr -d '\r' | awk -F': ' '/^HTTP\//{split($0,a," ");s=a[2]} tolower($1)=="x-cache"{printf "%s %s;", s, $2}')
+hits=$(curl -fsS "$HELPER/flaky?port=8082")
+[ "$r" = "200 MISS;200 MISS;200 STALE;" ] && [ "$hits" = 2 ] || fail "stale-if-error: $r with $hits origin requests (want 2)"
+pass "stale-if-error: the expired copy after one origin attempt"
 
 # Error pages: unknown and offline hosts (built-in, then the platform's
 # page for disabled sites), origin failures (built-in), intercepted origin

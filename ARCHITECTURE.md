@@ -371,7 +371,8 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
             header_filter_by_lua
               · 源站 5xx 且边缘持有可 stale 的过期副本时断开连接，让边缘层返回 stale（最先判断）。
                 边缘到回源层不保持连接：nginx 在复用的连接上失败时会换一条连接重试且不计次数，
-                那样一次请求可能把失败的源站请求很多遍
+                那样一次请求可能把失败的源站请求很多遍（nginx 1.29.7 起 upstream 默认
+                `keepalive 32 local`，两个回源层 upstream 因此设置 `keepalive 0`）
               · nginx 自己生成的回源失败与拦截的源站错误换成错误页（body_filter_by_lua 发送，§3.19）
               · 会话保持：X-Edgeweir-Affinity 告知边缘层要签发的 cookie（§3.20）
               · 按规则链与响应状态/大小决定 X-Accel-Expires 和 stale-* 扩展
