@@ -232,6 +232,61 @@ func (LoadBalancePolicy) EnumDescriptor() ([]byte, []int) {
 	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{3}
 }
 
+// OriginProtocol is the HTTP version of the requests to a pool's origins.
+// HTTP/2 goes over TLS with ALPN "h2" to HTTPS origins and with prior
+// knowledge (h2c) to HTTP origins; an origin that does not speak it fails
+// the attempt (there is no fallback to HTTP/1.1). WebSocket upgrades use
+// HTTP/1.1 whatever the protocol. Added in v0.21.0.
+type OriginProtocol int32
+
+const (
+	// HTTP/1.1, as before v0.21.0.
+	OriginProtocol_ORIGIN_PROTOCOL_UNSPECIFIED OriginProtocol = 0
+	OriginProtocol_ORIGIN_PROTOCOL_HTTP1       OriginProtocol = 1
+	OriginProtocol_ORIGIN_PROTOCOL_HTTP2       OriginProtocol = 2
+)
+
+// Enum value maps for OriginProtocol.
+var (
+	OriginProtocol_name = map[int32]string{
+		0: "ORIGIN_PROTOCOL_UNSPECIFIED",
+		1: "ORIGIN_PROTOCOL_HTTP1",
+		2: "ORIGIN_PROTOCOL_HTTP2",
+	}
+	OriginProtocol_value = map[string]int32{
+		"ORIGIN_PROTOCOL_UNSPECIFIED": 0,
+		"ORIGIN_PROTOCOL_HTTP1":       1,
+		"ORIGIN_PROTOCOL_HTTP2":       2,
+	}
+)
+
+func (x OriginProtocol) Enum() *OriginProtocol {
+	p := new(OriginProtocol)
+	*p = x
+	return p
+}
+
+func (x OriginProtocol) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OriginProtocol) Descriptor() protoreflect.EnumDescriptor {
+	return file_edgeweir_node_v1_config_proto_enumTypes[4].Descriptor()
+}
+
+func (OriginProtocol) Type() protoreflect.EnumType {
+	return &file_edgeweir_node_v1_config_proto_enumTypes[4]
+}
+
+func (x OriginProtocol) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OriginProtocol.Descriptor instead.
+func (OriginProtocol) EnumDescriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{4}
+}
+
 // OriginScheme is the protocol used to talk to an origin.
 type OriginScheme int32
 
@@ -266,11 +321,11 @@ func (x OriginScheme) String() string {
 }
 
 func (OriginScheme) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[4].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[5].Descriptor()
 }
 
 func (OriginScheme) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[4]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[5]
 }
 
 func (x OriginScheme) Number() protoreflect.EnumNumber {
@@ -279,7 +334,7 @@ func (x OriginScheme) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OriginScheme.Descriptor instead.
 func (OriginScheme) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{4}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{5}
 }
 
 // CacheAction is what a matching cache rule does.
@@ -316,11 +371,11 @@ func (x CacheAction) String() string {
 }
 
 func (CacheAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[5].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[6].Descriptor()
 }
 
 func (CacheAction) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[5]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[6]
 }
 
 func (x CacheAction) Number() protoreflect.EnumNumber {
@@ -329,7 +384,7 @@ func (x CacheAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CacheAction.Descriptor instead.
 func (CacheAction) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{5}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{6}
 }
 
 // OriginCacheControl decides whether origin caching headers win.
@@ -369,11 +424,11 @@ func (x OriginCacheControl) String() string {
 }
 
 func (OriginCacheControl) Descriptor() protoreflect.EnumDescriptor {
-	return file_edgeweir_node_v1_config_proto_enumTypes[6].Descriptor()
+	return file_edgeweir_node_v1_config_proto_enumTypes[7].Descriptor()
 }
 
 func (OriginCacheControl) Type() protoreflect.EnumType {
-	return &file_edgeweir_node_v1_config_proto_enumTypes[6]
+	return &file_edgeweir_node_v1_config_proto_enumTypes[7]
 }
 
 func (x OriginCacheControl) Number() protoreflect.EnumNumber {
@@ -382,7 +437,7 @@ func (x OriginCacheControl) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use OriginCacheControl.Descriptor instead.
 func (OriginCacheControl) EnumDescriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{6}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{7}
 }
 
 // NodeConfig is the engine-agnostic intermediate representation (IR) that the
@@ -3232,8 +3287,20 @@ type OriginPool struct {
 	// Cookie-based session affinity (feature session-affinity-v1); unset
 	// means none. Added in v0.12.0.
 	SessionAffinity *SessionAffinity `protobuf:"bytes,8,opt,name=session_affinity,json=sessionAffinity,proto3" json:"session_affinity,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// HTTP version of the requests to the origins (feature origin-http2-v1
+	// for ORIGIN_PROTOCOL_HTTP2). Unspecified means HTTP/1.1. Added in
+	// v0.21.0.
+	Protocol OriginProtocol `protobuf:"varint,9,opt,name=protocol,proto3,enum=edgeweir.node.v1.OriginProtocol" json:"protocol,omitempty"`
+	// Proxy gRPC requests (Content-Type application/grpc, optionally with a
+	// "+" suffix or parameters; not gRPC-Web) over HTTP/2 end to end: the
+	// edge forwards them unbuffered with their trailers, so streaming calls
+	// in both directions work. They are never cached, their bodies have no
+	// size limit, and the OWASP CRS (Site.waf) does not inspect them.
+	// Requires protocol ORIGIN_PROTOCOL_HTTP2 (feature origin-http2-v1).
+	// Added in v0.21.0.
+	Grpc          bool `protobuf:"varint,10,opt,name=grpc,proto3" json:"grpc,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OriginPool) Reset() {
@@ -3322,6 +3389,20 @@ func (x *OriginPool) GetSessionAffinity() *SessionAffinity {
 	return nil
 }
 
+func (x *OriginPool) GetProtocol() OriginProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return OriginProtocol_ORIGIN_PROTOCOL_UNSPECIFIED
+}
+
+func (x *OriginPool) GetGrpc() bool {
+	if x != nil {
+		return x.Grpc
+	}
+	return false
+}
+
 // ActiveHealthCheck probes every origin of the pool from each node, honoring
 // the origin address policy (special-purpose addresses outside
 // NodeConfig.origin_allowed_cidrs are refused, also as DNS answers). An
@@ -3329,7 +3410,8 @@ func (x *OriginPool) GetSessionAffinity() *SessionAffinity {
 // probes and healthy again after healthy_threshold consecutive successful
 // ones. Merge with the passive check: an origin that either check marks
 // down takes no traffic (passive marks last until their recovery time).
-// S3-compatible origins are not probed.
+// S3-compatible origins are not probed. Probes use the pool's protocol:
+// HTTP/2 for ORIGIN_PROTOCOL_HTTP2 (v0.21.0).
 type ActiveHealthCheck struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Absolute path with an optional query, e.g. "/healthz": 1-1024 bytes of
@@ -4453,7 +4535,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bwildcard\x18\x02 \x01(\bR\bwildcard\x12\x1f\n" +
 	"\vtls_pending\x18\x03 \x01(\bR\n" +
-	"tlsPending\"\xe5\x03\n" +
+	"tlsPending\"\xb7\x04\n" +
 	"\n" +
 	"OriginPool\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
@@ -4465,7 +4547,10 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"connection\x18\x06 \x01(\v2\".edgeweir.node.v1.OriginConnectionR\n" +
 	"connection\x12S\n" +
 	"\x13active_health_check\x18\a \x01(\v2#.edgeweir.node.v1.ActiveHealthCheckR\x11activeHealthCheck\x12L\n" +
-	"\x10session_affinity\x18\b \x01(\v2!.edgeweir.node.v1.SessionAffinityR\x0fsessionAffinity\"\xe5\x02\n" +
+	"\x10session_affinity\x18\b \x01(\v2!.edgeweir.node.v1.SessionAffinityR\x0fsessionAffinity\x12<\n" +
+	"\bprotocol\x18\t \x01(\x0e2 .edgeweir.node.v1.OriginProtocolR\bprotocol\x12\x12\n" +
+	"\x04grpc\x18\n" +
+	" \x01(\bR\x04grpc\"\xe5\x02\n" +
 	"\x11ActiveHealthCheck\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
 	"\x06method\x18\x02 \x01(\tR\x06method\x12.\n" +
@@ -4555,7 +4640,11 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x1fLOAD_BALANCE_POLICY_UNSPECIFIED\x10\x00\x12'\n" +
 	"#LOAD_BALANCE_POLICY_WEIGHTED_RANDOM\x10\x01\x12#\n" +
 	"\x1fLOAD_BALANCE_POLICY_ROUND_ROBIN\x10\x02\x12'\n" +
-	"#LOAD_BALANCE_POLICY_CONSISTENT_HASH\x10\x03*^\n" +
+	"#LOAD_BALANCE_POLICY_CONSISTENT_HASH\x10\x03*g\n" +
+	"\x0eOriginProtocol\x12\x1f\n" +
+	"\x1bORIGIN_PROTOCOL_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15ORIGIN_PROTOCOL_HTTP1\x10\x01\x12\x19\n" +
+	"\x15ORIGIN_PROTOCOL_HTTP2\x10\x02*^\n" +
 	"\fOriginScheme\x12\x1d\n" +
 	"\x19ORIGIN_SCHEME_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12ORIGIN_SCHEME_HTTP\x10\x01\x12\x17\n" +
@@ -4582,119 +4671,121 @@ func file_edgeweir_node_v1_config_proto_rawDescGZIP() []byte {
 	return file_edgeweir_node_v1_config_proto_rawDescData
 }
 
-var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
 var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(L4Protocol)(0),               // 0: edgeweir.node.v1.L4Protocol
 	(ListenerProtocol)(0),         // 1: edgeweir.node.v1.ListenerProtocol
 	(CacheKeyQuery)(0),            // 2: edgeweir.node.v1.CacheKeyQuery
 	(LoadBalancePolicy)(0),        // 3: edgeweir.node.v1.LoadBalancePolicy
-	(OriginScheme)(0),             // 4: edgeweir.node.v1.OriginScheme
-	(CacheAction)(0),              // 5: edgeweir.node.v1.CacheAction
-	(OriginCacheControl)(0),       // 6: edgeweir.node.v1.OriginCacheControl
-	(*NodeConfig)(nil),            // 7: edgeweir.node.v1.NodeConfig
-	(*NodeConfigDiff)(nil),        // 8: edgeweir.node.v1.NodeConfigDiff
-	(*L4App)(nil),                 // 9: edgeweir.node.v1.L4App
-	(*L4Origin)(nil),              // 10: edgeweir.node.v1.L4Origin
-	(*Listener)(nil),              // 11: edgeweir.node.v1.Listener
-	(*CacheZone)(nil),             // 12: edgeweir.node.v1.CacheZone
-	(*Site)(nil),                  // 13: edgeweir.node.v1.Site
-	(*BulkRedirect)(nil),          // 14: edgeweir.node.v1.BulkRedirect
-	(*SiteErrorPages)(nil),        // 15: edgeweir.node.v1.SiteErrorPages
-	(*ErrorPage)(nil),             // 16: edgeweir.node.v1.ErrorPage
-	(*PlatformErrorPages)(nil),    // 17: edgeweir.node.v1.PlatformErrorPages
-	(*OfflineHost)(nil),           // 18: edgeweir.node.v1.OfflineHost
-	(*SiteWaf)(nil),               // 19: edgeweir.node.v1.SiteWaf
-	(*SiteProtection)(nil),        // 20: edgeweir.node.v1.SiteProtection
-	(*CcPolicy)(nil),              // 21: edgeweir.node.v1.CcPolicy
-	(*PlatformProtection)(nil),    // 22: edgeweir.node.v1.PlatformProtection
-	(*ChallengeKeyRef)(nil),       // 23: edgeweir.node.v1.ChallengeKeyRef
-	(*RuleExpression)(nil),        // 24: edgeweir.node.v1.RuleExpression
-	(*RuleAction)(nil),            // 25: edgeweir.node.v1.RuleAction
-	(*QueryParam)(nil),            // 26: edgeweir.node.v1.QueryParam
-	(*EdgeRule)(nil),              // 27: edgeweir.node.v1.EdgeRule
-	(*IpList)(nil),                // 28: edgeweir.node.v1.IpList
-	(*TlsOptions)(nil),            // 29: edgeweir.node.v1.TlsOptions
-	(*HttpChallenge)(nil),         // 30: edgeweir.node.v1.HttpChallenge
-	(*CacheKeyPolicy)(nil),        // 31: edgeweir.node.v1.CacheKeyPolicy
-	(*Domain)(nil),                // 32: edgeweir.node.v1.Domain
-	(*OriginPool)(nil),            // 33: edgeweir.node.v1.OriginPool
-	(*ActiveHealthCheck)(nil),     // 34: edgeweir.node.v1.ActiveHealthCheck
-	(*SessionAffinity)(nil),       // 35: edgeweir.node.v1.SessionAffinity
-	(*PassiveHealthCheck)(nil),    // 36: edgeweir.node.v1.PassiveHealthCheck
-	(*OriginConnection)(nil),      // 37: edgeweir.node.v1.OriginConnection
-	(*Origin)(nil),                // 38: edgeweir.node.v1.Origin
-	(*S3Auth)(nil),                // 39: edgeweir.node.v1.S3Auth
-	(*CacheRule)(nil),             // 40: edgeweir.node.v1.CacheRule
-	(*CacheRuleMatch)(nil),        // 41: edgeweir.node.v1.CacheRuleMatch
-	(*CertificateRef)(nil),        // 42: edgeweir.node.v1.CertificateRef
-	(*timestamppb.Timestamp)(nil), // 43: google.protobuf.Timestamp
+	(OriginProtocol)(0),           // 4: edgeweir.node.v1.OriginProtocol
+	(OriginScheme)(0),             // 5: edgeweir.node.v1.OriginScheme
+	(CacheAction)(0),              // 6: edgeweir.node.v1.CacheAction
+	(OriginCacheControl)(0),       // 7: edgeweir.node.v1.OriginCacheControl
+	(*NodeConfig)(nil),            // 8: edgeweir.node.v1.NodeConfig
+	(*NodeConfigDiff)(nil),        // 9: edgeweir.node.v1.NodeConfigDiff
+	(*L4App)(nil),                 // 10: edgeweir.node.v1.L4App
+	(*L4Origin)(nil),              // 11: edgeweir.node.v1.L4Origin
+	(*Listener)(nil),              // 12: edgeweir.node.v1.Listener
+	(*CacheZone)(nil),             // 13: edgeweir.node.v1.CacheZone
+	(*Site)(nil),                  // 14: edgeweir.node.v1.Site
+	(*BulkRedirect)(nil),          // 15: edgeweir.node.v1.BulkRedirect
+	(*SiteErrorPages)(nil),        // 16: edgeweir.node.v1.SiteErrorPages
+	(*ErrorPage)(nil),             // 17: edgeweir.node.v1.ErrorPage
+	(*PlatformErrorPages)(nil),    // 18: edgeweir.node.v1.PlatformErrorPages
+	(*OfflineHost)(nil),           // 19: edgeweir.node.v1.OfflineHost
+	(*SiteWaf)(nil),               // 20: edgeweir.node.v1.SiteWaf
+	(*SiteProtection)(nil),        // 21: edgeweir.node.v1.SiteProtection
+	(*CcPolicy)(nil),              // 22: edgeweir.node.v1.CcPolicy
+	(*PlatformProtection)(nil),    // 23: edgeweir.node.v1.PlatformProtection
+	(*ChallengeKeyRef)(nil),       // 24: edgeweir.node.v1.ChallengeKeyRef
+	(*RuleExpression)(nil),        // 25: edgeweir.node.v1.RuleExpression
+	(*RuleAction)(nil),            // 26: edgeweir.node.v1.RuleAction
+	(*QueryParam)(nil),            // 27: edgeweir.node.v1.QueryParam
+	(*EdgeRule)(nil),              // 28: edgeweir.node.v1.EdgeRule
+	(*IpList)(nil),                // 29: edgeweir.node.v1.IpList
+	(*TlsOptions)(nil),            // 30: edgeweir.node.v1.TlsOptions
+	(*HttpChallenge)(nil),         // 31: edgeweir.node.v1.HttpChallenge
+	(*CacheKeyPolicy)(nil),        // 32: edgeweir.node.v1.CacheKeyPolicy
+	(*Domain)(nil),                // 33: edgeweir.node.v1.Domain
+	(*OriginPool)(nil),            // 34: edgeweir.node.v1.OriginPool
+	(*ActiveHealthCheck)(nil),     // 35: edgeweir.node.v1.ActiveHealthCheck
+	(*SessionAffinity)(nil),       // 36: edgeweir.node.v1.SessionAffinity
+	(*PassiveHealthCheck)(nil),    // 37: edgeweir.node.v1.PassiveHealthCheck
+	(*OriginConnection)(nil),      // 38: edgeweir.node.v1.OriginConnection
+	(*Origin)(nil),                // 39: edgeweir.node.v1.Origin
+	(*S3Auth)(nil),                // 40: edgeweir.node.v1.S3Auth
+	(*CacheRule)(nil),             // 41: edgeweir.node.v1.CacheRule
+	(*CacheRuleMatch)(nil),        // 42: edgeweir.node.v1.CacheRuleMatch
+	(*CertificateRef)(nil),        // 43: edgeweir.node.v1.CertificateRef
+	(*timestamppb.Timestamp)(nil), // 44: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
-	11, // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
-	12, // 1: edgeweir.node.v1.NodeConfig.cache_zones:type_name -> edgeweir.node.v1.CacheZone
-	13, // 2: edgeweir.node.v1.NodeConfig.sites:type_name -> edgeweir.node.v1.Site
-	42, // 3: edgeweir.node.v1.NodeConfig.certificates:type_name -> edgeweir.node.v1.CertificateRef
-	30, // 4: edgeweir.node.v1.NodeConfig.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
-	28, // 5: edgeweir.node.v1.NodeConfig.ip_lists:type_name -> edgeweir.node.v1.IpList
-	27, // 6: edgeweir.node.v1.NodeConfig.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
-	22, // 7: edgeweir.node.v1.NodeConfig.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
-	23, // 8: edgeweir.node.v1.NodeConfig.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
-	17, // 9: edgeweir.node.v1.NodeConfig.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
-	18, // 10: edgeweir.node.v1.NodeConfig.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
-	9,  // 11: edgeweir.node.v1.NodeConfig.l4_apps:type_name -> edgeweir.node.v1.L4App
-	11, // 12: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
-	12, // 13: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
-	13, // 14: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
-	42, // 15: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
-	30, // 16: edgeweir.node.v1.NodeConfigDiff.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
-	28, // 17: edgeweir.node.v1.NodeConfigDiff.ip_lists:type_name -> edgeweir.node.v1.IpList
-	27, // 18: edgeweir.node.v1.NodeConfigDiff.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
-	22, // 19: edgeweir.node.v1.NodeConfigDiff.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
-	23, // 20: edgeweir.node.v1.NodeConfigDiff.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
-	17, // 21: edgeweir.node.v1.NodeConfigDiff.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
-	18, // 22: edgeweir.node.v1.NodeConfigDiff.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
-	9,  // 23: edgeweir.node.v1.NodeConfigDiff.l4_apps:type_name -> edgeweir.node.v1.L4App
+	12, // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
+	13, // 1: edgeweir.node.v1.NodeConfig.cache_zones:type_name -> edgeweir.node.v1.CacheZone
+	14, // 2: edgeweir.node.v1.NodeConfig.sites:type_name -> edgeweir.node.v1.Site
+	43, // 3: edgeweir.node.v1.NodeConfig.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	31, // 4: edgeweir.node.v1.NodeConfig.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
+	29, // 5: edgeweir.node.v1.NodeConfig.ip_lists:type_name -> edgeweir.node.v1.IpList
+	28, // 6: edgeweir.node.v1.NodeConfig.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
+	23, // 7: edgeweir.node.v1.NodeConfig.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
+	24, // 8: edgeweir.node.v1.NodeConfig.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
+	18, // 9: edgeweir.node.v1.NodeConfig.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
+	19, // 10: edgeweir.node.v1.NodeConfig.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
+	10, // 11: edgeweir.node.v1.NodeConfig.l4_apps:type_name -> edgeweir.node.v1.L4App
+	12, // 12: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
+	13, // 13: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
+	14, // 14: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
+	43, // 15: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	31, // 16: edgeweir.node.v1.NodeConfigDiff.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
+	29, // 17: edgeweir.node.v1.NodeConfigDiff.ip_lists:type_name -> edgeweir.node.v1.IpList
+	28, // 18: edgeweir.node.v1.NodeConfigDiff.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
+	23, // 19: edgeweir.node.v1.NodeConfigDiff.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
+	24, // 20: edgeweir.node.v1.NodeConfigDiff.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
+	18, // 21: edgeweir.node.v1.NodeConfigDiff.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
+	19, // 22: edgeweir.node.v1.NodeConfigDiff.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
+	10, // 23: edgeweir.node.v1.NodeConfigDiff.l4_apps:type_name -> edgeweir.node.v1.L4App
 	0,  // 24: edgeweir.node.v1.L4App.protocol:type_name -> edgeweir.node.v1.L4Protocol
-	10, // 25: edgeweir.node.v1.L4App.origins:type_name -> edgeweir.node.v1.L4Origin
+	11, // 25: edgeweir.node.v1.L4App.origins:type_name -> edgeweir.node.v1.L4Origin
 	1,  // 26: edgeweir.node.v1.Listener.protocol:type_name -> edgeweir.node.v1.ListenerProtocol
-	32, // 27: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
-	33, // 28: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
-	40, // 29: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
-	31, // 30: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
-	29, // 31: edgeweir.node.v1.Site.tls:type_name -> edgeweir.node.v1.TlsOptions
-	27, // 32: edgeweir.node.v1.Site.rules:type_name -> edgeweir.node.v1.EdgeRule
-	20, // 33: edgeweir.node.v1.Site.protection:type_name -> edgeweir.node.v1.SiteProtection
-	19, // 34: edgeweir.node.v1.Site.waf:type_name -> edgeweir.node.v1.SiteWaf
-	15, // 35: edgeweir.node.v1.Site.error_pages:type_name -> edgeweir.node.v1.SiteErrorPages
-	14, // 36: edgeweir.node.v1.Site.bulk_redirects:type_name -> edgeweir.node.v1.BulkRedirect
-	16, // 37: edgeweir.node.v1.SiteErrorPages.pages:type_name -> edgeweir.node.v1.ErrorPage
-	21, // 38: edgeweir.node.v1.SiteProtection.cc:type_name -> edgeweir.node.v1.CcPolicy
-	24, // 39: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
-	24, // 40: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
-	26, // 41: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
-	24, // 42: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
-	25, // 43: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
-	43, // 44: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	33, // 27: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
+	34, // 28: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
+	41, // 29: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
+	32, // 30: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
+	30, // 31: edgeweir.node.v1.Site.tls:type_name -> edgeweir.node.v1.TlsOptions
+	28, // 32: edgeweir.node.v1.Site.rules:type_name -> edgeweir.node.v1.EdgeRule
+	21, // 33: edgeweir.node.v1.Site.protection:type_name -> edgeweir.node.v1.SiteProtection
+	20, // 34: edgeweir.node.v1.Site.waf:type_name -> edgeweir.node.v1.SiteWaf
+	16, // 35: edgeweir.node.v1.Site.error_pages:type_name -> edgeweir.node.v1.SiteErrorPages
+	15, // 36: edgeweir.node.v1.Site.bulk_redirects:type_name -> edgeweir.node.v1.BulkRedirect
+	17, // 37: edgeweir.node.v1.SiteErrorPages.pages:type_name -> edgeweir.node.v1.ErrorPage
+	22, // 38: edgeweir.node.v1.SiteProtection.cc:type_name -> edgeweir.node.v1.CcPolicy
+	25, // 39: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
+	25, // 40: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
+	27, // 41: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
+	25, // 42: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
+	26, // 43: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
+	44, // 44: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
 	2,  // 45: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
 	3,  // 46: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
-	38, // 47: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
-	36, // 48: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
-	37, // 49: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
-	34, // 50: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
-	35, // 51: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
-	4,  // 52: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
-	39, // 53: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
-	41, // 54: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
-	5,  // 55: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
-	6,  // 56: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
-	24, // 57: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
-	43, // 58: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
-	59, // [59:59] is the sub-list for method output_type
-	59, // [59:59] is the sub-list for method input_type
-	59, // [59:59] is the sub-list for extension type_name
-	59, // [59:59] is the sub-list for extension extendee
-	0,  // [0:59] is the sub-list for field type_name
+	39, // 47: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
+	37, // 48: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
+	38, // 49: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
+	35, // 50: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
+	36, // 51: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
+	4,  // 52: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
+	5,  // 53: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
+	40, // 54: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
+	42, // 55: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
+	6,  // 56: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
+	7,  // 57: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
+	25, // 58: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
+	44, // 59: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	60, // [60:60] is the sub-list for method output_type
+	60, // [60:60] is the sub-list for method input_type
+	60, // [60:60] is the sub-list for extension type_name
+	60, // [60:60] is the sub-list for extension extendee
+	0,  // [0:60] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
@@ -4708,7 +4799,7 @@ func file_edgeweir_node_v1_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_config_proto_rawDesc), len(file_edgeweir_node_v1_config_proto_rawDesc)),
-			NumEnums:      7,
+			NumEnums:      8,
 			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   0,
