@@ -154,6 +154,17 @@ sudo systemctl enable --now edgeweir-probe
 
 查询在本地完成，运行时不下载，不向第三方发送客户端 IP。更新数据：拉取新镜像，或挂载新副本并设置 `EDGEWEIR_GEOIP_IPINFO`。
 
+### WebSocket 入口
+
+控制台只能经 HTTPS 访问时（如 Render），节点经控制台 Web 端口上的 WebSocket 入口连接节点通道：`--server wss://console.example.com`；明文 HTTP 的控制台为 `ws://`。
+
+| 项目 | 说明 |
+| --- | --- |
+| 入口 | `<地址>/node-channel`，WebSocket 子协议 `edgeweir-node-channel`；地址不带路径 |
+| TLS | 节点通道的 TLS 在 WebSocket 内运行，由控制台终结；CA 指纹固定与 mTLS 与 `https://` 地址相同。`wss://` 地址本身的证书按系统根证书校验 |
+| 代理 | WebSocket 握手遵循 `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` |
+| 版本 | 0.2.0 起 |
+
 ## 命令行
 
 ```text
@@ -179,7 +190,7 @@ edgeweir-node version
 
 | `enroll` 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--server` | 必填 | 控制台节点通道地址，如 `https://console.example.com:8443` |
+| `--server` | 必填 | 控制台节点通道地址：节点通道端口 `https://console.example.com:8443`，或控制台 Web 端口上的 WebSocket 入口 `wss://console.example.com`（明文 HTTP 的控制台为 `ws://`），见下方 [WebSocket 入口](#websocket-入口) |
 | `--ca-sha256` | 必填 | 控制台内部 CA 证书（DER）的 SHA-256，十六进制 |
 | `--token-file` | 无 | 一次性 token 文件（忽略首尾空白） |
 | `--token` | 无 | 一次性 token；出现在进程列表中，优先用 `EDGEWEIR_TOKEN` 或 `--token-file` |
@@ -192,7 +203,7 @@ edgeweir-node version
 
 | `probe` 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--server` | 无（首次运行必填） | 控制台节点通道地址 |
+| `--server` | 无（首次运行必填） | 控制台节点通道地址，格式同 `enroll` |
 | `--ca-sha256` | 无（首次运行必填） | 控制台内部 CA 证书（DER）的 SHA-256，十六进制 |
 | `--token-file` | 无 | 一次性探针 token 文件（首次运行） |
 | `--token` | 无 | 一次性探针 token（首次运行）；出现在进程列表中，优先用 `EDGEWEIR_TOKEN` 或 `--token-file` |

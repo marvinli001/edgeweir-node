@@ -154,6 +154,17 @@ Platform bans dropped by nftables require `nftables` and `CAP_NET_ADMIN`. Neithe
 
 Lookups are local: no runtime download, no client IPs sent to third parties. To update, pull a newer image or mount a newer copy and set `EDGEWEIR_GEOIP_IPINFO`.
 
+### WebSocket entry
+
+When the console is only reachable over HTTPS (for example on Render), nodes reach the node channel through the WebSocket entry on the console's web port: `--server wss://console.example.com`; `ws://` for a plain-HTTP console.
+
+| Item | Details |
+| --- | --- |
+| Entry | `<URL>/node-channel`, WebSocket subprotocol `edgeweir-node-channel`; the URL has no path |
+| TLS | The node channel's TLS runs inside the WebSocket and is terminated by the console; CA pinning and mTLS are the same as with an `https://` URL. The certificate of a `wss://` URL itself is verified against the system roots |
+| Proxy | The WebSocket handshake follows `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` |
+| Version | 0.2.0 and later |
+
 ## Command line
 
 ```text
@@ -179,7 +190,7 @@ edgeweir-node version
 
 | `enroll` flag | Default | Description |
 | --- | --- | --- |
-| `--server` | required | Console node-channel URL, e.g. `https://console.example.com:8443` |
+| `--server` | required | Console node-channel URL: the node channel port, `https://console.example.com:8443`, or the WebSocket entry on the console's web port, `wss://console.example.com` (`ws://` for a plain-HTTP console); see [WebSocket entry](#websocket-entry) below |
 | `--ca-sha256` | required | SHA-256 of the console's internal CA certificate (DER, hex) |
 | `--token-file` | none | One-time token file (surrounding whitespace ignored) |
 | `--token` | none | One-time token; visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
@@ -192,7 +203,7 @@ edgeweir-node version
 
 | `probe` flag | Default | Description |
 | --- | --- | --- |
-| `--server` | none (required on the first run) | Console node-channel URL |
+| `--server` | none (required on the first run) | Console node-channel URL, same forms as `enroll` |
 | `--ca-sha256` | none (required on the first run) | SHA-256 of the console's internal CA certificate (DER, hex) |
 | `--token-file` | none | One-time probe token file (first run) |
 | `--token` | none | One-time probe token (first run); visible in the process list, prefer `EDGEWEIR_TOKEN` or `--token-file` |
