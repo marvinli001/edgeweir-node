@@ -16,7 +16,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Access policy | IP / GeoIP lists, phased rules (expression functions, dynamic redirects and rewrites, query edits, bulk redirects, origin rules and origin groups, per-request overrides of site settings, compression rules), WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
 | OWASP CRS | Per-site managed rules (ModSecurity v3 + CRS 4.29.0): detect only / block, paranoia level, anomaly threshold, excluded rules, request body inspection limit; cache hits are inspected too, sites without CRS never pass through ModSecurity |
 | Challenges and CC mitigation | Four challenge levels (cookie redirect, JS, proof of work, image captcha), signed passes, node-local tiered CC mitigation, JA4 fingerprints |
-| Cache and origins | `Host` routing, `proxy_cache`, cache rules with expression conditions and browser TTLs, origin-pool load balancing, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
+| Cache and origins | `Host` routing, `proxy_cache`, cache rules with expression conditions and browser TTLs, origin-pool load balancing, HTTP/2 to origins and end-to-end gRPC, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
 | Layer-4 forwarding | TCP / UDP ports forwarded to origins: weights, backup origins, passive health checks and retries on connect failures, connect and idle timeouts, allow / block lists, per-node concurrent and new-per-second limits; PROXY protocol v1 / v2 towards origins, listeners that accept the PROXY protocol; adding or removing ports reloads without dropping open connections, everything else is hot-updated; per-minute connections, refusals, peak concurrency and bytes |
 | Error pages | 403 / 429 / 502 / 503 / 504 from site templates or built-in pages (Chinese and English), optionally replacing origin errors; platform pages for unknown and disabled sites; `X-Request-Id` |
 | Statistics and logs | Per-minute statistics of sites and layer-4 applications (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
@@ -223,7 +223,7 @@ edgeweir-node version
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | Directory containing `edgeweir/*.lua` |
 | `--cache-dir` | `/var/cache/edgeweir-node` | Parent directory of the cache zones |
 | `--control-socket` | `/run/edgeweir-node/control.sock` | Data-plane control API socket |
-| `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket |
+| `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket; the origin layers for HTTP/2 to origins and gRPC sit next to it (`origin-h2.sock`, `origin-grpc.sock` and their `origin-noverify-*` versions) |
 | `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Origin layer socket without TLS verification |
 | `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches only (`edge-tls.sock` next to it is its TLS twin, while a listener speaks HTTPS); bans, CC, challenges and denying rules do not apply there, nothing is counted in the statistics |
 | `--l4-socket` | `l4.sock` next to the control socket | Control relay of the stream subsystem; the control API forwards layer-4 requests to it |
@@ -269,7 +269,7 @@ edgeweir-node version
 | `/var/lib/edgeweir-probe` | Probe state (0700): `probe.key` (0600), `probe.crt`, `ca.crt`, `probe.json` |
 | `/var/cache/edgeweir-node` | Cache zones |
 | `/run/edgeweir-node/control.sock` | Data-plane control API (unix socket only) |
-| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | Local edge listener and internal origin layers |
+| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock`, `origin[-noverify]-{h2,grpc}.sock` | Local edge listener and internal origin layers |
 | `/run/edgeweir-node/l4.sock` | Control relay of the stream subsystem (with layer-4 applications) |
 | `/usr/share/edgeweir-node/lua` | Lua modules |
 | `/usr/share/edgeweir-node/geoip` | IPinfo Lite database and `NOTICE` (container image) |

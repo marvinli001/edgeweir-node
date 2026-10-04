@@ -36,7 +36,7 @@
 │  控制 server   unix:/run/edgeweir-node/control.sock  → edgeweir.control      │
 │  边缘层 server  每个 listener 一个 + unix:edge.sock   → router + proxy_cache │
 │                设置了 Site.tls 的站点在每个 listener 上另有 server 块        │
-│  回源层 server  unix:origin.sock / origin-noverify.sock → origin (balancer)  │
+│  回源层 server  unix:origin[-noverify][-h2|-grpc].sock → origin (balancer)   │
 │  lua_shared_dict: edgeweir_sites / meta / stats / purge / health /           │
 │    policy_logs / topstats / logs / bans / challenge / cc / tags；            │
 │    每个已发布站点一个 edgeweir_rate_<hex(id)>                                │
@@ -276,7 +276,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 - **调度**（`internal/healthcheck`）：新检查在间隔内的随机时刻首次探测，之后每个间隔一次，同时最多 64 个探测。每次应用配置都对齐检查集合：参数不变的检查保留状态与时间表，参数变化的从头开始，删除的停止。
 - **地址策略**：主机名用系统 resolver 解析（A 记录；没有 A 记录且节点使用 IPv6 时查 AAAA，与数据面相同），丢弃允许清单（`origin_allowed_cidrs`）以外的特殊地址段（§3.5），只连接检查过的地址（按解析顺序，连不上换下一个），不做第二次解析。IP 字面量同样检查。解析失败为 `dns_failed {host}`，全部被拒为 `address_forbidden {address}`。
-- **请求**：检查的方法（GET / HEAD）与路径（可带查询串）；Host 取检查的 `host`，其次源站的 `host_header`，最后是源站地址（IPv6 加方括号，非默认端口带端口）；User-Agent `edgeweir-node-healthcheck/<版本>`，`Connection: close`。HTTPS 的 SNI 取源站的 `sni`，其次 `host_header`（去掉端口），最后是地址，按 `--trusted-ca` 或系统 CA bundle 校验（都没有时校验失败，与 nginx 相同），源站池关闭校验时不校验。重定向不跟随，响应体最多读 64 KiB，整个探测的超时为检查的 `timeout_seconds`。
+- **请求**：检查的方法（GET / HEAD）与路径（可带查询串）；Host 取检查的 `host`，其次源站的 `host_header`，最后是源站地址（IPv6 加方括号，非默认端口带端口）；User-Agent `edgeweir-node-healthcheck/<版本>`，`Connection: close`。HTTPS 的 SNI 取源站的 `sni`，其次 `host_header`（去掉端口），最后是地址，按 `--trusted-ca` 或系统 CA bundle 校验（都没有时校验失败，与 nginx 相同），源站池关闭校验时不校验。源站池以 HTTP/2 回源时以 HTTP/2 探测（§3.24）。重定向不跟随，响应体最多读 64 KiB，整个探测的超时为检查的 `timeout_seconds`。
 - **判定**：状态码在期望范围内为成功；失败的错误码与被动检查相同：`connect_failed`（连接失败或没有收到响应头）、`timeout`、`tls_failed`、`upstream_status {status}`。源站初始为健康，连续 `unhealthy_threshold` 次失败判为不健康，不健康时连续 `healthy_threshold` 次成功恢复。
 - **推送**：判定变化时、每次应用配置后、至少每 30 秒，以及 nginx 重启后（站点表之前），以 `PUT /v1/origins/active` 整体替换不健康源站的集合（最多 10000 个），ttl 为 max(90 秒, 3 × 最长间隔)，agent 停止推送后标记自行过期。没有检查时只在数据面可能还有标记时推送一次空集合。
 - **上报**：`ReportStatus.origin_health` 中数据面的条目带 `source=PASSIVE`；主动检查不健康或有连续失败的源站另有一条 `source=ACTIVE`（`healthy`、`consecutive_failures`、`last_failure_at`、`last_error`、`last_error_code` / `last_error_params`，没有 `down_until`）。合计最多 2000 条，超出时先保留不健康的。判定变化时立即上报。
@@ -336,7 +336,10 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               · Under Attack 与 CC 级别：没有足够级别凭证的请求被挑战；allow 规则或平台 allow 名单命中的请求例外
                 （config 规则可为本请求开关站点 Under Attack、限制 CC 最高级别）
               · Origin 规则与 config 规则的回源超时写入 $edgeweir_origin_override（X-Edgeweir-Origin）
-              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403（config 规则可覆盖）
+              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403（config 规则可覆盖）；
+                回源 HTTP/2 的站点也走 HTTP/1.1 回源层
+              · 开启 gRPC 的站点的 gRPC 请求（§3.24）：访问阶段末尾转入 @edgeweir_grpc，不缓存、不经 CRS，
+                以 grpc_pass 经 HTTP/2 送到 _grpc 回源层；其他请求按站点的回源 HTTP 版本选回源层
               · 非 GET/HEAD：透传（Range 原样转发）
               · 按规则链判断是否可能缓存（带条件的缓存规则按客户端原始请求求值；带 Authorization 的请求见 §3.3）
               · 设置 $edgeweir_cache_zone / $edgeweir_cache_key / bypass / no_cache / Range 模式；
@@ -356,9 +359,10 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               CRS 拦截换成错误页（只在 CRS 位置有 body filter），缓存规则的浏览器 TTL（§3.3），
               response-transform 与 compression 阶段，选定压缩编码（§3.17）
             内部请求头 X-Edgeweir-Site / -Rules / -Cache-Status / -Origin（proxy_set_header 设置，覆盖客户端同名头）
-                │ unix socket，不保持连接（关闭证书校验的站点走 origin-noverify.sock）
+                │ unix socket，不保持连接（关闭证书校验的站点走 origin-noverify*.sock；回源 HTTP/2 走 *-h2.sock，
+                │ gRPC 经 HTTP/2 走 *-grpc.sock，§3.24）
                 ▼
-          回源层 (listen unix:origin.sock / origin-noverify.sock)，外部不可达
+          回源层 (listen unix:origin[-noverify][-h2|-grpc].sock)，外部不可达
             access_by_lua  edgeweir.origin
               · 按站点 id 与 X-Edgeweir-Origin 的源站组取源站，lb.order 排序（主动检查标记、会话保持的
                 源站在前，§3.2），套用 Origin 规则的 Host、SNI、端口覆盖；DNS 解析并按地址策略过滤；S3 源站签名
@@ -367,12 +371,13 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
             balancer_by_lua（每次尝试一次）
               · set_current_peer(ip, port, sni)，$edgeweir_ssl_name = sni（证书名校验，§3.6）
               · 重试次数、超时（config 规则可覆盖；WebSocket 等升级连接的读写超时即空闲超时，为 1 小时）、
-                按地址+端口+SNI 的连接池；换到 Host/签名不同的源站时重建请求
+                按地址+端口+SNI 的连接池（每种回源协议一个 balancer upstream，连接池互不混用，§3.24）；
+                换到 Host/签名不同的源站时重建请求
             header_filter_by_lua
               · 源站 5xx 且边缘持有可 stale 的过期副本时断开连接，让边缘层返回 stale（最先判断）。
                 边缘到回源层不保持连接：nginx 在复用的连接上失败时会换一条连接重试且不计次数，
                 那样一次请求可能把失败的源站请求很多遍（nginx 1.29.7 起 upstream 默认
-                `keepalive 32 local`，两个回源层 upstream 因此设置 `keepalive 0`）
+                `keepalive 32 local`，HTTP/1.1 与 HTTP/2 回源层的 upstream 因此设置 `keepalive 0`，§3.24）
               · nginx 自己生成的回源失败与拦截的源站错误换成错误页（body_filter_by_lua 发送，§3.19）
               · 会话保持：X-Edgeweir-Affinity 告知边缘层要签发的 cookie（§3.20）
               · 按规则链与响应状态/大小决定 X-Accel-Expires 和 stale-* 扩展
@@ -549,10 +554,12 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | 已发布站点集合：新增、删除、启用、停用站点，或站点因没有有效源站或域名被跳过（增删它的固定大小限速分区 `edgeweir_rate_<站点 id 的十六进制>`，`--rate-limit-dict-kb`，默认 256 KiB；其他站点的分区名称和大小不变，计数保留） | 同上 |
 | 设置了 `Site.tls` 的站点：`Site.tls` 的有无、域名、HTTP/2、HTTP/3、gzip、Brotli、Zstandard（开关、级别、最小长度、类型）、密码套件档位，以及有没有证书（这些值写在站点自己的 `server` 块里；HTTPS 监听上的块只在站点有证书时生成） | 同上 |
 | OWASP CRS：第一个站点开启（加载 ModSecurity 与 CRS）、最后一个站点关闭（卸载）、出现或不再使用某个请求体上限（CRS 位置）、站点排除的规则（ModSecurity 配置） | 同上 |
+| 站点的 gRPC 开关（`grpc`：明文监听是否接受 h2c、该站点的 `server` 块是否开启 HTTP/2，§3.24） | 同上 |
 | agent 启动参数：resolver（`--resolver`，或启动时读取的 `--resolv-conf`）、回源 CA bundle（`--trusted-ca` 或系统 bundle）、`--sites-dict-mb`、`--purge-dict-mb`、`--tag-dict-mb`、IPv6 探测、worker 与 nginx 用户设置、socket 与目录 | agent 重启后生效：启动后的第一次应用总会写入、检查并 reload（托管模式下是启动 OpenResty） |
 | 站点表里的其他内容：源站与源站池设置、缓存规则与 TTL、缓存键、缓存代际号、所用 cache zone、Range 分片与 WebSocket 开关、边缘规则、日志采样率、证书与私钥（同一站点换证书）、OCSP stapling 开关与 OCSP 响应、强制 HTTPS、HSTS、最低 TLS 版本；表级的源站允许清单、cdn-id、HTTP-01 应答、IP 名单、平台规则 | 热更新：`PUT /v1/sites`，不 reload |
 | 清缓存（含标签标记） | 热更新：`POST` / `PUT /v1/purge` |
 | Cache-Tag 保留、站点与平台错误页、离线 Host、会话保持、主动健康检查的开关 | 热更新：站点表（`keep_cache_tag`、`error_pages`、`platform_error_pages`、`offline_hosts`、`affinity`、`active_health`） |
+| 回源 HTTP 版本 | 热更新：站点表（`origin_http2`）；各协议的回源层总是存在 |
 | 主动健康检查结果 | 热更新：`PUT /v1/origins/active` |
 | 动态封禁 | 热更新：`POST` / `PUT /v1/bans`，平台范围另写 nftables；`--ban-dict-mb` 与 `--ban-capacity` 属于 agent 启动参数 |
 | Under Attack、挑战规则、CC 策略、JA4 日志开关、平台 Under Attack | 热更新：站点表（`protection`、`platform_protection`、`rules`） |
@@ -773,6 +780,18 @@ stream 子系统有自己的 `lua_shared_dict`，http 子系统的 Lua 看不到
 **统计**：每个应用每分钟上报 `connections`（接受的连接或会话）、`refused`、`peak_concurrent`（该分钟见到的最大并发数：接受连接时与每 10 秒采样时记录，只有长连接的分钟同样有值）、`bytes_received` / `bytes_sent`（来自客户端 / 发往客户端）。字节在连接进行中计入：每个 worker 每 10 秒读取它正在服务的会话的 `$bytes_received` / `$bytes_sent`（经 lua-resty-core 使用的变量 API；会话在 log 阶段移出采样表之后不再读取），把增量记入当前分钟，log 阶段记入剩余部分；中继会话由 Lua 计数。reload 后旧 worker 继续采样，直到最后一个会话结束，所以长连接至少每分钟计入一次。agent 与站点统计一起取出、同批上报（§2.4）。删除最后一个应用的 reload 会去掉 `stream {}`，尚未取出的分钟（最多约两分钟）与旧 worker 上仍在进行的连接的统计随之丢失。
 
 **连接计数**：并发数在共享内存中（每个应用一个总数，另按 worker 进程记录），preread 加、log 阶段减。worker 异常退出（没有 log 阶段）时，每 30 秒一次的检查发现它已不在 `ngx.worker.pids()` 里（登记超过 60 秒），把它的计数从总数中减去，上限不会一直被占满。nginx 重启时计数清零。心跳的 `active_connections` 是 nginx 的全局计数，含四层的客户端连接、上游连接与 UDP 会话。
+
+### 3.24 回源 HTTP/2 与 gRPC（`origin-http2-v1`）
+
+`OriginPool.protocol`（proto v0.21.0）为 `ORIGIN_PROTOCOL_HTTP2` 的站点以 HTTP/2 请求源站，`OriginPool.grpc` 再让 gRPC 请求经 HTTP/2 端到端转发（只能与 HTTP/2 一起开启，否则整份配置被拒绝）。站点表字段 `origin_http2`、`grpc`；控制台在站点用到时要求能力 `origin-http2-v1`。
+
+- 依据（nginx 1.31.1 的文档与源码，即 edgeweir-openresty 1.31.1.1 的内核，`nginx -t` 实测）：`proxy_http_version 2`（1.29.4 起，`ngx_http_proxy_v2_module`）对 `https` 上游经 ALPN 只提供 `h2`，对 `http` 上游直接发送 HTTP/2 连接前言（prior knowledge）；不检查协商结果，也没有回退，源站不支持时这次尝试失败。设置了 `proxy_set_header Host` 时它把 Host 作为普通的 `host` 头发送、不发 `:authority`（1.31.4 起改为总发 `:authority`）；`grpc_pass` 相同。`grpc_pass` 默认不缓冲、透传 trailers，请求体边收边发，双向流可用；`grpc_pass` 的地址可以带变量（`grpc://` / `grpcs://`），按名字找到 upstream 块。明文监听的 `http2 on` 按连接前言区分 HTTP/1.x 与 h2c；HTTP/2 请求选中的 server 没有开启 HTTP/2 时，nginx 返回 421。
+- 回源层每种协议各一套（校验 / 不校验 TLS 各一个 server）：`origin[-noverify].sock` 以 HTTP/1.1 回源；`origin[-noverify]-h2.sock` 以 `proxy_http_version 2` 回源，不设置 `Connection`、`Upgrade`（HTTP/2 禁止这些头，模块默认把它们清空）；`origin[-noverify]-grpc.sock` 开启 `http2`（边缘以 h2c 连入）并以 `grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc` 回源，`$edgeweir_grpc_scheme` 由 `$edgeweir_upstream_scheme` 映射（`https` → `grpcs`）。三者共用 `edgeweir.origin` 的选源、签名、错误页与健康统计。
+- 连接池：`balancer_by_lua` 的连接池属于各自的 upstream 块（`lscf->balancer`），HTTP/1.1、HTTP/2 与 gRPC 的连接不能互用（HTTP/2 模块从连接池的清理回调里找自己的连接数据，找不到就失败），所以每种协议一个 balancer upstream：`edgeweir_balancer`、`edgeweir_balancer_h2`、`edgeweir_balancer_grpc`，都设置 `keepalive 0`（§3.6）。
+- 边缘层（`edgeweir.router`）：按站点的协议把 `$edgeweir_origin_layer` 设为 `_h2` 回源层；WebSocket 升级只能经 HTTP/1.1 代理，仍走 HTTP/1.1 回源层。开启 gRPC 的站点上 `Content-Type` 为 `application/grpc`（可带 `+…` 后缀或参数；`application/grpc-web` 不算）的请求，在访问阶段末尾经 `ngx.exec` 转入 `@edgeweir_grpc`，请求上下文与 CRS 位置一样经 `$edgeweir_ctx_ref` 带过去（`edgeweir.waf.stash_ctx`）。该位置以 `grpc_pass grpc://$edgeweir_origin_layer` 把请求经 h2c 送到 `_grpc` 回源层，不缓存，关闭 server 块开启的压缩，`client_max_body_size 0`（它累计一个流的全部请求数据，长时间的流会超过 100m）。gRPC 请求不进 CRS 位置：ModSecurity-nginx 在 preaccess 阶段总是读完整个请求体（与 `SecRequestBodyAccess` 无关）才继续，客户端流与双向流因此永远等不到转发。
+- 边缘到 `_grpc` 回源层的 upstream 保留 nginx 默认的连接缓存（gRPC 不缓存，没有要退回的过期副本）；HTTP/1.1 与 HTTP/2 回源层的 upstream 设置 `keepalive 0`（§3.1）。
+- 客户端连接：有站点开启 gRPC 时，明文监听的默认 server 开启 `http2`（接受 h2c），开启 gRPC 的站点自己的 `server` 块在每个监听上开启 HTTP/2（HTTPS 设置关闭 HTTP/2 时也开启）；其他站点保持原设置，h2c 请求它们的域名得到 421。
+- 主动健康检查（§2.10）：HTTP/2 站点的源站以 HTTP/2 探测：HTTPS 经 ALPN 只提供 `h2`，协商不出 `h2` 时记为 `connect_failed`（Go 的服务端在 ALPN 无交集时直接拒绝握手，记为 `tls_failed`），HTTP 以 prior knowledge 探测；方法、路径、Host（`:authority`）与 User-Agent 同 HTTP/1.1 探测。
 
 ## 4. 文件布局
 

@@ -16,7 +16,7 @@
 | 访问策略 | IP / GeoIP 名单、分阶段规则（表达式函数、动态重定向与改写、查询串编辑、批量重定向、Origin 规则与源站组、按请求覆盖站点设置、压缩规则）、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
 | OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
 | 挑战与 CC 防护 | 四级挑战（Cookie 跳转、JS、工作量证明、图片验证码）、签名通行凭证、节点本地分级 CC、JA4 指纹 |
-| 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
+| 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、HTTP/2 回源与端到端 gRPC、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
 | 四层转发 | TCP / UDP 端口转发到源站：权重、备用源站、被动健康检查与连接失败重试，连接与空闲超时，放行 / 拦截名单，每节点并发与每秒新建上限；向源站发送 PROXY protocol v1 / v2，监听可接受 PROXY protocol；增删端口 reload 时已有连接不断开，其余变更热更新；按分钟统计连接、拒绝、并发峰值与字节数 |
 | 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用站点的平台页；`X-Request-Id` |
 | 统计与日志 | 按站点与四层应用按分钟统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
@@ -223,7 +223,7 @@ edgeweir-node version
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | `edgeweir/*.lua` 所在目录 |
 | `--cache-dir` | `/var/cache/edgeweir-node` | 缓存 zone 上级目录 |
 | `--control-socket` | `/run/edgeweir-node/control.sock` | 数据面控制 API socket |
-| `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层 socket |
+| `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层 socket；以 HTTP/2 回源与 gRPC 的回源层在同目录（`origin-h2.sock`、`origin-grpc.sock` 及其 `origin-noverify-*` 版本） |
 | `--origin-socket-noverify` | 回源 socket 同目录的 `origin-noverify.sock` | 不校验 TLS 的回源层 socket |
 | `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 预热专用的本地边缘监听（同目录的 `edge-tls.sock` 是其 TLS 版本，有 HTTPS 监听时启用）；不受封禁、CC、挑战与拒绝规则影响，不计入统计 |
 | `--l4-socket` | 控制 socket 同目录的 `l4.sock` | stream 子系统的控制中继；控制 API 把四层应用的请求转给它 |
@@ -269,7 +269,7 @@ edgeweir-node version
 | `/var/lib/edgeweir-probe` | 探针状态目录（0700）：`probe.key`（0600）、`probe.crt`、`ca.crt`、`probe.json` |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | 数据面控制 API（仅 unix socket） |
-| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock` | 本地边缘监听与内部回源层 |
+| `/run/edgeweir-node/{edge,origin,origin-noverify}.sock`、`origin[-noverify]-{h2,grpc}.sock` | 本地边缘监听与内部回源层 |
 | `/run/edgeweir-node/l4.sock` | stream 子系统的控制中继（有四层应用时） |
 | `/usr/share/edgeweir-node/lua` | Lua 模块 |
 | `/usr/share/edgeweir-node/geoip` | IPinfo Lite 数据库与 `NOTICE`（容器镜像） |
