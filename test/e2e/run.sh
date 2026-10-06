@@ -181,17 +181,44 @@ pass "client-supplied X-Edgeweir-* headers never reach the origin"
 
 # PROXY protocol listener: origins see the client address from the PROXY
 # header, not the load balancer's.
-pp_request() { # [host [client address [path]]]
+pp_request() { # [host [client address [path [extra header line]]]]
   exec 3<>"/dev/tcp/127.0.0.1/${E2E_PP_PORT:-28081}"
-  printf 'PROXY TCP4 %s 10.0.0.1 40000 8081\r\nGET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' \
-    "${2:-198.51.100.23}" "${3:-/pp}" "${1:-demo.test}" >&3
+  printf 'PROXY TCP4 %s 10.0.0.1 40000 8081\r\nGET %s HTTP/1.1\r\nHost: %s\r\n%sConnection: close\r\n\r\n' \
+    "${2:-198.51.100.23}" "${3:-/pp}" "${1:-demo.test}" "${4:+$4$'\r\n'}" >&3
   cat <&3
   exec 3<&-
 }
 echoed=$(pp_request | tr -d '\r')
 echo "$echoed" | grep -qi "^X-Real-Ip: 198.51.100.23$" || fail "origin did not see the PROXY protocol client address: $(echo "$echoed" | grep -i -e x-real-ip -e x-forwarded-for)"
-echo "$echoed" | grep -qi "^X-Forwarded-For: 198.51.100.23$" || fail "X-Forwarded-For is not the PROXY protocol client address"
+# X-Forwarded-For carries the received chain followed by the TCP peer (the
+# load balancer), not the client address again (G9, client-ip-v1).
+xff=$(echo "$echoed" | sed -n 's/^X-Forwarded-For: //Ip')
+[[ "$xff" =~ ^[0-9.]+$ && "$xff" != 198.51.100.23 ]] || fail "X-Forwarded-For is not the TCP peer: $xff"
 pass "PROXY protocol client address reaches the origin"
+
+# G9 (edge-ports-v1, client-ip-v1, l4-v2): ports.test only on the extra
+# port 8082, p80.test only on 80, sites without ports on every listener;
+# ip.peer is the TCP peer behind the PROXY protocol, which X-Forwarded-For
+# appends to the received chain; a layer-4 port range reaches the origin on
+# the port the connection arrived on.
+EXTRA="http://127.0.0.1:${E2E_EXTRA_PORT:-28082}"
+port_status() { curl -s -o /dev/null -w '%{http_code}' -H "Host: $2" "$1/"; }
+[ "$(port_status "$EXTRA" ports.test)" = 200 ] || fail "ports.test is not served on 8082"
+[ "$(port_status "$NODE" ports.test)" = 404 ] || fail "ports.test is served on 80"
+[ "$(port_status "$NODE" p80.test)" = 200 ] || fail "p80.test is not served on 80"
+[ "$(port_status "$EXTRA" p80.test)" = 404 ] || fail "p80.test is served on 8082"
+[ "$(port_status "$EXTRA" demo.test)" = 200 ] || fail "a site without ports is not served on 8082"
+grep -q 'unknown-host' <<<"$(curl -s -D - -o /dev/null -H 'Host: ports.test' "$NODE/" | tr -d '\r')" || fail "a site on another port is not answered like an unknown host"
+echoed=$(pp_request peer.test 198.51.100.24 /peer 'X-Forwarded-For: 192.0.2.9' | tr -d '\r')
+peer=$(echo "$echoed" | sed -n 's/^X-Peer: //Ip')
+[[ "$peer" =~ ^[0-9.]+$ && "$peer" != 198.51.100.24 ]] || fail "ip.peer is not the TCP peer: $peer"
+echo "$echoed" | grep -qi "^X-Real-Ip: 198.51.100.24$" || fail "ip.src is not the PROXY protocol client"
+echo "$echoed" | grep -qi "^X-Forwarded-For: 192.0.2.9, $peer$" || fail "X-Forwarded-For is not the received chain and the peer: $(echo "$echoed" | grep -i x-forwarded-for)"
+for port in 9200 9202; do
+  r=$(curl -fsS "$HELPER/l4/tcp?port=$port&send=NAME")
+  [ "$r" = "p$port" ] || fail "layer-4 range port $port reached $r"
+done
+pass "G9: sites bound to listener ports, ip.peer and X-Forwarded-For behind the PROXY protocol, a layer-4 port range on the arriving port"
 
 # Origin address policy (special-purpose addresses) and CDN-Loop.
 NODE_ID=$(curl -fsS "$HELPER/node-id")

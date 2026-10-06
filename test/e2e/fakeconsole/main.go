@@ -385,7 +385,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3, configir.FeatureEdgePorts, configir.FeatureClientIP, configir.FeatureL4V2},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "disabled"},
 			{Name: "old.test", Reason: "disabled"},
@@ -396,6 +396,8 @@ func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 			{Port: 8081, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP, ProxyProtocol: true},
 			// HTTPS: the probes' health certificate (no site has a certificate).
 			{Port: 8443, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTPS},
+			// edge-ports-v1: an extra HTTP port that only some sites are bound to.
+			{Port: 8082, Protocol: nodev1.ListenerProtocol_LISTENER_PROTOCOL_HTTP},
 		},
 		CacheZones:         []*nodev1.CacheZone{{Name: "default", MaxSizeMb: 256, KeysZoneMb: 8, InactiveSeconds: 600}},
 		Sites:              sites,
@@ -403,6 +405,24 @@ func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 		IpLists:            l4Lists,
 		L4Apps:             currentL4(),
 	}
+}
+
+// edgePortSites (edge-ports-v1, client-ip-v1): ports.test is served on
+// 8082 only, p80.test on 80 only (every other site has no ports: every
+// listener); peer.test sends the connection's peer (ip.peer) to the origin
+// as X-Peer.
+func edgePortSites(origin string) []*nodev1.Site {
+	ports := site("site-ports", "ports.test", origin, 80)
+	ports.Ports = []uint32{8082}
+	p80 := site("site-p80", "p80.test", origin, 80)
+	p80.Ports = []uint32{80}
+	peer := site("site-peer", "peer.test", origin, 80)
+	peer.Rules = []*nodev1.EdgeRule{{
+		Id: "peer", Phase: "request-transform",
+		Expression: &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"},
+		Action:     &nodev1.RuleAction{Kind: "request_header", Header: "x-peer", Target: irCall("to_string", "string", irField("ip.peer", "ip"))},
+	}}
+	return []*nodev1.Site{ports, p80, peer}
 }
 
 // baseSites are published in every revision.
@@ -436,7 +456,7 @@ func baseSites(origin string) []*nodev1.Site {
 		activeSite(),
 		rulesSite(origin),
 		v3Site(origin),
-	}, h2Sites()...)
+	}, append(h2Sites(), edgePortSites(origin)...)...)
 }
 
 // Expression IR helpers for the rules-v2 sites.
