@@ -1609,9 +1609,11 @@ func (x *SiteErrorPages) GetInterceptOriginErrors() bool {
 }
 
 // ErrorPage is an HTML template of 1 to 65536 bytes. The placeholders
-// {{status}}, {{request_id}}, {{client_ip}} and {{host}} are replaced with
-// HTML-escaped values; any other text, including other {{...}}, is sent as
-// it is. Pages are sent with Cache-Control: no-store.
+// {{status}}, {{request_id}}, {{client_ip}} and {{host}} and, since v0.22.0
+// (feature rules-v3), {{time}} (UTC, RFC 3339) and {{path}} (the request
+// path) are replaced with HTML-escaped values; any other text, including
+// other {{...}}, is sent as it is. Pages are sent with Cache-Control:
+// no-store.
 type ErrorPage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Status        uint32                 `protobuf:"varint,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -2231,6 +2233,18 @@ func (x *ChallengeKeyRef) GetRole() string {
 // regex_replace and wildcard_replace in value expressions only (at most once
 // each). Strings are byte strings; see the console's rule-engine package for
 // the exact semantics and the shared test vectors.
+//
+// Since v0.22.0 (feature rules-v3): fields http.request.cookies.<name> and
+// http.request.uri.args.<name> (the first raw value of that name, "" when
+// absent), http.referer, http.user_agent, http.request.version,
+// http.request.scheme, http.request.id, http.request.timestamp.sec,
+// edge.server_port, ip.geoip.as_name (feature geoip-asn-v1) and, in the
+// response phases, http.response.cache_status; functions url_encode,
+// base64_encode, base64_decode, md5, sha1, sha256, substring and to_string
+// (in conditions and value expressions); comparisons wildcard and
+// strict_wildcard (value: the pattern). to_string takes a value node of any
+// type; substring takes a string and one or two op "const" arguments of
+// value_type "number" (start, length).
 type RuleExpression struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Op            string                 `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
@@ -2351,8 +2365,11 @@ type RuleAction struct {
 	OriginSendTimeoutMs    uint32  `protobuf:"varint,20,opt,name=origin_send_timeout_ms,json=originSendTimeoutMs,proto3" json:"origin_send_timeout_ms,omitempty"`
 	OriginReadTimeoutMs    uint32  `protobuf:"varint,21,opt,name=origin_read_timeout_ms,json=originReadTimeoutMs,proto3" json:"origin_read_timeout_ms,omitempty"`
 	LogSampleRate          *uint32 `protobuf:"varint,22,opt,name=log_sample_rate,json=logSampleRate,proto3,oneof" json:"log_sample_rate,omitempty"`
-	// Kinds "redirect" and "rewrite": a string value expression computed per
-	// request instead of the static value (exactly one of both is set).
+	// Kinds "redirect" and "rewrite" and, since v0.22.0 (feature rules-v3),
+	// "request_header" and "response_header" without remove: a string value
+	// expression computed per request instead of the static value (at most
+	// one of both is set). A header value that comes out longer than 4096
+	// bytes or with a control character skips the header action.
 	Target *RuleExpression `protobuf:"bytes,23,opt,name=target,proto3" json:"target,omitempty"`
 	// Append (redirect) or keep (rewrite) the request's query string. Unset:
 	// a redirect drops it, a rewrite keeps it.
@@ -2372,7 +2389,11 @@ type RuleAction struct {
 	Port        uint32 `protobuf:"varint,30,opt,name=port,proto3" json:"port,omitempty"`
 	// Kind "compression" (phase compression): codings in preference order,
 	// a subset of zstd, br and gzip; empty disables compression.
-	Compression   []string `protobuf:"bytes,31,rep,name=compression,proto3" json:"compression,omitempty"`
+	Compression []string `protobuf:"bytes,31,rep,name=compression,proto3" json:"compression,omitempty"`
+	// Kind "response_header" without remove: add the value as another line
+	// of the header next to those the response has. Added in v0.22.0 (feature
+	// rules-v3), like the redirect status 303.
+	Append        bool `protobuf:"varint,32,opt,name=append,proto3" json:"append,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2624,13 +2645,24 @@ func (x *RuleAction) GetCompression() []string {
 	return nil
 }
 
+func (x *RuleAction) GetAppend() bool {
+	if x != nil {
+		return x.Append
+	}
+	return false
+}
+
 // QueryParam is one query parameter a redirect or rewrite sets. name:
 // [A-Za-z0-9._~-]{1,64}; value: printable ASCII, at most 256 bytes,
 // percent-encoded by the node (everything but RFC 3986 unreserved).
 type QueryParam struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// A string value expression computed per request instead of value (value
+	// is empty then), percent-encoded like it. Added in v0.22.0 (feature
+	// rules-v3).
+	Expression    *RuleExpression `protobuf:"bytes,3,opt,name=expression,proto3" json:"expression,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2677,6 +2709,13 @@ func (x *QueryParam) GetValue() string {
 		return x.Value
 	}
 	return ""
+}
+
+func (x *QueryParam) GetExpression() *RuleExpression {
+	if x != nil {
+		return x.Expression
+	}
+	return nil
 }
 
 // EdgeRule is executed in list order inside its fixed phase. Phases, in
@@ -4419,7 +4458,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"value_type\x18\x03 \x01(\tR\tvalueType\x12\x14\n" +
 	"\x05value\x18\x04 \x01(\tR\x05value\x12\x16\n" +
 	"\x06values\x18\x05 \x03(\tR\x06values\x12<\n" +
-	"\bchildren\x18\x06 \x03(\v2 .edgeweir.node.v1.RuleExpressionR\bchildren\"\xd7\t\n" +
+	"\bchildren\x18\x06 \x03(\v2 .edgeweir.node.v1.RuleExpressionR\bchildren\"\xef\t\n" +
 	"\n" +
 	"RuleAction\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x14\n" +
@@ -4458,7 +4497,8 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"hostHeader\x12\x10\n" +
 	"\x03sni\x18\x1d \x01(\tR\x03sni\x12\x12\n" +
 	"\x04port\x18\x1e \x01(\rR\x04port\x12 \n" +
-	"\vcompression\x18\x1f \x03(\tR\vcompressionB\x0f\n" +
+	"\vcompression\x18\x1f \x03(\tR\vcompression\x12\x16\n" +
+	"\x06append\x18  \x01(\bR\x06appendB\x0f\n" +
 	"\r_cache_bypassB\x0e\n" +
 	"\f_force_httpsB\a\n" +
 	"\x05_gzipB\t\n" +
@@ -4469,11 +4509,14 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\r_under_attackB\r\n" +
 	"\v_cc_enabledB\x12\n" +
 	"\x10_log_sample_rateB\x11\n" +
-	"\x0f_preserve_query\"6\n" +
+	"\x0f_preserve_query\"x\n" +
 	"\n" +
 	"QueryParam\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value\"\xa8\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\x12@\n" +
+	"\n" +
+	"expression\x18\x03 \x01(\v2 .edgeweir.node.v1.RuleExpressionR\n" +
+	"expression\"\xa8\x01\n" +
 	"\bEdgeRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12@\n" +
@@ -4763,29 +4806,30 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	25, // 39: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
 	25, // 40: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
 	27, // 41: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
-	25, // 42: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
-	26, // 43: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
-	44, // 44: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	2,  // 45: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
-	3,  // 46: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
-	39, // 47: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
-	37, // 48: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
-	38, // 49: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
-	35, // 50: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
-	36, // 51: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
-	4,  // 52: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
-	5,  // 53: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
-	40, // 54: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
-	42, // 55: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
-	6,  // 56: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
-	7,  // 57: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
-	25, // 58: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
-	44, // 59: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
-	60, // [60:60] is the sub-list for method output_type
-	60, // [60:60] is the sub-list for method input_type
-	60, // [60:60] is the sub-list for extension type_name
-	60, // [60:60] is the sub-list for extension extendee
-	0,  // [0:60] is the sub-list for field type_name
+	25, // 42: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
+	25, // 43: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
+	26, // 44: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
+	44, // 45: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	2,  // 46: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
+	3,  // 47: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
+	39, // 48: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
+	37, // 49: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
+	38, // 50: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
+	35, // 51: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
+	36, // 52: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
+	4,  // 53: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
+	5,  // 54: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
+	40, // 55: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
+	42, // 56: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
+	6,  // 57: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
+	7,  // 58: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
+	25, // 59: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
+	44, // 60: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	61, // [61:61] is the sub-list for method output_type
+	61, // [61:61] is the sub-list for method input_type
+	61, // [61:61] is the sub-list for extension type_name
+	61, // [61:61] is the sub-list for extension extendee
+	0,  // [0:61] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
