@@ -23,6 +23,9 @@
 //   - l4_apps by id, inside an application origins by id and
 //     allow_list_ids / block_list_ids ascending without duplicates (proto
 //     v0.15.0; the console sorts the list ids as sets too);
+//   - inside a cache zone node_sizes by node_id, inside a site's
+//     maintenance allowed_cidrs and allowed_path_prefixes ascending without
+//     duplicates (proto v0.24.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -61,6 +64,11 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	slices.SortStableFunc(c.CacheZones, func(a, b *nodev1.CacheZone) int {
 		return cmp.Compare(a.GetName(), b.GetName())
 	})
+	for _, z := range c.CacheZones {
+		slices.SortStableFunc(z.NodeSizes, func(a, b *nodev1.CacheZoneNodeSize) int {
+			return cmp.Compare(a.GetNodeId(), b.GetNodeId())
+		})
+	}
 	slices.SortStableFunc(c.Certificates, func(a, b *nodev1.CertificateRef) int {
 		return cmp.Compare(a.GetId(), b.GetId())
 	})
@@ -121,6 +129,12 @@ func CanonicalizeSite(s *nodev1.Site) {
 		slices.SortStableFunc(s.ErrorPages.Pages, func(a, b *nodev1.ErrorPage) int {
 			return cmp.Compare(a.GetStatus(), b.GetStatus())
 		})
+	}
+	if m := s.Maintenance; m != nil {
+		slices.Sort(m.AllowedCidrs)
+		m.AllowedCidrs = slices.Compact(m.AllowedCidrs)
+		slices.Sort(m.AllowedPathPrefixes)
+		m.AllowedPathPrefixes = slices.Compact(m.AllowedPathPrefixes)
 	}
 	slices.SortStableFunc(s.Domains, func(a, b *nodev1.Domain) int {
 		return cmp.Compare(a.GetName(), b.GetName())
