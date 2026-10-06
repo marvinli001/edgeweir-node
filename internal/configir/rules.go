@@ -34,7 +34,10 @@ var fieldTypes = map[string]string{"http.host": "string", "http.request.method":
 	// response ("" for responses the node made itself).
 	"http.referer": "string", "http.user_agent": "string", "http.request.version": "string", "http.request.scheme": "string",
 	"http.request.id": "string", "http.request.timestamp.sec": "number", "edge.server_port": "number", "ip.geoip.as_name": "string",
-	"http.response.cache_status": "string"}
+	"http.response.cache_status": "string",
+	// client-ip-v1: the TCP (QUIC: UDP) peer, whatever the client address
+	// setting makes ip.src.
+	"ip.peer": "ip"}
 
 // namedFields are the rules-v3 fields of one request cookie
 // (http.request.cookies.<name>, an RFC 6265 token, case-sensitive) and one

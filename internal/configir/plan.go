@@ -124,6 +124,9 @@ type Plan struct {
 	// L4Apps are the layer-4 (TCP / UDP) applications, sorted by id
 	// (feature l4-v1).
 	L4Apps []L4App
+	// ClientAddress is how the HTTP(S) listeners find the client address
+	// (nil: the TCP peer; feature client-ip-v1).
+	ClientAddress *ClientAddress
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -194,6 +197,9 @@ type Site struct {
 	// BulkRedirects is the site's exact-match redirect table, sorted by
 	// source (feature rules-v2).
 	BulkRedirects []BulkRedirect `json:"bulk_redirects,omitempty"`
+	// Ports are the listener ports the site is served on (nil: every
+	// listener; feature edge-ports-v1).
+	Ports []uint32 `json:"ports,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -228,6 +234,12 @@ type TLSOptions struct {
 	ZstdLevel       uint32   `json:"zstd_level,omitempty"`
 	ZstdMinLength   uint32   `json:"zstd_min_length,omitempty"`
 	ZstdTypes       []string `json:"zstd_types,omitempty"`
+	// The HTTPS redirect (feature edge-ports-v1): status (0: 301), target
+	// port (0: 443) and the domains force_https leaves alone ("*.suffix"
+	// for wildcards).
+	RedirectStatus   uint32   `json:"redirect_status,omitempty"`
+	RedirectPort     uint32   `json:"redirect_port,omitempty"`
+	RedirectExcluded []string `json:"redirect_excluded,omitempty"`
 }
 
 type Certificate struct {
@@ -247,7 +259,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -552,6 +564,8 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	checks := map[string]*ActiveHealthCheck{}
 	affinities := map[string]*Affinity{}
 	protocols := map[string]originProtocol{}
+	ports := map[string][]uint32{}
+	listenerTLS := ListenerTLS(c)
 	for _, s := range c.GetSites() {
 		id := s.GetId()
 		if protections[id], err = buildProtection(s.GetProtection()); err != nil {
@@ -571,6 +585,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		if protocols[id], err = buildOriginProtocol(s.GetOriginPool()); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if ports[id], err = buildSitePorts(s, listenerTLS); err != nil {
+			return nil, err
 		}
 	}
 	if p.PlatformErrorPages, err = buildPlatformErrorPages(c.GetPlatformErrorPages()); err != nil {
@@ -621,6 +638,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			warn("no usable listener; serving HTTP on default port %d", defaultPort)
 		}
 		p.Listeners = []Listener{{Port: defaultPort}}
+	}
+	if p.ClientAddress, err = buildClientAddress(c); err != nil {
+		return nil, err
 	}
 
 	// Cache zones.
@@ -699,6 +719,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
 			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)
 		}
+		site.Ports = ports[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
@@ -708,6 +729,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			}
 			site.TLS = &TLSOptions{ForceHTTPS: tls.GetForceHttps(), HSTSMaxAge: tls.GetHstsMaxAge(), HSTSIncludeSubdomains: tls.GetHstsIncludeSubdomains(), HSTSPreload: tls.GetHstsPreload(), MinimumVersion: tls.GetMinimumVersion(), CipherProfile: tls.GetCipherProfile(), HTTP2: tls.GetHttp2(), HTTP3: tls.GetHttp3(), Gzip: tls.GetGzip(), GzipMinLength: tls.GetGzipMinLength(), GzipTypes: tls.GetGzipTypes(), OCSPStapling: tls.GetOcspStapling()}
 			if err := buildCompression(tls, site.TLS); err != nil {
+				return nil, err
+			}
+			if err := buildRedirect(s, site.Ports, listenerTLS, site.TLS); err != nil {
 				return nil, err
 			}
 		}

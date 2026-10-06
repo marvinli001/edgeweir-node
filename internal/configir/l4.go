@@ -31,6 +31,9 @@ const (
 	MinL4ConnectTimeout = 100
 	MaxL4ConnectTimeout = 60000
 	MaxL4IdleTimeout    = 86400
+	// MaxL4RangePorts bounds the ports of one application's range
+	// (feature l4-v2).
+	MaxL4RangePorts = 1000
 )
 
 // L4App is a validated layer-4 application. Port, Protocol,
@@ -64,15 +67,39 @@ type L4App struct {
 	// second (0: no limit).
 	MaxConnections          uint32 `json:"max_connections,omitempty"`
 	NewConnectionsPerSecond uint32 `json:"new_connections_per_second,omitempty"`
+	// PortEnd is the last port of the range Port..PortEnd (0: Port alone;
+	// feature l4-v2).
+	PortEnd uint32 `json:"port_end,omitempty"`
+	// CertificateID: TCP applications that terminate TLS (feature l4-v2)
+	// with this certificate and TLSMinimumVersion ("1.2" or "1.3"); the
+	// agent attaches the material (Certificate) like for sites.
+	CertificateID     string       `json:"certificate_id,omitempty"`
+	TLSMinimumVersion string       `json:"tls_minimum_version,omitempty"`
+	Certificate       *Certificate `json:"certificate,omitempty"`
+	// CertificateNames are the DNS names of the certificate (lowercase):
+	// the SNI of a handshake must be one of them.
+	CertificateNames []string `json:"certificate_names,omitempty"`
+}
+
+// LastPort is the last port of the application's range (Port for a
+// single port).
+func (a L4App) LastPort() uint32 {
+	return max(a.Port, a.PortEnd)
+}
+
+// TLS reports whether the node terminates TLS for the application.
+func (a L4App) TLS() bool {
+	return a.CertificateID != ""
 }
 
 // L4Origin is an upstream of a layer-4 application.
 type L4Origin struct {
 	ID      string `json:"id"`
 	Address string `json:"address"`
-	Port    uint32 `json:"port"`
-	Weight  uint32 `json:"weight"`
-	Backup  bool   `json:"backup,omitempty"`
+	// Port 0: the port the connection or session arrived on (l4-v2).
+	Port   uint32 `json:"port"`
+	Weight uint32 `json:"weight"`
+	Backup bool   `json:"backup,omitempty"`
 	// Forbidden marks an IP literal in a special-purpose range outside the
 	// origin allow list: the data plane never connects to it.
 	Forbidden bool `json:"forbidden,omitempty"`
@@ -105,13 +132,16 @@ func buildL4Apps(c *nodev1.NodeConfig, policy AddressPolicy) ([]L4App, []string,
 	for _, l := range c.GetListeners() {
 		listeners[l.GetPort()] = true
 	}
+	certificates := map[string]bool{}
+	for _, cert := range c.GetCertificates() {
+		certificates[cert.GetId()] = true
+	}
 	lists := map[string]bool{}
 	for _, l := range c.GetIpLists() {
 		lists[l.GetId()] = true
 	}
 	var out []L4App
 	var warnings []string
-	ports := map[string]string{} // "<protocol>:<port>" -> application id
 	previous := ""
 	for i, a := range apps {
 		id := a.GetId()
@@ -122,15 +152,15 @@ func buildL4Apps(c *nodev1.NodeConfig, policy AddressPolicy) ([]L4App, []string,
 			return nil, nil, fmt.Errorf("%w: layer-4 applications are not sorted by id or %q is repeated", ErrRejected, id)
 		}
 		previous = id
-		app, err := buildL4App(a, listeners, lists)
+		app, err := buildL4App(a, listeners, lists, certificates)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: layer-4 application %q: %w", ErrRejected, id, err)
 		}
-		key := fmt.Sprintf("%s:%d", app.Protocol, app.Port)
-		if owner, dup := ports[key]; dup {
-			return nil, nil, fmt.Errorf("%w: layer-4 applications %q and %q both use %s port %d", ErrRejected, owner, id, strings.ToUpper(app.Protocol), app.Port)
+		for _, other := range out {
+			if other.Protocol == app.Protocol && other.Port <= app.LastPort() && app.Port <= other.LastPort() {
+				return nil, nil, fmt.Errorf("%w: layer-4 applications %q and %q both use %s port %d", ErrRejected, other.ID, id, strings.ToUpper(app.Protocol), max(app.Port, other.Port))
+			}
 		}
-		ports[key] = id
 		for i, o := range app.Origins {
 			if ip, err := netip.ParseAddr(o.Address); err == nil && policy.Forbidden(ip) {
 				app.Origins[i].Forbidden = true
@@ -142,7 +172,7 @@ func buildL4Apps(c *nodev1.NodeConfig, policy AddressPolicy) ([]L4App, []string,
 	return out, warnings, nil
 }
 
-func buildL4App(a *nodev1.L4App, listeners map[uint32]bool, lists map[string]bool) (L4App, error) {
+func buildL4App(a *nodev1.L4App, listeners map[uint32]bool, lists, certificates map[string]bool) (L4App, error) {
 	app := L4App{
 		ID:                      a.GetId(),
 		Port:                    a.GetPort(),
@@ -154,6 +184,9 @@ func buildL4App(a *nodev1.L4App, listeners map[uint32]bool, lists map[string]boo
 		IdleTimeout:             a.GetIdleTimeoutSeconds(),
 		MaxConnections:          a.GetMaxConnections(),
 		NewConnectionsPerSecond: a.GetNewConnectionsPerSecond(),
+		PortEnd:                 a.GetPortEnd(),
+		CertificateID:           a.GetCertificateId(),
+		TLSMinimumVersion:       a.GetTlsMinimumVersion(),
 	}
 	switch a.GetProtocol() {
 	case nodev1.L4Protocol_L4_PROTOCOL_TCP:
@@ -166,8 +199,18 @@ func buildL4App(a *nodev1.L4App, listeners map[uint32]bool, lists map[string]boo
 	switch {
 	case app.Port < MinL4Port || app.Port > 65535:
 		return app, fmt.Errorf("port %d out of range (%d-65535)", app.Port, MinL4Port)
-	case listeners[app.Port]:
-		return app, fmt.Errorf("port %d is a listener of the node", app.Port)
+	case app.PortEnd != 0 && (app.PortEnd <= app.Port || app.PortEnd > 65535 || app.PortEnd-app.Port >= MaxL4RangePorts):
+		return app, fmt.Errorf("port range %d-%d (the last port above the first, at most %d ports)", app.Port, app.PortEnd, MaxL4RangePorts)
+	case app.CertificateID != "" && app.Protocol != L4TCP:
+		return app, errors.New("TLS is for TCP only")
+	case app.CertificateID != "" && !certificates[app.CertificateID]:
+		return app, fmt.Errorf("missing certificate reference %q", app.CertificateID)
+	case app.CertificateID != "" && app.TLSMinimumVersion != "1.2" && app.TLSMinimumVersion != "1.3":
+		return app, fmt.Errorf("minimum TLS version %q (1.2 or 1.3)", app.TLSMinimumVersion)
+	case app.CertificateID == "" && app.TLSMinimumVersion != "":
+		return app, errors.New("a minimum TLS version without a certificate")
+	case l4RangeHitsListener(app, listeners):
+		return app, fmt.Errorf("port range %d-%d holds a listener of the node", app.Port, app.LastPort())
 	case app.ProxyProtocolVersion > 2:
 		return app, fmt.Errorf("PROXY protocol version %d (0, 1 or 2)", app.ProxyProtocolVersion)
 	case app.Protocol == L4UDP && (app.AcceptProxyProtocol || app.ProxyProtocolVersion != 0):
@@ -207,6 +250,15 @@ func buildL4App(a *nodev1.L4App, listeners map[uint32]bool, lists map[string]boo
 	return app, nil
 }
 
+func l4RangeHitsListener(app L4App, listeners map[uint32]bool) bool {
+	for port := range listeners {
+		if app.Port <= port && port <= app.LastPort() {
+			return true
+		}
+	}
+	return false
+}
+
 // l4Lists checks the IP list ids of an application: ids of
 // NodeConfig.ip_lists, sorted without duplicates (canonical form).
 func l4Lists(kind string, ids []string, lists map[string]bool) ([]string, error) {
@@ -239,8 +291,8 @@ func buildL4Origin(o *nodev1.L4Origin) (L4Origin, error) {
 		return L4Origin{}, fmt.Errorf("origin %q: invalid address %q", id, o.GetAddress())
 	}
 	switch {
-	case o.GetPort() < 1 || o.GetPort() > 65535:
-		return L4Origin{}, fmt.Errorf("origin %q: port %d out of range (1-65535)", id, o.GetPort())
+	case o.GetPort() > 65535:
+		return L4Origin{}, fmt.Errorf("origin %q: port %d out of range (0-65535)", id, o.GetPort())
 	case o.GetWeight() < 1 || o.GetWeight() > MaxL4Weight:
 		return L4Origin{}, fmt.Errorf("origin %q: weight %d out of range (1-%d)", id, o.GetWeight(), MaxL4Weight)
 	}

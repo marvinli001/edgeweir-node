@@ -140,7 +140,6 @@ func TestBuildL4AppsRejects(t *testing.T) {
 		"origin address underscore": func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Address = "bad_name.test" },
 		"origin address with port":  func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Address = "origin.test:80" },
 		"origin address zoned":      func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Address = "fe80::1%eth0" },
-		"origin port 0":             func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Port = 0 },
 		"origin port 65536":         func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Port = 65536 },
 		"weight 0":                  func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Weight = 0 },
 		"weight 101":                func(c *nodev1.NodeConfig) { c.L4Apps[0].Origins[0].Weight = 101 },

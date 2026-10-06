@@ -23,6 +23,9 @@
 //   - l4_apps by id, inside an application origins by id and
 //     allow_list_ids / block_list_ids ascending without duplicates (proto
 //     v0.15.0; the console sorts the list ids as sets too);
+//   - inside a site ports and tls.redirect_excluded_domains ascending,
+//     client_address.trusted_cidrs ascending without duplicates (proto
+//     v0.23.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -86,6 +89,10 @@ func Canonicalize(c *nodev1.NodeConfig) {
 		slices.Sort(l.Entries)
 		l.Entries = slices.Compact(l.Entries)
 	}
+	if ca := c.ClientAddress; ca != nil {
+		slices.Sort(ca.TrustedCidrs)
+		ca.TrustedCidrs = slices.Compact(ca.TrustedCidrs)
+	}
 	slices.SortStableFunc(c.L4Apps, func(a, b *nodev1.L4App) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	for _, a := range c.L4Apps {
 		slices.SortStableFunc(a.Origins, func(x, y *nodev1.L4Origin) int { return cmp.Compare(x.GetId(), y.GetId()) })
@@ -105,7 +112,11 @@ func CanonicalizeSite(s *nodev1.Site) {
 	if s == nil {
 		return
 	}
+	slices.Sort(s.Ports)
+	s.Ports = slices.Compact(s.Ports)
 	if s.Tls != nil {
+		slices.Sort(s.Tls.RedirectExcludedDomains)
+		s.Tls.RedirectExcludedDomains = slices.Compact(s.Tls.RedirectExcludedDomains)
 		slices.Sort(s.Tls.GzipTypes)
 		s.Tls.GzipTypes = slices.Compact(s.Tls.GzipTypes)
 		slices.Sort(s.Tls.BrotliTypes)
