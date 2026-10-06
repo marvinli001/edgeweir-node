@@ -73,6 +73,8 @@ const (
 	// NodeServiceReportSecurityEventsProcedure is the fully-qualified name of the NodeService's
 	// ReportSecurityEvents RPC.
 	NodeServiceReportSecurityEventsProcedure = "/edgeweir.node.v1.NodeService/ReportSecurityEvents"
+	// NodeServiceSubmitPurgeProcedure is the fully-qualified name of the NodeService's SubmitPurge RPC.
+	NodeServiceSubmitPurgeProcedure = "/edgeweir.node.v1.NodeService/SubmitPurge"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -121,6 +123,14 @@ type NodeServiceClient interface {
 	// paths and banned addresses. Idempotent by (node, event id). Added in
 	// v0.10.0.
 	ReportSecurityEvents(context.Context, *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error)
+	// SubmitPurge creates a URL purge of the node's cluster for a PURGE request
+	// the node accepted (Site.purge; the agent checked the key). Errors:
+	// PermissionDenied when the node's cluster does not serve the site or the
+	// site has no PURGE method, InvalidArgument for a URL the site does not
+	// serve, ResourceExhausted over the console's per-site limit (the error
+	// message is "retry after <seconds>"). Added in v0.24.0 (feature
+	// site-content-v1).
+	SubmitPurge(context.Context, *connect.Request[v1.SubmitPurgeRequest]) (*connect.Response[v1.SubmitPurgeResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -230,6 +240,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportSecurityEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		submitPurge: connect.NewClient[v1.SubmitPurgeRequest, v1.SubmitPurgeResponse](
+			httpClient,
+			baseURL+NodeServiceSubmitPurgeProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("SubmitPurge")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -251,6 +267,7 @@ type nodeServiceClient struct {
 	reportBans           *connect.Client[v1.ReportBansRequest, v1.ReportBansResponse]
 	getChallengeKeys     *connect.Client[v1.GetChallengeKeysRequest, v1.GetChallengeKeysResponse]
 	reportSecurityEvents *connect.Client[v1.ReportSecurityEventsRequest, v1.ReportSecurityEventsResponse]
+	submitPurge          *connect.Client[v1.SubmitPurgeRequest, v1.SubmitPurgeResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -333,6 +350,11 @@ func (c *nodeServiceClient) ReportSecurityEvents(ctx context.Context, req *conne
 	return c.reportSecurityEvents.CallUnary(ctx, req)
 }
 
+// SubmitPurge calls edgeweir.node.v1.NodeService.SubmitPurge.
+func (c *nodeServiceClient) SubmitPurge(ctx context.Context, req *connect.Request[v1.SubmitPurgeRequest]) (*connect.Response[v1.SubmitPurgeResponse], error) {
+	return c.submitPurge.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -379,6 +401,14 @@ type NodeServiceHandler interface {
 	// paths and banned addresses. Idempotent by (node, event id). Added in
 	// v0.10.0.
 	ReportSecurityEvents(context.Context, *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error)
+	// SubmitPurge creates a URL purge of the node's cluster for a PURGE request
+	// the node accepted (Site.purge; the agent checked the key). Errors:
+	// PermissionDenied when the node's cluster does not serve the site or the
+	// site has no PURGE method, InvalidArgument for a URL the site does not
+	// serve, ResourceExhausted over the console's per-site limit (the error
+	// message is "retry after <seconds>"). Added in v0.24.0 (feature
+	// site-content-v1).
+	SubmitPurge(context.Context, *connect.Request[v1.SubmitPurgeRequest]) (*connect.Response[v1.SubmitPurgeResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -484,6 +514,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportSecurityEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceSubmitPurgeHandler := connect.NewUnaryHandler(
+		NodeServiceSubmitPurgeProcedure,
+		svc.SubmitPurge,
+		connect.WithSchema(nodeServiceMethods.ByName("SubmitPurge")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -518,6 +554,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceGetChallengeKeysHandler.ServeHTTP(w, r)
 		case NodeServiceReportSecurityEventsProcedure:
 			nodeServiceReportSecurityEventsHandler.ServeHTTP(w, r)
+		case NodeServiceSubmitPurgeProcedure:
+			nodeServiceSubmitPurgeHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -589,4 +627,8 @@ func (UnimplementedNodeServiceHandler) GetChallengeKeys(context.Context, *connec
 
 func (UnimplementedNodeServiceHandler) ReportSecurityEvents(context.Context, *connect.Request[v1.ReportSecurityEventsRequest]) (*connect.Response[v1.ReportSecurityEventsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportSecurityEvents is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) SubmitPurge(context.Context, *connect.Request[v1.SubmitPurgeRequest]) (*connect.Response[v1.SubmitPurgeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.SubmitPurge is not implemented"))
 }
