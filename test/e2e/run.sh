@@ -39,7 +39,11 @@
 #      rewrite to another origin group with its own Host, a port override,
 #      config rules (read timeout, sampled log, WebSocket, Under Attack),
 #      a cache rule condition with a browser TTL, compression rules and
-#      config gzip=false on a cached object;
+#      config gzip=false on a cached object; rules-v3: computed request
+#      headers (skipped and logged once when invalid), response header
+#      lines added with append, the cache status, a User-Agent wildcard, a
+#      Cookie block with {{time}} and {{path}} in its page, a 303 with a
+#      computed query parameter and a redirect to a query parameter;
 #  14. HTTP/2 to origins (h2c, h2 over TLS, request bodies, WebSocket
 #      still HTTP/1.1, no fallback, health probes over HTTP/2) and gRPC end
 #      to end (unary, bidirectional streaming, error trailers, past the CRS,
@@ -857,6 +861,34 @@ curl -s -o /dev/null -H 'Host: rules.test' "$NODE/sampled"
 WAIT_SECS=30 wait_for "the sampled request in the access logs" sh -c "curl -fsS $HELPER/logs | grep -q '^site-rules 200 /sampled '"
 if curl -fsS "$HELPER/logs" | grep -q '^site-rules .* /unsampled '; then fail "a request of a site sampling nothing was logged"; fi
 pass "rules-v2: dynamic and bulk redirects, rewrite, origin group, Host, port and timeout, WebSocket, Under Attack, sampling, browser TTL"
+
+# rules-v3 (v3.test): computed request headers (one skipped when invalid,
+# logged once), response header lines added with append, the cache
+# status, a User-Agent wildcard, a Cookie block with {{time}} and
+# {{path}} in its page, a 303 with a computed query parameter and a
+# redirect to a query parameter.
+grep -qx rules-v3 <<<"$(curl -fsS "$HELPER/features")" || fail "rules-v3 not reported"
+r=$(curl -s -D - -H 'Host: v3.test' -A 'curl/8 smoke' "$NODE/hdr?bad=a%0Ab" | tr -d '\r')
+rid=$(header_of x-request-id <<<"$r")
+[ -n "$rid" ] && grep -q "^X-Req: $rid\$" <<<"$r" || fail "x-req is not the request id $rid: $r"
+grep -q '^X-Info: HTTP/1.1 http 80 curl/8 smoke$' <<<"$r" || fail "x-info (version, scheme, port, User-Agent): $r"
+if grep -qi '^x-bad:' <<<"$r"; then fail "an invalid computed header value was sent: $r"; fi
+[ "$(header_of link <<<"$r" | paste -sd'|' -)" = '</a.css>; rel=preload|</hdr>; rel=canonical' ] || fail "two Link lines: $r"
+[ "$(header_of x-cache-status <<<"$r")" = MISS ] && [ "$(header_of x-ua-match <<<"$r")" = 1 ] || fail "cache status and UA wildcard (MISS): $r"
+r=$(hv v3.test '/hdr?bad=a%0Ab' -A 'Mozilla/5.0')
+[ "$(header_of x-cache-status <<<"$r")" = HIT ] && [ -z "$(header_of x-ua-match <<<"$r")" ] || fail "cache status and UA wildcard (HIT): $r"
+[ "$(compose logs node 2>&1 | grep -c 'header value skipped site=site-v3 rule=bad')" = 1 ] || fail "the skipped header is not logged exactly once"
+page=$(curl -s -D - -H 'Host: v3.test' -H 'Cookie: a=1; role=admin' "$NODE/x%3Cy" | tr -d '\r')
+[ "$(status_of <<<"$page")" = 403 ] && grep -Eq '^<p>v3 403 at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z for /x&lt;y</p>$' <<<"$page" ||
+  fail "Cookie block with {{time}} and {{path}}: $page"
+[ "$(status_code v3.test)" = 200 ] || fail "v3.test without the cookie"
+r=$(hv v3.test '/login?next=/a%20b&next=x')
+[ "$(status_of <<<"$r")" = 303 ] && case "$(header_of location <<<"$r")" in */signin\?next=%2Fa%2520b) true ;; *) false ;; esac ||
+  fail "303 with a computed next: $(status_of <<<"$r") $(header_of location <<<"$r")"
+r=$(hv v3.test '/go?to=dash')
+[ "$(status_of <<<"$r")" = 302 ] && case "$(header_of location <<<"$r")" in */dash) true ;; *) false ;; esac ||
+  fail "redirect to a query parameter: $(status_of <<<"$r") $(header_of location <<<"$r")"
+pass "rules-v3: computed and skipped headers, Link lines, cache status, wildcard, Cookie block page, 303 and query parameter redirects"
 
 # HTTP/2 to origins (origin-http2-v1): with prior knowledge and over TLS
 # (ALPN h2), cached like any request, WebSocket still over HTTP/1.1, no

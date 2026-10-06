@@ -46,6 +46,14 @@
 //	                   TTL (/img/); compress.test has compression rules
 //	                   (/gz-only gzip, /no-compress none, /no-gzip config
 //	                   gzip=false)
+//	v3.test         rules-v3: origin whoami:80; computed request headers
+//	                   (x-req = http.request.id, x-info = version, scheme,
+//	                   port and User-Agent; x-bad from ?bad=, skipped when
+//	                   invalid), two Link lines (append), x-cache-status,
+//	                   x-ua-match for User-Agent *CURL*, a block for the
+//	                   Cookie role=admin with a 403 page of {{time}} and
+//	                   {{path}}, a 303 to /signin with a computed next=
+//	                   and a redirect to ?to= (a value expression target)
 //
 // The sites of HTTP/2 to origins and gRPC, and their origins, are in h2.go.
 //
@@ -377,7 +385,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "disabled"},
 			{Name: "old.test", Reason: "disabled"},
@@ -427,6 +435,7 @@ func baseSites(origin string) []*nodev1.Site {
 		sitemapSite(),
 		activeSite(),
 		rulesSite(origin),
+		v3Site(origin),
 	}, h2Sites()...)
 }
 
@@ -486,6 +495,47 @@ func rulesSite(origin string) *nodev1.Site {
 			pathStarts("/img/"), {Op: "in", Field: "http.request.uri.path.extension", ValueType: "string", Values: []string{"png"}},
 		}}},
 	}}, s.CacheRules...)
+	return s
+}
+
+// irField reads a field.
+func irField(name, typ string) *nodev1.RuleExpression {
+	return &nodev1.RuleExpression{Op: "field", Field: name, ValueType: typ}
+}
+
+// v3Site exercises the rules-v3 additions (see the package comment).
+func v3Site(origin string) *nodev1.Site {
+	s := site("site-v3", "v3.test", origin, 80)
+	str := func(name string) *nodev1.RuleExpression { return irField(name, "string") }
+	header := func(id, phase, kind, name string, target *nodev1.RuleExpression) *nodev1.EdgeRule {
+		return &nodev1.EdgeRule{Id: id, Phase: phase, Expression: irTrue, Action: &nodev1.RuleAction{Kind: kind, Header: name, Target: target}}
+	}
+	path := func(p string) *nodev1.RuleExpression {
+		return &nodev1.RuleExpression{Op: "eq", Field: "http.request.uri.path", ValueType: "string", Value: p}
+	}
+	s.Rules = []*nodev1.EdgeRule{
+		header("req", "request-transform", "request_header", "x-req", str("http.request.id")),
+		header("bad", "request-transform", "request_header", "x-bad", irCall("url_decode", "string", str("http.request.uri.args.bad"))),
+		{Id: "login", Phase: "redirect", Expression: path("/login"), Action: &nodev1.RuleAction{
+			Kind: "redirect", StatusCode: 303, Value: "/signin",
+			SetQuery: []*nodev1.QueryParam{{Name: "next", Expression: str("http.request.uri.args.next")}},
+		}},
+		{Id: "go", Phase: "redirect", Expression: path("/go"), Action: &nodev1.RuleAction{
+			Kind: "redirect", StatusCode: 302, Target: irCall("concat", "string", irConst("/"), str("http.request.uri.args.to")),
+		}},
+		{Id: "admin", Phase: "waf-custom", Action: &nodev1.RuleAction{Kind: "block", StatusCode: 403},
+			Expression: &nodev1.RuleExpression{Op: "eq", Field: "http.request.cookies.role", ValueType: "string", Value: "admin"}},
+		header("info", "origin", "request_header", "x-info", irCall("concat", "string",
+			str("http.request.version"), irConst(" "), str("http.request.scheme"), irConst(" "),
+			irCall("to_string", "string", irField("edge.server_port", "number")), irConst(" "), str("http.user_agent"))),
+		{Id: "link1", Phase: "response-transform", Expression: irTrue, Action: &nodev1.RuleAction{Kind: "response_header", Header: "link", Value: "</a.css>; rel=preload", Append: true}},
+		{Id: "link2", Phase: "response-transform", Expression: irTrue, Action: &nodev1.RuleAction{Kind: "response_header", Header: "link", Append: true,
+			Target: irCall("concat", "string", irConst("<"), irPath, irConst(">; rel=canonical"))}},
+		header("cache", "response-transform", "response_header", "x-cache-status", str("http.response.cache_status")),
+		{Id: "ua", Phase: "response-transform", Action: &nodev1.RuleAction{Kind: "response_header", Header: "x-ua-match", Value: "1"},
+			Expression: &nodev1.RuleExpression{Op: "wildcard", Field: "http.user_agent", ValueType: "string", Value: "*CURL*"}},
+	}
+	s.ErrorPages = &nodev1.SiteErrorPages{Pages: []*nodev1.ErrorPage{{Status: 403, Template: "<p>v3 {{status}} at {{time}} for {{path}}</p>"}}}
 	return s
 }
 
