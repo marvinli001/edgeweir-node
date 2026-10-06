@@ -34,7 +34,7 @@ func TestLocalMMDB(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Country != "NZ" || got.Subdivision != "AUK" || got.ASNum != 64512 {
+		if got.Country != "NZ" || got.Subdivision != "AUK" || got.ASNum != 64512 || got.ASName != "Synthetic ASN 64512" {
 			t.Fatalf("%s: %+v", ip, got)
 		}
 	}
@@ -111,16 +111,16 @@ func TestIPinfoLite(t *testing.T) {
 		ip   string
 		want Result
 	}{
-		{only, "203.0.113.7", Result{Country: "NZ", ASNum: 64512}},
-		{only, "::ffff:203.0.113.7", Result{Country: "NZ", ASNum: 64512}},
-		{only, "2001:db8::7", Result{Country: "AU", ASNum: 64513}},
-		{only, "172.28.1.1", Result{Country: "NZ", ASNum: 64513}},
+		{only, "203.0.113.7", Result{Country: "NZ", ASNum: 64512, ASName: "Synthetic AS64512"}},
+		{only, "::ffff:203.0.113.7", Result{Country: "NZ", ASNum: 64512, ASName: "Synthetic AS64512"}},
+		{only, "2001:db8::7", Result{Country: "AU", ASNum: 64513, ASName: "Synthetic AS64513"}},
+		{only, "172.28.1.1", Result{Country: "NZ", ASNum: 64513, ASName: "Synthetic AS64513"}},
 		{only, "192.0.2.1", Result{}},
 		// The City database adds the subdivision where it agrees on the country.
-		{all, "203.0.113.7", Result{Country: "NZ", Subdivision: "AUK", ASNum: 64512}},
-		{all, "2001:db8::7", Result{Country: "AU", ASNum: 64513}},
-		// IPinfo answers the ASN even where the ASN database differs.
-		{all, "172.28.1.1", Result{Country: "NZ", Subdivision: "AUK", ASNum: 64513}},
+		{all, "203.0.113.7", Result{Country: "NZ", Subdivision: "AUK", ASNum: 64512, ASName: "Synthetic AS64512"}},
+		{all, "2001:db8::7", Result{Country: "AU", ASNum: 64513, ASName: "Synthetic AS64513"}},
+		// IPinfo answers the ASN and its name even where the ASN database differs.
+		{all, "172.28.1.1", Result{Country: "NZ", Subdivision: "AUK", ASNum: 64513, ASName: "Synthetic AS64513"}},
 		{all, "192.0.2.1", Result{}},
 	} {
 		got, err := test.db.Lookup(netip.MustParseAddr(test.ip))
@@ -159,7 +159,7 @@ func TestIPinfoFallsBackToOperatorDatabases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (Result{Country: "NZ", Subdivision: "AUK", ASNum: 64512}); got != want {
+	if want := (Result{Country: "NZ", Subdivision: "AUK", ASNum: 64512, ASName: "Synthetic ASN 64512"}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }

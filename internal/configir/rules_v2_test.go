@@ -241,7 +241,7 @@ func TestRuleActionsV2(t *testing.T) {
 		"value and target":           {"redirect", &nodev1.RuleAction{Kind: "redirect", Value: "/a", Target: irConst("/b"), StatusCode: 301}, false},
 		"neither value nor target":   {"redirect", &nodev1.RuleAction{Kind: "redirect", StatusCode: 301}, false},
 		"invalid target":             {"redirect", &nodev1.RuleAction{Kind: "redirect", Target: irCall("len", "number", irPath), StatusCode: 301}, false},
-		"redirect status":            {"redirect", &nodev1.RuleAction{Kind: "redirect", Target: target, StatusCode: 303}, false},
+		"redirect status":            {"redirect", &nodev1.RuleAction{Kind: "redirect", Target: target, StatusCode: 304}, false},
 		"unsorted set_query":         {"redirect", &nodev1.RuleAction{Kind: "redirect", Value: "/a", StatusCode: 301, SetQuery: query("b", "a")}, false},
 		"duplicate remove_query":     {"redirect", &nodev1.RuleAction{Kind: "redirect", Value: "/a", StatusCode: 301, RemoveQuery: []string{"a", "a"}}, false},
 		"set and removed":            {"redirect", &nodev1.RuleAction{Kind: "redirect", Value: "/a", StatusCode: 301, SetQuery: query("a"), RemoveQuery: []string{"a"}}, false},

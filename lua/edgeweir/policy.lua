@@ -10,6 +10,13 @@
 -- up after the redirect rules) and for the conditions of cache rules,
 -- which see the request as the client sent it, like the cache key.
 --
+-- Header actions may compute their value (proto v0.22.0, feature
+-- rules-v3): a value that comes out invalid (see
+-- edgeweir.expressions.header_value) skips the action, with one NOTICE per
+-- rule and node every 60 seconds; response headers may add a line
+-- (append); redirects and rewrites may compute the values of the query
+-- parameters they set.
+--
 -- Results of the rules travel in the request's policy context
 -- (ngx.ctx.edgeweir_policy): cache bypass, force HTTPS, compression
 -- switches and the compression rule's codings, WebSocket, Under Attack, CC,
@@ -32,6 +39,13 @@ function _M.prepare_rules(rules, lists)
     local compiled = { id = rule.id, match = expressions.compile(rule.expression, lists), action = rule.action }
     if type(rule.action) == "table" and type(rule.action.target) == "table" then
       compiled.target = expressions.compile_value(rule.action.target)
+    end
+    -- Computed query parameters (rules-v3), by position in set_query.
+    for i, p in ipairs(type(rule.action) == "table" and type(rule.action.set_query) == "table" and rule.action.set_query or {}) do
+      if type(p) == "table" and type(p.expression) == "table" then
+        compiled.query = compiled.query or {}
+        compiled.query[i] = expressions.compile_value(p.expression)
+      end
     end
     group[#group + 1] = compiled
   end
@@ -200,10 +214,22 @@ function _M.parse_origin_header(value)
   return any and out or nil
 end
 
+-- set_named sets the fields of the names (a set) after prefix from what
+-- parse (edgeweir.expressions.cookies or args) finds in text ("" for
+-- names it does not find).
+local function set_named(values, prefix, names, parse, text)
+  local found = parse(text or "", names, {})
+  for name in pairs(names) do values[prefix .. name] = found[name] or "" end
+end
+
+-- HEADER_FIELDS are the fields that read a request header (rules-v3).
+local HEADER_FIELDS = { referer = "http.referer", ["user-agent"] = "http.user_agent" }
+
 -- request builds the request values of a request. The derived fields
--- http.request.full_uri and http.request.uri.path.extension are computed
--- only for sites whose rules read them (site._full_uri, site._extension,
--- see edgeweir.store).
+-- http.request.full_uri and http.request.uri.path.extension, and the
+-- rules-v3 fields, are computed only for sites whose rules read them
+-- (site._full_uri, site._extension, site._request_v3, site._cookies,
+-- site._args, see edgeweir.store).
 function _M.request(site, headers)
   local var = ngx.var
   local scheme = var.scheme
@@ -222,12 +248,27 @@ function _M.request(site, headers)
   for name, value in pairs(headers) do
     values["http.request.headers." .. name:lower()] = type(value) == "table" and table.concat(value, ", ") or value
   end
+  if site._request_v3 then
+    values["http.referer"] = values["http.request.headers.referer"]
+    values["http.user_agent"] = values["http.request.headers.user-agent"]
+    values["http.request.version"] = var.server_protocol
+    values["http.request.scheme"] = scheme
+    values["http.request.id"] = var.edgeweir_request_id or var.request_id
+    values["http.request.timestamp.sec"] = math.floor(ngx.req.start_time())
+    values["edge.server_port"] = tonumber(var.server_port) or 0
+  end
+  if site._cookies then
+    local cookie = headers.cookie
+    set_named(values, "http.request.cookies.", site._cookies, expressions.cookies, type(cookie) == "table" and concat(cookie, "; ") or cookie)
+  end
+  if site._args then set_named(values, "http.request.uri.args.", site._args, expressions.args, values["http.request.uri.query"]) end
   -- JA4 comes from the TLS handshake (edgeweir.ja4); "" on plain HTTP.
   if site._ja4 then values["tls.ja4"] = require("edgeweir.ja4").value() end
   -- GeoIP is read once in the access phase; response filters cannot yield.
   if site._geo then
     local geo = assert(require("edgeweir.geoip").lookup(var.remote_addr), "GeoIP unavailable")
     values["ip.geoip.country"], values["ip.geoip.subdivision"], values["ip.geoip.asnum"] = geo.country or "", geo.subdivision or "", geo.asnum or 0
+    values["ip.geoip.as_name"] = geo.as_name or ""
   end
   return values
 end
@@ -245,23 +286,38 @@ local function writable(ctx)
   return values
 end
 
-local function rewrite(rule, a, ctx)
+-- set_query returns the parameters a redirect or rewrite sets, the
+-- computed ones (rules-v3) with their value for this request.
+local function set_query(rule, a, values)
+  local query = rule.query
+  if not query then return a.set_query end
+  local out = {}
+  for i, p in ipairs(a.set_query) do
+    local fn = query[i]
+    out[i] = fn and { name = p.name, value = fn(values) } or p
+  end
+  return out
+end
+
+local function rewrite(rule, a, ctx, site)
   local path = a.value
   if rule.target then
     path = rule.target(ctx.values)
     if not _M.valid_rewrite(path) then error("invalid rewrite path") end
   end
+  local params = set_query(rule, a, ctx.values)
   ngx.req.set_uri(path, false)
   local args = ngx.var.args or ""
   local query = args
   if a.preserve_query == false then query = "" end
-  if has_edits(a.set_query, a.remove_query) then query = _M.edit_query(query, a.set_query, a.remove_query) end
+  if has_edits(params, a.remove_query) then query = _M.edit_query(query, params, a.remove_query) end
   if query ~= args then ngx.req.set_uri_args(query) end
   local values = writable(ctx)
   values["http.request.uri.path"] = path
   values["http.request.uri.path.extension"] = expressions.path_extension(path)
   values["http.request.uri.query"] = query
   values["http.request.uri"] = query ~= "" and (path .. "?" .. query) or path
+  if site._args then set_named(values, "http.request.uri.args.", site._args, expressions.args, query) end
 end
 
 local function redirect(rule, a, ctx)
@@ -270,8 +326,35 @@ local function redirect(rule, a, ctx)
     location = rule.target(ctx.values)
     if not _M.valid_location(location) then error("invalid redirect target") end
   end
-  location = _M.redirect_location(location, ngx.var.args, a.preserve_query, a.set_query, a.remove_query)
+  location = _M.redirect_location(location, ngx.var.args, a.preserve_query, set_query(rule, a, ctx.values), a.remove_query)
   return { status = a.status_code, location = location }
+end
+
+-- header_value returns the value a header action sets: the static value,
+-- or its value expression's (rules-v3); nil skips the action (logged once
+-- per rule and node every 60 seconds, IDs only).
+function _M.header_value(rule, a, site, values)
+  if not rule.target then return a.value or "" end
+  local v = expressions.header_value(rule.target, values)
+  if v == nil and ngx.shared.edgeweir_policy_logs:safe_add("header:" .. rule.id, true, 60) then
+    ngx.log(ngx.NOTICE, "edgeweir: header value skipped site=", site.id, " rule=", rule.id)
+  end
+  return v
+end
+
+-- add_header_line appends value as another line of response header name.
+local function add_header_line(name, value)
+  local current = ngx.header[name]
+  if current == nil then
+    ngx.header[name] = value
+  elseif type(current) == "table" then
+    current[#current + 1] = value
+    ngx.header[name] = current
+  else
+    ngx.header[name] = { current, value }
+  end
+  local lines = ngx.header[name]
+  return type(lines) == "table" and concat(lines, ", ") or lines
 end
 
 local LEVELS = { cookie302 = 1, js = 2, pow = 3, captcha = 4 }
@@ -336,16 +419,27 @@ local function run_group(group, site, ctx, phase, namespace)
           ngx.log(ngx.NOTICE, "edgeweir: WAF match site=", site.id, " rule=", rule.id)
         end
       elseif a.kind == "redirect" then return redirect(rule, a, ctx)
-      elseif a.kind == "rewrite" then rewrite(rule, a, ctx)
+      elseif a.kind == "rewrite" then rewrite(rule, a, ctx, site)
       elseif a.kind == "request_header" then
-        if a.remove then ngx.req.clear_header(a.header) else ngx.req.set_header(a.header, a.value or "") end
-        writable(ctx)["http.request.headers." .. a.header] = a.remove and "" or (a.value or "")
+        local value = a.remove and "" or _M.header_value(rule, a, site, ctx.values)
+        if value then
+          if a.remove then ngx.req.clear_header(a.header) else ngx.req.set_header(a.header, value) end
+          local values = writable(ctx)
+          values["http.request.headers." .. a.header] = value
+          local alias = HEADER_FIELDS[a.header]
+          if alias and site._request_v3 then values[alias] = value end
+        end
       elseif a.kind == "response_header" then
-        ngx.header[a.header] = not a.remove and (a.value or "") or nil
-        local values = writable(ctx)
-        values["http.response.headers." .. a.header] = a.remove and "" or (a.value or "")
-        if a.header == "content-type" and site._media_type then
-          values["http.response.content_type.media_type"] = expressions.media_type(not a.remove and a.value or nil)
+        local value = a.remove and "" or _M.header_value(rule, a, site, ctx.values)
+        if value then
+          if a.remove then ngx.header[a.header] = nil
+          elseif a.append then value = add_header_line(a.header, value)
+          else ngx.header[a.header] = value end
+          local values = writable(ctx)
+          values["http.response.headers." .. a.header] = value
+          if a.header == "content-type" and site._media_type then
+            values["http.response.content_type.media_type"] = expressions.media_type(not a.remove and value or nil)
+          end
         end
       elseif a.kind == "config" then config(a, ctx)
       elseif a.kind == "origin" then origin(a, ctx)
@@ -418,6 +512,9 @@ function _M.response(site)
     if type(content_type) == "table" then content_type = content_type[1] end
     values["http.response.content_type.media_type"] = expressions.media_type(content_type)
   end
+  -- The edge cache's status (rules-v3); "" for responses the node made
+  -- itself and for those that never pass the cache (WebSocket, gRPC).
+  if site._cache_status then values["http.response.cache_status"] = ngx.var.upstream_cache_status or "" end
   local groups = site._config.groups
   for _, phase in ipairs({ "response-transform", "compression" }) do
     run_group(groups and groups[phase], site, ctx, phase, "platform")

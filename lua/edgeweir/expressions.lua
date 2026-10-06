@@ -2,11 +2,15 @@
 --
 -- compile(e, lists) turns a condition into a function of the request
 -- values (field name -> value) that returns a boolean; compile_value(e) a
--- value expression (redirect targets, rewrite paths) into one that returns
--- a string. Since proto v0.13.0 (feature rules-v2) conditions and values
--- may call functions (call, field and const nodes); the pure helpers below
+-- value expression (redirect targets, rewrite paths, since proto v0.22.0
+-- header values and set query parameters) into one that returns a string.
+-- Since proto v0.13.0 (feature rules-v2) conditions and values may call
+-- functions (call, field and const nodes); the pure helpers below
 -- (url_decode, wildcard_replace, regex_replace, path_extension,
--- media_type, full_uri) are shared with the request and response fields.
+-- media_type, full_uri, and with rules-v3 cookies, args, base64_decode,
+-- substring, to_string) are shared with the request and response fields.
+-- rules-v3 also adds the wildcard and strict_wildcard comparisons and
+-- header_value, the check of a computed header value.
 local ip = require("edgeweir.ipaddr")
 local bit = require("bit")
 local _M = {}
@@ -78,8 +82,10 @@ end
 -- (the caller fails closed).
 _M.MAX_VALUE = 8192
 
-local lower, upper, sub, find, gsub, match, char = string.lower, string.upper, string.sub, string.find, string.gsub, string.match, string.char
+local lower, upper, sub, find, gsub, match, char, byte, format, gmatch = string.lower, string.upper, string.sub, string.find, string.gsub, string.match, string.char, string.byte, string.format, string.gmatch
 local concat = table.concat
+local resty_sha256 = require("resty.sha256")
+local to_hex = require("resty.string").to_hex
 
 local function checked(s)
   if #s > _M.MAX_VALUE then error("expression value is too long") end
@@ -115,6 +121,103 @@ end
 -- URI as received.
 function _M.full_uri(scheme, host, request_uri)
   return (scheme or "") .. "://" .. (host or "") .. (request_uri or "")
+end
+
+-- url_encode percent-encodes every byte but the RFC 3986 unreserved
+-- characters (%XX, uppercase hex).
+function _M.url_encode(s)
+  return (gsub(s, "[^A-Za-z0-9%-._~]", function(c) return format("%%%02X", byte(c)) end))
+end
+
+local BASE64_URL = { ["-"] = "+", ["_"] = "/" }
+
+-- base64_decode accepts the standard and the URL-safe alphabet (mixed
+-- too), with or without padding, and ignores unused trailing bits. Other
+-- characters, whitespace, misplaced or excess padding and a length that
+-- leaves one character decode to "".
+function _M.base64_decode(s)
+  local text = gsub(s, "[-_]", BASE64_URL)
+  local body = text
+  if sub(body, -1) == "=" then body = sub(body, 1, -2) end
+  if sub(body, -1) == "=" then body = sub(body, 1, -2) end
+  if (body ~= text and #text % 4 ~= 0) or find(body, "[^A-Za-z0-9+/]") or #body % 4 == 1 or body == "" then
+    return ""
+  end
+  return ngx.decode_base64(body) or ""
+end
+
+-- substring returns length bytes (all when nil) of s from byte start
+-- (0-based; negative counts from the end, clamped to the first byte), ""
+-- past the end.
+function _M.substring(s, start, length)
+  local n = #s
+  if start < 0 then
+    start = n + start
+    if start < 0 then start = 0 end
+  end
+  if start >= n then return "" end
+  local finish = n
+  if length and start + length < n then finish = start + length end
+  return sub(s, start + 1, finish)
+end
+
+-- to_string writes integers in decimal, booleans as true / false; strings
+-- (addresses included) stay as they are.
+function _M.to_string(v)
+  local t = type(v)
+  if t == "number" then return format("%d", v) end
+  if t == "boolean" then return v and "true" or "false" end
+  return v
+end
+
+local function trim(s)
+  return (match(s, "^[ \t]*(.-)[ \t]*$"))
+end
+
+-- cookies adds to out the first value of every cookie named in names
+-- (a set) of a Cookie header value: pairs separated by ";", spaces and
+-- tabs around a pair, its name and its value ignored, pairs without "="
+-- skipped; values as sent (not decoded).
+function _M.cookies(header, names, out)
+  for pair in gmatch(header, "[^;]+") do
+    local eq = find(pair, "=", 1, true)
+    if eq then
+      local name = trim(sub(pair, 1, eq - 1))
+      if names[name] and out[name] == nil then out[name] = trim(sub(pair, eq + 1)) end
+    end
+  end
+  return out
+end
+
+-- args adds to out the first value of every query parameter named in
+-- names (a set): parameters separated by "&", the name before the first
+-- "=" (all of it without one, the value then ""), neither decoded.
+function _M.args(query, names, out)
+  for element in gmatch(query, "[^&]+") do
+    local eq = find(element, "=", 1, true)
+    local name = eq and sub(element, 1, eq - 1) or element
+    if names[name] and out[name] == nil then out[name] = eq and sub(element, eq + 1) or "" end
+  end
+  return out
+end
+
+-- cookie and arg read one name (shared test vectors).
+function _M.cookie(header, name)
+  return _M.cookies(header, { [name] = true }, {})[name] or ""
+end
+function _M.arg(query, name)
+  return _M.args(query, { [name] = true }, {})[name] or ""
+end
+
+_M.MAX_HEADER_VALUE = 4096
+
+-- header_value runs the value expression fn of a header action: its value,
+-- or nil when the node skips the action (the evaluation fails, or the value
+-- has more than 4096 bytes or a control character).
+function _M.header_value(fn, req)
+  local ok, v = pcall(fn, req)
+  if not ok or type(v) ~= "string" or #v > _M.MAX_HEADER_VALUE or find(v, "%c") then return nil end
+  return v
 end
 
 -- expand replaces ${1} to ${8} with captures (missing ones are "").
@@ -285,6 +388,25 @@ local function value(e)
       return checked(expand(replacement, captures))
     end
   end
+  -- rules-v3
+  if name == "url_encode" then return function(req) return checked(_M.url_encode(a(req))) end end
+  if name == "base64_encode" then return function(req) return checked(ngx.encode_base64(a(req))) end end
+  if name == "base64_decode" then return function(req) return checked(_M.base64_decode(a(req))) end end
+  if name == "md5" then return function(req) return ngx.md5(a(req)) end end
+  if name == "sha1" then return function(req) return to_hex(ngx.sha1_bin(a(req))) end end
+  if name == "sha256" then
+    return function(req)
+      local h = resty_sha256:new()
+      h:update(a(req))
+      return to_hex(h:final())
+    end
+  end
+  if name == "substring" then
+    local start = assert(tonumber(children[2].value), "invalid substring start")
+    local length = children[3] and assert(tonumber(children[3].value), "invalid substring length") or nil
+    return function(req) return _M.substring(a(req), start, length) end
+  end
+  if name == "to_string" then return function(req) return _M.to_string(a(req)) end end
   error("unknown function")
 end
 
@@ -344,6 +466,12 @@ function _M.compile(e, lists)
   if op == "eq" or op == "in" then return function(req) return equal(get(req)) end end
   if op == "ne" then return function(req) return not equal(get(req)) end end
   if op == "contains" then local needle = e.value or ""; return function(req) return find(get(req), needle, 1, true) ~= nil end end
+  if op == "wildcard" or op == "strict_wildcard" then
+    -- rules-v3: a full match of the pattern, ASCII case-insensitive unless strict.
+    local strict = op == "strict_wildcard"
+    local segments = fold_segments(e.value or "", strict)
+    return function(req) return wildcard_match(get(req), segments, strict) ~= nil end
+  end
   if op == "matches" then
     local pattern = _M.pcre_pattern(e.value or "")
     local _, _, err = ngx.re.find("", pattern, "j")
@@ -360,6 +488,18 @@ function _M.compile(e, lists)
   if op == "gt" then return function(req) return get(req) > v end end
   if op == "ge" then return function(req) return get(req) >= v end end
   error("unknown expression operator")
+end
+
+-- names adds to out (a set) the names after prefix of the fields of
+-- expression e that start with prefix (cookies and query parameters by
+-- name).
+function _M.names(e, prefix, out)
+  if type(e) ~= "table" then return out end
+  if e.op ~= "call" and type(e.field) == "string" and sub(e.field, 1, #prefix) == prefix then
+    out[sub(e.field, #prefix + 1)] = true
+  end
+  for _, c in ipairs(e.children or {}) do _M.names(c, prefix, out) end
+  return out
 end
 
 -- reads reports whether expression e reads a field for which test(field)

@@ -152,22 +152,43 @@ function _M.derive_origin(o)
   return o
 end
 
--- reads_field reports whether any rule (condition or value expression) or
--- cache rule condition of the site's rules list reads a field for which
--- test(field) is true.
-local function reads_field(rule_lists, cache_rules, test)
+-- rule_expressions calls fn with every expression of the site's rules
+-- lists (conditions, value expressions of targets, header values and set
+-- query parameters) and of its cache rule conditions until fn returns true.
+local function rule_expressions(rule_lists, cache_rules, fn)
   for _, list in ipairs(rule_lists) do
     for _, r in ipairs(list or {}) do
-      if type(r) == "table" and (expressions.reads(r.expression, test)
-        or (type(r.action) == "table" and expressions.reads(r.action.target, test))) then
-        return true
+      if type(r) == "table" then
+        if fn(r.expression) then return true end
+        local a = r.action
+        if type(a) == "table" then
+          if fn(a.target) then return true end
+          for _, p in ipairs(type(a.set_query) == "table" and a.set_query or {}) do
+            if type(p) == "table" and fn(p.expression) then return true end
+          end
+        end
       end
     end
   end
   for _, r in ipairs(type(cache_rules) == "table" and cache_rules or {}) do
-    if type(r) == "table" and expressions.reads(r.condition, test) then return true end
+    if type(r) == "table" and fn(r.condition) then return true end
   end
   return false
+end
+
+-- reads_field reports whether any rule (condition or value expression) or
+-- cache rule condition of the site's rules list reads a field for which
+-- test(field) is true.
+local function reads_field(rule_lists, cache_rules, test)
+  return rule_expressions(rule_lists, cache_rules, function(e) return expressions.reads(e, test) end)
+end
+
+-- field_names returns the set of names after prefix of the fields the
+-- site's rules read (cookies, query parameters), nil when there are none.
+local function field_names(rule_lists, cache_rules, prefix)
+  local names = {}
+  rule_expressions(rule_lists, cache_rules, function(e) expressions.names(e, prefix, names); return false end)
+  return next(names) and names or nil
 end
 
 local function is_geo(field) return field:sub(1, 9) == "ip.geoip." end
@@ -176,6 +197,11 @@ local function is_field(name) return function(field) return field == name end en
 local is_full_uri = is_field("http.request.full_uri")
 local is_extension = is_field("http.request.uri.path.extension")
 local is_media_type = is_field("http.response.content_type.media_type")
+local is_cache_status = is_field("http.response.cache_status")
+-- rules-v3 request fields (edgeweir.policy.request), computed together.
+local REQUEST_V3 = { ["http.referer"] = true, ["http.user_agent"] = true, ["http.request.version"] = true,
+  ["http.request.scheme"] = true, ["http.request.id"] = true, ["http.request.timestamp.sec"] = true, ["edge.server_port"] = true }
+local function is_request_v3(field) return REQUEST_V3[field] == true end
 
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
@@ -200,6 +226,10 @@ function _M.prepare(s, cfg)
   s._full_uri = reads_field(rule_lists, s.cache_rules, is_full_uri) or nil
   s._extension = reads_field(rule_lists, s.cache_rules, is_extension) or nil
   s._media_type = reads_field(rule_lists, s.cache_rules, is_media_type) or nil
+  s._cache_status = reads_field(rule_lists, s.cache_rules, is_cache_status) or nil
+  s._request_v3 = reads_field(rule_lists, s.cache_rules, is_request_v3) or nil
+  s._cookies = field_names(rule_lists, s.cache_rules, "http.request.cookies.")
+  s._args = field_names(rule_lists, s.cache_rules, "http.request.uri.args.")
   local platform_groups = s._config.groups or {}
   s._response_rules = (platform_groups["response-transform"] or platform_groups.compression
     or s._rule_groups["response-transform"] or s._rule_groups.compression) ~= nil

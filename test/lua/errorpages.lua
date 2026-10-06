@@ -104,7 +104,7 @@ end)
 
 test("built-in pages: the failing hop, what to do and a reload link where it helps", function()
   local values = { status = "503", request_id = "req-1", client_ip = "203.0.113.9", host = "<shop>.test",
-    time = "2026-10-03 03:41:28 UTC" }
+    display_time = "2026-10-03 03:41:28 UTC", time = "2026-10-03T03:41:28Z", path = "/<a>&b" }
   for _, case in ipairs({
     -- kind, failing hop, its state, reload link
     { "zh", 403, "边缘节点", "拦截", false }, { "zh", 429, "边缘节点", "限速", true },
@@ -142,8 +142,11 @@ test("built-in pages: the failing hop, what to do and a reload link where it hel
   local limited = errorpages.render(errorpages.builtin("en", 429), values)
   assert(not limited:find(".code{--w:760}", 1, true) and page:find(".code{--w:760}", 1, true), "429 weight")
   assert(limited:find('d="M-3.5-4.5h7l-7 9h7z"', 1, true) and not page:find('d="M-3.5-4.5h7l-7 9h7z"', 1, true), "429 mark")
-  -- {{time}} is filled on built-in pages only; templates keep it as it is.
-  eq(render("{{time}} {{status}}", values), "{{time}} 503")
+  -- Templates (rules-v3) get {{time}} in RFC 3339 and {{path}}, escaped;
+  -- the built-in pages' own time is not a template placeholder.
+  eq(render("{{time}} {{path}} {{status}}", values), "2026-10-03T03:41:28Z /&lt;a&gt;&amp;b 503")
+  eq(render("{{display_time}}", values), "{{display_time}}")
+  assert(not page:find("2026-10-03T03:41:28Z", 1, true), "built-in pages keep their time format")
 end)
 
 test("nginx's own errors: the status sent, the page and the code", function()
@@ -171,7 +174,7 @@ test("nginx's own errors: the status sent, the page and the code", function()
 end)
 
 test("built-in pages of requests nginx refuses: the signal fails at the visitor", function()
-  local values = { status = "400", request_id = "req-1", client_ip = "203.0.113.9", host = "", time = "t" }
+  local values = { status = "400", request_id = "req-1", client_ip = "203.0.113.9", host = "", time = "t", display_time = "t" }
   for _, case in ipairs({
     -- kind, the visitor's glyph, the signal it sends, the rules the page must not carry
     { 400, 'd="M-2.4-2.2a2.4', '<span class="s sa gb">', { ".sw{", ".zz{", ".fa{", ".btn{" } },

@@ -37,6 +37,10 @@ type Result struct {
 	Country     string `json:"country"`
 	Subdivision string `json:"subdivision"`
 	ASNum       uint   `json:"asnum"`
+	// ASName (ip.geoip.as_name, rules-v3) is the name of ASNum from the same
+	// database: IPinfo Lite's as_name, an ASN MMDB's
+	// autonomous_system_organization.
+	ASName string `json:"as_name"`
 }
 
 // Paths selects the databases to load; an empty path leaves that source off.
@@ -153,7 +157,8 @@ func (d *Databases) IPinfoBuilt() time.Time {
 
 // Lookup takes country and ASN from IPinfo when it has a record and falls back
 // to the City / ASN databases. A subdivision only comes from the City database
-// and only when that database agrees on the country.
+// and only when that database agrees on the country; the AS name comes with
+// the ASN from the database that answered it.
 func (d *Databases) Lookup(ip netip.Addr) (Result, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -169,12 +174,16 @@ func (d *Databases) Lookup(ip netip.Addr) (Result, error) {
 		var record struct {
 			Country string `maxminddb:"country_code"`
 			ASN     string `maxminddb:"asn"`
+			ASName  string `maxminddb:"as_name"`
 		}
 		if err := d.IPinfo.Lookup(ip).Decode(&record); err != nil {
 			return out, err
 		}
 		out.Country = record.Country
 		out.ASNum = parseASN(record.ASN)
+		if out.ASNum != 0 {
+			out.ASName = record.ASName
+		}
 	}
 	if d.City != nil {
 		var record struct {
@@ -201,12 +210,13 @@ func (d *Databases) Lookup(ip netip.Addr) (Result, error) {
 	}
 	if d.ASN != nil && out.ASNum == 0 {
 		var record struct {
-			Number uint `maxminddb:"autonomous_system_number"`
+			Number       uint   `maxminddb:"autonomous_system_number"`
+			Organization string `maxminddb:"autonomous_system_organization"`
 		}
 		if err := d.ASN.Lookup(ip).Decode(&record); err != nil {
 			return out, err
 		}
-		out.ASNum = record.Number
+		out.ASNum, out.ASName = record.Number, record.Organization
 	}
 	return out, nil
 }

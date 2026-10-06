@@ -7,19 +7,29 @@ local challenge_levels = require("edgeweir.challenge").LEVELS
 -- Shared vectors (packages/rule-engine/test/vectors.json in the console):
 -- accepted conditions and value expressions evaluate to the expected result,
 -- structured cache conditions match like their expression, derived fields
--- come out alike. Rejected patterns and IR never reach the data plane: the
--- console and configir refuse them.
-local counts = { condition = 0, value = 0, structured = 0, derive = 0, actions = 0 }
+-- (with rules-v3 cookies and query parameters by name) come out alike,
+-- header values are set or skipped alike. Rejected patterns and IR never
+-- reach the data plane: the console and configir refuse them.
+local counts = { condition = 0, value = 0, header = 0, structured = 0, derive = 0, named = 0, actions = 0 }
+local derivers = { extension = engine.path_extension, media_type = engine.media_type, cookie = engine.cookie, arg = engine.arg }
 for i, vector in ipairs(vectors) do
   local where = "vector " .. i .. ": " .. tostring(vector.source or vector.input)
   if vector.derive then
-    local derive = assert(({ extension = engine.path_extension, media_type = engine.media_type })[vector.derive], where)
-    local got = derive(vector.input)
+    local derive = assert(derivers[vector.derive], where)
+    local got = derive(vector.input, vector.name)
     assert(got == vector.expected, where .. ": got " .. tostring(got))
     counts.derive = counts.derive + 1
+    if vector.name then counts.named = counts.named + 1 end
   elseif not vector.rejected then
     local lists = {}; for id, entries in pairs(vector.lists) do lists[id] = engine.ip_set(entries) end
-    if vector.value then
+    if vector.header then
+      -- JSON null: the node skips the header action.
+      local want = vector.expected
+      if want == cjson.null then want = nil end
+      local got = engine.header_value(engine.compile_value(vector.ir), vector.request)
+      assert(got == want, where .. ": got " .. tostring(got))
+      counts.header = counts.header + 1
+    elseif vector.value then
       local got = engine.compile_value(vector.ir)(vector.request)
       assert(got == vector.expected, where .. ": got " .. tostring(got))
       counts.value = counts.value + 1
@@ -172,6 +182,38 @@ test("reads", function()
   eq(engine.reads(nil, is("x")), false)
 end)
 
-print(tostring(counts.condition) .. " conditions, " .. counts.value .. " values, " .. counts.structured
-  .. " structured and " .. counts.derive .. " derived shared TS/Lua vectors passed (" .. counts.actions
-  .. " challenge actions), " .. unit .. " unit tests")
+test("rules-v3 helpers", function()
+  -- The vectors cover the semantics; these pin the helpers' edges.
+  eq(engine.base64_decode("aGk"), "hi", "no padding")
+  eq(engine.base64_decode("aGk="), "hi")
+  eq(engine.base64_decode("aGk=="), "", "excess padding")
+  eq(engine.base64_decode("=aGk"), "", "padding first")
+  eq(engine.substring("abc", -1, 5), "c")
+  eq(engine.substring("", 0), "")
+  eq(engine.to_string(4294967295), "4294967295")
+  eq(engine.to_string(9007199254740991), "9007199254740991", "no exponent")
+  eq(engine.to_string(false), "false")
+  local found = engine.cookies("a=1; b=2; a=3", { a = true, c = true }, {})
+  eq(found.a, "1"); eq(found.c, nil)
+  found = engine.args("x=1&y&x=2", { x = true, y = true }, {})
+  eq(found.x, "1"); eq(found.y, "")
+  local wild = engine.compile({ op = "wildcard", field = "http.user_agent", value_type = "string", value = "*Bot*" }, {})
+  eq(wild({ ["http.user_agent"] = "Googlebot/2.1" }), true)
+  eq(wild({}), false, "missing field is empty")
+  local strict = engine.compile({ op = "strict_wildcard", field = "http.user_agent", value_type = "string", value = "*Bot*" }, {})
+  eq(strict({ ["http.user_agent"] = "Googlebot/2.1" }), false)
+  local names = engine.names({ op = "and", children = {
+    { op = "eq", field = "http.request.cookies.role", value_type = "string", value = "x" },
+    { op = "eq", value_type = "string", value = "x", children = { { op = "call", field = "md5", value_type = "string",
+      children = { { op = "field", field = "http.request.cookies.sid", value_type = "string" } } } } },
+  } }, "http.request.cookies.", {})
+  eq(names.role and names.sid, true, "names of cookies read")
+  eq(engine.header_value(function() error("boom") end, {}), nil, "a failing expression skips")
+  eq(engine.header_value(function() return "a\0b" end, {}), nil, "NUL")
+  eq(engine.header_value(function() return string.rep("x", 4096) end, {}), string.rep("x", 4096))
+end)
+
+for kind, n in pairs({ header = counts.header, named = counts.named }) do assert(n > 0, "no " .. kind .. " vectors") end
+print(tostring(counts.condition) .. " conditions, " .. counts.value .. " values, " .. counts.header .. " header values, "
+  .. counts.structured .. " structured and " .. counts.derive .. " derived (" .. counts.named .. " cookies and parameters)"
+  .. " shared TS/Lua vectors passed (" .. counts.actions .. " challenge actions), " .. unit .. " unit tests")

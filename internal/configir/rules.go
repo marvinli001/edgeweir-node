@@ -27,12 +27,28 @@ var fieldTypes = map[string]string{"http.host": "string", "http.request.method":
 	// rules-v2: scheme://host followed by the request URI as received; the
 	// lowercase extension of the last path segment; the lowercase media type
 	// of the response's Content-Type without parameters.
-	"http.request.full_uri": "string", "http.request.uri.path.extension": "string", "http.response.content_type.media_type": "string"}
+	"http.request.full_uri": "string", "http.request.uri.path.extension": "string", "http.response.content_type.media_type": "string",
+	// rules-v3: the Referer and User-Agent request headers; the request's
+	// HTTP version, scheme, id (X-Request-Id) and arrival in Unix seconds;
+	// the listener's port; the AS name; the edge cache status of the
+	// response ("" for responses the node made itself).
+	"http.referer": "string", "http.user_agent": "string", "http.request.version": "string", "http.request.scheme": "string",
+	"http.request.id": "string", "http.request.timestamp.sec": "number", "edge.server_port": "number", "ip.geoip.as_name": "string",
+	"http.response.cache_status": "string"}
+
+// namedFields are the rules-v3 fields of one request cookie
+// (http.request.cookies.<name>, an RFC 6265 token, case-sensitive) and one
+// query parameter (http.request.uri.args.<name>, as sent: printable ASCII
+// without `"`, `#`, `&` and `=`), both strings.
+var namedFields = map[string]*regexp.Regexp{
+	"http.request.cookies.":  regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$"),
+	"http.request.uri.args.": regexp.MustCompile(`^[\x21\x24\x25\x27-\x3c\x3e-\x7e]{1,64}$`),
+}
 
 // geoFeatures is the local capability each GeoIP field needs (see
 // geoip.Features). The console sends geoip-city-v1 for subdivision rules too;
 // this check keeps a node without a City MMDB from accepting them.
-var geoFeatures = map[string]string{"ip.geoip.country": "geoip-country-v1", "ip.geoip.subdivision": "geoip-subdivision-v1", "ip.geoip.asnum": "geoip-asn-v1"}
+var geoFeatures = map[string]string{"ip.geoip.country": "geoip-country-v1", "ip.geoip.subdivision": "geoip-subdivision-v1", "ip.geoip.asnum": "geoip-asn-v1", "ip.geoip.as_name": "geoip-asn-v1"}
 var protectedHeaders = []string{"host", "authorization", "proxy-authorization", "cookie", "set-cookie", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "cdn-loop"}
 
 func ruleHeader(s string) bool {
@@ -63,26 +79,45 @@ func ruleValue(s, typ string) bool {
 }
 
 // ruleFunction is the signature of a function of the expression language
-// (proto v0.13.0, feature rules-v2). Arguments are string value nodes;
-// valueOnly functions appear only in value expressions (RuleAction.target),
-// at most once each, and take constant pattern and replacement arguments.
+// (proto v0.13.0, feature rules-v2; v0.22.0, feature rules-v3). args are
+// the kinds of the arguments (the last one repeats): "string" a string
+// value node, "any" a value node of any type, "start" and "length" op
+// "const" nodes of value_type "number" within substringBounds. valueOnly
+// functions appear only in value expressions (RuleAction.target), at most
+// once each, and take constant pattern and replacement arguments.
 type ruleFunction struct {
 	result    string
 	min, max  int
 	valueOnly bool
+	args      []string
 }
 
+var stringArgs = []string{"string"}
+
 var ruleFunctions = map[string]ruleFunction{
-	"lower":            {"string", 1, 1, false},
-	"upper":            {"string", 1, 1, false},
-	"len":              {"number", 1, 1, false},
-	"starts_with":      {"boolean", 2, 2, false},
-	"ends_with":        {"boolean", 2, 2, false},
-	"url_decode":       {"string", 1, 1, false},
-	"concat":           {"string", 2, 8, false},
-	"regex_replace":    {"string", 3, 3, true},
-	"wildcard_replace": {"string", 3, 4, true},
+	"lower":            {"string", 1, 1, false, stringArgs},
+	"upper":            {"string", 1, 1, false, stringArgs},
+	"len":              {"number", 1, 1, false, stringArgs},
+	"starts_with":      {"boolean", 2, 2, false, stringArgs},
+	"ends_with":        {"boolean", 2, 2, false, stringArgs},
+	"url_decode":       {"string", 1, 1, false, stringArgs},
+	"concat":           {"string", 2, 8, false, stringArgs},
+	"regex_replace":    {"string", 3, 3, true, stringArgs},
+	"wildcard_replace": {"string", 3, 4, true, stringArgs},
+	// rules-v3
+	"url_encode":    {"string", 1, 1, false, stringArgs},
+	"base64_encode": {"string", 1, 1, false, stringArgs},
+	"base64_decode": {"string", 1, 1, false, stringArgs},
+	"md5":           {"string", 1, 1, false, stringArgs},
+	"sha1":          {"string", 1, 1, false, stringArgs},
+	"sha256":        {"string", 1, 1, false, stringArgs},
+	"substring":     {"string", 2, 3, false, []string{"string", "start", "length"}},
+	"to_string":     {"string", 1, 1, false, []string{"any"}},
 }
+
+// substringBounds are the bounds of substring's integer arguments: the
+// start byte (negative counts from the end) and the length.
+var substringBounds = map[string][2]int64{"start": {-65536, 65536}, "length": {0, 65536}}
 
 // Bounds of expressions: nodes per expression (conditions and value
 // expressions each), nesting of and/or/not and of function calls.
@@ -139,6 +174,11 @@ func (c *exprCheck) fieldType(field string) string {
 	typ := fieldTypes[field]
 	for _, prefix := range []string{"http.request.headers.", "http.response.headers."} {
 		if strings.HasPrefix(field, prefix) && tokenRE.MatchString(strings.TrimPrefix(field, prefix)) {
+			typ = "string"
+		}
+	}
+	for prefix, re := range namedFields {
+		if strings.HasPrefix(field, prefix) && re.MatchString(strings.TrimPrefix(field, prefix)) {
 			typ = "string"
 		}
 	}
@@ -247,6 +287,11 @@ func (c *exprCheck) condition(e *nodev1.RuleExpression, depth int) error {
 		if typ == "string" && validPattern(e.Value) {
 			return nil
 		}
+	case "wildcard", "strict_wildcard":
+		// rules-v3: a full match of a wildcard pattern (strict: case-sensitive).
+		if typ == "string" && wildcardStars(e.Value) >= 0 {
+			return nil
+		}
 	}
 	return bad
 }
@@ -291,12 +336,19 @@ func (c *exprCheck) call(e *nodev1.RuleExpression, depth int) (string, error) {
 		c.used[e.Field] = true
 	}
 	for i, arg := range e.Children {
+		kind := f.args[min(i, len(f.args)-1)]
+		if kind == "start" || kind == "length" {
+			if !c.integerArg(arg, substringBounds[kind]) {
+				return "", bad
+			}
+			continue
+		}
 		typ, err := c.valueNode(arg, depth)
 		if err != nil {
 			return "", err
 		}
 		// Patterns, replacements and the flag are constants.
-		if typ != "string" || (f.valueOnly && i > 0 && arg.Op != "const") {
+		if (kind == "string" && typ != "string") || (f.valueOnly && i > 0 && arg.Op != "const") {
 			return "", bad
 		}
 	}
@@ -313,6 +365,17 @@ func (c *exprCheck) call(e *nodev1.RuleExpression, depth int) (string, error) {
 		}
 	}
 	return f.result, nil
+}
+
+// integerArg checks an integer argument of substring: an op "const" node
+// of value_type "number" within bounds.
+func (c *exprCheck) integerArg(e *nodev1.RuleExpression, bounds [2]int64) bool {
+	c.budget--
+	if e == nil || c.budget < 0 || e.Op != "const" || e.ValueType != "number" || e.Field != "" || len(e.Values) > 0 || len(e.Children) > 0 || !ruleValue(e.Value, "number") {
+		return false
+	}
+	v, _ := strconv.ParseInt(e.Value, 10, 64)
+	return v >= bounds[0] && v <= bounds[1]
 }
 
 // validReplacement checks a replacement template: literal text without
@@ -589,8 +652,8 @@ var actionFields = map[string][]protoreflect.Name{
 	"challenge":       {"challenge"},
 	"redirect":        {"value", "status_code", "target", "preserve_query", "set_query", "remove_query"},
 	"rewrite":         {"value", "target", "preserve_query", "set_query", "remove_query"},
-	"request_header":  {"header", "value", "remove"},
-	"response_header": {"header", "value", "remove"},
+	"request_header":  {"header", "value", "remove", "target"},
+	"response_header": {"header", "value", "remove", "target", "append"},
 	"config": {"cache_bypass", "force_https", "gzip", "brotli", "zstd", "websocket", "under_attack", "cc_enabled",
 		"cc_max_level", "origin_connect_timeout_ms", "origin_send_timeout_ms", "origin_read_timeout_ms", "log_sample_rate"},
 	"rate_limit":  {"status_code", "limit", "window_seconds", "key"},
@@ -601,7 +664,10 @@ var actionFields = map[string][]protoreflect.Name{
 // Codings of compression rules (RuleAction.compression).
 var compressionCodings = []string{"zstd", "br", "gzip"}
 
-var redirectStatuses = []uint32{301, 302, 307, 308}
+// redirectStatuses of redirect rules (303 since proto v0.22.0, feature
+// rules-v3) and bulk redirects (without 303).
+var redirectStatuses = []uint32{301, 302, 303, 307, 308}
+var bulkRedirectStatuses = []uint32{301, 302, 307, 308}
 
 // queryNameRE matches the query parameter names redirects and rewrites set
 // or remove (RFC 3986 unreserved characters).
@@ -658,14 +724,18 @@ func validRewritePath(v string) bool {
 
 // validQueryEdits checks set_query and remove_query: at most 16 each,
 // sorted by name without duplicates, names never in both lists, values
-// printable ASCII of at most 256 bytes.
-func validQueryEdits(a *nodev1.RuleAction) bool {
+// printable ASCII of at most 256 bytes or (rules-v3) a string value
+// expression of phase with an empty value.
+func validQueryEdits(a *nodev1.RuleAction, phase string, features []string) bool {
 	if len(a.SetQuery) > maxQueryEdits || len(a.RemoveQuery) > maxQueryEdits {
 		return false
 	}
 	names := make([]string, 0, len(a.SetQuery))
 	for _, p := range a.SetQuery {
 		if p == nil || len(p.Value) > maxQueryValue || strings.ContainsFunc(p.Value, func(r rune) bool { return r < 0x20 || r > 0x7e }) {
+			return false
+		}
+		if p.Expression != nil && (p.Value != "" || validateValueExpression(p.Expression, phase, features) != nil) {
 			return false
 		}
 		names = append(names, p.Name)
@@ -696,6 +766,17 @@ func validTarget(a *nodev1.RuleAction, phase string, features []string, static f
 		return a.Value == "" && validateValueExpression(a.Target, phase, features) == nil
 	}
 	return static(a.Value)
+}
+
+// validHeaderValue checks the value of a header action: the static value,
+// or (rules-v3) a string value expression of phase instead of it; neither
+// goes with remove, whose header has no value to compute. append (response
+// headers) adds a line and never goes with remove either.
+func validHeaderValue(a *nodev1.RuleAction, phase string, features []string) bool {
+	if a.Append && a.Remove {
+		return false
+	}
+	return a.Target == nil || (!a.Remove && a.Value == "" && validateValueExpression(a.Target, phase, features) == nil)
 }
 
 func validOriginTimeout(ms, max uint32) bool {
@@ -749,14 +830,14 @@ func validAction(a *nodev1.RuleAction, phase string, features []string) bool {
 	case "challenge":
 		return phase == "waf-custom" && slices.Contains(ChallengeTypes, a.Challenge)
 	case "redirect":
-		return phase == "redirect" && slices.Contains(redirectStatuses, a.StatusCode) && validQueryEdits(a) &&
+		return phase == "redirect" && slices.Contains(redirectStatuses, a.StatusCode) && validQueryEdits(a, phase, features) &&
 			validTarget(a, phase, features, validRedirectLocation)
 	case "rewrite":
-		return phase == "request-transform" && validQueryEdits(a) && validTarget(a, phase, features, validRewritePath)
+		return phase == "request-transform" && validQueryEdits(a, phase, features) && validTarget(a, phase, features, validRewritePath)
 	case "request_header":
-		return (phase == "request-transform" || phase == "origin") && ruleHeader(a.Header)
+		return (phase == "request-transform" || phase == "origin") && ruleHeader(a.Header) && validHeaderValue(a, phase, features)
 	case "response_header":
-		return phase == "response-transform" && ruleHeader(a.Header)
+		return phase == "response-transform" && ruleHeader(a.Header) && validHeaderValue(a, phase, features)
 	case "config":
 		return validConfigAction(a, phase)
 	case "rate_limit":
@@ -878,7 +959,7 @@ func validateBulkRedirects(list []*nodev1.BulkRedirect) error {
 		if !validBulkSource(b.GetSource()) || (i > 0 && list[i-1].GetSource() >= b.GetSource()) {
 			return fmt.Errorf("%w: invalid or unsorted bulk redirect source %q", ErrRejected, b.GetSource())
 		}
-		if len(b.GetTarget()) > maxBulkTarget || hasControl(b.GetTarget()) || !validRedirectLocation(b.GetTarget()) || !slices.Contains(redirectStatuses, b.GetStatusCode()) {
+		if len(b.GetTarget()) > maxBulkTarget || hasControl(b.GetTarget()) || !validRedirectLocation(b.GetTarget()) || !slices.Contains(bulkRedirectStatuses, b.GetStatusCode()) {
 			return fmt.Errorf("%w: invalid bulk redirect for %q", ErrRejected, b.GetSource())
 		}
 	}

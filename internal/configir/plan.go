@@ -247,7 +247,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -304,6 +304,18 @@ const FeatureTLSPendingDomains = "tls-pending-domains-v1"
 // such pools probe over HTTP/2. The console requires it when a served site
 // uses either.
 const FeatureOriginHTTP2 = "origin-http2-v1"
+
+// FeatureRulesV3 covers the rule engine additions of proto v0.22.0:
+// cookies and query parameters by name, http.referer, http.user_agent,
+// the request version, scheme, id and timestamp, edge.server_port,
+// ip.geoip.as_name and http.response.cache_status; the functions
+// url_encode, base64_encode, base64_decode, md5, sha1, sha256, substring
+// and to_string; wildcard and strict_wildcard comparisons; value
+// expressions for request and response header values and set query
+// parameters; response header lines added with append; redirect status
+// 303; the error page placeholders {{time}} and {{path}}. The console
+// requires it when a configuration uses any of them.
+const FeatureRulesV3 = "rules-v3"
 
 // HealthCheck marks an origin down after MaxFails consecutive failures for
 // RecoverySeconds.

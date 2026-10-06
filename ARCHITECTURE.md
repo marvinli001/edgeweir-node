@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.21.0`）里的 `edgeweir.node.v1`。
+本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.22.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 

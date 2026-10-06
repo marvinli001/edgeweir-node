@@ -20,7 +20,7 @@ func Write(dir string) (string, string, error) {
 		data      mmdbtype.Map
 	}{
 		{city, "Synthetic-City", mmdbtype.Map{"country": mmdbtype.Map{"iso_code": mmdbtype.String("NZ")}, "subdivisions": mmdbtype.Slice{mmdbtype.Map{"iso_code": mmdbtype.String("AUK")}}}},
-		{asn, "Synthetic-ASN", mmdbtype.Map{"autonomous_system_number": mmdbtype.Uint32(64512)}},
+		{asn, "Synthetic-ASN", mmdbtype.Map{"autonomous_system_number": mmdbtype.Uint32(64512), "autonomous_system_organization": mmdbtype.String("Synthetic ASN 64512")}},
 	} {
 		if err := write(entry.path, entry.typ, map[string]mmdbtype.Map{"": entry.data}); err != nil {
 			return "", "", err

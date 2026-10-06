@@ -17,8 +17,10 @@
 -- node answers itself (404, 405, 421, 508, ...) keep their plain text.
 --
 -- Templates are compiled once (per site table version) into literal parts
--- and placeholders: {{status}}, {{request_id}}, {{client_ip}} and {{host}}
--- are replaced with HTML-escaped values; anything else, including other
+-- and placeholders: {{status}}, {{request_id}}, {{client_ip}}, {{host}}
+-- and, since proto v0.22.0 (feature rules-v3), {{time}} (when the node
+-- answered, UTC, RFC 3339) and {{path}} (the request path, $uri) are
+-- replaced with HTML-escaped values; anything else, including other
 -- {{...}}, is sent as it is. Template content is never interpreted.
 --
 -- Built-in pages are self-contained (inline CSS and SVG, no script, no
@@ -53,11 +55,17 @@ _M.STATUSES = { [403] = true, [429] = true, [502] = true, [503] = true, [504] = 
 
 _M.MAX_TEMPLATE = 65536
 
-local NAMES = { status = true, request_id = true, client_ip = true, host = true }
+local NAMES = { status = true, request_id = true, client_ip = true, host = true, time = true, path = true }
 
--- Built-in pages also show the time the node answered ({{time}}, UTC);
--- in templates {{time}} stays as it is.
-local BUILTIN_NAMES = { status = true, request_id = true, client_ip = true, host = true, time = true }
+-- Built-in pages show the time the node answered in their own format
+-- ({{display_time}}, which templates do not know).
+local BUILTIN_NAMES = { status = true, request_id = true, client_ip = true, host = true, display_time = true }
+
+-- times returns {{time}} (RFC 3339, UTC) and the built-in pages' time.
+local function times()
+  local now = ngx.time()
+  return os.date("!%Y-%m-%dT%H:%M:%SZ", now), os.date("!%Y-%m-%d %H:%M:%S UTC", now)
+end
 
 local ESCAPES = { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&#39;" }
 
@@ -449,7 +457,7 @@ function _M.builtin(lang, kind)
     '<div class="bot"><div><h1>', title, '</h1><p class="todo">', todo, "</p>",
     s.retry and ('<a class="btn" href="">' .. text.reload .. "</a>") or "",
     "</div><dl><div><dt>", REQUEST_ID[lang], '</dt><dd class="rid">{{request_id}}</dd></div>',
-    "<div><dt>", text.time, "</dt><dd>{{time}}</dd></div>",
+    "<div><dt>", text.time, "</dt><dd>{{display_time}}</dd></div>",
     "<div><dt>", text.host, "</dt><dd>{{host}}</dd></div>",
     "<div><dt>", text.ip, "</dt><dd><details><summary>", text.show, "</summary>{{client_ip}}</details></dd></div></dl></div>",
     "</div></main></body></html>\n",
@@ -479,24 +487,30 @@ end
 -- edge_values are the placeholder values at the edge layer.
 function _M.edge_values(status)
   local var = ngx.var
+  local time, display_time = times()
   return {
     status = tostring(status),
     request_id = var.edgeweir_request_id or var.request_id,
     client_ip = var.remote_addr,
     host = _M.host(var.host),
-    time = os.date("!%Y-%m-%d %H:%M:%S UTC", ngx.time()),
+    time = time,
+    display_time = display_time,
+    path = var.uri,
   }
 end
 
 -- origin_values are the placeholder values in the origin layer.
 function _M.origin_values(status)
   local var = ngx.var
+  local time, display_time = times()
   return {
     status = tostring(status),
     request_id = var.http_x_request_id,
     client_ip = var.http_x_real_ip,
     host = _M.host(var.host),
-    time = os.date("!%Y-%m-%d %H:%M:%S UTC", ngx.time()),
+    time = time,
+    display_time = display_time,
+    path = var.uri,
   }
 end
 
