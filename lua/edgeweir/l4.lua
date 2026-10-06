@@ -5,7 +5,8 @@
 -- agent pushes through the control socket (edgeweir.l4control), so
 -- changing origins, timeouts, IP lists or limits never reloads nginx:
 --
---   preread  finds the application of $protocol:$server_port and checks
+--   preread  finds the application of $protocol:$server_port (a single
+--            port, else the range that holds it, lookup()) and checks
 --            the client address (from the PROXY protocol header when the
 --            listener accepts one) against its allow lists (when set, only
 --            their addresses pass) and block lists, then the new
@@ -27,6 +28,14 @@
 --            the idle timeout (nginx's proxy_timeout semantics).
 --   log      passive health of the last attempt, statistics, the
 --            connection count.
+--   client_hello, certificate
+--            (TCP applications that terminate TLS, l4-v2) the handshake:
+--            an SNI the application's certificate does not name aborts
+--            it, one without SNI gets the certificate; TLS 1.3 only when
+--            the application's minimum version is 1.3.
+--
+-- Origins with port 0 take the port the connection or session arrived on
+-- (port ranges, l4-v2).
 --
 -- Shared dicts (all workers, kept across reloads):
 --
@@ -111,7 +120,9 @@ end
 -- The table.
 
 -- prepare checks a decoded table and indexes it for lookups (pure):
--- by_port["tcp:9000"] = application; each application gets _allow and
+-- by_port["tcp:9000"] = application of a single port, ranges.tcp /
+-- ranges.udp = applications with port ranges sorted by their first port
+-- (lookup()); each application gets _allow and
 -- _block (lists of address matchers) and the parsed origin allow list as
 -- doc.allowed. Returns doc or nil and an error.
 function _M.prepare(doc)
@@ -130,10 +141,25 @@ function _M.prepare(doc)
     end
     lists[l.id] = expressions.ip_set(l.entries)
   end
-  doc.by_port = {}
+  doc.by_port, doc.ranges = {}, { tcp = {}, udp = {} }
   for i, a in ipairs(doc.apps) do
     if type(a) ~= "table" or not valid_id(a.id) or (a.protocol ~= "tcp" and a.protocol ~= "udp") or not whole(a.port, 1, 65535) then
       return nil, "invalid application #" .. i
+    end
+    a.port_end = tonumber(a.port_end) or 0
+    if a.port_end ~= 0 and not (whole(a.port_end, a.port + 1, 65535) and a.port_end - a.port < 1000) then
+      return nil, "application " .. a.id .. ": invalid port range"
+    end
+    if a.certificate_id ~= nil and a.certificate_id ~= cjson.null and a.certificate_id ~= "" then
+      local c = a.certificate
+      if a.protocol ~= "tcp" or type(c) ~= "table" or type(c.chain_pem) ~= "string" or type(c.private_key_pem) ~= "string"
+          or type(c.fingerprint) ~= "string" or (a.tls_minimum_version ~= "1.2" and a.tls_minimum_version ~= "1.3") then
+        return nil, "application " .. a.id .. ": invalid TLS settings"
+      end
+      a._names = {}
+      for _, name in ipairs(type(a.certificate_names) == "table" and a.certificate_names or {}) do
+        if type(name) == "string" then a._names[lower(name)] = true end
+      end
     end
     if not whole(a.max_fails, 1, 100) or not whole(a.fail_timeout, 1, 3600) or not whole(a.connect_timeout_ms, 1, 60000)
         or not whole(a.idle_timeout, 1, 86400) then
@@ -146,7 +172,7 @@ function _M.prepare(doc)
       return nil, "application " .. a.id .. ": no origins"
     end
     for j, o in ipairs(a.origins) do
-      if type(o) ~= "table" or not valid_id(o.id) or type(o.address) ~= "string" or o.address == "" or not whole(o.port, 1, 65535)
+      if type(o) ~= "table" or not valid_id(o.id) or type(o.address) ~= "string" or o.address == "" or not whole(o.port, 0, 65535)
           or not whole(o.weight, 1, 100) then
         return nil, "application " .. a.id .. ": invalid origin #" .. j
       end
@@ -169,14 +195,69 @@ function _M.prepare(doc)
         end
       end
     end
-    local key = a.protocol .. ":" .. a.port
-    if doc.by_port[key] then
-      return nil, "two applications on " .. key
+    if a.port_end == 0 then
+      local key = a.protocol .. ":" .. a.port
+      if doc.by_port[key] then
+        return nil, "two applications on " .. key
+      end
+      doc.by_port[key] = a
+    else
+      local list = doc.ranges[a.protocol]
+      list[#list + 1] = a
     end
-    doc.by_port[key] = a
+  end
+  for protocol, list in pairs(doc.ranges) do
+    table.sort(list, function(x, y) return x.port < y.port end)
+    for i, a in ipairs(list) do
+      local prev = list[i - 1]
+      if (prev and prev.port_end >= a.port) or doc.by_port[protocol .. ":" .. a.port] then
+        return nil, "two applications on " .. protocol .. ":" .. a.port
+      end
+    end
+    for key, a in pairs(doc.by_port) do
+      if a.protocol == protocol and _M.lookup(doc, protocol, a.port, true) then
+        return nil, "two applications on " .. key
+      end
+    end
   end
   doc.allowed = ipaddr.prefixes(doc.origin_allowed_cidrs)
   return doc
+end
+
+-- lookup returns the application of protocol ("tcp" / "udp") on port:
+-- the single-port one, else the range that holds the port (binary search;
+-- ranges_only skips the single ports).
+function _M.lookup(doc, protocol, port, ranges_only)
+  port = tonumber(port)
+  if not doc or not port then return nil end
+  if not ranges_only then
+    local app = doc.by_port[protocol .. ":" .. port]
+    if app then return app end
+  end
+  local list = doc.ranges and doc.ranges[protocol]
+  if not list then return nil end
+  local lo, hi = 1, #list
+  while lo <= hi do
+    local mid = floor((lo + hi) / 2)
+    local a = list[mid]
+    if port < a.port then
+      hi = mid - 1
+    elseif port > a.port_end then
+      lo = mid + 1
+    else
+      return a
+    end
+  end
+  return nil
+end
+
+-- names_match tells whether host (lowercase) is one of a certificate's
+-- names: exactly, or through a wildcard name of its parent (one label).
+function _M.names_match(names, host)
+  if not names or type(host) ~= "string" then return false end
+  if names[host] then return true end
+  local dot = find(host, ".", 1, true)
+  return dot ~= nil and dot > 1 and names["*." .. sub(host, dot + 1)] == true
 end
 
 local cache = { version = nil, doc = nil }
@@ -392,12 +473,12 @@ end
 -- peers resolves the ordered origins: {origin, ip, port} each; an origin
 -- whose name does not resolve (or only to refused addresses) is a
 -- failure and is skipped.
-function _M.peers(app, doc, now)
+function _M.peers(app, doc, now, port)
   local out = {}
   for _, o in ipairs(_M.order(app, now)) do
     local ip, err = dns.resolve(o.address, doc.allowed)
     if ip then
-      out[#out + 1] = { origin = o, ip = ip, port = o.port }
+      out[#out + 1] = { origin = o, ip = ip, port = o.port ~= 0 and o.port or port }
     else
       _M.failure(app, o.id, now, err)
     end
@@ -711,8 +792,9 @@ function _M.preread()
   local var = ngx.var
   local now = ngx.now()
   local doc = _M.current()
-  local key = lower(var.protocol or "") .. ":" .. tostring(var.server_port)
-  local app = doc and doc.by_port[key]
+  local protocol = lower(var.protocol or "")
+  local key = protocol .. ":" .. tostring(var.server_port)
+  local app = _M.lookup(doc, protocol, var.server_port)
   if not app then
     warn_once(key, "edgeweir: no layer-4 application for ", key, " (yet); connection closed")
     return ngx.exit(ngx.ERROR)
@@ -731,10 +813,53 @@ function _M.preread()
   _M.count(app.id, "conn", 1, now)
   _M.peak(app.id, concurrent, now)
   live[var.connection] = { app = app.id, r = get_request and get_request(), rx = 0, tx = 0 }
-  ctx.peers = _M.peers(app, doc, now)
+  ctx.peers = _M.peers(app, doc, now, tonumber(var.server_port))
   if #ctx.peers == 0 then
     warn_once("none:" .. app.id, "edgeweir: layer-4 application ", app.id, ": no usable origin")
     return ngx.exit(502)
+  end
+end
+
+------------------------------------------------------------------------
+-- TLS termination (l4-v2).
+
+local ssl, hello
+local parsed = require("resty.lrucache").new(64)
+
+-- tls_app is the TLS application of the handshake's port.
+local function tls_app()
+  ssl = ssl or require("ngx.ssl")
+  local doc = _M.current()
+  local app = _M.lookup(doc, "tcp", ssl.server_port())
+  if app and app.certificate and app._names then return app end
+end
+
+function _M.client_hello()
+  hello = hello or require("ngx.ssl.clienthello")
+  local app = tls_app()
+  if not app then return ngx.exit(ngx.ERROR) end
+  local name = hello.get_client_hello_server_name()
+  if name and not _M.names_match(app._names, lower(name)) then
+    return ngx.exit(ngx.ERROR)
+  end
+  if app.tls_minimum_version == "1.3" and not hello.set_protocols({ "TLSv1.3" }) then
+    return ngx.exit(ngx.ERROR)
+  end
+end
+
+function _M.certificate()
+  local app = tls_app()
+  if not app then return ngx.exit(ngx.ERROR) end
+  local c = app.certificate
+  local pair = parsed:get(c.fingerprint)
+  if not pair then
+    local cert, key = ssl.parse_pem_cert(c.chain_pem), ssl.parse_pem_priv_key(c.private_key_pem)
+    if not cert or not key then return ngx.exit(ngx.ERROR) end
+    pair = { cert, key }
+    parsed:set(c.fingerprint, pair)
+  end
+  if not ssl.clear_certs() or not ssl.set_cert(pair[1]) or not ssl.set_priv_key(pair[2]) then
+    return ngx.exit(ngx.ERROR)
   end
 end
 

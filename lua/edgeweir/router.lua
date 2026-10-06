@@ -235,6 +235,11 @@ local function access()
   -- solve challenges).
   local acme = token ~= nil
   local site, ver = store.lookup_host(host)
+  -- A site bound to other listener ports (edge-ports-v1) is unknown here;
+  -- the origin's own HTTP-01 tokens still reach it on port 80.
+  if site and not is_local and not store.serves_port(site, var.server_port) and not (acme and var.server_port == "80") then
+    return errorpages.unknown_host(store.config(), host)
+  end
   if not site then
     -- Offline hosts (disabled sites) and unknown hosts get the platform's
     -- pages (from the table version the lookup used: no further shared
@@ -247,17 +252,19 @@ local function access()
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
   -- Dynamic bans: platform scope, then the site's; addresses on a
-  -- platform allow list are never banned.
-  if not is_local and bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
+  -- platform allow list and trusted proxies of the client address
+  -- setting are never banned.
+  if not is_local and bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) and not store.trusted_proxy(site, var.remote_addr) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   local original_path = var.uri
   ngx.ctx.edgeweir_original_path = original_path
   var.edgeweir_site = site.id
   -- CC counts every request of the site (edgeweir.cc), clients by their
-  -- IPv4 address or IPv6 /64.
+  -- IPv4 address or IPv6 /64; trusted proxies (the address of requests
+  -- whose header named no client) are not counted.
   local cc_n, cc_w, cc_now, cc_addr
-  if site._cc and not is_local then
+  if site._cc and not is_local and not store.trusted_proxy(site, var.remote_addr) then
     cc_addr = ipaddr.client_network(var.remote_addr)
     cc_n, cc_w, cc_now = cc.count(site, cc_addr, original_path)
   end

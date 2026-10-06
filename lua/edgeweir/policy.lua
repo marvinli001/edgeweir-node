@@ -107,6 +107,37 @@ function _M.tls_pending(site, host)
   return dot ~= nil and pending.wild[sub(host, dot + 1)] == true
 end
 
+-- redirect_excluded tells whether host (lowercase) reaches the site
+-- through a domain the HTTPS redirect leaves alone (edge-ports-v1): an
+-- exact name, else the wildcard of its parent (as the site resolves it).
+function _M.redirect_excluded(site, host)
+  local excluded = site._redirect_excluded
+  if not excluded or type(host) ~= "string" then return false end
+  if excluded[host] then return true end
+  local hosts = site._exact_hosts
+  if hosts == nil then
+    hosts = {}
+    for _, d in ipairs(site.domains or {}) do
+      if type(d) == "table" and d.wildcard ~= true and type(d.name) == "string" then hosts[d.name] = true end
+    end
+    site._exact_hosts = hosts
+  end
+  if hosts[host] then return false end
+  local dot = find(host, ".", 1, true)
+  return dot ~= nil and excluded["*." .. sub(host, dot + 1)] == true
+end
+
+-- https_redirect is the HTTPS redirect of a request for host with
+-- request_uri: the site's status (301 by default) to its port (443 by
+-- default, left out of the URL).
+function _M.https_redirect(tls, host, request_uri)
+  local status = tls and tonumber(tls.redirect_status) or 0
+  local port = tls and tonumber(tls.redirect_port) or 0
+  local authority = host
+  if port ~= 0 and port ~= 443 then authority = host .. ":" .. port end
+  return { status = status ~= 0 and status or 301, location = "https://" .. authority .. request_uri }
+end
+
 -- bulk_lookup returns the entry of table bulk for host and path: the
 -- "host/path" entry first, then the "/path" one.
 function _M.bulk_lookup(bulk, host, path)
@@ -228,7 +259,7 @@ local HEADER_FIELDS = { referer = "http.referer", ["user-agent"] = "http.user_ag
 -- request builds the request values of a request. The derived fields
 -- http.request.full_uri and http.request.uri.path.extension, and the
 -- rules-v3 fields, are computed only for sites whose rules read them
--- (site._full_uri, site._extension, site._request_v3, site._cookies,
+-- (site._full_uri, site._extension, site._request_v3, site._peer, site._cookies,
 -- site._args, see edgeweir.store).
 function _M.request(site, headers)
   local var = ngx.var
@@ -256,6 +287,12 @@ function _M.request(site, headers)
     values["http.request.id"] = var.edgeweir_request_id or var.request_id
     values["http.request.timestamp.sec"] = math.floor(ngx.req.start_time())
     values["edge.server_port"] = tonumber(var.server_port) or 0
+  end
+  -- ip.peer (client-ip-v1): the connection's peer before realip; the
+  -- local listeners' peer is the address the agent names.
+  if site._peer then
+    local peer = var.realip_remote_addr
+    values["ip.peer"] = (peer and peer ~= "unix:") and peer or var.remote_addr
   end
   if site._cookies then
     local cookie = headers.cookie
@@ -362,7 +399,7 @@ local TIMEOUTS = { origin_connect_timeout_ms = "c", origin_send_timeout_ms = "w"
 
 local function config(a, ctx)
   if a.cache_bypass ~= nil then ctx.cache_bypass = a.cache_bypass end
-  if a.force_https ~= nil then ctx.force_https = a.force_https end
+  if a.force_https ~= nil then ctx.force_https, ctx.force_https_rule = a.force_https, a.force_https end
   -- Compression switches (edgeweir.compress): false drops the coding for
   -- this response, true allows it again among the site's codings.
   if a.gzip ~= nil then ctx.gzip = a.gzip end
@@ -479,9 +516,10 @@ function _M.access(site, headers)
       end
     end
   end
-  if ctx.force_https and ngx.var.scheme ~= "https" and not _M.tls_pending(site, ngx.var.host) then
+  if ctx.force_https and ngx.var.scheme ~= "https" and not _M.tls_pending(site, ngx.var.host)
+    and (ctx.force_https_rule or not _M.redirect_excluded(site, ngx.var.host)) then
     if not site.certificate_id or site.certificate_id == "" then return { status = 503 } end
-    return { status = 301, location = "https://" .. ngx.var.host .. ngx.var.request_uri }
+    return _M.https_redirect(site.tls, ngx.var.host, ngx.var.request_uri)
   end
   -- gzip switched off for a site the edge does not compress: the origin
   -- gets no Accept-Encoding, and the cache's Vary tells the variants apart

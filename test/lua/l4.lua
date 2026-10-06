@@ -361,6 +361,67 @@ test("prepare: indexes applications by protocol and port, refuses broken tables"
   end
 end)
 
+test("l4-v2 ranges: lookup by port, single ports first, overlaps refused", function()
+  local cert = { chain_pem = "c", private_key_pem = "k", fingerprint = "f" }
+  local doc = assert(l4.prepare({
+    revision = "1",
+    apps = {
+      app({ id = "r1", port = 9100, port_end = 9199 }),
+      app({ id = "r2", port = 9300, port_end = 9300 + 999 }),
+      app({ id = "s1", port = 9200 }),
+      app({ id = "u1", protocol = "udp", port = 9100, port_end = 9101 }),
+      app({ id = "t1", port = 10443, certificate_id = "c1", tls_minimum_version = "1.3", certificate = cert,
+        certificate_names = { "A.test", "*.w.test" } }),
+    },
+  }))
+  eq(l4.lookup(doc, "tcp", 9100).id, "r1")
+  eq(l4.lookup(doc, "tcp", "9150").id, "r1", "$server_port is a string")
+  eq(l4.lookup(doc, "tcp", 9199).id, "r1")
+  eq(l4.lookup(doc, "tcp", 9200).id, "s1")
+  eq(l4.lookup(doc, "tcp", 10299).id, "r2")
+  eq(l4.lookup(doc, "tcp", 10300), nil)
+  eq(l4.lookup(doc, "tcp", 9099), nil)
+  eq(l4.lookup(doc, "udp", 9101).id, "u1")
+  eq(l4.lookup(doc, "udp", 9102), nil)
+  eq(l4.lookup(doc, "udp", 9200), nil)
+  eq(l4.lookup(nil, "tcp", 9100), nil)
+  eq(l4.names_match(l4.lookup(doc, "tcp", 10443)._names, "a.test"), true, "names are lowercase")
+  eq(l4.names_match(doc.by_port["tcp:10443"]._names, "x.w.test"), true)
+  eq(l4.names_match(doc.by_port["tcp:10443"]._names, "y.x.w.test"), false, "one label")
+  eq(l4.names_match(doc.by_port["tcp:10443"]._names, "w.test"), false)
+  eq(l4.names_match(doc.by_port["tcp:10443"]._names, "b.test"), false)
+  for name, mutate in pairs({
+    ["range of 1001"] = function(d) d.apps[1].port_end = 10100 end,
+    ["range end below"] = function(d) d.apps[1].port_end = 9000 end,
+    ["ranges overlap"] = function(d) d.apps[2] = app({ id = "r2", port = 9150, port_end = 9250 }) end,
+    ["single port in a range"] = function(d) d.apps[2] = app({ id = "s1", port = 9150 }) end,
+    ["TLS for UDP"] = function(d) d.apps[1].protocol, d.apps[1].certificate_id, d.apps[1].tls_minimum_version, d.apps[1].certificate = "udp", "c", "1.2", cert end,
+    ["TLS without material"] = function(d) d.apps[1].certificate_id, d.apps[1].tls_minimum_version = "c", "1.2" end,
+    ["TLS version"] = function(d) d.apps[1].certificate_id, d.apps[1].tls_minimum_version, d.apps[1].certificate = "c", "1.1", cert end,
+  }) do
+    local d = { revision = "1", apps = { app({ id = "r1", port = 9100, port_end = 9199 }) } }
+    mutate(d)
+    local ok, err = l4.prepare(d)
+    if ok or not err then
+      error(name .. ": accepted")
+    end
+  end
+end)
+
+test("l4-v2 peers: origins with port 0 take the arriving port", function()
+  reset()
+  local resolve = dns.resolve
+  dns.resolve = function() return "192.0.2.1" end
+  local same = app({ port = 9100, port_end = 9199, origins = { { id = "same", address = "o.test", port = 0, weight = 1 } } })
+  local fixed = app({ port = 9100, port_end = 9199, origins = { { id = "fixed", address = "o.test", port = 7000, weight = 1 } } })
+  local a = l4.peers(same, { allowed = {} }, ngx.now(), 9123)
+  local b = l4.peers(fixed, { allowed = {} }, ngx.now(), 9123)
+  dns.resolve = resolve
+  eq(a[1].origin.id, "same")
+  eq(a[1].port, 9123)
+  eq(b[1].port, 7000)
+end)
+
 test("replace: versioned table, previous one kept, lock, status", function()
   reset()
   local d = ngx.shared.edgeweir_l4
