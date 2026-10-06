@@ -11,7 +11,7 @@ error_log stderr notice;
 pcre_jit on;
 
 events {
-    worker_connections 4115;
+    worker_connections 4131;
 }
 
 http {
@@ -42,9 +42,9 @@ http {
     lua_shared_dict edgeweir_challenge 8m;
     lua_shared_dict edgeweir_cc 32m;
     lua_shared_dict edgeweir_tags 64m;
-    lua_shared_dict edgeweir_rate_616c6c 256k;
-    lua_shared_dict edgeweir_rate_62726f746c692d6f6e6c79 256k;
-    lua_shared_dict edgeweir_rate_6e6f6e65 256k;
+    lua_shared_dict edgeweir_rate_61 256k;
+    lua_shared_dict edgeweir_rate_62 256k;
+    lua_shared_dict edgeweir_rate_63 256k;
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).
     lua_capture_error_log 64k;
@@ -54,7 +54,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "c06785f342fe40f3",
+            conf_id = "5951b5e1166a90af",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -120,6 +120,18 @@ http {
     map $uri $edgeweir_error_page {
         ""      /./edgeweir-error;
         default @edgeweir_error;
+    }
+    # X-Forwarded-For towards the origins: the received header followed by
+    # the TCP peer. realip made $remote_addr the client, so nginx's
+    # $proxy_add_x_forwarded_for would append the client instead; the local
+    # listeners' peer is the address the agent names.
+    map $realip_remote_addr $edgeweir_peer {
+        "unix:" $remote_addr;
+        default $realip_remote_addr;
+    }
+    map $http_x_forwarded_for $edgeweir_forwarded_for {
+        ""      $edgeweir_peer;
+        default "$http_x_forwarded_for, $edgeweir_peer";
     }
 
     # Edge -> origin layer (local unix sockets). The variants without TLS
@@ -589,6 +601,13 @@ http {
     # requests.
     server {
         listen 80 default_server;
+        listen [::]:80 default_server;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
         server_name _;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
@@ -628,7 +647,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -685,7 +704,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -721,19 +740,14 @@ http {
     }
     server {
         listen 80;
-        gzip on;
-        gzip_vary on;
-        gzip_min_length 256;
-        gzip_types application/json text/css;
-        brotli on;
-        brotli_comp_level 6;
-        brotli_min_length 256;
-        brotli_types application/json text/css;
-        zstd on;
-        zstd_comp_level 3;
-        zstd_min_length 1024;
-        zstd_types text/css;
-        server_name all.test;
+        listen [::]:80;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name a.test;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -772,7 +786,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -825,14 +839,11 @@ http {
         # (client_max_body_size counts all the data a stream ever sends).
         location @edgeweir_grpc {
             client_max_body_size 0;
-            gzip off;
-            brotli off;
-            zstd off;
             access_by_lua_block { require("edgeweir.router").grpc_access() }
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -868,12 +879,14 @@ http {
     }
     server {
         listen 80;
-        # Vary: Accept-Encoding on responses Brotli or Zstandard could encode.
-        gzip_vary on;
-        brotli on;
-        brotli_comp_level 11;
-        brotli_min_length 1;
-        server_name br.test;
+        listen [::]:80;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name c.test;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -912,140 +925,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
-            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
-            # layer forwards it to the origin unchanged.
-            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
-            proxy_set_header X-Edgeweir-Site $edgeweir_site;
-            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
-            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
-            # Origin rules' group, Host, SNI and port and config rules'
-            # timeouts (edgeweir.policy.origin_header).
-            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
-            proxy_set_header Range $edgeweir_range;
-            proxy_set_header If-Range $edgeweir_if_range;
-            # One request id for the client, the origin layer and the origin.
-            proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
-
-            proxy_cache $edgeweir_cache_zone;
-            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
-            proxy_cache_bypass $edgeweir_cache_bypass;
-            proxy_no_cache $edgeweir_no_cache;
-            proxy_cache_methods GET HEAD;
-            proxy_cache_lock on;
-            proxy_cache_lock_timeout 10s;
-            # Stale serving follows the stale-while-revalidate and
-            # stale-if-error extensions the origin layer sets per rule.
-            proxy_cache_background_update on;
-            proxy_cache_revalidate on;
-            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
-            # Never sent to clients (cache hits included): the origin's own
-            # request id, Cache-Tag (edgeweir.router puts it back for sites
-            # that keep it) and the origin layer's affinity announcement.
-            proxy_hide_header X-Request-Id;
-            proxy_hide_header Cache-Tag;
-            proxy_hide_header X-Edgeweir-Affinity;
-
-            add_header X-Cache $upstream_cache_status always;
-            add_header X-Request-Id $edgeweir_request_id always;
-            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
-            log_by_lua_block { require("edgeweir.stats").log() }
-        }
-
-        # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
-        # here at the end of its access phase, instead of the CRS location.
-        # HTTP/2 to the origin layer (grpc_pass, h2c), unbuffered both ways
-        # with trailers; never cached or compressed, and no body size limit
-        # (client_max_body_size counts all the data a stream ever sends).
-        location @edgeweir_grpc {
-            client_max_body_size 0;
-            brotli off;
-            access_by_lua_block { require("edgeweir.router").grpc_access() }
-            grpc_pass grpc://$edgeweir_origin_layer;
-            grpc_set_header Host $host;
-            grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            grpc_set_header X-Forwarded-Proto $scheme;
-            grpc_set_header CDN-Loop $edgeweir_cdn_loop;
-            grpc_set_header X-Edgeweir-Site $edgeweir_site;
-            grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
-            grpc_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer;
-            # these only bound the local hop.
-            grpc_send_timeout 3600s;
-            grpc_read_timeout 3600s;
-            grpc_hide_header X-Request-Id;
-            grpc_hide_header Cache-Tag;
-            grpc_hide_header X-Edgeweir-Affinity;
-            add_header X-Request-Id $edgeweir_request_id always;
-            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
-            log_by_lua_block { require("edgeweir.stats").log(true) }
-        }
-
-        # Error pages of nginx's own errors (error_page above), also of
-        # requests that came from a CRS or gRPC location (log: counted as
-        # there).
-        # Variables location / sets are unset for requests that never got
-        # there.
-        location @edgeweir_error {
-            uninitialized_variable_warn off;
-            content_by_lua_block { require("edgeweir.router").error_page() }
-            log_by_lua_block { require("edgeweir.stats").log(true) }
-        }
-        location = /./edgeweir-error {
-            internal;
-            uninitialized_variable_warn off;
-            content_by_lua_block { require("edgeweir.router").error_page() }
-        }
-    }
-    server {
-        listen 80;
-        server_name none.test;
-        # nginx's own errors get error pages (edgeweir.router.error_page):
-        # malformed requests and CRS blocks with status 400, request headers
-        # (494) and URIs (414) that are too long, bodies over
-        # client_max_body_size (413), plain HTTP on an HTTPS port (497),
-        # uncaught Lua errors (500) and the origin layer's failures (502,
-        # 504) when the cache has no stale copy to serve. 494 and 497 reach
-        # the handler as they are; it answers them with 400 like nginx.
-        error_page 400 413 414 500 502 504 $edgeweir_error_page;
-        error_page 494 =494 $edgeweir_error_page;
-        error_page 497 =497 $edgeweir_error_page;
-
-        location / {
-            set $edgeweir_local "";
-            set $edgeweir_site "";
-            set $edgeweir_cache_zone "default";
-            set $edgeweir_cache_key "";
-            set $edgeweir_cache_bypass 1;
-            set $edgeweir_no_cache 1;
-            set $edgeweir_rules "";
-            set $edgeweir_range_mode "";
-            set $edgeweir_origin_layer "edgeweir_origin_verify";
-            set $edgeweir_upgrade "";
-            set $edgeweir_connection "";
-            set $edgeweir_cdn_loop "";
-            set $edgeweir_strip_ae "";
-            set $edgeweir_origin_override "";
-            # The request context across the hand-over to a CRS or gRPC
-            # location (edgeweir.waf.stash_ctx).
-            set $edgeweir_ctx_ref "";
-            access_by_lua_block { require("edgeweir.router").access() }
-
-            slice 1m;
-            proxy_pass http://$edgeweir_origin_layer;
-            proxy_http_version 1.1;
-            proxy_set_header Connection $edgeweir_connection;
-            proxy_set_header Upgrade $edgeweir_upgrade;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1102,7 +982,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -1138,6 +1018,7 @@ http {
     }
     server {
         listen 443 default_server ssl;
+        listen [::]:443 default_server ssl;
         http3 off;
         http2 on;
         ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
@@ -1147,6 +1028,12 @@ http {
         ssl_session_tickets off;
         ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
         ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
         server_name _;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
@@ -1186,7 +1073,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1243,7 +1130,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -1279,6 +1166,7 @@ http {
     }
     server {
         listen 443 ssl;
+        listen [::]:443 ssl;
         http3 off;
         http2 on;
         ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
@@ -1288,19 +1176,13 @@ http {
         ssl_session_tickets off;
         ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
         ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
-        gzip on;
-        gzip_vary on;
-        gzip_min_length 256;
-        gzip_types application/json text/css;
-        brotli on;
-        brotli_comp_level 6;
-        brotli_min_length 256;
-        brotli_types application/json text/css;
-        zstd on;
-        zstd_comp_level 3;
-        zstd_min_length 1024;
-        zstd_types text/css;
-        server_name all.test;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name a.test;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -1339,7 +1221,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1392,14 +1274,11 @@ http {
         # (client_max_body_size counts all the data a stream ever sends).
         location @edgeweir_grpc {
             client_max_body_size 0;
-            gzip off;
-            brotli off;
-            zstd off;
             access_by_lua_block { require("edgeweir.router").grpc_access() }
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -1434,21 +1313,15 @@ http {
         }
     }
     server {
-        listen 443 ssl;
-        http3 off;
-        ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
-        ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
-        ssl_session_tickets off;
-        ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
-        ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
-        # Vary: Accept-Encoding on responses Brotli or Zstandard could encode.
-        gzip_vary on;
-        brotli on;
-        brotli_comp_level 11;
-        brotli_min_length 1;
-        server_name br.test;
+        listen 8081 default_server;
+        listen [::]:8081 default_server;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name _;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -1487,7 +1360,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1540,12 +1413,11 @@ http {
         # (client_max_body_size counts all the data a stream ever sends).
         location @edgeweir_grpc {
             client_max_body_size 0;
-            brotli off;
             access_by_lua_block { require("edgeweir.router").grpc_access() }
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -1580,16 +1452,15 @@ http {
         }
     }
     server {
-        listen 443 ssl;
-        http3 off;
-        ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
-        ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
-        ssl_session_tickets off;
-        ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
-        ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
-        server_name none.test;
+        listen 8081;
+        listen [::]:8081;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name b.test;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -1628,7 +1499,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1685,7 +1556,446 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            grpc_set_header X-Forwarded-Proto $scheme;
+            grpc_set_header CDN-Loop $edgeweir_cdn_loop;
+            grpc_set_header X-Edgeweir-Site $edgeweir_site;
+            grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            grpc_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer;
+            # these only bound the local hop.
+            grpc_send_timeout 3600s;
+            grpc_read_timeout 3600s;
+            grpc_hide_header X-Request-Id;
+            grpc_hide_header Cache-Tag;
+            grpc_hide_header X-Edgeweir-Affinity;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
+        # Error pages of nginx's own errors (error_page above), also of
+        # requests that came from a CRS or gRPC location (log: counted as
+        # there).
+        # Variables location / sets are unset for requests that never got
+        # there.
+        location @edgeweir_error {
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+        location = /./edgeweir-error {
+            internal;
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+        }
+    }
+    server {
+        listen 8081;
+        listen [::]:8081;
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name c.test;
+        # nginx's own errors get error pages (edgeweir.router.error_page):
+        # malformed requests and CRS blocks with status 400, request headers
+        # (494) and URIs (414) that are too long, bodies over
+        # client_max_body_size (413), plain HTTP on an HTTPS port (497),
+        # uncaught Lua errors (500) and the origin layer's failures (502,
+        # 504) when the cache has no stale copy to serve. 494 and 497 reach
+        # the handler as they are; it answers them with 400 like nginx.
+        error_page 400 413 414 500 502 504 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+        error_page 497 =497 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_local "";
+            set $edgeweir_site "";
+            set $edgeweir_cache_zone "default";
+            set $edgeweir_cache_key "";
+            set $edgeweir_cache_bypass 1;
+            set $edgeweir_no_cache 1;
+            set $edgeweir_rules "";
+            set $edgeweir_range_mode "";
+            set $edgeweir_origin_layer "edgeweir_origin_verify";
+            set $edgeweir_upgrade "";
+            set $edgeweir_connection "";
+            set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
+            # The request context across the hand-over to a CRS or gRPC
+            # location (edgeweir.waf.stash_ctx).
+            set $edgeweir_ctx_ref "";
+            access_by_lua_block { require("edgeweir.router").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
+
+            add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
+        # here at the end of its access phase, instead of the CRS location.
+        # HTTP/2 to the origin layer (grpc_pass, h2c), unbuffered both ways
+        # with trailers; never cached or compressed, and no body size limit
+        # (client_max_body_size counts all the data a stream ever sends).
+        location @edgeweir_grpc {
+            client_max_body_size 0;
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+            grpc_pass grpc://$edgeweir_origin_layer;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            grpc_set_header X-Forwarded-Proto $scheme;
+            grpc_set_header CDN-Loop $edgeweir_cdn_loop;
+            grpc_set_header X-Edgeweir-Site $edgeweir_site;
+            grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            grpc_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer;
+            # these only bound the local hop.
+            grpc_send_timeout 3600s;
+            grpc_read_timeout 3600s;
+            grpc_hide_header X-Request-Id;
+            grpc_hide_header Cache-Tag;
+            grpc_hide_header X-Edgeweir-Affinity;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
+        # Error pages of nginx's own errors (error_page above), also of
+        # requests that came from a CRS or gRPC location (log: counted as
+        # there).
+        # Variables location / sets are unset for requests that never got
+        # there.
+        location @edgeweir_error {
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+        location = /./edgeweir-error {
+            internal;
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+        }
+    }
+    server {
+        listen 9443 default_server ssl;
+        listen [::]:9443 default_server ssl;
+        listen 9443 quic reuseport default_server;
+        listen [::]:9443 quic reuseport default_server;
+        http3 on;
+        http2 on;
+        ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
+        ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+        ssl_session_tickets off;
+        ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
+        ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name _;
+        # nginx's own errors get error pages (edgeweir.router.error_page):
+        # malformed requests and CRS blocks with status 400, request headers
+        # (494) and URIs (414) that are too long, bodies over
+        # client_max_body_size (413), plain HTTP on an HTTPS port (497),
+        # uncaught Lua errors (500) and the origin layer's failures (502,
+        # 504) when the cache has no stale copy to serve. 494 and 497 reach
+        # the handler as they are; it answers them with 400 like nginx.
+        error_page 400 413 414 500 502 504 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+        error_page 497 =497 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_local "";
+            set $edgeweir_site "";
+            set $edgeweir_cache_zone "default";
+            set $edgeweir_cache_key "";
+            set $edgeweir_cache_bypass 1;
+            set $edgeweir_no_cache 1;
+            set $edgeweir_rules "";
+            set $edgeweir_range_mode "";
+            set $edgeweir_origin_layer "edgeweir_origin_verify";
+            set $edgeweir_upgrade "";
+            set $edgeweir_connection "";
+            set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
+            # The request context across the hand-over to a CRS or gRPC
+            # location (edgeweir.waf.stash_ctx).
+            set $edgeweir_ctx_ref "";
+            access_by_lua_block { require("edgeweir.router").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
+
+            add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
+        # here at the end of its access phase, instead of the CRS location.
+        # HTTP/2 to the origin layer (grpc_pass, h2c), unbuffered both ways
+        # with trailers; never cached or compressed, and no body size limit
+        # (client_max_body_size counts all the data a stream ever sends).
+        location @edgeweir_grpc {
+            client_max_body_size 0;
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+            grpc_pass grpc://$edgeweir_origin_layer;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            grpc_set_header X-Forwarded-Proto $scheme;
+            grpc_set_header CDN-Loop $edgeweir_cdn_loop;
+            grpc_set_header X-Edgeweir-Site $edgeweir_site;
+            grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            grpc_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer;
+            # these only bound the local hop.
+            grpc_send_timeout 3600s;
+            grpc_read_timeout 3600s;
+            grpc_hide_header X-Request-Id;
+            grpc_hide_header Cache-Tag;
+            grpc_hide_header X-Edgeweir-Affinity;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+
+        # Error pages of nginx's own errors (error_page above), also of
+        # requests that came from a CRS or gRPC location (log: counted as
+        # there).
+        # Variables location / sets are unset for requests that never got
+        # there.
+        location @edgeweir_error {
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+            log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+        location = /./edgeweir-error {
+            internal;
+            uninitialized_variable_warn off;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+        }
+    }
+    server {
+        listen 9443 ssl;
+        listen [::]:9443 ssl;
+        listen 9443 quic;
+        listen [::]:9443 quic;
+        http3 on;
+        http2 on;
+        ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
+        ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+        ssl_session_tickets off;
+        ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
+        ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
+        # Trusted proxies name the client in X-Forwarded-For (right to left
+        # past trusted addresses); other peers keep their own address.
+        set_real_ip_from 10.0.0.0/8;
+        set_real_ip_from 2001:db8::/32;
+        real_ip_header X-Forwarded-For;
+        real_ip_recursive on;
+        server_name b.test;
+        # nginx's own errors get error pages (edgeweir.router.error_page):
+        # malformed requests and CRS blocks with status 400, request headers
+        # (494) and URIs (414) that are too long, bodies over
+        # client_max_body_size (413), plain HTTP on an HTTPS port (497),
+        # uncaught Lua errors (500) and the origin layer's failures (502,
+        # 504) when the cache has no stale copy to serve. 494 and 497 reach
+        # the handler as they are; it answers them with 400 like nginx.
+        error_page 400 413 414 500 502 504 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+        error_page 497 =497 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_local "";
+            set $edgeweir_site "";
+            set $edgeweir_cache_zone "default";
+            set $edgeweir_cache_key "";
+            set $edgeweir_cache_bypass 1;
+            set $edgeweir_no_cache 1;
+            set $edgeweir_rules "";
+            set $edgeweir_range_mode "";
+            set $edgeweir_origin_layer "edgeweir_origin_verify";
+            set $edgeweir_upgrade "";
+            set $edgeweir_connection "";
+            set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
+            # The request context across the hand-over to a CRS or gRPC
+            # location (edgeweir.waf.stash_ctx).
+            set $edgeweir_ctx_ref "";
+            access_by_lua_block { require("edgeweir.router").access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer; these
+            # only bound the local hop (long for WebSocket).
+            proxy_send_timeout 3600s;
+            proxy_read_timeout 3600s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
+
+            add_header X-Cache $upstream_cache_status always;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
+        # here at the end of its access phase, instead of the CRS location.
+        # HTTP/2 to the origin layer (grpc_pass, h2c), unbuffered both ways
+        # with trailers; never cached or compressed, and no body size limit
+        # (client_max_body_size counts all the data a stream ever sends).
+        location @edgeweir_grpc {
+            client_max_body_size 0;
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+            grpc_pass grpc://$edgeweir_origin_layer;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -1767,7 +2077,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1824,7 +2134,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -1914,7 +2224,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -1971,7 +2281,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;

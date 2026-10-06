@@ -14,7 +14,7 @@ error_log stderr notice;
 pcre_jit on;
 
 events {
-    worker_connections 4096;
+    worker_connections 4107;
 }
 
 http {
@@ -58,7 +58,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "6ea9c9954ebf0f12",
+            conf_id = "c3517f7eb885ed50",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,

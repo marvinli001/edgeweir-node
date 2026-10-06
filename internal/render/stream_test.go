@@ -27,7 +27,15 @@ func l4Plan() *configir.Plan {
 	relay1, relay2 := l4App("tcp-relay-v1", configir.L4TCP, 9004), l4App("tcp-relay-v2", configir.L4TCP, 9005)
 	relay1.AcceptProxyProtocol, relay1.ProxyProtocolVersion = true, 1
 	relay2.AcceptProxyProtocol, relay2.ProxyProtocolVersion = true, 2
-	plan.L4Apps = []configir.L4App{l4App("tcp-plain", configir.L4TCP, 9000), pp1, pp2, accept, relay1, relay2, l4App("udp", configir.L4UDP, 9000)}
+	// l4-v2: port ranges (TCP: one socket per port; UDP: reuseport) and
+	// TLS termination, also after a PROXY protocol header.
+	tcpRange, udpRange := l4App("tcp-range", configir.L4TCP, 9100), l4App("udp-range", configir.L4UDP, 9100)
+	tcpRange.PortEnd, udpRange.PortEnd = 9109, 9104
+	tcpRange.Origins[0].Port, udpRange.Origins[0].Port = 0, 0
+	tlsApp, tlsAccept := l4App("tcp-tls", configir.L4TCP, 9200), l4App("tcp-tls-accept", configir.L4TCP, 9201)
+	tlsApp.CertificateID, tlsApp.TLSMinimumVersion = "c", "1.3"
+	tlsAccept.CertificateID, tlsAccept.TLSMinimumVersion, tlsAccept.AcceptProxyProtocol = "c", "1.2", true
+	plan.L4Apps = []configir.L4App{l4App("tcp-plain", configir.L4TCP, 9000), pp1, pp2, accept, relay1, relay2, l4App("udp", configir.L4UDP, 9000), tcpRange, udpRange, tlsApp, tlsAccept}
 	return plan
 }
 
@@ -72,11 +80,14 @@ func TestRenderL4HotFields(t *testing.T) {
 		t.Fatal("hot layer-4 fields changed nginx.conf")
 	}
 	for name, mutate := range map[string]func(p *configir.Plan){
-		"port":               func(p *configir.Plan) { p.L4Apps[0].Port = 9100 },
+		"port":               func(p *configir.Plan) { p.L4Apps[0].Port = 9300 },
 		"protocol":           func(p *configir.Plan) { p.L4Apps[1].Protocol, p.L4Apps[1].ProxyProtocolVersion = configir.L4UDP, 0 },
 		"accept PROXY":       func(p *configir.Plan) { p.L4Apps[0].AcceptProxyProtocol = true },
 		"PROXY version":      func(p *configir.Plan) { p.L4Apps[1].ProxyProtocolVersion = 2 },
-		"new application":    func(p *configir.Plan) { p.L4Apps = append(p.L4Apps, l4App("new", configir.L4UDP, 9100)) },
+		"new application":    func(p *configir.Plan) { p.L4Apps = append(p.L4Apps, l4App("new", configir.L4UDP, 9300)) },
+		"range":              func(p *configir.Plan) { p.L4Apps[6].PortEnd = 9050 },
+		"range end":          func(p *configir.Plan) { p.L4Apps[7].PortEnd = 9110 },
+		"TLS":                func(p *configir.Plan) { p.L4Apps[0].CertificateID, p.L4Apps[0].TLSMinimumVersion = "c", "1.2" },
 		"removed":            func(p *configir.Plan) { p.L4Apps = p.L4Apps[1:] },
 		"last one removed":   func(p *configir.Plan) { p.L4Apps = nil },
 		"relay to non-PROXY": func(p *configir.Plan) { p.L4Apps[4].ProxyProtocolVersion = 0 },

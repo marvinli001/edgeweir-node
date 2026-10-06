@@ -12,7 +12,7 @@ error_log stderr notice;
 pcre_jit on;
 
 events {
-    worker_connections 8192;
+    worker_connections 8206;
 }
 
 http {
@@ -53,7 +53,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "c2e0e6f793203197",
+            conf_id = "a94c5225b7009161",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
@@ -120,6 +120,18 @@ http {
     map $uri $edgeweir_error_page {
         ""      /./edgeweir-error;
         default @edgeweir_error;
+    }
+    # X-Forwarded-For towards the origins: the received header followed by
+    # the TCP peer. realip made $remote_addr the client, so nginx's
+    # $proxy_add_x_forwarded_for would append the client instead; the local
+    # listeners' peer is the address the agent names.
+    map $realip_remote_addr $edgeweir_peer {
+        "unix:" $remote_addr;
+        default $realip_remote_addr;
+    }
+    map $http_x_forwarded_for $edgeweir_forwarded_for {
+        ""      $edgeweir_peer;
+        default "$http_x_forwarded_for, $edgeweir_peer";
     }
 
     # Edge -> origin layer (local unix sockets). The variants without TLS
@@ -639,7 +651,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -696,7 +708,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -778,7 +790,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -835,7 +847,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
@@ -917,7 +929,7 @@ http {
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
@@ -974,7 +986,7 @@ http {
             grpc_pass grpc://$edgeweir_origin_layer;
             grpc_set_header Host $host;
             grpc_set_header X-Real-IP $remote_addr;
-            grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            grpc_set_header X-Forwarded-For $edgeweir_forwarded_for;
             grpc_set_header X-Forwarded-Proto $scheme;
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;

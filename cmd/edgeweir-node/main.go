@@ -555,6 +555,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	// Let nginx workers use the hard open-file limit (os/exec children only
 	// inherit the default soft limit) and size worker_connections to fit.
+	hostinfo.RaiseNofile()
 	nofile := min(hostinfo.NofileHardLimit(), 1<<20)
 	workerConnections := 4096
 	if nofile > 0 && nofile < 2*uint64(workerConnections) {
@@ -582,6 +583,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		WorkerProcesses:    *workers,
 		WorkerRlimitNofile: nofile,
 		WorkerConnections:  workerConnections,
+		CPUs:               hostinfo.OnlineCPUs(),
 		SitesDictMB:        *sitesDictMB,
 		StatsDictMB:        *statsDictMB,
 		PurgeDictMB:        *purgeDictMB,
