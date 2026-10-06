@@ -57,7 +57,7 @@ func TestSiteContentSettings(t *testing.T) {
 	s.HideXCache = true
 	s.Purge = &nodev1.PurgeMethod{CredentialId: "key-1", CredentialVersion: 3}
 	s.Maintenance = &nodev1.Maintenance{Template: "<p>{{status}}</p>", RetryAfterSeconds: 120,
-		AllowedCidrs: []string{"192.0.2.0/24", "2001:db8::/32"}, AllowedPathPrefixes: []string{"/health", "/status/"}}
+		AllowedCidrs: []string{"192.0.2.0/24", "2001:db8::/32", "::ffff:102:304/128"}, AllowedPathPrefixes: []string{"/health", "/status/"}}
 	s.Charset = &nodev1.Charset{Name: "gbk", Force: true, Uppercase: true}
 	s.RequestBodyLimit = proto.Uint64(0)
 	s.Tls = &nodev1.TlsOptions{MinimumVersion: "1.2", CipherProfile: "modern", Gzip: true, GzipLevel: 9, CompressMaxLength: 1 << 20}
@@ -73,7 +73,7 @@ func TestSiteContentSettings(t *testing.T) {
 		t.Fatalf("charset = %+v", got.Charset)
 	}
 	m := got.Maintenance
-	if m.Template != "<p>{{status}}</p>" || m.RetryAfter != 120 || !slices.Equal(m.AllowCIDRs, []string{"192.0.2.0/24", "2001:db8::/32"}) ||
+	if m.Template != "<p>{{status}}</p>" || m.RetryAfter != 120 || !slices.Equal(m.AllowCIDRs, []string{"192.0.2.0/24", "2001:db8::/32", "::ffff:102:304/128"}) ||
 		!slices.Equal(m.AllowPrefixes, []string{"/health", "/status/"}) {
 		t.Fatalf("maintenance = %+v", m)
 	}

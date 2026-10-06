@@ -88,8 +88,10 @@ func buildMaintenance(m *nodev1.Maintenance) (*Maintenance, error) {
 	}
 	out := &Maintenance{Template: m.GetTemplate(), RetryAfter: m.GetRetryAfterSeconds()}
 	for _, c := range m.GetAllowedCidrs() {
+		// Host bits zero, as the console normalizes them (its text of an
+		// IPv4-mapped address may differ from Go's, so no string compare).
 		prefix, err := netip.ParsePrefix(c)
-		if err != nil || prefix.Masked().String() != c {
+		if err != nil || prefix.Masked() != prefix {
 			return nil, fmt.Errorf("%w: invalid maintenance CIDR %q", ErrRejected, c)
 		}
 		out.AllowCIDRs = append(out.AllowCIDRs, c)
