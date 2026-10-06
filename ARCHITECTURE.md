@@ -801,6 +801,15 @@ stream 子系统有自己的 `lua_shared_dict`，http 子系统的 Lua 看不到
 - 客户端连接：有站点开启 gRPC 时，明文监听的默认 server 开启 `http2`（接受 h2c），开启 gRPC 的站点自己的 `server` 块在每个监听上开启 HTTP/2（HTTPS 设置关闭 HTTP/2 时也开启）；其他站点保持原设置，h2c 请求它们的域名得到 421。
 - 主动健康检查（§2.10）：HTTP/2 站点的源站以 HTTP/2 探测：HTTPS 经 ALPN 只提供 `h2`，协商不出 `h2` 时记为 `connect_failed`（Go 的服务端在 ALPN 无交集时直接拒绝握手，记为 `tls_failed`），HTTP 以 prior knowledge 探测；方法、路径、Host（`:authority`）与 User-Agent 同 HTTP/1.1 探测。
 
+### 3.25 监听端口、访客 IP 与四层补充（`edge-ports-v1`、`client-ip-v1`、`l4-v2`）
+
+proto v0.23.0 的三项能力，设计见控制台仓库的 ADR-0033：
+
+- **监听端口**（`edge-ports-v1`）：`Listener` 可以是 80 / 443 之外的端口。`Site.ports` 列出站点绑定的监听端口（空为全部监听）：`render` 只在这些端口上为站点渲染 server 块；HTTPS 端口上有开启 HTTP/3 的站点时同号 UDP 监听 QUIC。`edgeweir.router` 对查到的站点检查 `$server_port`，未绑定时返回未知域名页（ACME token 在 80 上仍放行；本地 `edge.sock` 不检查）；`edgeweir.tls` 的两个 TLS 回调用 `ngx.ssl.server_port()` 判断，未绑定时中止握手。`TlsOptions.redirect_status` / `redirect_port` / `redirect_excluded_domains` 决定强制 HTTPS 的状态码、目标端口与不跳转的域名（配置规则显式打开的跳转不受排除影响）。
+- **访客 IP**（`client-ip-v1`）：`NodeConfig.client_address` 的 `proxy_protocol` 模式要求每个监听都带 `proxy_protocol`（`real_ip_header proxy_protocol`）；`header` 模式渲染 `set_real_ip_from <可信 CIDR>`、`real_ip_header`、`real_ip_recursive on`（`x-forwarded-for` / `x-real-ip` 写成 nginx 识别的大小写）；`direct` 只用于丢弃访客的 `X-Forwarded-For`。非直连时回源 `X-Forwarded-For` 为 `map` 出的「收到的链 + `$realip_remote_addr`」，直连为 `$proxy_add_x_forwarded_for`（或丢弃时为 `$remote_addr`）。规则字段 `ip.peer` 为 `$realip_remote_addr`（本地监听为 `$remote_addr`）。可信 CIDR 随站点表下发：封禁与 CC 单 IP 计数跳过它们。没有 `client_address` 而监听自带 `proxy_protocol` 的旧配置照常接受。
+- **四层补充**（`l4-v2`）：`L4App.port_end` 为端口段（≤ 1000 个端口），stream `listen 起-止`，TCP 端口段不带 `reuseport`；`edgeweir.l4` 对单端口查表、对端口段按协议二分查找。`L4Origin.port` 为 0 时取 `$server_port`。`L4App.certificate_id` 的应用在 stream server 上终结 TLS：`ssl_client_hello_by_lua` 校验 SNI 属于证书名称（没有 SNI 时放行）并按 `tls_minimum_version` 限制协议，`ssl_certificate_by_lua` 设置证书；agent 把证书材料与 DNS 名称附在 L4 表中（与站点证书同一状态文件）。
+- **资源**：`render` 按监听 socket 数（`reuseport` 的每个 worker 副本都算，`worker_processes auto` 按在线 CPU 数估算）提高 `worker_connections`；agent 启动时把自身 `RLIMIT_NOFILE` 软限制设为硬限制，nginx 主进程继承后才能打开端口段的全部监听。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
