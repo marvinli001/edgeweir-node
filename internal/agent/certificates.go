@@ -165,6 +165,10 @@ func (a *Agent) pruneSecrets(current, previous *nodev1.NodeConfig) {
 			certs[cert.GetId()+"/"+cert.GetSha256Fingerprint()] = true
 		}
 		for _, site := range config.GetSites() {
+			// The keys of PURGE methods travel like S3 credentials.
+			if purge := site.GetPurge(); purge != nil {
+				credentials[purge.GetCredentialId()] = true
+			}
 			for _, origin := range site.GetOriginPool().GetOrigins() {
 				if s3 := origin.GetS3(); s3 != nil {
 					credentials[s3.GetCredentialId()] = true

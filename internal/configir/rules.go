@@ -655,7 +655,8 @@ var actionFields = map[string][]protoreflect.Name{
 	"request_header":  {"header", "value", "remove", "target"},
 	"response_header": {"header", "value", "remove", "target", "append"},
 	"config": {"cache_bypass", "force_https", "gzip", "brotli", "zstd", "websocket", "under_attack", "cc_enabled",
-		"cc_max_level", "origin_connect_timeout_ms", "origin_send_timeout_ms", "origin_read_timeout_ms", "log_sample_rate"},
+		"cc_max_level", "origin_connect_timeout_ms", "origin_send_timeout_ms", "origin_read_timeout_ms", "log_sample_rate",
+		"request_body_limit"},
 	"rate_limit":  {"status_code", "limit", "window_seconds", "key"},
 	"origin":      {"origin_group", "host_header", "sni", "port"},
 	"compression": {"compression"},
@@ -788,8 +789,9 @@ func validOriginTimeout(ms, max uint32) bool {
 func validConfigAction(a *nodev1.RuleAction, phase string) bool {
 	v2 := a.Brotli != nil || a.Zstd != nil || a.Websocket != nil || a.UnderAttack != nil || a.CcEnabled != nil ||
 		a.CcMaxLevel != "" || a.OriginConnectTimeoutMs != 0 || a.OriginSendTimeoutMs != 0 || a.OriginReadTimeoutMs != 0 ||
-		a.LogSampleRate != nil
+		a.LogSampleRate != nil || a.RequestBodyLimit != nil
 	return (phase == "config" || (phase == "cache" && !v2)) &&
+		(a.RequestBodyLimit == nil || *a.RequestBodyLimit <= MaxRequestBodyLimit) &&
 		(a.CcMaxLevel == "" || slices.Contains(ChallengeTypes, a.CcMaxLevel)) &&
 		validOriginTimeout(a.OriginConnectTimeoutMs, maxConnectTimeoutMS) &&
 		validOriginTimeout(a.OriginSendTimeoutMs, maxSendReadTimeoutMS) &&

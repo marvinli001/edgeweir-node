@@ -26,7 +26,7 @@ import (
 var confTemplate string
 
 var tmpl = template.Must(template.New("nginx.conf").
-	Funcs(template.FuncMap{"join": strings.Join}).
+	Funcs(template.FuncMap{"join": strings.Join, "originProxy": newOriginProxy}).
 	Option("missingkey=error").
 	Parse(confTemplate))
 
@@ -54,6 +54,9 @@ type Params struct {
 	EdgeSocket    string
 	EdgeTLSSocket string
 	GeoIPSocket   string
+	// AgentSocket is the agent's unix socket for the data plane's requests
+	// (PURGE method; default: agent.sock next to ControlSocket).
+	AgentSocket string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
 	// OriginSocketNoVerify is the unix socket of the origin layer for sites
@@ -202,6 +205,9 @@ func (p Params) WithDefaults() Params {
 	if p.GeoIPSocket == "" && p.ControlSocket != "" {
 		p.GeoIPSocket = p.ControlSocket + ".geo"
 	}
+	if p.AgentSocket == "" && p.ControlSocket != "" {
+		p.AgentSocket = filepath.Join(filepath.Dir(p.ControlSocket), "agent.sock")
+	}
 	if p.EdgeSocket == "" && p.ControlSocket != "" {
 		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
 	}
@@ -257,6 +263,7 @@ func (p Params) Validate() error {
 		"edge socket":                               p.EdgeSocket,
 		"TLS edge socket":                           p.EdgeTLSSocket,
 		"GeoIP socket":                              p.GeoIPSocket,
+		"agent socket":                              p.AgentSocket,
 		"layer-4 control socket":                    p.L4Socket,
 	} {
 		if !safePath.MatchString(v) {
@@ -323,6 +330,36 @@ type data struct {
 	// unset).
 	L4Servers         []l4Server
 	ShutdownTimeoutMS int64
+	// ClientMaxBodySize is client_max_body_size of the http block
+	// (configir.Plan.MaxRequestBody).
+	ClientMaxBodySize string
+}
+
+// originProxy is the data of one origin layer location (template
+// "origin_proxy"): P is the directive prefix (proxy or grpc), StatusRetry
+// whether 502, 503 and 504 responses are retried.
+type originProxy struct {
+	Root        data
+	Layer       originLayer
+	P           string
+	StatusRetry bool
+}
+
+func newOriginProxy(root data, layer originLayer, statusRetry bool) originProxy {
+	p := "proxy"
+	if layer.Protocol == protocolGRPC {
+		p = "grpc"
+	}
+	return originProxy{Root: root, Layer: layer, P: p, StatusRetry: statusRetry}
+}
+
+// clientMaxBodySize renders a body limit in bytes (0: none) for nginx,
+// keeping the former "100m" for the default.
+func clientMaxBodySize(limit uint64) string {
+	if limit == configir.DefaultRequestBodyLimit {
+		return "100m"
+	}
+	return fmt.Sprint(limit)
 }
 
 // sharedDict is one lua_shared_dict of the data plane.
@@ -408,6 +445,8 @@ type edgeServer struct {
 	ZstdLevel       uint32
 	ZstdMinLength   uint32
 	ZstdTypes       string
+	// GzipLevel is gzip_comp_level (0: nginx's default).
+	GzipLevel uint32
 }
 
 // edgeServers returns the edge layer's servers. gRPC clients speak HTTP/2
@@ -472,6 +511,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				custom.QUICListen[i] = strings.ReplaceAll(strings.ReplaceAll(listen, " default_server", ""), " reuseport", "")
 			}
 			custom.Gzip, custom.GzipMinLength = site.TLS.Gzip, max(site.TLS.GzipMinLength, 1)
+			custom.GzipLevel = site.TLS.GzipLevel
 			custom.GzipTypes = strings.Join(site.TLS.GzipTypes, " ")
 			custom.Brotli, custom.BrotliLevel = site.TLS.Brotli, site.TLS.BrotliLevel
 			custom.BrotliMinLength, custom.BrotliTypes = max(site.TLS.BrotliMinLength, 1), strings.Join(site.TLS.BrotliTypes, " ")
@@ -586,6 +626,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		Balancers:         balancers,
 		ModSecurityConf:   modsecConf,
 		WAFHeader:         WAFHeader,
+		ClientMaxBodySize: clientMaxBodySize(plan.MaxRequestBody()),
 	}
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()
@@ -615,7 +656,7 @@ func validateCompression(plan *configir.Plan) error {
 		if s.TLS == nil {
 			continue
 		}
-		if s.TLS.BrotliLevel > configir.MaxBrotliLevel || s.TLS.ZstdLevel > configir.MaxZstdLevel ||
+		if s.TLS.BrotliLevel > configir.MaxBrotliLevel || s.TLS.ZstdLevel > configir.MaxZstdLevel || s.TLS.GzipLevel > 9 ||
 			(s.TLS.Brotli && s.TLS.BrotliLevel == 0) || (s.TLS.Zstd && s.TLS.ZstdLevel == 0) {
 			return fmt.Errorf("site %q: invalid compression level", s.ID)
 		}

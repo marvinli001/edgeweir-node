@@ -38,7 +38,10 @@ http {
     sendfile on;
     tcp_nopush on;
     keepalive_timeout 65s;
-    client_max_body_size 100m;
+    # The largest request body limit of the sites and their rules (0: a site
+    # has none); each site checks its own by Content-Length
+    # (edgeweir.router). Chunked bodies are bounded by this alone.
+    client_max_body_size {{ .ClientMaxBodySize }};
 
     client_body_temp_path {{ .Prefix }}/tmp/client_body;
     proxy_temp_path {{ .Prefix }}/tmp/proxy;
@@ -62,6 +65,8 @@ http {
             -- can tell that a reload really loaded it.
             conf_id = "{{ .ConfID }}",
             geoip_socket = "{{ .GeoIPSocket }}",
+            -- The agent's socket for PURGE requests (edgeweir.purgemethod).
+            agent_socket = "{{ .AgentSocket }}",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = {{ .BanCapacity }},
 {{- if .L4Servers }}
@@ -116,6 +121,13 @@ http {
     # cache holds one uncompressed object that serves every encoding.
     map $edgeweir_strip_ae $edgeweir_upstream_ae {
         default $http_accept_encoding;
+        1       "";
+    }
+    # X-Cache towards clients: the cache status, or nothing for sites that
+    # hide it (edgeweir.router sets $edgeweir_x_cache_off). add_header runs
+    # after the Lua header filter, hence a variable.
+    map $edgeweir_x_cache_off $edgeweir_x_cache {
+        default $upstream_cache_status;
         1       "";
     }
     map $http_upgrade $edgeweir_origin_connection {
@@ -195,7 +207,6 @@ http {
         }
     }
 {{ range .OriginLayers }}
-{{- $p := "proxy" }}{{ if eq .Protocol "grpc" }}{{ $p = "grpc" }}{{ end }}
     # Origin layer{{ if not .Verify }} without TLS verification{{ end }}: reachable only through its
     # unix socket from the edge layer below; internal X-Edgeweir-* request
     # headers never reach the origin.
@@ -221,70 +232,15 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
-            set $edgeweir_upstream_scheme "http";
-            set $edgeweir_upstream_host "";
-            set $edgeweir_upstream_uri "";
-            set $edgeweir_authorization "";
-            set $edgeweir_amz_date "";
-            set $edgeweir_amz_content_sha256 "";
-            set $edgeweir_trust_store "{{ if $.TrustedCA }}ok{{ else }}missing{{ end }}";
-            set $edgeweir_ssl_name "";
-            access_by_lua_block { require("edgeweir.origin").access() }
-{{ if eq .Protocol "grpc" }}
-            # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
-            # both ways, trailers passed on.
-            grpc_pass $edgeweir_grpc_scheme://{{ .Balancer }};
-{{- else if eq .Protocol "http2" }}
-            # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
-            # knowledge (h2c) otherwise. nginx sends Host as the "host"
-            # header field (no :authority with proxy_set_header Host).
-            proxy_pass $edgeweir_upstream_scheme://{{ .Balancer }}$edgeweir_upstream_uri;
-            proxy_http_version 2;
-{{- else }}
-            proxy_pass $edgeweir_upstream_scheme://{{ .Balancer }}$edgeweir_upstream_uri;
-            proxy_http_version 1.1;
-{{- end }}
-            {{ $p }}_set_header Host $edgeweir_upstream_host;
-{{- if eq .Protocol "http1" }}
-            proxy_set_header Connection $edgeweir_origin_connection;
-            proxy_set_header Upgrade $http_upgrade;
-{{- end }}
-            {{ $p }}_set_header Authorization $edgeweir_authorization;
-            {{ $p }}_set_header X-Amz-Date $edgeweir_amz_date;
-            {{ $p }}_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
-            {{ $p }}_set_header X-Edgeweir-Site "";
-            {{ $p }}_set_header X-Edgeweir-Rules "";
-            {{ $p }}_set_header X-Edgeweir-Cache-Status "";
-            {{ $p }}_set_header X-Edgeweir-Origin "";
-{{- if $.ModSecurityConf }}
-            {{ $p }}_set_header {{ $.WAFHeader }} "";
-{{- end }}
-            {{ $p }}_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
-            # SNI and certificate name of the origin chosen for the attempt
-            # (set in balancer_by_lua; the default, the proxied host, would
-            # be the name of the balancer upstream).
-            {{ $p }}_ssl_name $edgeweir_ssl_name;
-            {{ $p }}_ssl_server_name on;
-{{- if .Verify }}
-{{- if $.TrustedCA }}
-            {{ $p }}_ssl_verify on;
-            {{ $p }}_ssl_verify_depth 5;
-            {{ $p }}_ssl_trusted_certificate {{ $.TrustedCA }};
-{{- end }}
-{{- else }}
-            {{ $p }}_ssl_verify off;
-{{- end }}
-            {{ $p }}_connect_timeout 10s;
-            {{ $p }}_send_timeout 60s;
-            {{ $p }}_read_timeout 60s;
-            {{ $p }}_next_upstream error timeout http_502 http_503 http_504;
-            {{ $p }}_next_upstream_tries 3;
+{{- template "origin_proxy" (originProxy $ . true) }}
+        }
 
-            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
-            # Sends the error page header_filter put in place of nginx's own
-            # upstream failures and of intercepted origin errors.
-            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
-            log_by_lua_block { require("edgeweir.origin").log() }
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+{{- template "origin_proxy" (originProxy $ . false) }}
         }
 
         location @edgeweir_error {
@@ -338,6 +294,9 @@ http {
         gzip on;
         gzip_vary on;
         gzip_min_length {{ .GzipMinLength }};
+{{- if .GzipLevel }}
+        gzip_comp_level {{ .GzipLevel }};
+{{- end }}
 {{- if .GzipTypes }}
         gzip_types {{ .GzipTypes }};
 {{- end }}
@@ -400,6 +359,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -597,7 +557,81 @@ stream {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
+{{- end }}
+{{- define "origin_proxy" }}
+            set $edgeweir_noretry "{{ if not .StatusRetry }}1{{ end }}";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "{{ if .Root.TrustedCA }}ok{{ else }}missing{{ end }}";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+{{ if eq .Layer.Protocol "grpc" }}
+            # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
+            # both ways, trailers passed on.
+            grpc_pass $edgeweir_grpc_scheme://{{ .Layer.Balancer }};
+{{- else if eq .Layer.Protocol "http2" }}
+            # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
+            # knowledge (h2c) otherwise. nginx sends Host as the "host"
+            # header field (no :authority with proxy_set_header Host).
+            proxy_pass $edgeweir_upstream_scheme://{{ .Layer.Balancer }}$edgeweir_upstream_uri;
+            proxy_http_version 2;
+{{- else }}
+            proxy_pass $edgeweir_upstream_scheme://{{ .Layer.Balancer }}$edgeweir_upstream_uri;
+            proxy_http_version 1.1;
+{{- end }}
+            {{ .P }}_set_header Host $edgeweir_upstream_host;
+{{- if eq .Layer.Protocol "http1" }}
+            proxy_set_header Connection $edgeweir_origin_connection;
+            proxy_set_header Upgrade $http_upgrade;
+{{- end }}
+            {{ .P }}_set_header Authorization $edgeweir_authorization;
+            {{ .P }}_set_header X-Amz-Date $edgeweir_amz_date;
+            {{ .P }}_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            {{ .P }}_set_header X-Edgeweir-Site "";
+            {{ .P }}_set_header X-Edgeweir-Rules "";
+            {{ .P }}_set_header X-Edgeweir-Cache-Status "";
+            {{ .P }}_set_header X-Edgeweir-Origin "";
+{{- if .Root.ModSecurityConf }}
+            {{ .P }}_set_header {{ .Root.WAFHeader }} "";
+{{- end }}
+            {{ .P }}_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            {{ .P }}_ssl_name $edgeweir_ssl_name;
+            {{ .P }}_ssl_server_name on;
+{{- if .Layer.Verify }}
+{{- if .Root.TrustedCA }}
+            {{ .P }}_ssl_verify on;
+            {{ .P }}_ssl_verify_depth 5;
+            {{ .P }}_ssl_trusted_certificate {{ .Root.TrustedCA }};
+{{- end }}
+{{- else }}
+            {{ .P }}_ssl_verify off;
+{{- end }}
+            {{ .P }}_connect_timeout 10s;
+            {{ .P }}_send_timeout 60s;
+            {{ .P }}_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            {{ .P }}_next_upstream error timeout{{ if .StatusRetry }} http_502 http_503 http_504{{ end }};
+            {{ .P }}_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
 {{- end }}

@@ -215,12 +215,13 @@ func TestRenderOriginLayersAndTrustStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf = string(got)
-	// HTTP/1.1 and HTTP/2 layers use the proxy module, gRPC layers grpc.
-	if strings.Count(conf, "proxy_ssl_verify on;") != 2 || strings.Count(conf, "proxy_ssl_verify off;") != 2 ||
-		strings.Count(conf, "grpc_ssl_verify on;") != 1 || strings.Count(conf, "grpc_ssl_verify off;") != 1 ||
-		strings.Count(conf, "proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") != 2 ||
-		strings.Count(conf, "grpc_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") != 1 ||
-		strings.Count(conf, `set $edgeweir_trust_store "ok";`) != 6 {
+	// HTTP/1.1 and HTTP/2 layers use the proxy module, gRPC layers grpc;
+	// every layer has the location / and the one without status retries.
+	if strings.Count(conf, "proxy_ssl_verify on;") != 4 || strings.Count(conf, "proxy_ssl_verify off;") != 4 ||
+		strings.Count(conf, "grpc_ssl_verify on;") != 2 || strings.Count(conf, "grpc_ssl_verify off;") != 2 ||
+		strings.Count(conf, "proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") != 4 ||
+		strings.Count(conf, "grpc_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;") != 2 ||
+		strings.Count(conf, `set $edgeweir_trust_store "ok";`) != 12 {
 		t.Errorf("verifying origin layers not rendered as expected:\n%s", conf)
 	}
 }
@@ -334,7 +335,9 @@ func TestRenderOriginLayerProtocols(t *testing.T) {
 				"grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc;",
 				"grpc_set_header Host $edgeweir_upstream_host;",
 				`grpc_set_header X-Edgeweir-Site "";`,
-				"grpc_next_upstream_tries 3;",
+				"grpc_next_upstream_tries 5;",
+				"grpc_next_upstream error timeout http_502 http_503 http_504;",
+				"grpc_next_upstream error timeout;",
 			}
 			unwanted = []string{"proxy_", "Connection", "Upgrade"}
 		}

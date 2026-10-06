@@ -29,7 +29,7 @@ func TestBuildErrorPages(t *testing.T) {
 	}
 	got := p.Sites[0]
 	if !got.KeepCacheTag || got.ErrorPages == nil || !got.ErrorPages.Intercept || len(got.ErrorPages.Pages) != 2 ||
-		got.ErrorPages.Pages[403] != "<p>{{status}}</p>" || len(got.ErrorPages.Pages[503]) != MaxErrorPageBytes {
+		got.ErrorPages.Pages[403].Template != "<p>{{status}}</p>" || len(got.ErrorPages.Pages[503].Template) != MaxErrorPageBytes {
 		t.Fatalf("site = %+v, pages %+v", got, got.ErrorPages)
 	}
 	if p.Sites[1].ErrorPages != nil || p.Sites[1].KeepCacheTag {
@@ -37,8 +37,9 @@ func TestBuildErrorPages(t *testing.T) {
 	}
 
 	for name, pages := range map[string][]*nodev1.ErrorPage{
-		"status 404":       {page(404, "x")},
-		"status 500":       {page(500, "x")},
+		// 404 and 500 are valid since proto v0.24.0 (TestBuildErrorPagesV24).
+		"status 418":       {page(418, "x")},
+		"status 501":       {page(501, "x")},
 		"duplicate":        {page(502, "a"), page(502, "b")},
 		"empty template":   {page(403, "")},
 		"oversized":        {page(504, strings.Repeat("y", MaxErrorPageBytes+1))},

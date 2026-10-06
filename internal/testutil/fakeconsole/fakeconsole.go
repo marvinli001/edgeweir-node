@@ -110,6 +110,10 @@ type Console struct {
 
 	probe probeState
 
+	// PURGE requests (SubmitPurge) and the error to answer them with.
+	purges   []*nodev1.SubmitPurgeRequest
+	purgeErr error
+
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -574,6 +578,32 @@ func (c *Console) TaskResults() []*nodev1.ReportTaskResultRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.taskResults)
+}
+
+// SubmitPurge implements NodeService: records the request and answers
+// with task "purge-<n>", or with the error SetPurgeError set.
+func (c *Console) SubmitPurge(_ context.Context, req *connect.Request[nodev1.SubmitPurgeRequest]) (*connect.Response[nodev1.SubmitPurgeResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.purgeErr != nil {
+		return nil, c.purgeErr
+	}
+	c.purges = append(c.purges, proto.CloneOf(req.Msg))
+	return connect.NewResponse(&nodev1.SubmitPurgeResponse{TaskId: fmt.Sprintf("purge-%d", len(c.purges))}), nil
+}
+
+// SetPurgeError makes SubmitPurge fail with err (nil: succeed again).
+func (c *Console) SetPurgeError(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.purgeErr = err
+}
+
+// Purges returns every accepted SubmitPurge request.
+func (c *Console) Purges() []*nodev1.SubmitPurgeRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.purges)
 }
 
 // GetOriginCredentials implements NodeService.

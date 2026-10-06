@@ -209,6 +209,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		scancel()
 	}
 	req.Metrics = a.nodeMetrics(cctx)
+	req.CacheUsage = a.cacheUsageReport()
 	req.OriginHealth = a.originHealth(cctx)
 	req.Bans = a.banReport(cctx)
 	req.Security = a.securityReport(cctx)

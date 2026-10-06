@@ -9,7 +9,9 @@ import (
 )
 
 // Error page statuses and limits (SiteErrorPages, PlatformErrorPages).
-var ErrorPageStatuses = []uint32{403, 429, 502, 503, 504}
+// Since proto v0.24.0 (feature site-content-v1) also 400, 401, 404, 405,
+// 410 and 500, and the classes 4 (4xx) and 5 (5xx).
+var ErrorPageStatuses = []uint32{4, 5, 400, 401, 403, 404, 405, 410, 429, 500, 502, 503, 504}
 
 // MaxErrorPageBytes bounds every error page template.
 const MaxErrorPageBytes = 65536
@@ -18,13 +20,21 @@ const MaxErrorPageBytes = 65536
 // disabled site's domains.
 const OfflineDisabled = "disabled"
 
-// ErrorPages are a site's error page templates (site table field
-// "error_pages"; lua/edgeweir/errorpages.lua). Pages maps a status (403,
-// 429, 502, 503, 504) to its template; Intercept also replaces origin
-// responses whose status has a page.
+// ErrorPages are a site's error pages (site table field "error_pages";
+// lua/edgeweir/errorpages.lua). Pages maps a status or class
+// (ErrorPageStatuses) to its page; Intercept also replaces origin
+// responses that have a page.
 type ErrorPages struct {
-	Pages     map[uint32]string `json:"pages"`
-	Intercept bool              `json:"intercept,omitempty"`
+	Pages     map[uint32]ErrorPage `json:"pages"`
+	Intercept bool                 `json:"intercept,omitempty"`
+}
+
+// ErrorPage is a template, or a redirect URL with placeholders; Status
+// replaces the status a template page is sent with (0: the response's).
+type ErrorPage struct {
+	Template string `json:"template,omitempty"`
+	Redirect string `json:"redirect,omitempty"`
+	Status   uint32 `json:"status,omitempty"`
 }
 
 // PlatformErrorPages are the platform's templates for hosts no site serves
@@ -44,26 +54,34 @@ type OfflineHost struct {
 	Reason   string `json:"reason"`
 }
 
-// buildErrorPages validates a site's error pages: statuses 403, 429, 502,
-// 503 and 504, each at most once, templates of 1-65536 bytes. Anything
-// else rejects the configuration. No page means nil (intercepting origin
-// errors needs a page).
+// buildErrorPages validates a site's error pages: statuses and classes of
+// ErrorPageStatuses, each at most once; a template of 1-65536 bytes or a
+// redirect URL (validErrorRedirect), not both; a replacement status of
+// 200-599 for templates only. Anything else rejects the configuration. No
+// page means nil (intercepting origin errors needs a page).
 func buildErrorPages(e *nodev1.SiteErrorPages) (*ErrorPages, error) {
 	if e == nil || len(e.GetPages()) == 0 {
 		return nil, nil
 	}
-	out := &ErrorPages{Pages: make(map[uint32]string, len(e.GetPages())), Intercept: e.GetInterceptOriginErrors()}
+	out := &ErrorPages{Pages: make(map[uint32]ErrorPage, len(e.GetPages())), Intercept: e.GetInterceptOriginErrors()}
 	for _, p := range e.GetPages() {
 		status := p.GetStatus()
+		_, dup := out.Pages[status]
 		switch {
 		case !slices.Contains(ErrorPageStatuses, status):
 			return nil, fmt.Errorf("%w: error page for unsupported status %d", ErrRejected, status)
-		case out.Pages[status] != "":
+		case dup:
 			return nil, fmt.Errorf("%w: more than one error page for status %d", ErrRejected, status)
+		case p.GetRedirectUrl() != "":
+			if p.GetTemplate() != "" || p.GetResponseStatus() != 0 || !validErrorRedirect(p.GetRedirectUrl()) {
+				return nil, fmt.Errorf("%w: invalid redirect of the error page for status %d", ErrRejected, status)
+			}
 		case p.GetTemplate() == "" || len(p.GetTemplate()) > MaxErrorPageBytes:
 			return nil, fmt.Errorf("%w: error page for status %d must have 1-%d bytes", ErrRejected, status, MaxErrorPageBytes)
+		case p.GetResponseStatus() != 0 && (p.GetResponseStatus() < 200 || p.GetResponseStatus() > 599):
+			return nil, fmt.Errorf("%w: invalid response status of the error page for status %d", ErrRejected, status)
 		}
-		out.Pages[status] = p.GetTemplate()
+		out.Pages[status] = ErrorPage{Template: p.GetTemplate(), Redirect: p.GetRedirectUrl(), Status: p.GetResponseStatus()}
 	}
 	return out, nil
 }

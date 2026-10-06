@@ -21,7 +21,10 @@ http {
     sendfile on;
     tcp_nopush on;
     keepalive_timeout 65s;
-    client_max_body_size 100m;
+    # The largest request body limit of the sites and their rules (0: a site
+    # has none); each site checks its own by Content-Length
+    # (edgeweir.router). Chunked bodies are bounded by this alone.
+    client_max_body_size 0;
 
     client_body_temp_path /var/lib/edgeweir-node/nginx/tmp/client_body;
     proxy_temp_path /var/lib/edgeweir-node/nginx/tmp/proxy;
@@ -54,8 +57,10 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "2ca5efff635f3e8c",
+            conf_id = "2842b0141c615d7f",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
+            -- The agent's socket for PURGE requests (edgeweir.purgemethod).
+            agent_socket = "/run/edgeweir-node/agent.sock",
             -- Bans held in edgeweir_bans (edgeweir.bans).
             ban_capacity = 100000,
         })
@@ -93,6 +98,13 @@ http {
     # cache holds one uncompressed object that serves every encoding.
     map $edgeweir_strip_ae $edgeweir_upstream_ae {
         default $http_accept_encoding;
+        1       "";
+    }
+    # X-Cache towards clients: the cache status, or nothing for sites that
+    # hide it (edgeweir.router sets $edgeweir_x_cache_off). add_header runs
+    # after the Lua header filter, hence a variable.
+    map $edgeweir_x_cache_off $edgeweir_x_cache {
+        default $upstream_cache_status;
         1       "";
     }
     map $http_upgrade $edgeweir_origin_connection {
@@ -207,6 +219,7 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
+            set $edgeweir_noretry "";
             set $edgeweir_upstream_scheme "http";
             set $edgeweir_upstream_host "";
             set $edgeweir_upstream_uri "";
@@ -238,8 +251,59 @@ http {
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
             proxy_next_upstream error timeout http_502 http_503 http_504;
-            proxy_next_upstream_tries 3;
+            proxy_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+            set $edgeweir_noretry "1";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
+            proxy_http_version 1.1;
+            proxy_set_header Host $edgeweir_upstream_host;
+            proxy_set_header Connection $edgeweir_origin_connection;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Authorization $edgeweir_authorization;
+            proxy_set_header X-Amz-Date $edgeweir_amz_date;
+            proxy_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            proxy_set_header X-Edgeweir-Site "";
+            proxy_set_header X-Edgeweir-Rules "";
+            proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            proxy_next_upstream error timeout;
+            proxy_next_upstream_tries 5;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -269,6 +333,7 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
+            set $edgeweir_noretry "";
             set $edgeweir_upstream_scheme "http";
             set $edgeweir_upstream_host "";
             set $edgeweir_upstream_uri "";
@@ -301,8 +366,60 @@ http {
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
             proxy_next_upstream error timeout http_502 http_503 http_504;
-            proxy_next_upstream_tries 3;
+            proxy_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+            set $edgeweir_noretry "1";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
+            proxy_http_version 1.1;
+            proxy_set_header Host $edgeweir_upstream_host;
+            proxy_set_header Connection $edgeweir_origin_connection;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Authorization $edgeweir_authorization;
+            proxy_set_header X-Amz-Date $edgeweir_amz_date;
+            proxy_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            proxy_set_header X-Edgeweir-Site "";
+            proxy_set_header X-Edgeweir-Rules "";
+            proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_ssl_verify off;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            proxy_next_upstream error timeout;
+            proxy_next_upstream_tries 5;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -333,6 +450,7 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
+            set $edgeweir_noretry "";
             set $edgeweir_upstream_scheme "http";
             set $edgeweir_upstream_host "";
             set $edgeweir_upstream_uri "";
@@ -365,8 +483,60 @@ http {
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
             proxy_next_upstream error timeout http_502 http_503 http_504;
-            proxy_next_upstream_tries 3;
+            proxy_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+            set $edgeweir_noretry "1";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
+            # knowledge (h2c) otherwise. nginx sends Host as the "host"
+            # header field (no :authority with proxy_set_header Host).
+            proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer_h2$edgeweir_upstream_uri;
+            proxy_http_version 2;
+            proxy_set_header Host $edgeweir_upstream_host;
+            proxy_set_header Authorization $edgeweir_authorization;
+            proxy_set_header X-Amz-Date $edgeweir_amz_date;
+            proxy_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            proxy_set_header X-Edgeweir-Site "";
+            proxy_set_header X-Edgeweir-Rules "";
+            proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            proxy_next_upstream error timeout;
+            proxy_next_upstream_tries 5;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -397,6 +567,7 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
+            set $edgeweir_noretry "";
             set $edgeweir_upstream_scheme "http";
             set $edgeweir_upstream_host "";
             set $edgeweir_upstream_uri "";
@@ -430,8 +601,61 @@ http {
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
             proxy_next_upstream error timeout http_502 http_503 http_504;
-            proxy_next_upstream_tries 3;
+            proxy_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+            set $edgeweir_noretry "1";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
+            # knowledge (h2c) otherwise. nginx sends Host as the "host"
+            # header field (no :authority with proxy_set_header Host).
+            proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer_h2$edgeweir_upstream_uri;
+            proxy_http_version 2;
+            proxy_set_header Host $edgeweir_upstream_host;
+            proxy_set_header Authorization $edgeweir_authorization;
+            proxy_set_header X-Amz-Date $edgeweir_amz_date;
+            proxy_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            proxy_set_header X-Edgeweir-Site "";
+            proxy_set_header X-Edgeweir-Rules "";
+            proxy_set_header X-Edgeweir-Cache-Status "";
+            proxy_set_header X-Edgeweir-Origin "";
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_ssl_verify off;
+            proxy_connect_timeout 10s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            proxy_next_upstream error timeout;
+            proxy_next_upstream_tries 5;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -467,6 +691,7 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
+            set $edgeweir_noretry "";
             set $edgeweir_upstream_scheme "http";
             set $edgeweir_upstream_host "";
             set $edgeweir_upstream_uri "";
@@ -497,8 +722,58 @@ http {
             grpc_connect_timeout 10s;
             grpc_send_timeout 60s;
             grpc_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
             grpc_next_upstream error timeout http_502 http_503 http_504;
-            grpc_next_upstream_tries 3;
+            grpc_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+            set $edgeweir_noretry "1";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
+            # both ways, trailers passed on.
+            grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc;
+            grpc_set_header Host $edgeweir_upstream_host;
+            grpc_set_header Authorization $edgeweir_authorization;
+            grpc_set_header X-Amz-Date $edgeweir_amz_date;
+            grpc_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            grpc_set_header X-Edgeweir-Site "";
+            grpc_set_header X-Edgeweir-Rules "";
+            grpc_set_header X-Edgeweir-Cache-Status "";
+            grpc_set_header X-Edgeweir-Origin "";
+            grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            grpc_ssl_name $edgeweir_ssl_name;
+            grpc_ssl_server_name on;
+            grpc_connect_timeout 10s;
+            grpc_send_timeout 60s;
+            grpc_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            grpc_next_upstream error timeout;
+            grpc_next_upstream_tries 5;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -534,6 +809,7 @@ http {
         error_page 494 =494 $edgeweir_error_page;
 
         location / {
+            set $edgeweir_noretry "";
             set $edgeweir_upstream_scheme "http";
             set $edgeweir_upstream_host "";
             set $edgeweir_upstream_uri "";
@@ -565,8 +841,59 @@ http {
             grpc_connect_timeout 10s;
             grpc_send_timeout 60s;
             grpc_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
             grpc_next_upstream error timeout http_502 http_503 http_504;
-            grpc_next_upstream_tries 3;
+            grpc_next_upstream_tries 5;
+
+            header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
+            # Sends the error page header_filter put in place of nginx's own
+            # upstream failures and of intercepted origin errors.
+            body_filter_by_lua_block { require("edgeweir.origin").body_filter() }
+            log_by_lua_block { require("edgeweir.origin").log() }
+        }
+
+        # Sites that retry only after connection errors and timeouts
+        # (OriginPool.status_retry_disabled): edgeweir.origin.access sends
+        # their requests here first thing, as nginx cannot choose the
+        # conditions of the next upstream per request.
+        location @edgeweir_origin_noretry {
+            set $edgeweir_noretry "1";
+            set $edgeweir_upstream_scheme "http";
+            set $edgeweir_upstream_host "";
+            set $edgeweir_upstream_uri "";
+            set $edgeweir_authorization "";
+            set $edgeweir_amz_date "";
+            set $edgeweir_amz_content_sha256 "";
+            set $edgeweir_trust_store "missing";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.origin").access() }
+
+            # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
+            # both ways, trailers passed on.
+            grpc_pass $edgeweir_grpc_scheme://edgeweir_balancer_grpc;
+            grpc_set_header Host $edgeweir_upstream_host;
+            grpc_set_header Authorization $edgeweir_authorization;
+            grpc_set_header X-Amz-Date $edgeweir_amz_date;
+            grpc_set_header X-Amz-Content-Sha256 $edgeweir_amz_content_sha256;
+            grpc_set_header X-Edgeweir-Site "";
+            grpc_set_header X-Edgeweir-Rules "";
+            grpc_set_header X-Edgeweir-Cache-Status "";
+            grpc_set_header X-Edgeweir-Origin "";
+            grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # SNI and certificate name of the origin chosen for the attempt
+            # (set in balancer_by_lua; the default, the proxied host, would
+            # be the name of the balancer upstream).
+            grpc_ssl_name $edgeweir_ssl_name;
+            grpc_ssl_server_name on;
+            grpc_ssl_verify off;
+            grpc_connect_timeout 10s;
+            grpc_send_timeout 60s;
+            grpc_read_timeout 60s;
+            # How many origins a request tries is the length of its candidate
+            # list (edgeweir.origin, OriginPool.tries); this is the maximum.
+            grpc_next_upstream error timeout;
+            grpc_next_upstream_tries 5;
 
             header_filter_by_lua_block { require("edgeweir.origin").header_filter() }
             # Sends the error page header_filter put in place of nginx's own
@@ -616,6 +943,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -667,8 +995,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -760,6 +1093,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -811,8 +1145,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -900,6 +1239,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -951,8 +1291,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1033,6 +1378,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1084,8 +1430,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1174,6 +1525,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1225,8 +1577,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1327,6 +1684,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1378,8 +1736,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1475,6 +1838,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1526,8 +1890,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1616,6 +1985,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1667,8 +2037,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1755,6 +2130,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1806,8 +2182,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
@@ -1902,6 +2283,7 @@ http {
             set $edgeweir_cdn_loop "";
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1953,8 +2335,13 @@ http {
             proxy_hide_header X-Request-Id;
             proxy_hide_header Cache-Tag;
             proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
 
-            add_header X-Cache $upstream_cache_status always;
+            add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }

@@ -194,6 +194,24 @@ type Site struct {
 	// BulkRedirects is the site's exact-match redirect table, sorted by
 	// source (feature rules-v2).
 	BulkRedirects []BulkRedirect `json:"bulk_redirects,omitempty"`
+	// Settings of proto v0.24.0 (feature site-content-v1). Tries is how
+	// many origins a request tries (OriginPool.tries, default 3);
+	// NoStatusRetry stops retrying after 502, 503 and 504 responses.
+	Tries         uint32 `json:"tries"`
+	NoStatusRetry bool   `json:"no_status_retry,omitempty"`
+	// HideXCache sends no X-Cache header.
+	HideXCache bool `json:"hide_x_cache,omitempty"`
+	// Purge enables the PURGE method; PurgeKey names its key, which only
+	// the agent holds.
+	Purge    bool      `json:"purge,omitempty"`
+	PurgeKey *PurgeRef `json:"-"`
+	// Maintenance is the site's maintenance mode (nil: off).
+	Maintenance *Maintenance `json:"maintenance,omitempty"`
+	// Charset adds a charset to text responses (nil: off).
+	Charset *Charset `json:"charset,omitempty"`
+	// BodyLimit is the largest request body by Content-Length in bytes
+	// (0: no limit; default 100 MiB).
+	BodyLimit uint64 `json:"body_limit"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -228,6 +246,11 @@ type TLSOptions struct {
 	ZstdLevel       uint32   `json:"zstd_level,omitempty"`
 	ZstdMinLength   uint32   `json:"zstd_min_length,omitempty"`
 	ZstdTypes       []string `json:"zstd_types,omitempty"`
+	// GzipLevel is gzip_comp_level of the site's server blocks (0: nginx's
+	// default); CompressMaxLength the largest response of known length any
+	// coding compresses (0: no limit). Feature site-content-v1.
+	GzipLevel         uint32 `json:"gzip_level,omitempty"`
+	CompressMaxLength uint64 `json:"compress_max_length,omitempty"`
 }
 
 type Certificate struct {
@@ -247,7 +270,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureSiteContent, FeatureCacheZone}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -339,6 +362,9 @@ const (
 	QueryAll     = "all"
 	QueryIgnore  = "ignore"
 	QueryInclude = "include"
+	// QueryExclude keys on every parameter but the listed ones, which may
+	// end in "*" (a prefix). Feature site-content-v1.
+	QueryExclude = "exclude"
 )
 
 // CacheKey is the site's cache key policy.
@@ -434,12 +460,19 @@ type CacheRule struct {
 	// BrowserTTL replaces the client's Cache-Control with max-age=N on
 	// responses the rule caches; 0 keeps the origin's (feature rules-v2).
 	BrowserTTL uint32 `json:"browser_ttl,omitempty"`
+	// CacheSetCookie caches responses with Set-Cookie that this rule
+	// decides; only the response fetched for the request carries the
+	// cookies (feature site-content-v1).
+	CacheSetCookie bool `json:"set_cookie,omitempty"`
 }
 
 // CredentialRefs returns the S3 credentials the plan needs, id -> version.
 func (p *Plan) CredentialRefs() map[string]uint64 {
 	refs := map[string]uint64{}
 	for _, s := range p.Sites {
+		if s.PurgeKey != nil {
+			refs[s.PurgeKey.CredentialID] = s.PurgeKey.CredentialVersion
+		}
 		for _, o := range s.Origins {
 			if o.S3 != nil {
 				refs[o.S3.CredentialID] = o.S3.CredentialVersion
@@ -456,6 +489,8 @@ type Options struct {
 	// ClusterID, when set, must equal the config's cluster_id.
 	ClusterID     string
 	ExtraFeatures []string
+	// NodeID selects the node's own cache zone sizes (CacheZone.node_sizes).
+	NodeID string
 }
 
 // Bootstrap returns the plan used before any configuration exists: a
@@ -552,6 +587,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	checks := map[string]*ActiveHealthCheck{}
 	affinities := map[string]*Affinity{}
 	protocols := map[string]originProtocol{}
+	contents := map[string]content{}
 	for _, s := range c.GetSites() {
 		id := s.GetId()
 		if protections[id], err = buildProtection(s.GetProtection()); err != nil {
@@ -570,6 +606,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if protocols[id], err = buildOriginProtocol(s.GetOriginPool()); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if contents[id], err = buildContent(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 	}
@@ -636,7 +675,11 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			continue
 		}
 		zones[name] = true
-		cz := CacheZone{Name: name, MaxSizeMB: z.GetMaxSizeMb(), KeysZoneMB: z.GetKeysZoneMb(), InactiveSeconds: z.GetInactiveSeconds()}
+		maxSize, keysZone, _, err := nodeZoneSize(z, opts.NodeID)
+		if err != nil {
+			return nil, err
+		}
+		cz := CacheZone{Name: name, MaxSizeMB: maxSize, KeysZoneMB: keysZone, InactiveSeconds: z.GetInactiveSeconds()}
 		if cz.MaxSizeMB == 0 {
 			cz.MaxSizeMB = defaultZoneMaxSizeMB
 		}
@@ -692,6 +735,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.ActiveHealth = site.ActiveHealthCheck != nil
 		site.Affinity = affinities[id]
 		site.OriginHTTP2, site.GRPC = protocols[id].http2, protocols[id].grpc
+		contents[id].apply(&site)
 		// Affinity cookies are signed with the cluster's challenge keys.
 		if site.Affinity != nil && len(p.ChallengeKeys) == 0 {
 			return nil, fmt.Errorf("%w: site %q uses session affinity, but the configuration carries no challenge keys to sign its cookies", ErrRejected, id)
@@ -710,6 +754,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			if err := buildCompression(tls, site.TLS); err != nil {
 				return nil, err
 			}
+			site.TLS.GzipLevel, site.TLS.CompressMaxLength = tls.GetGzipLevel(), tls.GetCompressMaxLength()
 		}
 		key, keyWarnings := buildCacheKey(s.GetCacheKey())
 		site.CacheKey = key
@@ -868,10 +913,17 @@ func buildCacheKey(k *nodev1.CacheKeyPolicy) (CacheKey, []string) {
 		out.Query = QueryIgnore
 	case nodev1.CacheKeyQuery_CACHE_KEY_QUERY_INCLUDE:
 		out.Query = QueryInclude
+	case nodev1.CacheKeyQuery_CACHE_KEY_QUERY_EXCLUDE:
+		out.Query = QueryExclude
 	}
-	if out.Query == QueryInclude {
+	if out.Query == QueryInclude || out.Query == QueryExclude {
 		for _, q := range k.GetQueryParams() {
-			if q == "" || len(q) > 128 || strings.ContainsAny(q, "&=# \t\r\n") {
+			// "*" ends an excluded name only (a prefix pattern).
+			name := q
+			if out.Query == QueryExclude {
+				name = strings.TrimSuffix(q, "*")
+			}
+			if name == "" || len(q) > 128 || strings.ContainsAny(name, "&=#* \t\r\n") {
 				warnings = append(warnings, fmt.Sprintf("cache key query parameter %q ignored", q))
 				continue
 			}
@@ -988,6 +1040,7 @@ func buildRule(r *nodev1.CacheRule) (CacheRule, bool, string) {
 		CacheAuthorized:      r.GetCacheAuthorized(),
 		Condition:            r.GetMatch().GetCondition(),
 		BrowserTTL:           r.GetBrowserTtlSeconds(),
+		CacheSetCookie:       r.GetCacheSetCookie(),
 	}
 	switch r.GetAction() {
 	case nodev1.CacheAction_CACHE_ACTION_CACHE:

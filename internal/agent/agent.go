@@ -111,6 +111,10 @@ type Config struct {
 	ReloadTimeout      time.Duration // wait for workers running a new nginx.conf, default 15s
 	TestTimeout        time.Duration // `nginx -t` of a new nginx.conf, default 60s
 	RPCTimeout         time.Duration // unary RPC timeout, default 30s
+	// CacheUsageInterval is how often the cache zones' disk usage is
+	// measured (ReportStatus.cache_usage), default 10m; the first
+	// measurement runs after at most a minute.
+	CacheUsageInterval time.Duration
 	TaskPollInterval   time.Duration // PullTasks fallback poll, default 30s
 	// SupervisorHealthInterval: the supervisor hears how the node is this
 	// often (default 5s; see supervisorHealthLoop).
@@ -192,6 +196,7 @@ func (c *Config) setDefaults() {
 	def(&c.ReloadTimeout, 15*time.Second)
 	def(&c.TestTimeout, time.Minute)
 	def(&c.RPCTimeout, 30*time.Second)
+	def(&c.CacheUsageInterval, 10*time.Minute)
 	def(&c.TaskPollInterval, 30*time.Second)
 	def(&c.IdentityInterval, 10*time.Second)
 	def(&c.SupervisorHealthInterval, 5*time.Second)
@@ -242,8 +247,10 @@ type Agent struct {
 	engineVersion  string
 	channel        *controlplane.Channel
 	// connectedCh is channel for loops that start before enrollment.
-	connectedCh   atomic.Pointer[controlplane.Channel]
-	nodeID        string // guarded by mu; empty until the identity is known
+	connectedCh atomic.Pointer[controlplane.Channel]
+	nodeID      string // guarded by mu; empty until the identity is known
+	// cacheUsage is the last measurement of the cache zones (mu).
+	cacheUsage    []*nodev1.CacheZoneUsage
 	connectedOnce sync.Once
 
 	mu        sync.Mutex
@@ -461,6 +468,10 @@ func (a *Agent) Run(parent context.Context) error {
 	// after it finds the manager inactive.
 	defer a.stopKernel()
 	spawn("dataplane", a.dataPlaneLoop)
+	spawn("cacheusage", a.cacheUsageLoop)
+	if err := a.serveAgentSocket(ctx, spawn); err != nil {
+		return err
+	}
 	spawn("activehealth", a.activeHealthLoop)
 	spawn("ocsp", a.ocspLoop)
 	spawn("kernel", a.kernelLoop)
@@ -631,7 +642,7 @@ func (a *Agent) prepareDirs() error {
 }
 
 func (a *Agent) buildOptions() configir.Options {
-	opts := configir.Options{DefaultPort: a.cfg.DefaultPort, ExtraFeatures: a.extraFeatures()}
+	opts := configir.Options{DefaultPort: a.cfg.DefaultPort, ExtraFeatures: a.extraFeatures(), NodeID: a.selfID()}
 	if a.channel != nil {
 		opts.ClusterID = a.channel.Identity().ClusterID
 	}
@@ -682,6 +693,12 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 // cdnID returns this node's CDN-Loop identifier, reading identity.json
 // while the mTLS channel is not open yet (last-known-good at startup).
 func (a *Agent) cdnID() string {
+	return dataplane.CDNID(a.selfID())
+}
+
+// selfID returns this node's id ("" before enrollment), reading
+// identity.json while the mTLS channel is not open yet.
+func (a *Agent) selfID() string {
 	a.mu.Lock()
 	id := a.nodeID
 	a.mu.Unlock()
@@ -690,7 +707,7 @@ func (a *Agent) cdnID() string {
 			id = ident.NodeID
 		}
 	}
-	return dataplane.CDNID(id)
+	return id
 }
 
 func (a *Agent) appliedConfig() *nodev1.NodeConfig {

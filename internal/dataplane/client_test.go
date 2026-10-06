@@ -280,7 +280,7 @@ func TestSiteTableG4Fields(t *testing.T) {
 		},
 		Sites: []configir.Site{{
 			ID: "s1", KeepCacheTag: true,
-			ErrorPages:        &configir.ErrorPages{Pages: map[uint32]string{503: "page {{status}}", 403: "denied"}, Intercept: true},
+			ErrorPages:        &configir.ErrorPages{Pages: map[uint32]configir.ErrorPage{503: {Template: "page {{status}}"}, 403: {Template: "denied"}}, Intercept: true},
 			ActiveHealthCheck: &configir.ActiveHealthCheck{Path: "/healthz", Method: "HEAD", ExpectedStatusMin: 200, ExpectedStatusMax: 299},
 			ActiveHealth:      true,
 			Affinity:          &configir.Affinity{TTL: 7200},
@@ -299,7 +299,7 @@ func TestSiteTableG4Fields(t *testing.T) {
 	got := string(b)
 	for _, want := range []string{
 		`"keep_cache_tag":true`,
-		`"error_pages":{"pages":{"403":"denied","503":"page {{status}}"},"intercept":true}`,
+		`"error_pages":{"pages":{"403":{"template":"denied"},"503":{"template":"page {{status}}"}},"intercept":true}`,
 		`"active_health":true`,
 		`"affinity":{"ttl":7200}`,
 		`"tag_ttl":86400`,

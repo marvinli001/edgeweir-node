@@ -448,6 +448,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		purgePerSite  = fs.Int("purge-markers-per-site", agent.DefaultPurgeMarkersPerSite, "URL and prefix purge markers per site before they collapse into one site-level marker")
 		purgeTags     = fs.Int("purge-tags-per-site", agent.DefaultPurgeTagsPerSite, "tag purge markers per site before the site's markers collapse into one site-level marker")
 		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
+		cacheUsage    = fs.Duration("cache-usage-interval", 10*time.Minute, "how often the disk usage of the cache zones is measured for the console (a walk over the cache directory)")
 		banCapacity   = fs.Int("ban-capacity", render.DefaultBanCapacity, "dynamic bans the data plane holds (console and own); the oldest automatic bans make room first")
 		banDictMB     = fs.Int("ban-dict-mb", render.DefaultBanDictMB, "size of the ban store (lua_shared_dict edgeweir_bans) in MiB")
 		ccDictMB      = fs.Int("cc-dict-mb", render.DefaultCCDictMB, "size of the CC mitigation store (lua_shared_dict edgeweir_cc: counters, levels, events) in MiB")
@@ -487,6 +488,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *prefetchTime <= 0 {
 		fmt.Fprintln(stderr, "run: --prefetch-budget must be positive")
+		return 2
+	}
+	if *cacheUsage < time.Second {
+		fmt.Fprintln(stderr, "run: --cache-usage-interval must be at least 1s")
 		return 2
 	}
 	if *purgePerSite < 1 {
@@ -700,6 +705,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		PurgeMarkersPerSite: *purgePerSite,
 		PurgeTagsPerSite:    *purgeTags,
 		PrefetchBudget:      *prefetchTime,
+		CacheUsageInterval:  *cacheUsage,
 		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, IPinfoOptional: ipinfoOptional, City: *geoCity, ASN: *geoASN},
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
