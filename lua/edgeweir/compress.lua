@@ -107,7 +107,8 @@ end
 
 -- applicable returns the codings of the site's tls options that nginx's
 -- filters would apply to a response: status 200, 403 or 404, not already
--- encoded, a known length not below the minimum, a listed type.
+-- encoded, a known length not below the minimum (and not above the site's
+-- compress_max_length), a listed type.
 -- resp: { status, content_type, content_length (number or nil),
 -- content_encoding, head (HEAD request) }.
 function _M.applicable(tls, resp)
@@ -117,6 +118,10 @@ function _M.applicable(tls, resp)
   if status ~= 200 and status ~= 403 and status ~= 404 then return out end
   if resp.content_encoding and resp.content_encoding ~= "" then return out end
   local length = resp.content_length
+  -- The largest response any coding compresses (0: no limit; responses of
+  -- unknown length are compressed).
+  local max_length = tonumber(tls.compress_max_length) or 0
+  if length and max_length > 0 and length > max_length then return out end
   local function add(coding, on, min_length, types)
     if not on then return end
     if length and length < math.max(tonumber(min_length) or 0, 1) then return end

@@ -49,9 +49,21 @@ local _M = {}
 local concat, find, match, sub, gsub = table.concat, string.find, string.match, string.sub, string.gsub
 local ipairs, pairs, tonumber, tostring, type = ipairs, pairs, tonumber, tostring, type
 
--- STATUSES are the statuses site pages apply to (besides the platform's
--- 404); nginx's own other errors get built-in pages only (nginx_page).
-_M.STATUSES = { [403] = true, [429] = true, [502] = true, [503] = true, [504] = true }
+-- STATUSES are the statuses of node-generated responses that get error
+-- pages (the site's page of the status or of its class, else the built-in
+-- page) instead of plain text; 405 (S3 origins refusing a method) and 413
+-- (a site's body limit) since proto v0.24.0.
+_M.STATUSES = { [400] = true, [403] = true, [405] = true, [413] = true, [414] = true, [429] = true,
+  [500] = true, [502] = true, [503] = true, [504] = true }
+
+-- PAGE_STATUSES are the statuses and classes (4: 4xx, 5: 5xx) a site may
+-- have pages for (feature site-content-v1 beyond 403, 429, 502-504).
+_M.PAGE_STATUSES = { [4] = true, [5] = true, [400] = true, [401] = true, [403] = true, [404] = true,
+  [405] = true, [410] = true, [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
+
+-- REDIRECT_NAMES are the placeholders of an error page's redirect URL,
+-- replaced with percent-encoded values.
+local REDIRECT_NAMES = { status = true, request_id = true }
 
 _M.MAX_TEMPLATE = 65536
 
@@ -124,21 +136,54 @@ function _M.render(parts, values)
   return concat(out)
 end
 
--- compile_pages compiles a site's pages ({"<status>": template}) into
--- {[status] = parts}; nil without a valid page.
+-- compile_pages compiles a site's pages ({"<status>": {template,
+-- redirect, status}}, or a template string) into {[status] = page}: page
+-- = { parts, status } (status: the one to send, nil keeps it) or
+-- { redirect = parts }. nil without a valid page.
 function _M.compile_pages(pages)
   if type(pages) ~= "table" then
     return nil
   end
   local out, any = {}, false
-  for status, template in pairs(pages) do
+  for status, page in pairs(pages) do
     local code = tonumber(status)
-    if code and _M.STATUSES[code] and type(template) == "string" and template ~= "" and #template <= _M.MAX_TEMPLATE then
-      out[code] = _M.compile(template)
-      any = true
+    if type(page) == "string" then
+      page = { template = page }
+    end
+    if code and _M.PAGE_STATUSES[code] and type(page) == "table" then
+      local template, redirect = page.template, page.redirect
+      if type(redirect) == "string" and redirect ~= "" then
+        out[code] = { redirect = _M.compile(redirect, REDIRECT_NAMES) }
+        any = true
+      elseif type(template) == "string" and template ~= "" and #template <= _M.MAX_TEMPLATE then
+        local send = tonumber(page.status)
+        out[code] = { parts = _M.compile(template), status = (send and send >= 200 and send <= 599) and send or nil }
+        any = true
+      end
     end
   end
   return any and out or nil
+end
+
+-- page_for returns the site's page for status: the status's own, else its
+-- class's (4xx, 5xx); nil when the site has neither.
+function _M.page_for(site, status)
+  local pages = site and site._error_pages
+  if not pages or type(status) ~= "number" then
+    return nil
+  end
+  return pages[status] or pages[math.floor(status / 100)]
+end
+
+-- render_url fills a compiled redirect URL with percent-encoded values
+-- (everything but RFC 3986 unreserved characters).
+function _M.render_url(parts, values)
+  local out = {}
+  for i = 1, #parts do
+    local p = parts[i]
+    out[i] = type(p) == "table" and ngx.escape_uri(tostring(values[p[1]] or "")) or p
+  end
+  return concat(out)
 end
 
 -- compile_platform compiles the platform's pages ({unknown_host,
@@ -180,12 +225,13 @@ local TITLES = {
     [400] = "请求无效", [403] = "访问被拒绝", [404] = "站点不存在", [413] = "请求内容过大", [414] = "网址过长",
     [429] = "请求过于频繁", [494] = "请求头过大", [497] = "需要使用 HTTPS", [500] = "边缘节点出错",
     [502] = "无法连接源站", [503] = "服务暂不可用", [504] = "源站响应超时", ["site-disabled"] = "站点已停用",
+    [405] = "不支持的请求方法", maintenance = "维护中",
   },
   en = {
     [400] = "Bad request", [403] = "Access denied", [404] = "Site not found", [413] = "Request too large",
     [414] = "URL too long", [429] = "Too many requests", [494] = "Request header too large", [497] = "HTTPS required",
     [500] = "Edge error", [502] = "Origin unreachable", [503] = "Service unavailable", [504] = "Origin timed out",
-    ["site-disabled"] = "Site disabled",
+    ["site-disabled"] = "Site disabled", [405] = "Method not allowed", maintenance = "Under maintenance",
   },
 }
 local LANG = { zh = "zh-CN", en = "en" }
@@ -200,7 +246,7 @@ local TEXT = {
     stamp = {
       [400] = "格式错误", [403] = "拦截", [404] = "未接入", [413] = "过大", [414] = "过长", [429] = "限速",
       [494] = "过大", [497] = "未加密", [500] = "出错", [502] = "无法连接", [503] = "暂不可用", [504] = "超时",
-      ["site-disabled"] = "已停用", other = "出错",
+      ["site-disabled"] = "已停用", other = "出错", [405] = "不支持", maintenance = "维护中",
     },
     todo = {
       [400] = "边缘节点无法解析这个请求，请检查网址后重试。",
@@ -216,6 +262,8 @@ local TEXT = {
       [503] = "请稍后重试。",
       [504] = "源站没有及时响应，请稍后重试。",
       ["site-disabled"] = "网站管理员已停用此站点。",
+      [405] = "这个网址不接受这种请求方法。",
+      maintenance = "网站正在维护，请稍后再来。",
       other = "请稍后重试。",
     },
   },
@@ -226,6 +274,7 @@ local TEXT = {
       [400] = "Malformed", [403] = "Blocked", [404] = "No site", [413] = "Too large", [414] = "Too long",
       [429] = "Rate limited", [494] = "Too large", [497] = "Not encrypted", [500] = "Error", [502] = "Unreachable",
       [503] = "Unavailable", [504] = "Timed out", ["site-disabled"] = "Disabled", other = "Error",
+      [405] = "Not allowed", maintenance = "Maintenance",
     },
     todo = {
       [400] = "The edge couldn't read this request. Check the URL and try again.",
@@ -241,6 +290,8 @@ local TEXT = {
       [503] = "Try again shortly.",
       [504] = "The origin didn't answer in time. Try again shortly.",
       ["site-disabled"] = "The site's owner has turned this site off.",
+      [405] = "This address does not accept this request method.",
+      maintenance = "The site is under maintenance. Please come back later.",
       other = "Try again shortly.",
     },
   },
@@ -268,6 +319,8 @@ local SHAPES = {
   ["503-origin"] = { at = 2, a = "flow", b = "flow", mark = "pause", w = 600, retry = true },
   [504] = { at = 2, a = "flow", b = "slow", mark = "clock", w = 200, retry = true },
   ["site-disabled"] = { at = 1, a = "flow", b = "held", mark = "pause", w = 500 },
+  [405] = { at = 1, a = "flow", b = "held", mark = "stop", w = 700 },
+  maintenance = { at = 1, a = "flow", b = "held", mark = "pause", w = 500, retry = true },
   other = { at = 1, a = "flow", b = "held", mark = "cross", w = 600, retry = true },
 }
 
@@ -514,29 +567,36 @@ function _M.origin_values(status)
   }
 end
 
--- template returns the compiled template for status of site: its own
--- page, else the built-in one of kind (default: the status; for a 503 of
--- the origin, code origin-unreachable, the one marking the origin).
+-- template returns the page for status of site: its own page (of the
+-- status or its class), else the built-in one of kind (default: the
+-- status; for a 503 of the origin, code origin-unreachable, the one marking
+-- the origin) as { parts }.
 local function template(site, status, code, kind)
-  local pages = site and site._error_pages
-  local t = pages and pages[status]
-  if t then
-    return t
+  local page = _M.page_for(site, status)
+  if page then
+    return page
   end
   kind = kind or ((status == 503 and code == "origin-unreachable") and "503-origin" or status)
-  return _M.builtin(language(ngx.var.http_accept_language), kind)
+  return { parts = _M.builtin(language(ngx.var.http_accept_language), kind) }
 end
 
--- send answers the request with a rendered page (access or content
--- phase).
-local function send(status, code, parts, values)
-  local body = _M.render(parts, values)
-  ngx.status = status
+-- send answers the request with a page (access or content phase): a
+-- redirect page with 302 to its URL, else the rendered template with the
+-- page's status or status.
+local function send(status, code, page, values)
   local h = ngx.header
-  h["Content-Type"] = "text/html; charset=utf-8"
   h["Cache-Control"] = "no-store"
-  h["Content-Length"] = #body
   h["X-Edgeweir-Error"] = code
+  if page.redirect then
+    ngx.status = 302
+    h["Location"] = _M.render_url(page.redirect, values)
+    h["Content-Length"] = 0
+    return ngx.exit(ngx.HTTP_OK)
+  end
+  local body = _M.render(page.parts, values)
+  ngx.status = page.status or status
+  h["Content-Type"] = "text/html; charset=utf-8"
+  h["Content-Length"] = #body
   if ngx.req.get_method() ~= "HEAD" then
     ngx.print(body)
   end
@@ -547,6 +607,18 @@ end
 -- STATUSES) for site (nil: built-in page) and X-Edgeweir-Error code.
 function _M.respond(status, code, site)
   return send(status, code, template(site, status, code), _M.edge_values(status))
+end
+
+-- maintenance answers an edge-layer request of a site in maintenance
+-- (Site.maintenance): 503 with the site's maintenance page or the built-in
+-- one, Retry-After when set.
+function _M.maintenance(site)
+  local retry = tonumber(site.maintenance.retry_after)
+  if retry and retry > 0 then
+    ngx.header["Retry-After"] = tostring(retry)
+  end
+  local parts = site._maintenance_page or _M.builtin(language(ngx.var.http_accept_language), "maintenance")
+  return send(503, "maintenance", { parts = parts }, _M.edge_values(503))
 end
 
 -- NGINX are nginx's own errors error_page hands to the error pages: the
@@ -584,14 +656,14 @@ end
 -- X-Request-Id, which the error locations do not add).
 function _M.nginx_page(status, site, waf, origin)
   local out, kind, code = _M.nginx_error(status, waf)
-  local parts = template(site, out, code, kind)
+  local page = template(site, out, code, kind)
   if origin then
     ngx.header["X-Accel-Expires"] = 0
-    return send(out, code, parts, _M.origin_values(out))
+    return send(out, code, page, _M.origin_values(out))
   end
   local values = _M.edge_values(out)
   ngx.header["X-Request-Id"] = values.request_id
-  return send(out, code, parts, values)
+  return send(out, code, page, values)
 end
 
 -- offline_reason returns the reason (disabled) of a host no site serves
@@ -618,9 +690,9 @@ function _M.unknown_host(cfg, host)
   local pages = cfg and cfg.platform_pages or {}
   local lang = language(ngx.var.http_accept_language)
   if reason == "disabled" then
-    return send(503, "site-disabled", pages.site_disabled or _M.builtin(lang, "site-disabled"), _M.edge_values(503))
+    return send(503, "site-disabled", { parts = pages.site_disabled or _M.builtin(lang, "site-disabled") }, _M.edge_values(503))
   end
-  return send(404, "unknown-host", pages.unknown_host or _M.builtin(lang, 404), _M.edge_values(404))
+  return send(404, "unknown-host", { parts = pages.unknown_host or _M.builtin(lang, 404) }, _M.edge_values(404))
 end
 
 -- origin_fail answers an origin-layer failure (access phase) with the page
@@ -636,9 +708,21 @@ end
 -- X-Accel-Expires: 0).
 function _M.replace(status, code, site, origin)
   local values = origin and _M.origin_values(status) or _M.edge_values(status)
-  local body = _M.render(template(site, status, code), values)
+  local page = template(site, status, code)
   local h = ngx.header
-  h["Content-Type"] = "text/html; charset=utf-8"
+  local body
+  if page.redirect then
+    body = ""
+    ngx.status = 302
+    h["Location"] = _M.render_url(page.redirect, values)
+    h["Content-Type"] = nil
+  else
+    body = _M.render(page.parts, values)
+    if page.status then
+      ngx.status = page.status
+    end
+    h["Content-Type"] = "text/html; charset=utf-8"
+  end
   h["Cache-Control"] = "no-store"
   h["Content-Length"] = #body
   h["X-Edgeweir-Error"] = code

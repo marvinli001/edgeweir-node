@@ -83,11 +83,17 @@ end
 function _M.prepare(key)
   key = type(key) == "table" and key or {}
   key.query = key.query or "all"
-  local params = {}
+  local params, prefixes = {}, {}
   for _, p in ipairs(key.query_params or {}) do
-    params[p] = true
+    -- "name*" (exclude only) stands for every name with that prefix.
+    if key.query == "exclude" and sub(p, -1) == "*" then
+      prefixes[#prefixes + 1] = sub(p, 1, -2)
+    else
+      params[p] = true
+    end
   end
   key._params = params
+  key._prefixes = prefixes
   key.headers = key.headers or {}
   key.cookies = key.cookies or {}
   return key
@@ -98,25 +104,50 @@ local function param_name(segment)
   return eq and sub(segment, 1, eq - 1) or segment
 end
 
+-- listed reports whether a parameter name (raw or percent-decoded) is one
+-- of the policy's names or starts with one of its prefixes.
+local function listed(key, name)
+  local params = key._params
+  local decoded = unescape(name)
+  if params[name] or params[decoded] then
+    return true
+  end
+  local prefixes = key._prefixes
+  for i = 1, #prefixes do
+    local p = prefixes[i]
+    if sub(name, 1, #p) == p or sub(decoded, 1, #p) == p then
+      return true
+    end
+  end
+  return false
+end
+
+-- keeps reports whether the query segment enters the key: listed under
+-- include, not listed under exclude, always otherwise.
+local function keeps(key, segment)
+  local mode = key.query
+  if mode == "include" then
+    return listed(key, param_name(segment))
+  elseif mode == "exclude" then
+    return not listed(key, param_name(segment))
+  end
+  return true
+end
+
 -- normalize_query returns the part of the raw query string args that enters
 -- the key under policy key (without "?").
 function _M.normalize_query(args, key)
   if not args or args == "" or key.query == "ignore" then
     return ""
   end
-  local include = key.query == "include"
-  if not include and not key.sort_query then
+  local filtered = key.query == "include" or key.query == "exclude"
+  if not filtered and not key.sort_query then
     return args
   end
   local parts = {}
   for segment in gmatch(args, "[^&]+") do
-    if not include then
+    if keeps(key, segment) then
       parts[#parts + 1] = segment
-    else
-      local name = param_name(segment)
-      if key._params[name] or key._params[unescape(name)] then
-        parts[#parts + 1] = segment
-      end
     end
   end
   if key.sort_query then
@@ -136,10 +167,9 @@ function _M.purge_query(args, key)
   if not args or args == "" or key.query == "ignore" then
     return ""
   end
-  local include = key.query == "include"
   local parts = {}
   for segment in gmatch(args, "[^&]+") do
-    if not include or key._params[param_name(segment)] or key._params[unescape(param_name(segment))] then
+    if keeps(key, segment) then
       parts[#parts + 1] = gsub(segment, "%%(%x%x)", decode_hex)
     end
   end

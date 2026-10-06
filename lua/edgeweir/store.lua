@@ -259,6 +259,22 @@ function _M.prepare(s, cfg)
   local pages = type(s.error_pages) == "table" and s.error_pages or nil
   s._error_pages = pages and errorpages.compile_pages(pages.pages)
   s._intercept = s._error_pages ~= nil and pages.intercept == true
+  -- Settings of proto v0.24.0 (feature site-content-v1): PURGE, X-Cache,
+  -- maintenance (allowed addresses and the compiled page), charset, the
+  -- body limit and origin tries.
+  s.purge = s.purge == true
+  s.hide_x_cache = s.hide_x_cache == true
+  s.no_status_retry = s.no_status_retry == true
+  s.tries = tonumber(s.tries) or 3
+  if type(s.maintenance) == "table" then
+    local cidrs = s.maintenance.allow_cidrs
+    s._maintenance_allow = type(cidrs) == "table" and #cidrs > 0 and expressions.ip_set(cidrs) or nil
+    local page = s.maintenance.template
+    s._maintenance_page = type(page) == "string" and page ~= "" and errorpages.compile(page) or nil
+  else
+    s.maintenance = nil
+  end
+  if type(s.charset) ~= "table" or type(s.charset.name) ~= "string" then s.charset = nil end
   s.health = with_defaults(s.health, DEFAULT_HEALTH)
   s.conn = with_defaults(s.conn, DEFAULT_CONN)
   s.cache_key = cachekey.prepare(s.cache_key)

@@ -373,6 +373,8 @@ local function config(a, ctx)
   if a.cc_enabled ~= nil then ctx.cc_enabled = a.cc_enabled end
   if LEVELS[a.cc_max_level] then ctx.cc_max_level = LEVELS[a.cc_max_level] end
   if tonumber(a.log_sample_rate) then ctx.log_sample_rate = tonumber(a.log_sample_rate) end
+  -- The request's body limit in bytes (0: none), feature site-content-v1.
+  if tonumber(a.request_body_limit) then ctx.body_limit = tonumber(a.request_body_limit) end
   for field, key in pairs(TIMEOUTS) do
     local ms = tonumber(a[field])
     if ms and ms > 0 then
@@ -530,4 +532,8 @@ function _M.cc_level(ctx, level)
   if ctx.cc_max_level and level > ctx.cc_max_level then return ctx.cc_max_level end
   return level
 end
+-- config_action applies a config action to a request's policy context
+-- (exported for tests).
+_M.config_action = config
+
 return _M

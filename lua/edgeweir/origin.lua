@@ -42,6 +42,7 @@ local errorpages = require("edgeweir.errorpages")
 local affinity = require("edgeweir.affinity")
 local challenge = require("edgeweir.challenge")
 local policy = require("edgeweir.policy")
+local setcookie = require("edgeweir.setcookie")
 
 local _M = {}
 
@@ -188,6 +189,11 @@ function _M.access()
   if not site then
     return fail(ngx.HTTP_BAD_GATEWAY, "unknown-site")
   end
+  -- Sites that do not retry after 502, 503 and 504 responses continue in
+  -- the location whose next upstream conditions leave them out.
+  if site.no_status_retry and var.edgeweir_noretry ~= "1" then
+    return ngx.exec("@edgeweir_origin_noretry")
+  end
   local ctx = ngx.ctx
   ctx.site = site
   ctx.chain = chain_from_header(site, var.http_x_edgeweir_rules)
@@ -246,6 +252,10 @@ function _M.access()
         health.failure(site.id, o.id, err, site.health.max_fails, site.health.recovery_seconds, now, code, params)
       end
     end
+  end
+  -- A request tries at most the site's number of origins (OriginPool.tries).
+  for i = #cands, (tonumber(site.tries) or 3) + 1, -1 do
+    cands[i] = nil
   end
   if #cands == 0 then
     if s3_refused then
@@ -401,7 +411,8 @@ end
 
 -- decide returns what the origin layer adds to a response for the edge
 -- cache: { accel_expires = seconds or nil, cache_control = string or nil,
--- stash = original Cache-Control ("-" when absent) or nil }.
+-- stash = original Cache-Control ("-" when absent) or nil, set_cookie =
+-- true when the deciding rule caches responses with Set-Cookie }.
 -- cc and expires are the origin's Cache-Control and Expires values;
 -- authorized tells whether the request carried Authorization.
 function _M.decide(chain, status, size, cc, expires, authorized)
@@ -418,6 +429,7 @@ function _M.decide(chain, status, size, cc, expires, authorized)
     ttl = (rule._has_status or rules.default_cacheable(status)) and rule.ttl or 0
   end
   out.accel_expires = ttl
+  out.set_cookie = rule.set_cookie == true
   if (rule.swr > 0 or rule.sie > 0) and ttl ~= 0 then
     local directives
     if rule.mode == "override" then
@@ -442,13 +454,13 @@ end
 -- replaced with an error page: nginx's own failure of the last attempt
 -- (no response header), or an origin error the site intercepts.
 function _M.page_code(site, status, upstream_header_time)
-  if not errorpages.STATUSES[status] then
-    return nil
-  end
   if errorpages.generated(upstream_header_time) then
-    return errorpages.origin_code(status)
+    -- nginx's own upstream failures; its other errors (an uncaught Lua
+    -- error's 500) go to error_page and never reach the header filter.
+    return (status == 502 or status == 503 or status == 504) and errorpages.origin_code(status) or nil
   end
-  if site._intercept and site._error_pages[status] then
+  -- Intercepted: any 4xx or 5xx with a page of its status or class.
+  if site._intercept and status >= 400 and status <= 599 and errorpages.page_for(site, status) then
     return "origin-error"
   end
   return nil
@@ -457,8 +469,10 @@ end
 function _M.header_filter()
   local ctx = ngx.ctx
   local h = ngx.header
-  -- Only this layer may set the stash header the edge restores.
+  -- Only this layer may set the stash header the edge restores and the
+  -- carrier of cached Set-Cookie lines.
   h["X-Edgeweir-CC"] = nil
+  h[setcookie.HEADER] = nil
   local site = ctx.site
   if not site then
     return
@@ -506,6 +520,12 @@ function _M.header_filter()
   if d.cache_control then
     h["X-Edgeweir-CC"] = d.stash
     h["Cache-Control"] = d.cache_control
+  end
+  -- The rule caches responses with Set-Cookie: the lines travel in the
+  -- carrier, which the edge never sends on (proxy_hide_header) and turns
+  -- back into Set-Cookie only for the response fetched for the request.
+  if d.set_cookie and d.accel_expires ~= 0 then
+    setcookie.carry(h)
   end
 end
 

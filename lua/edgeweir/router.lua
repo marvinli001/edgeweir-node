@@ -70,6 +70,9 @@ local waf = require("edgeweir.waf")
 local errorpages = require("edgeweir.errorpages")
 local affinity = require("edgeweir.affinity")
 local probehealth = require("edgeweir.probehealth")
+local setcookie = require("edgeweir.setcookie")
+local charset = require("edgeweir.charset")
+local purgemethod = require("edgeweir.purgemethod")
 
 local _M = {}
 
@@ -243,6 +246,9 @@ local function access()
   end
 
   ngx.ctx.edgeweir_site = site
+  if site.hide_x_cache then
+    var.edgeweir_x_cache_off = "1"
+  end
   if var.scheme == "https" and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
@@ -251,7 +257,17 @@ local function access()
   if not is_local and bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
+  -- The PURGE method of sites that turned it on, before maintenance and
+  -- the rules (edgeweir.purgemethod).
+  if site.purge and ngx.req.get_method() == "PURGE" then
+    return purgemethod.handle(site)
+  end
   local original_path = var.uri
+  -- Maintenance: 503 and the maintenance page, but for allowed addresses
+  -- and paths and HTTP-01 requests for the origin; nothing is cached.
+  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path) then
+    return errorpages.maintenance(site)
+  end
   ngx.ctx.edgeweir_original_path = original_path
   var.edgeweir_site = site.id
   -- CC counts every request of the site (edgeweir.cc), clients by their
@@ -336,6 +352,11 @@ local function access()
     ngx.ctx.edgeweir_grpc = true
     return true
   end
+  -- The site's body limit (a config rule's for this request) by
+  -- Content-Length; chunked bodies are bounded by client_max_body_size.
+  if _M.body_too_large(pctx and pctx.body_limit, site.body_limit, var.http_content_length) then
+    return deny(413, "body-too-large", "request body too large")
+  end
   var.edgeweir_origin_layer = _M.origin_layer(site)
 
   local method = ngx.req.get_method()
@@ -410,6 +431,39 @@ function _M.access()
       return waf.enter(site)
     end
   end
+end
+
+-- maintenance_allowed reports whether a request of a site in maintenance
+-- is served as usual: its client address in the allowed CIDRs or its
+-- original path under an allowed prefix.
+function _M.maintenance_allowed(site, addr, path)
+  local allow = site._maintenance_allow
+  if allow and addr and allow(addr) then
+    return true
+  end
+  local prefixes = site.maintenance.allow_prefixes
+  if type(prefixes) == "table" then
+    for i = 1, #prefixes do
+      local p = prefixes[i]
+      if sub(path, 1, #p) == p then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- body_too_large reports whether a request's Content-Length exceeds its
+-- body limit: the config rule's (rule_limit) when one set it, else the
+-- site's; 0 or nil means no limit.
+function _M.body_too_large(rule_limit, site_limit, content_length)
+  local limit = rule_limit
+  if limit == nil then
+    limit = site_limit
+  end
+  limit = tonumber(limit)
+  local length = tonumber(content_length)
+  return limit ~= nil and limit > 0 and length ~= nil and length > limit
 end
 
 -- origin_layer returns the edge layer's upstream of the origin layer for a
@@ -536,6 +590,11 @@ function _M.header_filter(waf_location)
     end
   end
   local site = ngx.ctx.edgeweir_site
+  -- Set-Cookie lines cached with the response (edgeweir.setcookie): only
+  -- on the response fetched for this request, before the affinity cookie.
+  if site then
+    setcookie.restore(h, var.upstream_http_x_edgeweir_set_cookie, cs, ngx.is_subrequest)
+  end
   if site and site.keep_cache_tag then
     -- proxy_hide_header removes Cache-Tag for every other site, cache hits
     -- included.
@@ -581,6 +640,10 @@ function _M.header_filter(waf_location)
     end
   end
   if site then
+    -- Responses the node made itself keep their own charset.
+    if site.charset and not h["X-Edgeweir-Error"] then
+      charset.apply(h, site.charset)
+    end
     if site._response_rules then
       local ok = pcall(policy.response, site)
       if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end

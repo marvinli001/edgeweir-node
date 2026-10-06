@@ -54,14 +54,15 @@ test("values are HTML-escaped and never expanded again", function()
 end)
 
 test("site pages compile only valid statuses and sizes", function()
-  local pages = errorpages.compile_pages({ ["403"] = "a {{status}}", ["429"] = "b", ["404"] = "not a page status",
+  -- 404 is a page status since proto v0.24.0 (site-content-v1); 418 is not.
+  local pages = errorpages.compile_pages({ ["403"] = "a {{status}}", ["429"] = "b", ["418"] = "not a page status",
     ["502"] = "", ["503"] = string.rep("x", 65537), ["504"] = string.rep("y", 65536), ["x"] = "junk" })
   assert(pages[403] and pages[429] and pages[504])
-  eq(pages[404], nil)
+  eq(pages[418], nil)
   eq(pages[502], nil, "empty")
   eq(pages[503], nil, "too large")
-  eq(errorpages.render(pages[403], VALUES), "a 503")
-  eq(errorpages.compile_pages({ ["404"] = "x" }), nil, "no valid page")
+  eq(errorpages.render(pages[403].parts, VALUES), "a 503")
+  eq(errorpages.compile_pages({ ["418"] = "x" }), nil, "no valid page")
   eq(errorpages.compile_pages(nil), nil)
   local platform = errorpages.compile_platform({ unknown_host = "u {{host}}", site_disabled = "" })
   eq(errorpages.render(platform.unknown_host, VALUES), "u shop.test")
@@ -166,11 +167,16 @@ test("nginx's own errors: the status sent, the page and the code", function()
     eq(kind, case[4], name .. ": page")
     eq(code, case[5], name .. ": code")
   end
-  -- None of them has a site template: pages exist for STATUSES only.
-  for _, status in ipairs({ 400, 413, 414, 494, 497, 500 }) do
+  -- Since proto v0.24.0 (site-content-v1) nginx's own errors use the
+  -- site's page of their status or class too; 494 and 497 are sent as 400.
+  for _, status in ipairs({ 400, 413, 414, 500 }) do
+    eq(errorpages.STATUSES[status], true, tostring(status))
+  end
+  for _, status in ipairs({ 494, 497 }) do
     eq(errorpages.STATUSES[status], nil, tostring(status))
   end
-  eq(errorpages.compile_pages({ ["400"] = "x", ["500"] = "y" }), nil, "no site page for nginx's own errors")
+  local own = errorpages.compile_pages({ ["400"] = "x", ["500"] = "y" })
+  assert(own[400] and own[500], "site pages for nginx's own 400 and 500")
 end)
 
 test("built-in pages of requests nginx refuses: the signal fails at the visitor", function()

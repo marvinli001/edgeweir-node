@@ -1121,7 +1121,8 @@ test("store keeps the error page, affinity, active health and offline host setti
     sites = {
       site("g4", { { name = "g4.test" } }, {
         keep_cache_tag = true, active_health = true, affinity = { ttl = 7200 },
-        error_pages = { pages = { ["403"] = "<b>{{status}}</b>", ["404"] = "ignored" }, intercept = true },
+        -- 404 is a page status since proto v0.24.0; 418 is not.
+        error_pages = { pages = { ["403"] = "<b>{{status}}</b>", ["418"] = "ignored" }, intercept = true },
       }),
       site("g4-plain", { { name = "plain-g4.test" } }),
     },
@@ -1132,7 +1133,7 @@ test("store keeps the error page, affinity, active health and offline host setti
   eq(s._active, true)
   eq(s._affinity_ttl, 7200)
   eq(s._intercept, true)
-  assert(s._error_pages[403] and not s._error_pages[404], "only page statuses compile")
+  assert(s._error_pages[403] and not s._error_pages[418], "only page statuses compile")
   local p = store.lookup_host("plain-g4.test")
   eq(p.keep_cache_tag, false)
   eq(p._active, false)

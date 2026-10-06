@@ -20,6 +20,7 @@ function _M.init(opts)
   _M.l4_socket = type(opts.l4_socket) == "string" and opts.l4_socket or ""
   -- Load every module eagerly: workers inherit them after fork.
   require("edgeweir.geoip").socket = opts.geoip_socket or ""
+  require("edgeweir.purgemethod").socket = opts.agent_socket or ""
   -- Request body limits of this nginx.conf's CRS locations.
   require("edgeweir.waf").init(opts.waf_body_limits)
   local capacity = tonumber(opts.ban_capacity)
