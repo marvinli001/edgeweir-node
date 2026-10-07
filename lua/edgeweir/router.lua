@@ -68,6 +68,7 @@ local challenge = require("edgeweir.challenge")
 local compress = require("edgeweir.compress")
 local waf = require("edgeweir.waf")
 local errorpages = require("edgeweir.errorpages")
+local unknownhost = require("edgeweir.unknownhost")
 local affinity = require("edgeweir.affinity")
 local probehealth = require("edgeweir.probehealth")
 local setcookie = require("edgeweir.setcookie")
@@ -201,6 +202,29 @@ local function key_request(site, var, path, headers)
   return req
 end
 
+-- unknown answers a request no site serves (Host unknown, an IP literal
+-- or empty, or a site's host on a port it is not bound to) by the
+-- cluster's handling (edgeweir.unknownhost), and counts it for scan
+-- protection. Returns the default site when the request is handed to it;
+-- otherwise the request has been answered.
+local function unknown(cfg, host, var, is_local)
+  if is_local then
+    return nil, errorpages.unknown_host(cfg, host)
+  end
+  unknownhost.count(cfg, var.remote_addr)
+  local action = unknownhost.action(cfg, host)
+  if action == "close" then
+    return nil, ngx.exit(444)
+  end
+  if action == "site" then
+    local site = store.site_current(cfg.unknown.default_site_id)
+    if site and store.serves_port(site, var.server_port) then
+      return site
+    end
+  end
+  return nil, errorpages.unknown_host(cfg, host)
+end
+
 -- access returns true when the request goes on to the cache and origin;
 -- every other outcome has answered the request already.
 local function access()
@@ -240,21 +264,30 @@ local function access()
   local site, ver = store.lookup_host(host)
   -- A site bound to other listener ports (edge-ports-v1) is unknown here;
   -- the origin's own HTTP-01 tokens still reach it on port 80.
-  if site and not is_local and not store.serves_port(site, var.server_port) and not (acme and var.server_port == "80") then
-    return errorpages.unknown_host(store.config(), host)
-  end
-  if not site then
-    -- Offline hosts (disabled sites) and unknown hosts get the platform's
-    -- pages (from the table version the lookup used: no further shared
-    -- dict read).
-    return errorpages.unknown_host(ver and store.config(ver), host)
+  local unbound = site and not is_local and not store.serves_port(site, var.server_port) and not (acme and var.server_port == "80")
+  local handed = false
+  if not site or unbound then
+    -- From the table version the lookup used: no further shared dict read.
+    local cfg = (not site and ver) and store.config(ver) or store.config()
+    -- Offline hosts (disabled sites) keep the platform's page.
+    if not site and errorpages.offline_reason(cfg, host) then
+      return errorpages.unknown_host(cfg, host)
+    end
+    site = unknown(cfg, host, var, is_local)
+    if not site then
+      return
+    end
+    handed = true
   end
 
   ngx.ctx.edgeweir_site = site
   if site.hide_x_cache then
     var.edgeweir_x_cache_off = "1"
   end
-  if var.scheme == "https" and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
+  -- The default site takes requests whose SNI named no site (its
+  -- certificate, or the health certificate without SNI): they are not
+  -- another site's.
+  if var.scheme == "https" and not handed and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
   -- Dynamic bans: platform scope, then the site's; addresses on a
@@ -424,9 +457,18 @@ function _M.access()
   if probehealth.is_request(ngx.req.get_method(), var.uri) then
     return probehealth.respond()
   end
-  -- A connection with the health SNI (or none) serves only that path.
+  -- A connection with the health SNI (or none) serves only that path,
+  -- and requests by node IP when the cluster closes them or hands them to
+  -- its default site (unknown-host-v1).
   if var.scheme == "https" and probehealth.is_health_sni(var.ssl_server_name) then
-    return deny(421, "sni-host-mismatch", "SNI and Host must match")
+    local cfg = store.config()
+    local u = cfg.unknown
+    if not (u and unknownhost.ip_access(var.host) and u.ip_access ~= "page") then
+      if u and unknownhost.ip_access(var.host) then
+        unknownhost.count(cfg, var.remote_addr)
+      end
+      return deny(421, "sni-host-mismatch", "SNI and Host must match")
+    end
   end
   if access() then
     local ctx = ngx.ctx

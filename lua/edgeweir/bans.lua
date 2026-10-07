@@ -730,14 +730,15 @@ local function protected(bytes)
   return true
 end
 
--- add_auto bans a client on a site for ttl seconds and queues it for
+-- add_auto bans a client on a site (site_id "*": every site, the
+-- platform scope of scan protection) for ttl seconds and queues it for
 -- reporting: an IPv4 address or an IPv6 /64 (see own_network). trigger =
 -- {reason, metric, observed, threshold, window_seconds}. A network a
 -- console ban already holds is only reported; loopback and unspecified
 -- ones are refused. Returns true, or nil and an error ("full" when no room
 -- is left without evicting a console ban).
 function _M.add_auto(site_id, client, ttl, trigger)
-  if not valid_id(site_id) then
+  if site_id ~= PLATFORM and not valid_id(site_id) then
     return nil, "invalid site id"
   end
   local ip, bytes, len = own_network(client)
@@ -798,7 +799,8 @@ function _M.add_auto(site_id, client, ttl, trigger)
 end
 
 -- release deletes own bans the console lifted:
--- list = [{site_id, cidr, expires_at}], IPv4 addresses or IPv6 /64 (or
+-- list = [{site_id ("*" for a platform one), cidr, expires_at}], IPv4
+-- addresses or IPv6 /64 (or
 -- /128 of older own bans). An own ban there
 -- is deleted only if it expires no later than expires_at (one second of
 -- slack for rounding): an own ban of the address made after the lift
@@ -811,7 +813,7 @@ function _M.release(list)
   local items = {}
   for i = 1, #list do
     local b = list[i]
-    if type(b) ~= "table" or not valid_id(b.site_id) then
+    if type(b) ~= "table" or (b.site_id ~= PLATFORM and not valid_id(b.site_id)) then
       return nil, "#" .. i .. ": invalid site_id", 400
     end
     local ip, bytes, len = own_network(type(b.cidr) == "string" and find(b.cidr, "/", 1, true) and b.cidr or "")

@@ -667,18 +667,29 @@ function _M.nginx_page(status, site, waf, origin)
 end
 
 -- offline_reason returns the reason (disabled) of a host no site serves
--- when it is a domain of an offline site (exact, or a wildcard on its
--- parent domain like site domains), or nil. cfg is the site table's
--- settings (edgeweir.store.config).
+-- when it is a domain of an offline site (exact, a wildcard on its parent
+-- domain, a suffix of any depth or a pattern, like site domains), or nil.
+-- cfg is the site table's settings (edgeweir.store.config).
 function _M.offline_reason(cfg, host)
   local offline = cfg and cfg.offline
   if not offline or type(host) ~= "string" then
     return nil
   end
   local reason = offline.exact[host]
-  if not reason then
-    local dot = find(host, ".", 1, true)
-    reason = dot and offline.wild[sub(host, dot + 1)] or nil
+  local dot = find(host, ".", 1, true)
+  if not reason and dot then
+    reason = offline.wild[sub(host, dot + 1)]
+  end
+  while not reason and dot and offline.suffix do
+    reason = offline.suffix[sub(host, dot + 1)]
+    dot = find(host, ".", dot + 1, true)
+  end
+  if not reason and offline.patterns then
+    for _, p in ipairs(offline.patterns) do
+      if ngx.re.find(host, p.source, "jo") then
+        return p.reason
+      end
+    end
   end
   return reason
 end

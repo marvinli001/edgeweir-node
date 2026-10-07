@@ -6,12 +6,16 @@
 --   v<N>:site:<id>    JSON of the site
 --   v<N>:host:<name>  site id for an exact host name
 --   v<N>:wild:<name>  site id for a wildcard suffix ("*.<name>")
+--   v<N>:sfx:<name>   site id for a suffix of any depth (".<name>",
+--                     domains-v2)
 --   v<N>:cfg          JSON of the table settings (origin allow list,
 --                     cdn_id, HTTP-01 answers, IP lists, platform rules,
 --                     platform protection, ids of the sites with CC, the
 --                     lifetime of Cache-Tag index entries, the platform's
---                     error pages, the offline hosts and the node's health
---                     certificate)
+--                     error pages, the offline hosts, the node's health
+--                     certificate, the site patterns ("~pattern" domains
+--                     in precedence order, domains-v2) and the unknown host
+--                     handling (unknown-host-v1))
 --
 -- A replacement writes table N+1 next to table N, then flips
 -- edgeweir_meta["version"]; requests never observe a half-written table.
@@ -24,6 +28,9 @@
 --           and table settings;
 --   hosts   host -> site id for exact names, "*.<parent>" -> site id for
 --           wildcards (random subdomains of a wildcard site add nothing);
+--   matched host -> site id found through a suffix or a pattern, a cache
+--           of its own: random subdomains under a suffix only churn this
+--           one and never evict exact names;
 --   misses  unknown hosts, a small separate cache: a flood of made-up Host
 --           headers only churns this one and never evicts sites or hosts.
 local cjson = require("cjson.safe")
@@ -48,6 +55,7 @@ local meta = ngx.shared.edgeweir_meta
 _M.SITE_CACHE_SIZE = 20000
 _M.HOST_CACHE_SIZE = 20000
 _M.MISS_CACHE_SIZE = 1024
+_M.MATCH_CACHE_SIZE = 4096
 
 local caches = {}
 
@@ -74,6 +82,36 @@ end
 
 local function misses()
   return new_cache("misses", _M.MISS_CACHE_SIZE)
+end
+
+local function matched()
+  return new_cache("matched", _M.MATCH_CACHE_SIZE)
+end
+
+-- host_pattern is the PCRE2 source of a "~pattern" domain: the whole host
+-- (^(?:pattern)$, with expressions.pcre_pattern's bounds and `$` as \z).
+function _M.host_pattern(pattern)
+  return expressions.pcre_pattern("^(?:" .. pattern .. ")$")
+end
+
+-- patterns lists the "~pattern" domains of the sites (and of offline hosts
+-- with offline = true) by precedence: order, then site id.
+local function patterns_of(list)
+  local out = {}
+  for _, site in ipairs(list) do
+    if type(site) == "table" and type(site.domains) == "table" then
+      for _, d in ipairs(site.domains) do
+        if type(d) == "table" and d.match == "regex" then
+          out[#out + 1] = { pattern = d.name, order = tonumber(d.order) or 0, site = site.id }
+        end
+      end
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.order ~= b.order then return a.order < b.order end
+    return a.site < b.site
+  end)
+  return out
 end
 
 local function is_nonempty_string(v)
@@ -403,6 +441,15 @@ function _M.replace(doc)
   cfg.tag_ttl = tonumber(doc.tag_ttl)
   if type(doc.platform_error_pages) == "table" then cfg.platform_error_pages = doc.platform_error_pages end
   if type(doc.offline_hosts) == "table" and #doc.offline_hosts > 0 then cfg.offline_hosts = doc.offline_hosts end
+  -- Site patterns in precedence order; each compiles (checked here so a
+  -- pattern PCRE2 refuses rejects the table instead of every request).
+  local patterns = patterns_of(list)
+  for _, p in ipairs(patterns) do
+    local _, _, perr = ngx.re.find("", _M.host_pattern(p.pattern), "jo")
+    if perr then meta:delete("lock"); return nil, "invalid domain pattern of site " .. tostring(p.site), 400 end
+  end
+  if #patterns > 0 then cfg.patterns = patterns end
+  if type(doc.unknown_hosts) == "table" then cfg.unknown_hosts = doc.unknown_hosts end
   -- The trusted proxies of the client address setting (client-ip-v1):
   -- never banned, not counted per address by CC.
   local ca = doc.client_address
@@ -435,8 +482,9 @@ function _M.replace(doc)
       break
     end
     for _, d in ipairs(site.domains) do
-      local kind = (d.wildcard == true) and "wild:" or "host:"
-      if not put(kind .. d.name, site.id) then
+      local kind = (d.match == "suffix" and "sfx:") or (d.wildcard == true and "wild:") or "host:"
+      -- Patterns live in cfg.patterns.
+      if d.match ~= "regex" and not put(kind .. d.name, site.id) then
         break
       end
     end
@@ -496,20 +544,45 @@ end
 -- site table does not set it (the default inactive time of cache zones).
 _M.DEFAULT_TAG_TTL = 3600
 
--- offline_hosts indexes the offline hosts of a table: exact names and
--- wildcard suffixes to their reason (disabled).
+-- offline_hosts indexes the offline hosts of a table: exact names,
+-- wildcard suffixes and suffixes of any depth to their reason (disabled),
+-- and the patterns (compiled sources) in order.
 local function offline_hosts(list)
   if type(list) ~= "table" or #list == 0 then
     return nil
   end
-  local out = { exact = {}, wild = {} }
+  local out = { exact = {}, wild = {}, suffix = {}, patterns = {} }
   for _, h in ipairs(list) do
     if type(h) == "table" and type(h.name) == "string" and h.reason == "disabled" then
-      local t = h.wildcard == true and out.wild or out.exact
-      if not t[h.name] then
-        t[h.name] = h.reason
+      if h.match == "regex" then
+        out.patterns[#out.patterns + 1] = { source = _M.host_pattern(h.name), reason = h.reason }
+      else
+        local t = (h.match == "suffix" and out.suffix) or (h.wildcard == true and out.wild) or out.exact
+        if not t[h.name] then
+          t[h.name] = h.reason
+        end
       end
     end
+  end
+  return out
+end
+
+-- unknown_hosts validates the unknown host handling of a table (nil: the
+-- defaults): { unknown_host, ip_access = "page" | "close" | "site",
+-- default_site_id, default_certificate, scan_threshold, scan_ban_seconds }.
+local ACTIONS = { page = true, close = true, site = true }
+local function unknown_hosts(u)
+  if type(u) ~= "table" then return nil end
+  local out = {
+    unknown_host = ACTIONS[u.unknown_host] and u.unknown_host or "page",
+    ip_access = ACTIONS[u.ip_access] and u.ip_access or "page",
+    default_site_id = type(u.default_site_id) == "string" and u.default_site_id ~= "" and u.default_site_id or nil,
+    default_certificate = u.default_certificate == true,
+    scan_threshold = math.floor(tonumber(u.scan_threshold) or 0),
+    scan_ban_seconds = math.floor(tonumber(u.scan_ban_seconds) or 0),
+  }
+  if out.scan_threshold < 1 or out.scan_ban_seconds < 1 then
+    out.scan_threshold, out.scan_ban_seconds = 0, 0
   end
   return out
 end
@@ -548,7 +621,14 @@ function _M.config(version)
       offline = offline_hosts(doc.offline_hosts),
       health_certificate = probehealth.material(doc),
       trusted = type(doc.trusted_proxies) == "table" and #doc.trusted_proxies > 0 and expressions.ip_set(doc.trusted_proxies) or nil,
+      unknown = unknown_hosts(doc.unknown_hosts),
     }
+    if type(doc.patterns) == "table" and #doc.patterns > 0 then
+      cfg.patterns = {}
+      for i, p in ipairs(doc.patterns) do
+        cfg.patterns[i] = { source = _M.host_pattern(p.pattern), site = p.site }
+      end
+    end
     local tag_ttl = tonumber(doc.tag_ttl)
     cfg.tag_ttl = (tag_ttl and tag_ttl >= 1) and tag_ttl or _M.DEFAULT_TAG_TTL
     policy.prepare_config(cfg)
@@ -597,8 +677,12 @@ function _M.site_current(id)
 end
 
 -- lookup_host resolves a lowercase host name: exact match first, then a
--- wildcard on the parent domain (single left-most label). Without a site
--- it also returns the table version it looked in (for config(ver)).
+-- wildcard on the parent domain (single left-most label), then the longest
+-- suffix of any depth, then the first site pattern that matches the whole
+-- host (domains-v2). Returns the site (nil without one), the table version
+-- it looked in (for config(ver)) and how the site was found: "exact",
+-- "wildcard" or "match" (a suffix or a pattern: TLS completes only where
+-- the site's certificate covers the host, edgeweir.tls).
 function _M.lookup_host(host)
   local ver = meta:get("version")
   if not ver or not host or host == "" then
@@ -607,7 +691,7 @@ function _M.lookup_host(host)
   local hc = hosts()
   local hit = hc:get(host)
   if hit and hit[1] == ver then
-    return _M.site(ver, hit[2])
+    return _M.site(ver, hit[2]), ver, "exact"
   end
   local mc = misses()
   if mc:get(host) == ver then
@@ -616,7 +700,7 @@ function _M.lookup_host(host)
   local id = sites:get("v" .. ver .. ":host:" .. host)
   if id then
     hc:set(host, { ver, id })
-    return _M.site(ver, id)
+    return _M.site(ver, id), ver, "exact"
   end
   local dot = find(host, ".", 1, true)
   if dot then
@@ -624,12 +708,36 @@ function _M.lookup_host(host)
     local wk = "*." .. parent
     local w = hc:get(wk)
     if w and w[1] == ver then
-      return _M.site(ver, w[2])
+      return _M.site(ver, w[2]), ver, "wildcard"
     end
     id = sites:get("v" .. ver .. ":wild:" .. parent)
     if id then
       hc:set(wk, { ver, id })
-      return _M.site(ver, id)
+      return _M.site(ver, id), ver, "wildcard"
+    end
+  end
+  local pc = matched()
+  local m = pc:get(host)
+  if m and m[1] == ver then
+    return _M.site(ver, m[2]), ver, "match"
+  end
+  -- The longest suffix first: drop one label at a time.
+  while dot do
+    id = sites:get("v" .. ver .. ":sfx:" .. sub(host, dot + 1))
+    if id then
+      pc:set(host, { ver, id })
+      return _M.site(ver, id), ver, "match"
+    end
+    dot = find(host, ".", dot + 1, true)
+  end
+  local patterns = _M.config(ver).patterns
+  if patterns then
+    for i = 1, #patterns do
+      local p = patterns[i]
+      if ngx.re.find(host, p.source, "jo") then
+        pc:set(host, { ver, p.site })
+        return _M.site(ver, p.site), ver, "match"
+      end
     end
   end
   mc:set(host, ver)

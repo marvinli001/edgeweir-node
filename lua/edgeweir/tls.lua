@@ -3,7 +3,13 @@
 -- health.edgeweir.invalid and handshakes without SNI
 -- (edgeweir.probehealth); any other name, a domain its site's certificate
 -- does not cover yet (tls_pending) and a site's domain on a listener port
--- the site is not bound to (edge-ports-v1) abort the handshake.
+-- the site is not bound to (edge-ports-v1) abort the handshake. A host
+-- found through a suffix or pattern domain (domains-v2) completes only
+-- where the site's certificate names it (its dns_names: the host, or "*."
+-- and its parent). With the cluster's unknown host handling
+-- (unknown-host-v1) handing unknown hosts to the default site and
+-- default_certificate on, names no site serves get the default site's
+-- certificate instead of an aborted handshake.
 local ssl = require("ngx.ssl")
 local hello = require("ngx.ssl.clienthello")
 local store = require("edgeweir.store")
@@ -20,15 +26,44 @@ local function on_port(site)
   return not port or store.serves_port(site, port)
 end
 
+-- names_cover tells whether a certificate's DNS names cover host: the
+-- same name, or a wildcard over its parent.
+local function names_cover(names, host)
+  if type(names) ~= "table" then return false end
+  local dot = string.find(host, ".", 1, true)
+  local wild = dot and "*." .. string.sub(host, dot + 1)
+  for i = 1, #names do
+    if names[i] == host or names[i] == wild then return true end
+  end
+  return false
+end
+
+-- choose returns the site whose certificate a handshake for host gets
+-- (nil: abort): the site serving the host, else (for names no site serves
+-- here) the default site when the cluster hands unknown hosts to it with
+-- its certificate.
+local function choose(host)
+  local site, ver, how = store.lookup_host(host)
+  if site then
+    if not site.certificate or policy.tls_pending(site, host) then return nil end
+    if how == "match" and not names_cover(site.certificate.dns_names, host) then return nil end
+    if on_port(site) then return site end
+  end
+  local u = store.config(not site and ver or nil).unknown
+  if not (u and u.default_certificate and u.unknown_host == "site" and u.default_site_id) then return nil end
+  local default = store.site_current(u.default_site_id)
+  if default and default.certificate and on_port(default) then return default end
+  return nil
+end
+
 function _M.client_hello()
   local name = hello.get_client_hello_server_name()
   if probehealth.is_health_sni(name) then
     if not probehealth.material(store.config()) then return ngx.exit(ngx.ERROR) end
     return
   end
-  local host = string.lower(name)
-  local site = store.lookup_host(host)
-  if not site or not site.certificate or policy.tls_pending(site, host) or not on_port(site) then return ngx.exit(ngx.ERROR) end
+  local site = choose(string.lower(name))
+  if not site then return ngx.exit(ngx.ERROR) end
   -- JA4 only for sites that read it; never fails the handshake.
   if site._ja4 then
     local ok, err = pcall(ja4.client_hello)
@@ -46,9 +81,8 @@ function _M.certificate()
   if probehealth.is_health_sni(name) then
     material = probehealth.material(store.config())
   else
-    local host = string.lower(name)
-    site = store.lookup_host(host)
-    material = site and not policy.tls_pending(site, host) and on_port(site) and site.certificate
+    site = choose(string.lower(name))
+    material = site and site.certificate
   end
   if not material then return ngx.exit(ngx.ERROR) end
   local parsed = cache:get(material.fingerprint)
