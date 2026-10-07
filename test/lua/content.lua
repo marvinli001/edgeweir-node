@@ -4,7 +4,7 @@
 -- redirects, origin tries and the PURGE method's rate.
 --
 --   resty -I lua --shdict 'edgeweir_sites 1m' --shdict 'edgeweir_meta 1m' --shdict 'edgeweir_health 1m' \
---     --shdict 'edgeweir_challenge 1m' test/lua/content.lua
+--     --shdict 'edgeweir_challenge 1m' --shdict 'edgeweir_purge_rate 1m' test/lua/content.lua
 local cachekey = require("edgeweir.cachekey")
 local setcookie = require("edgeweir.setcookie")
 local charset = require("edgeweir.charset")
@@ -249,6 +249,15 @@ test("PURGE: at most RATE requests per site, client address and second on a node
   eq(purgemethod.limited("site-a", "198.51.100.7", 1000), false, "per client address")
   eq(purgemethod.limited("site-b", "192.0.2.1", 1000), false, "per site")
   eq(purgemethod.limited("site-a", "192.0.2.1", 1001), false, "per second")
+  -- IPv6 clients count per /64 (as CC and bans group them): rotating the
+  -- address inside it does not buy a new budget.
+  for i = 1, purgemethod.RATE do
+    eq(purgemethod.limited("site-a", "2001:db8:1:2::" .. i, 1002), false, "IPv6 request " .. i)
+  end
+  eq(purgemethod.limited("site-a", "2001:db8:1:2::ffff", 1002), true, "same /64")
+  eq(purgemethod.limited("site-a", "2001:db8:1:3::1", 1002), false, "another /64")
+  -- The counters live apart from the data plane's own state.
+  eq(ngx.shared.edgeweir_meta:get("purge:site-a:192.0.2.1:1000"), nil)
   local s = site({ purge = true })
   eq(s.purge, true)
   eq(site({}).purge, false)

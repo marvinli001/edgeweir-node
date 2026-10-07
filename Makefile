@@ -70,7 +70,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 	docker run --rm -v "$(CURDIR)/lua:/lua:ro" -v "$(CURDIR)/test/lua:/t:ro" $(OPENRESTY_FAT) sh -c '\
 		resty -I /lua --shdict "edgeweir_sites 4m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_stats 4m" \
 			--shdict "edgeweir_purge 4m" --shdict "edgeweir_health 1m" --shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_topstats 4m" \
-			--shdict "edgeweir_bans 4m" --shdict "edgeweir_tags 1m" /t/run.lua && \
+			--shdict "edgeweir_bans 4m" --shdict "edgeweir_tags 1m" --shdict "edgeweir_purge_rate 1m" /t/run.lua && \
 		resty -I /lua --shdict "edgeweir_purge 4m" --shdict "edgeweir_tags 1m" /t/tags.lua && \
 		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" /t/errorpages.lua && \
 		resty -I /lua --shdict "edgeweir_challenge 1m" --shdict "edgeweir_health 1m" /t/origins.lua && \
@@ -81,7 +81,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 		resty -I /lua /t/sigv4.lua && resty -I /lua /t/expressions.lua && resty -I /lua /t/http3.lua && resty -I /lua /t/ja4.lua && \
 		resty -I /lua /t/compress.lua && \
 		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_health 1m" \
-			--shdict "edgeweir_challenge 1m" --shdict "edgeweir_policy_logs 1m" /t/content.lua && \
+			--shdict "edgeweir_challenge 1m" --shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_purge_rate 1m" /t/content.lua && \
 		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" /t/probehealth.lua && \
 		resty -I /lua --shdict "edgeweir_stats 4m" --shdict "edgeweir_topstats 4m" --shdict "edgeweir_logs 1m" /t/waf.lua && \
 		resty -I /lua --shdict "edgeweir_challenge 4m" /t/challenge.lua && \

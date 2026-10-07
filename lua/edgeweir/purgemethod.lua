@@ -2,8 +2,9 @@
 -- site-content-v1).
 --
 -- A PURGE request for a site with the method on is answered at the edge:
--- at most RATE requests per second per site and client address on this
--- node (429 purge-rate-limited), then the request's URL and X-Purge-Key go
+-- at most RATE requests per second per site and client network (the
+-- address, an IPv6 /64, as CC and bans group clients) on this node (429
+-- purge-rate-limited), then the request's URL and X-Purge-Key go
 -- to the agent over its unix socket (agent_socket). The agent checks the
 -- key, allows a site RATE accepted requests per second (so clients without
 -- the key cannot use up the site's budget, only their own) and
@@ -13,6 +14,7 @@
 -- Retry-After) or 503 (purge-unavailable). Answers are JSON and never
 -- cached. The key never enters the data plane's shared memory.
 local cjson = require("cjson.safe")
+local ipaddr = require("edgeweir.ipaddr")
 
 local _M = { socket = "" }
 
@@ -38,11 +40,13 @@ local function answer(status, body, code, retry_after)
   return ngx.exit(ngx.HTTP_OK)
 end
 
--- limited reports whether the site took RATE PURGE requests from addr this
--- second.
+-- limited reports whether the site took RATE PURGE requests from the
+-- client network of addr this second. The counters live in their own
+-- dict: their keys are chosen by clients and must not crowd out the data
+-- plane's state (edgeweir_meta).
 function _M.limited(site_id, addr, now)
-  local dict = ngx.shared.edgeweir_meta
-  local key = "purge:" .. site_id .. ":" .. tostring(addr) .. ":" .. tostring(now)
+  local dict = ngx.shared.edgeweir_purge_rate
+  local key = "purge:" .. site_id .. ":" .. (ipaddr.client_network(addr) or tostring(addr)) .. ":" .. tostring(now)
   local n = dict:incr(key, 1, 0, 2)
   return n == nil or n > _M.RATE
 end

@@ -384,6 +384,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictChallenge:  p.ChallengeDictMB,
 		configir.DictCC:         p.CCDictMB,
 		configir.DictTags:       p.TagDictMB,
+		configir.DictPurgeRate:  1,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {

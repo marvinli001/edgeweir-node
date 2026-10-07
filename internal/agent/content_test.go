@@ -119,12 +119,13 @@ func TestAgentPurgeMethod(t *testing.T) {
 	for i := 0; i < 41 && !limited; i++ {
 		status, out := agentPost(t, socket, "/v1/purge", map[string]string{"site_id": "site-p", "url": url, "key": "s3cret-purge-key"})
 		switch {
+		case i == 0 && (status != http.StatusAccepted || out["task_id"] == nil):
+			// The 40 wrong keys must not have used up the site's budget.
+			t.Fatalf("the right key after 40 wrong ones: %d %v", status, out)
 		case status == http.StatusTooManyRequests && out["error"] == "purge-rate-limited" && out["retry_after"] == float64(1):
 			limited = true
 		case status != http.StatusAccepted:
 			t.Fatalf("accepted request %d: %d %v", i+1, status, out)
-		case i == 0 && out["task_id"] == nil:
-			t.Fatalf("the right key after 40 wrong ones: %v", out)
 		}
 	}
 	if !limited {
