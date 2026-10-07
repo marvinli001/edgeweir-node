@@ -7,6 +7,7 @@ package render
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -324,13 +325,17 @@ func (p Params) Validate() error {
 
 type data struct {
 	Params
-	ConfID       string
-	SharedDicts  []sharedDict
-	EdgeServers  []edgeServer
-	CacheZones   []configir.CacheZone
-	DefaultZone  string
-	OriginLayers []originLayer
-	Balancers    []string
+	ConfID      string
+	SharedDicts []sharedDict
+	// RegexCacheEntries sizes lua_regex_cache_max_entries when site or
+	// offline host patterns (domains-v2) are matched with ngx.re's "jo": each
+	// is compiled once per worker. 0: nginx's default (1024).
+	RegexCacheEntries int
+	EdgeServers       []edgeServer
+	CacheZones        []configir.CacheZone
+	DefaultZone       string
+	OriginLayers      []originLayer
+	Balancers         []string
 	// ModSecurityConf is the CRS configuration (ModSecurityConf) when a
 	// site runs the CRS; WAFBodyLimits are the request body limits of the
 	// edge layer's CRS locations.
@@ -439,6 +444,94 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 	return out, nil
 }
 
+// matchServer is the server of a suffix or pattern domain (domains-v2).
+type matchServer struct {
+	site    configir.Site
+	name    string
+	suffix  string
+	pattern bool
+	order   uint64
+}
+
+// regexCacheEntries is lua_regex_cache_max_entries for a plan with host
+// patterns: room for the rules' patterns (nginx's default 1024) and every
+// host pattern of the sites and offline hosts twice. 0 without patterns.
+func regexCacheEntries(plan *configir.Plan) int {
+	n := 0
+	for _, site := range plan.Sites {
+		for _, d := range site.Domains {
+			if d.Match == configir.MatchRegex {
+				n++
+			}
+		}
+	}
+	for _, h := range plan.OfflineHosts {
+		if h.Match == configir.MatchRegex {
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return 1024 + 2*n
+}
+
+// hasMatchDomains tells whether a plan has suffix or pattern domains.
+func hasMatchDomains(plan *configir.Plan) bool {
+	for _, site := range plan.Sites {
+		for _, d := range site.Domains {
+			if d.Match != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// siteServer is site's server on listener l, from the listener's generic
+// server s, with the given server names.
+func siteServer(s edgeServer, site configir.Site, l configir.Listener, names []string) edgeServer {
+	custom := s
+	custom.Listen = withoutDefault(s.Listen, false)
+	custom.QUICListen = withoutDefault(s.QUICListen, true)
+	custom.ServerName = strings.Join(names, " ")
+	custom.HTTP2 = (l.TLS && site.TLS.HTTP2) || site.GRPC
+	custom.HTTP3 = l.TLS && site.TLS.HTTP3
+	custom.Gzip, custom.GzipMinLength = site.TLS.Gzip, max(site.TLS.GzipMinLength, 1)
+	custom.GzipLevel = site.TLS.GzipLevel
+	custom.GzipTypes = strings.Join(site.TLS.GzipTypes, " ")
+	custom.Brotli, custom.BrotliLevel = site.TLS.Brotli, site.TLS.BrotliLevel
+	custom.BrotliMinLength, custom.BrotliTypes = max(site.TLS.BrotliMinLength, 1), strings.Join(site.TLS.BrotliTypes, " ")
+	custom.Zstd, custom.ZstdLevel = site.TLS.Zstd, site.TLS.ZstdLevel
+	custom.ZstdMinLength, custom.ZstdTypes = max(site.TLS.ZstdMinLength, 1), strings.Join(site.TLS.ZstdTypes, " ")
+	custom.CipherProfile = site.TLS.CipherProfile
+	return custom
+}
+
+// withoutDefault drops default_server from listen arguments (and reuseport
+// from QUIC ones: only the listener's default server sets it).
+func withoutDefault(listen []string, quic bool) []string {
+	out := make([]string, len(listen))
+	for i, arg := range listen {
+		arg = strings.ReplaceAll(arg, " default_server", "")
+		if quic {
+			arg = strings.ReplaceAll(arg, " reuseport", "")
+		}
+		out[i] = arg
+	}
+	return out
+}
+
+func compareBool(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	}
+	return -1
+}
+
 // edgeServer is one server block of the edge layer.
 type edgeServer struct {
 	Listen        []string // listen directive arguments
@@ -476,10 +569,27 @@ type edgeServer struct {
 // prior knowledge (h2c; nginx tells it from HTTP/1.1 by the connection
 // preface), and that site's servers enable HTTP/2 on every listener
 // (nginx answers 421 to HTTP/2 requests for a server without it).
+//
+// Server names follow the site lookup of edgeweir.store (domains-v2) so a
+// request gets the server-level settings (HTTP/2, HTTP/3, compression,
+// ciphers) of the site that serves it. nginx tries exact names, then the
+// longest "*." wildcard (any depth), then regular expressions in the
+// order they appear. Without suffix or pattern domains the names are
+// rendered as before. With them, "*.x" becomes ~^[^.]+\.x$ (one label),
+// and after every site's server each ".x" (longest first) and each
+// pattern (by order and site id) gets a server of its own with the
+// settings of its site. When unknown hosts or node IP access go to the
+// default site (unknown-host-v1), its server is the listener's
+// default_server.
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
 	hasTLS := false
 	grpc := slices.ContainsFunc(plan.Sites, func(s configir.Site) bool { return s.GRPC })
+	forms := hasMatchDomains(plan)
+	defaultSite := ""
+	if u := plan.UnknownHosts; u != nil && (u.UnknownHost == configir.UnknownHostSite || u.IPAccess == configir.UnknownHostSite) {
+		defaultSite = u.DefaultSiteID
+	}
 	for _, l := range plan.Listeners {
 		hasTLS = hasTLS || l.TLS
 		suffix := " default_server"
@@ -503,7 +613,9 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				s.QUICListen = append(s.QUICListen, fmt.Sprintf("[::]:%d quic reuseport default_server", l.Port))
 			}
 		}
+		generic := len(out)
 		out = append(out, s)
+		var matches []matchServer
 		for _, site := range plan.Sites {
 			if site.TLS == nil || (l.TLS && site.CertificateID == "") {
 				continue
@@ -520,36 +632,48 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				if l.TLS && domain.TLSPending {
 					continue
 				}
-				name := domain.Name
-				if domain.Wildcard {
-					name = "*." + name
+				switch {
+				case domain.Match == configir.MatchSuffix:
+					matches = append(matches, matchServer{site: site, name: `~^.+\.` + regexp.QuoteMeta(domain.Name) + `$`, suffix: domain.Name})
+				case domain.Match == configir.MatchRegex:
+					matches = append(matches, matchServer{site: site, name: `"~^(?:` + domain.Name + `)$"`, pattern: true, order: domain.Order})
+				case domain.Wildcard && forms:
+					names = append(names, `~^[^.]+\.`+regexp.QuoteMeta(domain.Name)+`$`)
+				case domain.Wildcard:
+					names = append(names, "*."+domain.Name)
+				default:
+					names = append(names, domain.Name)
 				}
-				names = append(names, name)
 			}
-			if len(names) == 0 {
+			isDefault := site.ID == defaultSite
+			if len(names) == 0 && !isDefault {
 				continue
 			}
-			custom := s
-			custom.Listen = make([]string, len(s.Listen))
-			for i, listen := range s.Listen {
-				custom.Listen[i] = strings.ReplaceAll(listen, " default_server", "")
+			if len(names) == 0 {
+				names = []string{"_"}
 			}
-			custom.ServerName = strings.Join(names, " ")
-			custom.HTTP2 = (l.TLS && site.TLS.HTTP2) || site.GRPC
-			custom.HTTP3 = l.TLS && site.TLS.HTTP3
-			custom.QUICListen = make([]string, len(s.QUICListen))
-			for i, listen := range s.QUICListen {
-				custom.QUICListen[i] = strings.ReplaceAll(strings.ReplaceAll(listen, " default_server", ""), " reuseport", "")
+			custom := siteServer(s, site, l, names)
+			if isDefault {
+				// The default site takes the listener's default_server (and
+				// the first QUIC listen's reuseport) from the generic server.
+				custom.Listen, custom.QUICListen = s.Listen, s.QUICListen
+				out[generic].Listen = withoutDefault(s.Listen, false)
+				out[generic].QUICListen = withoutDefault(s.QUICListen, true)
 			}
-			custom.Gzip, custom.GzipMinLength = site.TLS.Gzip, max(site.TLS.GzipMinLength, 1)
-			custom.GzipLevel = site.TLS.GzipLevel
-			custom.GzipTypes = strings.Join(site.TLS.GzipTypes, " ")
-			custom.Brotli, custom.BrotliLevel = site.TLS.Brotli, site.TLS.BrotliLevel
-			custom.BrotliMinLength, custom.BrotliTypes = max(site.TLS.BrotliMinLength, 1), strings.Join(site.TLS.BrotliTypes, " ")
-			custom.Zstd, custom.ZstdLevel = site.TLS.Zstd, site.TLS.ZstdLevel
-			custom.ZstdMinLength, custom.ZstdTypes = max(site.TLS.ZstdMinLength, 1), strings.Join(site.TLS.ZstdTypes, " ")
-			custom.CipherProfile = site.TLS.CipherProfile
 			out = append(out, custom)
+		}
+		// Suffixes longest first (then by name), patterns by order and site.
+		slices.SortStableFunc(matches, func(a, b matchServer) int {
+			switch {
+			case a.pattern != b.pattern:
+				return compareBool(a.pattern, b.pattern)
+			case a.pattern:
+				return cmp.Or(cmp.Compare(a.order, b.order), cmp.Compare(a.site.ID, b.site.ID))
+			}
+			return cmp.Or(cmp.Compare(len(b.suffix), len(a.suffix)), cmp.Compare(a.suffix, b.suffix))
+		})
+		for _, m := range matches {
+			out = append(out, siteServer(s, m.site, l, []string{m.name}))
 		}
 	}
 	out = append(out, edgeServer{Listen: []string{"unix:" + p.EdgeSocket + " default_server"}, Local: true, ServerName: "_"})
@@ -656,6 +780,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		// Whole milliseconds, at least one (nginx's time syntax).
 		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
 		SharedDicts:       dicts,
+		RegexCacheEntries: regexCacheEntries(plan),
 		EdgeServers:       edge,
 		ForwardedFor:      forwardedFor,
 		ForwardedMap:      forwardedFor == forwardedForChain,
