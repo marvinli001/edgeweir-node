@@ -640,8 +640,11 @@ function _M.header_filter(waf_location)
     end
   end
   if site then
-    -- Responses the node made itself keep their own charset.
-    if site.charset and not h["X-Edgeweir-Error"] then
+    -- Only responses of the origin layer (fetched or from the cache) get
+    -- the site's charset: what the node makes itself (challenge pages and
+    -- scripts, PURGE answers, error pages) keeps its own.
+    local proxied = (cs ~= nil and cs ~= "") or (var.upstream_status or "") ~= ""
+    if site.charset and proxied and not h["X-Edgeweir-Error"] then
       charset.apply(h, site.charset)
     end
     if site._response_rules then
