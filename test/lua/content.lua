@@ -60,9 +60,11 @@ test("cache key: exclude drops listed names and prefixes, raw or decoded", funct
   local a = cachekey.build(s, { scheme = "https", host = "s.test", path = "/p", args = "id=1&utm_source=a" }, 0)
   local b = cachekey.build(s, { scheme = "https", host = "s.test", path = "/p", args = "utm_campaign=b&id=1" }, 0)
   eq(a, b)
-  -- Patterns only mean something under exclude.
-  key = cachekey.prepare({ query = "include", query_params = { "id" } })
+  -- Patterns only mean something under exclude: an included "v*" is the
+  -- literal name, as before.
+  key = cachekey.prepare({ query = "include", query_params = { "id", "v*" } })
   eq(cachekey.normalize_query("id=1&utm_a=2", key), "id=1")
+  eq(cachekey.normalize_query("id=1&v*=a&vx=b", key), "id=1&v*=a", "literal v*")
 end)
 
 test("Set-Cookie: carried lines survive commas and percent signs", function()
@@ -180,6 +182,9 @@ test("maintenance: allowed addresses and paths, the page and Retry-After", funct
     allow_cidrs = { "192.0.2.0/24", "2001:db8::/32" }, allow_prefixes = { "/health", "/api/status" } } })
   eq(router.maintenance_allowed(s, "192.0.2.7", "/"), true)
   eq(router.maintenance_allowed(s, "2001:db8::1", "/x"), true)
+  -- IPv4 clients are looked up as IPv4, mapped or not (configir turns a
+  -- mapped allow prefix into IPv4 for this reason).
+  eq(router.maintenance_allowed(s, "::ffff:192.0.2.7", "/"), true, "mapped client")
   eq(router.maintenance_allowed(s, "198.51.100.1", "/healthz"), true, "prefix, not segment")
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1"), true)
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/"), false)
@@ -234,13 +239,16 @@ test("origin tries and status retries come from the site table", function()
   eq(s.no_status_retry, false)
 end)
 
-test("PURGE: at most RATE requests per site and second on a node", function()
+test("PURGE: at most RATE requests per site, client address and second on a node", function()
   for i = 1, purgemethod.RATE do
-    eq(purgemethod.limited("site-a", 1000), false, "request " .. i)
+    eq(purgemethod.limited("site-a", "192.0.2.1", 1000), false, "request " .. i)
   end
-  eq(purgemethod.limited("site-a", 1000), true, "over the rate")
-  eq(purgemethod.limited("site-b", 1000), false, "per site")
-  eq(purgemethod.limited("site-a", 1001), false, "per second")
+  eq(purgemethod.limited("site-a", "192.0.2.1", 1000), true, "over the rate")
+  -- Another client's requests (the operator's, with the key) still go to
+  -- the agent, which limits the site's accepted requests.
+  eq(purgemethod.limited("site-a", "198.51.100.7", 1000), false, "per client address")
+  eq(purgemethod.limited("site-b", "192.0.2.1", 1000), false, "per site")
+  eq(purgemethod.limited("site-a", "192.0.2.1", 1001), false, "per second")
   local s = site({ purge = true })
   eq(s.purge, true)
   eq(site({}).purge, false)

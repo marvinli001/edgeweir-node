@@ -3,6 +3,8 @@ package configir
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -73,7 +75,9 @@ func TestSiteContentSettings(t *testing.T) {
 		t.Fatalf("charset = %+v", got.Charset)
 	}
 	m := got.Maintenance
-	if m.Template != "<p>{{status}}</p>" || m.RetryAfter != 120 || !slices.Equal(m.AllowCIDRs, []string{"192.0.2.0/24", "2001:db8::/32", "::ffff:102:304/128"}) ||
+	// The IPv4-mapped prefix (as the console writes it) becomes IPv4: the data
+	// plane looks IPv4 clients up as IPv4.
+	if m.Template != "<p>{{status}}</p>" || m.RetryAfter != 120 || !slices.Equal(m.AllowCIDRs, []string{"192.0.2.0/24", "2001:db8::/32", "1.2.3.4/32"}) ||
 		!slices.Equal(m.AllowPrefixes, []string{"/health", "/status/"}) {
 		t.Fatalf("maintenance = %+v", m)
 	}
@@ -135,11 +139,12 @@ func TestCacheKeyExclude(t *testing.T) {
 	if key.Query != QueryExclude || !slices.Equal(key.QueryParams, []string{"fbclid", "utm_*"}) || len(warnings) != 3 {
 		t.Fatalf("key = %+v, warnings %q", key, warnings)
 	}
-	// Patterns belong to EXCLUDE only.
+	// Patterns belong to EXCLUDE only: an included name keeps "*" as an
+	// ordinary character, as before proto v0.24.0.
 	key, warnings = buildCacheKey(&nodev1.CacheKeyPolicy{
-		Query: nodev1.CacheKeyQuery_CACHE_KEY_QUERY_INCLUDE, QueryParams: []string{"id", "utm_*"},
+		Query: nodev1.CacheKeyQuery_CACHE_KEY_QUERY_INCLUDE, QueryParams: []string{"id", "v*", "a*b", "x=y"},
 	})
-	if key.Query != QueryInclude || !slices.Equal(key.QueryParams, []string{"id"}) || len(warnings) != 1 {
+	if key.Query != QueryInclude || !slices.Equal(key.QueryParams, []string{"id", "v*", "a*b"}) || len(warnings) != 1 {
 		t.Fatalf("include key = %+v, warnings %q", key, warnings)
 	}
 }
@@ -310,4 +315,32 @@ func siteJSON(t *testing.T, s *Site) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// TestErrorRedirectVectors checks the error page redirect URLs shared with
+// the console (testdata/error_redirect_vectors.json): the node accepts
+// exactly what the console saves, so no saved page rejects a configuration.
+func TestErrorRedirectVectors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "error_redirect_vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Cases []struct {
+			Value string `json:"value"`
+			Valid bool   `json:"valid"`
+			Note  string `json:"note"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Cases) < 30 {
+		t.Fatalf("only %d cases", len(v.Cases))
+	}
+	for _, c := range v.Cases {
+		if got := validErrorRedirect(c.Value); got != c.Valid {
+			t.Errorf("%s (%q): valid = %v, want %v", c.Note, c.Value, got, c.Valid)
+		}
+	}
 }

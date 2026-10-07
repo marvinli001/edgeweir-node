@@ -3,8 +3,10 @@ package configir
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
@@ -94,7 +96,13 @@ func buildMaintenance(m *nodev1.Maintenance) (*Maintenance, error) {
 		if err != nil || prefix.Masked() != prefix {
 			return nil, fmt.Errorf("%w: invalid maintenance CIDR %q", ErrRejected, c)
 		}
-		out.AllowCIDRs = append(out.AllowCIDRs, c)
+		// The data plane looks IPv4 clients up as IPv4 (a mapped client
+		// address is unmapped first), so an IPv4-mapped prefix becomes the
+		// IPv4 prefix it covers; a shorter one covers no mapped address only.
+		if a := prefix.Addr(); a.Is4In6() && prefix.Bits() >= 96 {
+			prefix = netip.PrefixFrom(a.Unmap(), prefix.Bits()-96)
+		}
+		out.AllowCIDRs = append(out.AllowCIDRs, prefix.String())
 	}
 	for _, p := range m.GetAllowedPathPrefixes() {
 		if !strings.HasPrefix(p, "/") || len(p) > 1024 || hasControl(p) || strings.ContainsAny(p, " ?#") {
@@ -218,18 +226,64 @@ func (p *Plan) MaxRequestBody() uint64 {
 // placeholders are replaced: printable ASCII without spaces.
 var errorRedirectRE = regexp.MustCompile(`^[\x21-\x7e]+$`)
 
+// errorRedirectAbsRE matches an absolute redirect URL as the console takes
+// it too: http(s), "//", a host of DNS characters or a bracketed IPv6
+// literal (no user information, no escapes), an optional port, then a
+// path, query or fragment. URL parsers repair other shapes differently
+// (WHATWG reads "https:example.com" as https://example.com/, Go as an
+// opaque URL).
+var errorRedirectAbsRE = regexp.MustCompile(`^https?://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:[/?#][\x21-\x7e]*)?$`)
+
+// validEscapes reports whether every "%" of s starts an escape of two hex
+// digits.
+func validEscapes(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && (i+2 >= len(s) || !isHexDigit(s[i+1]) || !isHexDigit(s[i+2])) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
 // validErrorRedirect reports whether u is a valid redirect URL of an error
 // page: an absolute http(s) URL or a local path, whose only placeholders
-// are {{status}} and {{request_id}}.
+// are {{status}} and {{request_id}} and whose "%" each start an escape.
+// The console applies the same rule (@edgeweir/contract validErrorRedirect);
+// shared vectors: testdata/error_redirect_vectors.json.
 func validErrorRedirect(u string) bool {
 	if len(u) > maxErrorRedirectURL || !errorRedirectRE.MatchString(u) {
 		return false
 	}
 	bare := strings.NewReplacer("{{status}}", "0", "{{request_id}}", "0").Replace(u)
-	if strings.Contains(bare, "{{") || strings.Contains(bare, "}}") {
+	if strings.Contains(bare, "{{") || strings.Contains(bare, "}}") || strings.Contains(bare, "\\") || !validEscapes(bare) {
 		return false
 	}
-	return validRedirectLocation(bare)
+	if strings.HasPrefix(bare, "/") {
+		return !strings.HasPrefix(bare, "//")
+	}
+	if !errorRedirectAbsRE.MatchString(bare) || !validRedirectLocation(bare) {
+		return false
+	}
+	parsed, err := url.Parse(bare)
+	if err != nil {
+		return false
+	}
+	// As strict as the WHATWG parser: ports up to 65535, IPv6 literals that parse.
+	if p := parsed.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n > 65535 {
+			return false
+		}
+	}
+	if strings.HasPrefix(parsed.Host, "[") {
+		if a, err := netip.ParseAddr(parsed.Hostname()); err != nil || !a.Is6() || a.Zone() != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // content holds a site's validated proto v0.24.0 settings until the site

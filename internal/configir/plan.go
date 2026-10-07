@@ -918,12 +918,13 @@ func buildCacheKey(k *nodev1.CacheKeyPolicy) (CacheKey, []string) {
 	}
 	if out.Query == QueryInclude || out.Query == QueryExclude {
 		for _, q := range k.GetQueryParams() {
-			// "*" ends an excluded name only (a prefix pattern).
-			name := q
+			// "*" ends an excluded name only (a prefix pattern); an included
+			// name keeps it as an ordinary character, as before proto v0.24.0.
+			name, invalid := q, "&=# \t\r\n"
 			if out.Query == QueryExclude {
-				name = strings.TrimSuffix(q, "*")
+				name, invalid = strings.TrimSuffix(q, "*"), "&=#* \t\r\n"
 			}
-			if name == "" || len(q) > 128 || strings.ContainsAny(name, "&=#* \t\r\n") {
+			if name == "" || len(q) > 128 || strings.ContainsAny(name, invalid) {
 				warnings = append(warnings, fmt.Sprintf("cache key query parameter %q ignored", q))
 				continue
 			}

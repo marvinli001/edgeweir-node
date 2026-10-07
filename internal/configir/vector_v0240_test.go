@@ -63,7 +63,9 @@ func TestContentHashVectorV0240(t *testing.T) {
 	Canonicalize(cfg)
 	s1 := vectorSite(cfg, "s1")
 	if m := s1.GetMaintenance(); !slices.Equal(m.GetAllowedCidrs(), []string{"192.0.2.0/24", "2001:db8::/32"}) ||
-		!slices.Equal(m.GetAllowedPathPrefixes(), []string{"/health", "/status"}) {
+		// UTF-8 byte order ("/！" is EF BC 81, "/😀" F0 9F 98 80), which the
+		// console's canonical form (and so the hash) must use too.
+		!slices.Equal(m.GetAllowedPathPrefixes(), []string{"/health", "/status", "/！", "/😀"}) {
 		t.Errorf("canonical maintenance lists %v", m)
 	}
 	if n := cfg.GetCacheZones()[0].GetNodeSizes(); n[0].GetNodeId() != "node-a" || n[1].GetNodeId() != "node-b" {
