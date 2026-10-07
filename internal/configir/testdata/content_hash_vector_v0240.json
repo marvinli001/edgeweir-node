@@ -71,9 +71,7 @@
             "id": "r2",
             "priority": 5,
             "match": {
-              "pathPrefixes": [
-                "/account/"
-              ]
+              "pathPrefixes": ["/account/"]
             },
             "action": "CACHE_ACTION_CACHE",
             "edgeTtlSeconds": 30,
@@ -84,9 +82,7 @@
             "id": "r1",
             "priority": 10,
             "match": {
-              "pathPrefixes": [
-                "/"
-              ]
+              "pathPrefixes": ["/"]
             },
             "action": "CACHE_ACTION_CACHE",
             "edgeTtlSeconds": 60,
@@ -97,11 +93,7 @@
         "cacheGeneration": "1",
         "cacheKey": {
           "query": "CACHE_KEY_QUERY_EXCLUDE",
-          "queryParams": [
-            "fbclid",
-            "gclid",
-            "utm_*"
-          ],
+          "queryParams": ["fbclid", "gclid", "utm_*"],
           "sortQuery": true
         },
         "tls": {
@@ -109,9 +101,7 @@
           "http2": true,
           "gzip": true,
           "gzipMinLength": 256,
-          "gzipTypes": [
-            "text/css"
-          ],
+          "gzipTypes": ["text/css"],
           "cipherProfile": "modern",
           "gzipLevel": 6,
           "compressMaxLength": "8388608"
@@ -173,16 +163,8 @@
         "maintenance": {
           "template": "<h1>{{status}}</h1><p>{{request_id}} 维护中</p>",
           "retryAfterSeconds": 600,
-          "allowedCidrs": [
-            "2001:db8::/32",
-            "192.0.2.0/24",
-            "2001:db8::/32"
-          ],
-          "allowedPathPrefixes": [
-            "/status",
-            "/health",
-            "/status"
-          ]
+          "allowedCidrs": ["2001:db8::/32", "192.0.2.0/24", "2001:db8::/32"],
+          "allowedPathPrefixes": ["/status", "/health", "/status"]
         },
         "charset": {
           "name": "gbk",
