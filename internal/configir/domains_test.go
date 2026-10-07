@@ -226,6 +226,11 @@ func TestApplyDiffUnknownHosts(t *testing.T) {
 	if !proto.Equal(out.GetUnknownHosts(), target.UnknownHosts) {
 		t.Fatalf("unknown hosts %v", out.GetUnknownHosts())
 	}
+	// Diff (the fake console's) carries it too.
+	target.ContentHash = h
+	if out, err := ApplyDiff(base, Diff(base, target)); err != nil || !proto.Equal(out.GetUnknownHosts(), target.UnknownHosts) {
+		t.Fatalf("Diff: %v, %v", out.GetUnknownHosts(), err)
+	}
 }
 
 // TestHostMatcherSharedVectors runs the host lookup vectors the console

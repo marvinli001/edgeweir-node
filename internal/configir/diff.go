@@ -133,6 +133,12 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 	if p := target.GetPlatformErrorPages(); p != nil {
 		d.PlatformErrorPages = proto.CloneOf(p)
 	}
+	if ca := target.GetClientAddress(); ca != nil {
+		d.ClientAddress = proto.CloneOf(ca)
+	}
+	if u := target.GetUnknownHosts(); u != nil {
+		d.UnknownHosts = proto.CloneOf(u)
+	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {
 		old[s.GetId()] = s
