@@ -235,6 +235,11 @@ var errorRedirectRE = regexp.MustCompile(`^[\x21-\x7e]+$`)
 // IPv4 address, Go as an opaque URL and a host name).
 var errorRedirectAbsRE = regexp.MustCompile(`^https?://(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|(?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:[/?#][\x21-\x7e]*)?$`)
 
+// errorRedirectAuthorityPlaceholderRE matches a placeholder in the host or
+// port, which is checked as written: valid as "0", it may be invalid with
+// its value (http://{{status}}.1.2.3/ is sent as http://502.1.2.3/).
+var errorRedirectAuthorityPlaceholderRE = regexp.MustCompile(`^https?://[^/?#]*\{\{`)
+
 // validEscapes reports whether every "%" of s starts an escape of two hex
 // digits.
 func validEscapes(s string) bool {
@@ -252,11 +257,12 @@ func isHexDigit(c byte) bool {
 
 // validErrorRedirect reports whether u is a valid redirect URL of an error
 // page: an absolute http(s) URL or a local path, whose only placeholders
-// are {{status}} and {{request_id}} and whose "%" each start an escape.
+// are {{status}} and {{request_id}} (not in the host or port) and whose
+// "%" each start an escape.
 // The console applies the same rule (@edgeweir/contract validErrorRedirect);
 // shared vectors: testdata/error_redirect_vectors.json.
 func validErrorRedirect(u string) bool {
-	if len(u) > maxErrorRedirectURL || !errorRedirectRE.MatchString(u) {
+	if len(u) > maxErrorRedirectURL || !errorRedirectRE.MatchString(u) || errorRedirectAuthorityPlaceholderRE.MatchString(u) {
 		return false
 	}
 	bare := strings.NewReplacer("{{status}}", "0", "{{request_id}}", "0").Replace(u)

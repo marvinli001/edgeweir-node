@@ -239,7 +239,7 @@ test("origin tries and status retries come from the site table", function()
   eq(s.no_status_retry, false)
 end)
 
-test("PURGE: at most RATE requests per site, client address and second on a node", function()
+test("PURGE: at most RATE requests per site, client network and second on a node", function()
   for i = 1, purgemethod.RATE do
     eq(purgemethod.limited("site-a", "192.0.2.1", 1000), false, "request " .. i)
   end

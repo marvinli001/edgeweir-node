@@ -19,7 +19,7 @@ local ipaddr = require("edgeweir.ipaddr")
 local _M = { socket = "" }
 
 -- RATE is how many PURGE requests per second a site takes from one client
--- address on this node (the agent applies the same number to the site's
+-- network on this node (the agent applies the same number to the site's
 -- accepted requests).
 _M.RATE = 20
 -- TIMEOUT bounds the agent's answer (it waits for the console).

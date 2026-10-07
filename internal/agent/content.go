@@ -254,9 +254,9 @@ func (a *Agent) purgeMethod(ctx context.Context, req purgeRequest) (int, purgeAn
 }
 
 // purgeRate is how many accepted PURGE requests (right key) a site takes
-// per second on this node. The data plane limits every client address to
-// as many requests first, so clients without the key cannot use up a
-// site's budget.
+// per second on this node. The data plane limits every client network (an
+// IPv4 address, an IPv6 /64) to as many requests first, so clients without
+// the key cannot use up a site's budget.
 const purgeRate = 20
 
 // purgeLimiter counts the accepted PURGE requests of each site in fixed
