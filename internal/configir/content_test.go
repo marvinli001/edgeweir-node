@@ -344,3 +344,20 @@ func TestErrorRedirectVectors(t *testing.T) {
 		}
 	}
 }
+
+// TestMaintenanceMappedCIDRs: IPv4-mapped allow prefixes of /96 and longer
+// become the IPv4 prefixes they cover, which the data plane looks IPv4
+// clients up in.
+func TestMaintenanceMappedCIDRs(t *testing.T) {
+	for in, want := range map[string]string{
+		"::ffff:0:0/96":       "0.0.0.0/0",
+		"::ffff:c000:200/120": "192.0.2.0/24",
+		"::ffff:102:304/128":  "1.2.3.4/32",
+		"2001:db8::/32":       "2001:db8::/32",
+	} {
+		m, err := buildMaintenance(&nodev1.Maintenance{AllowedCidrs: []string{in}})
+		if err != nil || len(m.AllowCIDRs) != 1 || m.AllowCIDRs[0] != want {
+			t.Errorf("%s: %v %v, want %s", in, m, err, want)
+		}
+	}
+}

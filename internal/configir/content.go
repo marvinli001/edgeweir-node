@@ -227,12 +227,13 @@ func (p *Plan) MaxRequestBody() uint64 {
 var errorRedirectRE = regexp.MustCompile(`^[\x21-\x7e]+$`)
 
 // errorRedirectAbsRE matches an absolute redirect URL as the console takes
-// it too: http(s), "//", a host of DNS characters or a bracketed IPv6
-// literal (no user information, no escapes), an optional port, then a
-// path, query or fragment. URL parsers repair other shapes differently
-// (WHATWG reads "https:example.com" as https://example.com/, Go as an
-// opaque URL).
-var errorRedirectAbsRE = regexp.MustCompile(`^https?://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:[/?#][\x21-\x7e]*)?$`)
+// it too: http(s), "//", a host that is a dotted-quad IPv4 address, a DNS
+// name whose last label starts with a letter or a bracketed IPv6 literal
+// (no user information, no escapes), an optional port, then a path, query
+// or fragment. URL parsers repair other shapes differently (WHATWG reads
+// "https:example.com" as https://example.com/ and "1.08" as an invalid
+// IPv4 address, Go as an opaque URL and a host name).
+var errorRedirectAbsRE = regexp.MustCompile(`^https?://(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|(?:[A-Za-z0-9-]+\.)*[A-Za-z][A-Za-z0-9-]*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:[/?#][\x21-\x7e]*)?$`)
 
 // validEscapes reports whether every "%" of s starts an escape of two hex
 // digits.
