@@ -478,8 +478,8 @@ type NodeConfig struct {
 	Certificates []*CertificateRef `protobuf:"bytes,7,rep,name=certificates,proto3" json:"certificates,omitempty"`
 	// CIDRs origins may use although they are special-purpose addresses
 	// (loopback, link-local, private, CGNAT...), which nodes otherwise refuse
-	// both as configured literals and as DNS answers. Set by the platform
-	// administrator; empty by default. Added in v0.2.1.
+	// both as configured literals and as DNS answers. Set by the operator;
+	// empty by default. Added in v0.2.1.
 	OriginAllowedCidrs []string `protobuf:"bytes,8,rep,name=origin_allowed_cidrs,json=originAllowedCidrs,proto3" json:"origin_allowed_cidrs,omitempty"`
 	// Feature identifiers every receiving agent must implement. Unknown features
 	// reject the whole configuration and retain last-known-good.
@@ -1254,7 +1254,7 @@ func (x *CacheZone) GetInactiveSeconds() uint32 {
 	return 0
 }
 
-// Site is one customer property: a set of domains, an origin pool and rules.
+// Site is one property: a set of domains, an origin pool and rules.
 type Site struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1666,7 +1666,7 @@ func (x *ErrorPage) GetTemplate() string {
 	return ""
 }
 
-// PlatformErrorPages are the platform administrator's templates, with the
+// PlatformErrorPages are the operator's platform-wide templates, with the
 // rules of ErrorPage. An empty template uses the node's built-in page.
 type PlatformErrorPages struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2113,7 +2113,7 @@ func (x *CcPolicy) GetCooldownSeconds() uint32 {
 	return 0
 }
 
-// PlatformProtection is set by platform administrators for every site.
+// PlatformProtection is set by the operator for every site.
 type PlatformProtection struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	UnderAttack          bool                   `protobuf:"varint,1,opt,name=under_attack,json=underAttack,proto3" json:"under_attack,omitempty"`
@@ -2867,7 +2867,7 @@ func (x *IpList) GetPlatform() bool {
 	return false
 }
 
-// HTTP and TLS policy. Cipher strings are never accepted from tenants.
+// HTTP and TLS policy. Ciphers come from a named profile, never a cipher string.
 type TlsOptions struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	ForceHttps            bool                   `protobuf:"varint,1,opt,name=force_https,json=forceHttps,proto3" json:"force_https,omitempty"`
