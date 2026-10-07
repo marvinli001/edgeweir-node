@@ -107,6 +107,29 @@ func TestAgentPurgeMethod(t *testing.T) {
 		}
 	}
 	e.console.SetPurgeError(nil)
+	// Requests without the right key never count against the site's
+	// budget: after 40 of them the right key still works, and the budget
+	// (20 a second) runs out only with accepted requests.
+	for range 40 {
+		if status, _ := agentPost(t, socket, "/v1/purge", map[string]string{"site_id": "site-p", "url": url, "key": "wrong-key-0123456789"}); status != 403 {
+			t.Fatalf("wrong key: %d", status)
+		}
+	}
+	limited := false
+	for i := 0; i < 41 && !limited; i++ {
+		status, out := agentPost(t, socket, "/v1/purge", map[string]string{"site_id": "site-p", "url": url, "key": "s3cret-purge-key"})
+		switch {
+		case status == http.StatusTooManyRequests && out["error"] == "purge-rate-limited" && out["retry_after"] == float64(1):
+			limited = true
+		case status != http.StatusAccepted:
+			t.Fatalf("accepted request %d: %d %v", i+1, status, out)
+		case i == 0 && out["task_id"] == nil:
+			t.Fatalf("the right key after 40 wrong ones: %v", out)
+		}
+	}
+	if !limited {
+		t.Fatal("41 accepted requests within two seconds were not rate limited")
+	}
 }
 
 // TestAgentCacheUsage: the agent measures the cache zone's directory and

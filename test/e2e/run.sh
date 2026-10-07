@@ -933,6 +933,8 @@ pass "content: Set-Cookie only on the fetched response, excluded utm_* parameter
 
 r=$(curl -s -D - -X PURGE -H 'Host: content.test' -H "X-Purge-Key: $PURGE_KEY" "$NODE/purge/me?x=1" | tr -d '\r')
 [ "$(status_of <<<"$r")" = 202 ] && grep -q '"task_id":"purge-1"' <<<"$r" || fail "PURGE with the key: $r"
+# content.test forces charset GBK; the node's own answer keeps its type.
+[ "$(header_of content-type <<<"$r")" = application/json ] || fail "the site's charset reached the PURGE answer: $r"
 grep -q '"url":"http://content.test/purge/me?x=1"' <<<"$(curl -fsS "$HELPER/purges")" || fail "the purge did not reach the console: $(curl -fsS "$HELPER/purges")"
 r=$(curl -s -D - -X PURGE -H 'Host: content.test' -H 'X-Purge-Key: wrong-key-0123456789' "$NODE/purge/me" | tr -d '\r')
 [ "$(status_of <<<"$r")" = 403 ] && [ "$(header_of x-edgeweir-error <<<"$r")" = purge-key-invalid ] || fail "PURGE with a wrong key: $r"

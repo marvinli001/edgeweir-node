@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -222,6 +223,8 @@ func (a *Agent) purgeMethod(ctx context.Context, req purgeRequest) (int, purgeAn
 		return http.StatusForbidden, purgeAnswer{Error: purgeKeyInvalid}
 	case len(req.URL) == 0 || len(req.URL) > 2048:
 		return http.StatusBadRequest, purgeAnswer{Error: purgeURLInvalid}
+	case !a.purgeLimit.allow(req.SiteID):
+		return http.StatusTooManyRequests, purgeAnswer{Error: purgeRateLimited, RetryAfter: 1}
 	}
 	ch := a.connectedCh.Load()
 	if ch == nil {
@@ -248,6 +251,40 @@ func (a *Agent) purgeMethod(ctx context.Context, req purgeRequest) (int, purgeAn
 	}
 	a.log.Info("PURGE request submitted", "site", req.SiteID, "task", resp.Msg.GetTaskId())
 	return http.StatusAccepted, purgeAnswer{TaskID: resp.Msg.GetTaskId()}
+}
+
+// purgeRate is how many accepted PURGE requests (right key) a site takes
+// per second on this node. The data plane limits every client address to
+// as many requests first, so clients without the key cannot use up a
+// site's budget.
+const purgeRate = 20
+
+// purgeLimiter counts the accepted PURGE requests of each site in fixed
+// one-second windows.
+type purgeLimiter struct {
+	mu     sync.Mutex
+	now    func() time.Time // nil: time.Now
+	window int64
+	counts map[string]int
+}
+
+// allow reports whether site may take one more accepted request in the
+// current second, and counts it.
+func (l *purgeLimiter) allow(site string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now
+	if l.now != nil {
+		now = l.now
+	}
+	if sec := now().Unix(); sec != l.window || l.counts == nil {
+		l.window, l.counts = sec, map[string]int{}
+	}
+	if l.counts[site] >= purgeRate {
+		return false
+	}
+	l.counts[site]++
+	return true
 }
 
 // samePurgeKey compares a PURGE key in constant time (of the digests, so

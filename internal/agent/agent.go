@@ -233,12 +233,15 @@ func (c *Config) setDefaults() {
 
 // Agent is the node runtime.
 type Agent struct {
-	cfg    Config
-	log    *slog.Logger
-	engine Engine
-	dp     DataPlane
-	ids    identity.Store
-	lkg    configstore.Store
+	cfg Config
+	log *slog.Logger
+
+	// purgeLimit limits the accepted PURGE requests of each site.
+	purgeLimit purgeLimiter
+	engine     Engine
+	dp         DataPlane
+	ids        identity.Store
+	lkg        configstore.Store
 
 	geoFeatures []string
 	// moduleFeatures are the optional OpenResty modules this node can use
