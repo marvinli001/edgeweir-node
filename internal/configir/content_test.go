@@ -232,7 +232,7 @@ func TestCacheZoneNodeSizes(t *testing.T) {
 			t.Errorf("%s: err = %v, want rejection", name, err)
 		}
 	}
-	// The console's derivation (ADR-0033): 64 MiB for the default 10 GiB.
+	// The console's derivation (ADR-0035): 64 MiB for the default 10 GiB.
 	for size, want := range map[uint64]uint32{1024: 16, 10240: 64, 100 * 1024: 512, MaxCacheZoneMB: 512, 5000: 32} {
 		if got := keysZoneMB(size); got != want {
 			t.Errorf("keysZoneMB(%d) = %d, want %d", size, got, want)
