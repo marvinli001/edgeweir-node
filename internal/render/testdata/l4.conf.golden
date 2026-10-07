@@ -14,7 +14,7 @@ pcre_jit on;
 worker_shutdown_timeout 90000ms;
 
 events {
-    worker_connections 4096;
+    worker_connections 4184;
 }
 
 http {
@@ -58,7 +58,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "3ed1955c22440333",
+            conf_id = "2253413bd6b3a3b8",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -1223,7 +1223,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "3ed1955c22440333",
+            conf_id = "2253413bd6b3a3b8",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }
@@ -1307,6 +1307,63 @@ stream {
     server {
         listen 9000 udp reuseport;
         listen [::]:9000 udp reuseport;
+        preread_by_lua_block { require("edgeweir.l4").preread() }
+        proxy_pass edgeweir_l4;
+        log_by_lua_block { require("edgeweir.l4").log() }
+    }
+
+    # TCP 9100-9109.
+    server {
+        listen 9100-9109;
+        listen [::]:9100-9109;
+        preread_by_lua_block { require("edgeweir.l4").preread() }
+        proxy_pass edgeweir_l4;
+        log_by_lua_block { require("edgeweir.l4").log() }
+    }
+
+    # UDP 9100-9104: every datagram an origin answers goes back to the
+    # client (no proxy_responses); a session ends after its idle timeout.
+    server {
+        listen 9100-9104 udp reuseport;
+        listen [::]:9100-9104 udp reuseport;
+        preread_by_lua_block { require("edgeweir.l4").preread() }
+        proxy_pass edgeweir_l4;
+        log_by_lua_block { require("edgeweir.l4").log() }
+    }
+
+    # TCP 9200, TLS terminated.
+    server {
+        listen 9200 reuseport ssl;
+        listen [::]:9200 reuseport ssl;
+        # The application's certificate and minimum version come from the
+        # layer-4 table (edgeweir.l4); the bootstrap pair only satisfies
+        # nginx.
+        ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
+        ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+        ssl_session_tickets off;
+        ssl_client_hello_by_lua_block { require("edgeweir.l4").client_hello() }
+        ssl_certificate_by_lua_block { require("edgeweir.l4").certificate() }
+        preread_by_lua_block { require("edgeweir.l4").preread() }
+        proxy_pass edgeweir_l4;
+        log_by_lua_block { require("edgeweir.l4").log() }
+    }
+
+    # TCP 9201, PROXY protocol from clients, TLS terminated.
+    server {
+        listen 9201 reuseport ssl proxy_protocol;
+        listen [::]:9201 reuseport ssl proxy_protocol;
+        # The application's certificate and minimum version come from the
+        # layer-4 table (edgeweir.l4); the bootstrap pair only satisfies
+        # nginx.
+        ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
+        ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+        ssl_session_tickets off;
+        ssl_client_hello_by_lua_block { require("edgeweir.l4").client_hello() }
+        ssl_certificate_by_lua_block { require("edgeweir.l4").certificate() }
         preread_by_lua_block { require("edgeweir.l4").preread() }
         proxy_pass edgeweir_l4;
         log_by_lua_block { require("edgeweir.l4").log() }

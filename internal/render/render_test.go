@@ -27,6 +27,8 @@ func params() Params {
 		OriginSocket:  "/run/edgeweir-node/origin.sock",
 		ResolvConf:    "/etc/resolv.conf",
 		Resolvers:     []string{"127.0.0.11"},
+		// worker_connections counts the reuseport clones per CPU.
+		CPUs: 2,
 	}
 }
 

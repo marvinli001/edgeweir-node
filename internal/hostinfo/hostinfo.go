@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
+	"strings"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/version"
@@ -88,4 +90,31 @@ func Collect(engineVersion string) *nodev1.NodeInfo {
 		EngineVersion:     engineVersion,
 		IpAddresses:       IPAddresses(),
 	}
+}
+
+// OnlineCPUs is an upper bound of the CPUs nginx counts for
+// `worker_processes auto`: the online CPUs of the host (Linux), at least
+// the CPUs this process may run on.
+func OnlineCPUs() int {
+	n := runtime.NumCPU()
+	data, err := os.ReadFile("/sys/devices/system/cpu/online")
+	if err != nil {
+		return n
+	}
+	online := 0
+	for _, part := range strings.Split(strings.TrimSpace(string(data)), ",") {
+		first, last, isRange := strings.Cut(part, "-")
+		a, err := strconv.Atoi(first)
+		if err != nil {
+			return n
+		}
+		b := a
+		if isRange {
+			if b, err = strconv.Atoi(last); err != nil || b < a {
+				return n
+			}
+		}
+		online += b - a + 1
+	}
+	return max(n, online)
 }

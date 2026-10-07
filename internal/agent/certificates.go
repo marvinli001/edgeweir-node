@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -148,6 +149,31 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 			}
 		}
 		site.Certificate = &cert
+	}
+	// TCP applications that terminate TLS (l4-v2): any name of the
+	// certificate is accepted (edgeweir.l4 checks the SNI against them).
+	for i := range plan.L4Apps {
+		app := &plan.L4Apps[i]
+		if !app.TLS() {
+			continue
+		}
+		cert, ok := a.certificates[app.CertificateID+"/"+plan.Certificates[app.CertificateID]]
+		if !ok {
+			return fmt.Errorf("missing certificate for layer-4 application %s", app.ID)
+		}
+		if err := validMaterial(cert); err != nil {
+			return err
+		}
+		pair, _ := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
+		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		if err != nil {
+			return err
+		}
+		app.Certificate = &cert
+		app.CertificateNames = nil
+		for _, name := range leaf.DNSNames {
+			app.CertificateNames = append(app.CertificateNames, strings.ToLower(name))
+		}
 	}
 	return nil
 }

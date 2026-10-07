@@ -49,6 +49,9 @@ type SiteTable struct {
 	// HealthCertificate is the node's self-signed certificate for SNI
 	// health.edgeweir.invalid and handshakes without SNI (probe-health-v1).
 	HealthCertificate *configir.Certificate `json:"health_certificate,omitempty"`
+	// ClientAddress is the cluster's client address setting; the data
+	// plane uses its trusted proxies (never banned, not counted by CC).
+	ClientAddress *configir.ClientAddress `json:"client_address,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -60,6 +63,7 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.PlatformProtection = p.PlatformProtection
 	t.PlatformErrorPages = p.PlatformErrorPages
 	t.OfflineHosts = p.OfflineHosts
+	t.ClientAddress = p.ClientAddress
 	for _, z := range p.CacheZones {
 		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
 	}

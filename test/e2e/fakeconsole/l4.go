@@ -91,12 +91,16 @@ func initialL4Apps() []*nodev1.L4App {
 	relay.AcceptProxyProtocol, relay.ProxyProtocolVersion = true, 2
 	relay.BlockListIds = []string{"l4-blocked"}
 	limit := l4App("l4-limit", tcp, 9104, l4Origin("a", 7000, 1))
+	// l4-v2: a port range whose origin takes the arriving port; the fake
+	// console answers on 9200-9202 with the port's name.
+	rangeApp := l4App("l4-range", tcp, 9200, l4Origin("same", 0, 1))
+	rangeApp.PortEnd = 9202
 	limit.MaxConnections = 1
 	udpApp := l4App("l4-udp", udp, 9100, l4Origin("echo", 7001, 1))
 	udpApp.IdleTimeoutSeconds = 30
 	return []*nodev1.L4App{
 		l4App("l4-echo", tcp, 9100, l4Origin("a", 7000, 1), l4Origin("dead", 9, 100)),
-		limit, pp1, pp2, relay, udpApp,
+		limit, pp1, pp2, rangeApp, relay, udpApp,
 	}
 }
 
@@ -115,6 +119,10 @@ func serveL4Origins() {
 	go serveTCP(":7000", func(c net.Conn) { echoNamed(c, "a") })
 	go serveTCP(":7003", func(c net.Conn) { echoNamed(c, "b") })
 	go serveTCP(":7002", readProxyHeader)
+	for port := 9200; port <= 9202; port++ {
+		name := fmt.Sprintf("p%d", port)
+		go serveTCP(fmt.Sprintf(":%d", port), func(c net.Conn) { echoNamed(c, name) })
+	}
 	pc, err := net.ListenPacket("udp", ":7001")
 	if err != nil {
 		log.Fatal(err)

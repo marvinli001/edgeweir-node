@@ -414,7 +414,7 @@ type BanSource int32
 
 const (
 	BanSource_BAN_SOURCE_UNSPECIFIED BanSource = 0
-	// An operator or a tenant.
+	// The operator, in the console or through the API.
 	BanSource_BAN_SOURCE_MANUAL BanSource = 1
 	// A node's automatic mitigation, shared with the cluster.
 	BanSource_BAN_SOURCE_AUTO BanSource = 2

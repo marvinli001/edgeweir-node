@@ -1,8 +1,9 @@
 -- edgeweir.tls: certificates of the TLS listeners. A site's certificate
 -- for its domains; the node's health certificate for SNI
 -- health.edgeweir.invalid and handshakes without SNI
--- (edgeweir.probehealth); any other name, and a domain its site's
--- certificate does not cover yet (tls_pending), aborts the handshake.
+-- (edgeweir.probehealth); any other name, a domain its site's certificate
+-- does not cover yet (tls_pending) and a site's domain on a listener port
+-- the site is not bound to (edge-ports-v1) abort the handshake.
 local ssl = require("ngx.ssl")
 local hello = require("ngx.ssl.clienthello")
 local store = require("edgeweir.store")
@@ -12,6 +13,13 @@ local probehealth = require("edgeweir.probehealth")
 local cache = require("resty.lrucache").new(1000)
 local _M = {}
 
+-- on_port tells whether site is served on the listener of the handshake
+-- (edge-ports-v1); the local TLS socket (prefetches) has no port.
+local function on_port(site)
+  local port = ssl.server_port()
+  return not port or store.serves_port(site, port)
+end
+
 function _M.client_hello()
   local name = hello.get_client_hello_server_name()
   if probehealth.is_health_sni(name) then
@@ -20,7 +28,7 @@ function _M.client_hello()
   end
   local host = string.lower(name)
   local site = store.lookup_host(host)
-  if not site or not site.certificate or policy.tls_pending(site, host) then return ngx.exit(ngx.ERROR) end
+  if not site or not site.certificate or policy.tls_pending(site, host) or not on_port(site) then return ngx.exit(ngx.ERROR) end
   -- JA4 only for sites that read it; never fails the handshake.
   if site._ja4 then
     local ok, err = pcall(ja4.client_hello)
@@ -40,7 +48,7 @@ function _M.certificate()
   else
     local host = string.lower(name)
     site = store.lookup_host(host)
-    material = site and not policy.tls_pending(site, host) and site.certificate
+    material = site and not policy.tls_pending(site, host) and on_port(site) and site.certificate
   end
   if not material then return ngx.exit(ngx.ERROR) end
   local parsed = cache:get(material.fingerprint)

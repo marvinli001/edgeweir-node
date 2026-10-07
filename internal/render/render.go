@@ -12,9 +12,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -90,11 +93,17 @@ type Params struct {
 	WorkerProcesses string
 	// WorkerRlimitNofile raises the workers' open file limit (0: unset).
 	WorkerRlimitNofile uint64
-	WorkerConnections  int
-	ErrorLogLevel      string
-	SitesDictMB        int
-	StatsDictMB        int
-	PurgeDictMB        int
+	// WorkerConnections is the connections of a worker besides the
+	// listening sockets: Render adds those (nginx counts every listening
+	// socket, each reuseport clone too, against worker_connections).
+	WorkerConnections int
+	// CPUs bounds the workers of `worker_processes auto` when counting
+	// reuseport clones (0: runtime.NumCPU()).
+	CPUs          int
+	ErrorLogLevel string
+	SitesDictMB   int
+	StatsDictMB   int
+	PurgeDictMB   int
 	// BanDictMB sizes lua_shared_dict edgeweir_bans; BanCapacity is the
 	// number of bans it may hold (edgeweir.bans).
 	BanDictMB   int
@@ -171,6 +180,9 @@ func (p Params) WithDefaults() Params {
 	}
 	if p.WorkerConnections == 0 {
 		p.WorkerConnections = 4096
+	}
+	if p.CPUs == 0 {
+		p.CPUs = runtime.NumCPU()
 	}
 	if p.ErrorLogLevel == "" {
 		p.ErrorLogLevel = "notice"
@@ -330,6 +342,11 @@ type data struct {
 	// unset).
 	L4Servers         []l4Server
 	ShutdownTimeoutMS int64
+	// ForwardedFor is the X-Forwarded-For the edge sends to the origin
+	// layer (ForwardedMap: the maps of $edgeweir_forwarded_for are
+	// rendered).
+	ForwardedFor string
+	ForwardedMap bool
 	// ClientMaxBodySize is client_max_body_size of the http block
 	// (configir.Plan.MaxRequestBody).
 	ClientMaxBodySize string
@@ -429,6 +446,10 @@ type edgeServer struct {
 	HTTP3         bool
 	HTTP2         bool
 	ProxyProtocol bool
+	// RealIPHeader names the client in requests of TrustedCIDRs (client
+	// address mode header).
+	RealIPHeader  string
+	TrustedCIDRs  []string
 	Local         bool // the agent's unix socket listeners
 	TLS           bool
 	ServerName    string
@@ -469,6 +490,9 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			suffix += " proxy_protocol"
 		}
 		s := edgeServer{Listen: []string{fmt.Sprintf("%d%s", l.Port, suffix)}, HTTP2: l.HTTP2 || (grpc && !l.TLS), ProxyProtocol: l.ProxyProtocol, TLS: l.TLS, ServerName: "_"}
+		if ca := plan.ClientAddress; ca != nil && ca.Mode == configir.ClientAddressHeader {
+			s.RealIPHeader, s.TrustedCIDRs = realIPHeader(ca.Header), ca.TrustedCIDRs
+		}
 		if p.ListenIPv6 {
 			s.Listen = append(s.Listen, fmt.Sprintf("[::]:%d%s", l.Port, suffix))
 		}
@@ -482,6 +506,12 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 		out = append(out, s)
 		for _, site := range plan.Sites {
 			if site.TLS == nil || (l.TLS && site.CertificateID == "") {
+				continue
+			}
+			// Sites bound to other ports (edge-ports-v1) have no server here:
+			// their hosts reach the default server, which answers them like
+			// unknown hosts (edgeweir.router).
+			if len(site.Ports) > 0 && !slices.Contains(site.Ports, l.Port) {
 				continue
 			}
 			var names []string
@@ -594,6 +624,10 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 			return nil, fmt.Errorf("invalid listener port %d", l.Port)
 		}
 	}
+	forwardedFor, err := validateClientAddress(plan)
+	if err != nil {
+		return nil, err
+	}
 	for _, z := range plan.CacheZones {
 		if !safeWord.MatchString(z.Name) || strings.HasPrefix(z.Name, configir.RateLimitDictPrefix) {
 			return nil, fmt.Errorf("invalid cache zone name %q", z.Name)
@@ -614,13 +648,17 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	edge := edgeServers(p, plan)
+	p.WorkerConnections += listeningSockets(p, edge, l4)
 	d := data{
 		Params:    p,
 		L4Servers: l4,
 		// Whole milliseconds, at least one (nginx's time syntax).
 		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
 		SharedDicts:       dicts,
-		EdgeServers:       edgeServers(p, plan),
+		EdgeServers:       edge,
+		ForwardedFor:      forwardedFor,
+		ForwardedMap:      forwardedFor == forwardedForChain,
 		CacheZones:        plan.CacheZones,
 		DefaultZone:       plan.CacheZones[0].Name,
 		OriginLayers:      originLayers(p),
@@ -646,6 +684,92 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		return nil, fmt.Errorf("render nginx.conf: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// X-Forwarded-For towards the origin layer: the received header followed
+// by the peer ($proxy_add_x_forwarded_for appends $remote_addr, which
+// realip turns into the client), or the peer alone.
+const (
+	forwardedForDefault = "$proxy_add_x_forwarded_for"
+	forwardedForChain   = "$edgeweir_forwarded_for"
+	forwardedForPeer    = "$remote_addr"
+)
+
+var trustedHeaderRE = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
+// validateClientAddress checks again what nginx.conf takes from the client
+// address setting and returns the X-Forwarded-For value of the edge.
+func validateClientAddress(plan *configir.Plan) (string, error) {
+	ca := plan.ClientAddress
+	if ca == nil {
+		for _, l := range plan.Listeners {
+			if l.ProxyProtocol {
+				// Listeners that take the PROXY protocol on their own.
+				return forwardedForChain, nil
+			}
+		}
+		return forwardedForDefault, nil
+	}
+	switch ca.Mode {
+	case configir.ClientAddressDirect:
+		if ca.DropForwardedFor {
+			return forwardedForPeer, nil
+		}
+		return forwardedForDefault, nil
+	case configir.ClientAddressProxyProtocol:
+		return forwardedForChain, nil
+	case configir.ClientAddressHeader:
+		if !trustedHeaderRE.MatchString(ca.Header) || len(ca.TrustedCIDRs) == 0 {
+			return "", fmt.Errorf("invalid client address header %q", ca.Header)
+		}
+		for _, c := range ca.TrustedCIDRs {
+			if prefix, err := netip.ParsePrefix(c); err != nil || prefix.Masked() != prefix || prefix.String() != c {
+				return "", fmt.Errorf("invalid trusted CIDR %q", c)
+			}
+		}
+		return forwardedForChain, nil
+	}
+	return "", fmt.Errorf("invalid client address mode %q", ca.Mode)
+}
+
+// realIPHeader is the real_ip_header argument: nginx treats X-Real-IP and
+// X-Forwarded-For (all of its lines) specially only when written so.
+func realIPHeader(name string) string {
+	switch name {
+	case "x-forwarded-for":
+		return "X-Forwarded-For"
+	case "x-real-ip":
+		return "X-Real-IP"
+	}
+	return name
+}
+
+// listeningSockets counts the listening sockets of the rendered file the
+// way nginx does: every reuseport socket once per worker.
+func listeningSockets(p Params, edge []edgeServer, l4 []l4Server) int {
+	workers := p.CPUs
+	if n, err := strconv.Atoi(p.WorkerProcesses); err == nil {
+		workers = n
+	}
+	workers = max(workers, 1)
+	n := 3 // control socket, layer-4 relay socket, the GeoIP socket's margin
+	n += len(originLayers(p))
+	for _, s := range edge {
+		n += len(s.Listen)
+		for _, q := range s.QUICListen {
+			if strings.Contains(q, " reuseport") {
+				n += workers
+			}
+		}
+	}
+	for _, s := range l4 {
+		per := int(s.Ports)
+		if s.ReusePort {
+			per *= workers
+		}
+		n += per * len(s.Listen)
+	}
+	return n
 }
 
 var mimeTypeRE = regexp.MustCompile(`^[a-z0-9.+-]+/[a-z0-9.+-]+$`)

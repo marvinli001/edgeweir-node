@@ -202,6 +202,7 @@ local is_cache_status = is_field("http.response.cache_status")
 local REQUEST_V3 = { ["http.referer"] = true, ["http.user_agent"] = true, ["http.request.version"] = true,
   ["http.request.scheme"] = true, ["http.request.id"] = true, ["http.request.timestamp.sec"] = true, ["edge.server_port"] = true }
 local function is_request_v3(field) return REQUEST_V3[field] == true end
+local is_peer = is_field("ip.peer")
 
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
@@ -211,6 +212,16 @@ function _M.prepare(s, cfg)
   s._rule_groups = policy.prepare_rules(s.rules, s._config.lists)
   s._bulk = policy.prepare_bulk(s.bulk_redirects)
   s._tls_pending = policy.prepare_tls_pending(s.domains)
+  -- The listener ports the site is served on (edge-ports-v1); nil: every
+  -- listener. The HTTPS redirect's excluded domains, by name.
+  if type(s.ports) == "table" and #s.ports > 0 then
+    s._ports = {}
+    for _, port in ipairs(s.ports) do s._ports[port] = true end
+  end
+  if type(s.tls) == "table" and type(s.tls.redirect_excluded) == "table" and #s.tls.redirect_excluded > 0 then
+    s._redirect_excluded = {}
+    for _, name in ipairs(s.tls.redirect_excluded) do s._redirect_excluded[name] = true end
+  end
   -- GeoIP is looked up and JA4 computed at the handshake only for sites
   -- whose rules (conditions, value expressions, cache rule conditions,
   -- rate limit keys) read them.
@@ -228,6 +239,7 @@ function _M.prepare(s, cfg)
   s._media_type = reads_field(rule_lists, s.cache_rules, is_media_type) or nil
   s._cache_status = reads_field(rule_lists, s.cache_rules, is_cache_status) or nil
   s._request_v3 = reads_field(rule_lists, s.cache_rules, is_request_v3) or nil
+  s._peer = reads_field(rule_lists, s.cache_rules, is_peer) or nil
   s._cookies = field_names(rule_lists, s.cache_rules, "http.request.cookies.")
   s._args = field_names(rule_lists, s.cache_rules, "http.request.uri.args.")
   local platform_groups = s._config.groups or {}
@@ -391,6 +403,10 @@ function _M.replace(doc)
   cfg.tag_ttl = tonumber(doc.tag_ttl)
   if type(doc.platform_error_pages) == "table" then cfg.platform_error_pages = doc.platform_error_pages end
   if type(doc.offline_hosts) == "table" and #doc.offline_hosts > 0 then cfg.offline_hosts = doc.offline_hosts end
+  -- The trusted proxies of the client address setting (client-ip-v1):
+  -- never banned, not counted per address by CC.
+  local ca = doc.client_address
+  if type(ca) == "table" and type(ca.trusted_cidrs) == "table" and #ca.trusted_cidrs > 0 then cfg.trusted_proxies = ca.trusted_cidrs end
   if doc.health_certificate ~= nil and doc.health_certificate ~= cjson.null then
     cfg.health_certificate = probehealth.material(doc)
     if not cfg.health_certificate then
@@ -531,6 +547,7 @@ function _M.config(version)
       platform_pages = errorpages.compile_platform(doc.platform_error_pages),
       offline = offline_hosts(doc.offline_hosts),
       health_certificate = probehealth.material(doc),
+      trusted = type(doc.trusted_proxies) == "table" and #doc.trusted_proxies > 0 and expressions.ip_set(doc.trusted_proxies) or nil,
     }
     local tag_ttl = tonumber(doc.tag_ttl)
     cfg.tag_ttl = (tag_ttl and tag_ttl >= 1) and tag_ttl or _M.DEFAULT_TAG_TTL
@@ -617,6 +634,22 @@ function _M.lookup_host(host)
   end
   mc:set(host, ver)
   return nil, ver
+end
+
+-- serves_port tells whether site is served on a listener port (a number
+-- or the decimal $server_port): sites without ports (configurations
+-- without edge-ports-v1) on every listener.
+function _M.serves_port(site, port)
+  local ports = site._ports
+  if not ports then return true end
+  return ports[tonumber(port) or -1] == true
+end
+
+-- trusted_proxy tells whether addr is a trusted proxy of the client
+-- address setting of the table the site came from (client-ip-v1).
+function _M.trusted_proxy(site, addr)
+  local m = site._config and site._config.trusted
+  return m ~= nil and addr ~= nil and m(addr) == true
 end
 
 return _M

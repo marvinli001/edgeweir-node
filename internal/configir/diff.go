@@ -18,8 +18,8 @@ var ErrBaseMismatch = errors.New("diff base revision mismatch")
 //
 //   - listeners, cache zones, certificates, the origin allow list, the
 //     platform protection, the challenge keys, the platform error pages,
-//     the offline hosts and the layer-4 applications are replaced
-//     wholesale;
+//     the offline hosts, the layer-4 applications and the client address
+//     setting are replaced wholesale;
 //   - sites listed in removed_site_ids are dropped;
 //   - upserted sites replace sites with the same id or are added;
 //   - the result is canonicalized and its content hash must equal
@@ -65,6 +65,9 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 	}
 	if p := d.GetPlatformErrorPages(); p != nil {
 		out.PlatformErrorPages = proto.CloneOf(p)
+	}
+	if ca := d.GetClientAddress(); ca != nil {
+		out.ClientAddress = proto.CloneOf(ca)
 	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {

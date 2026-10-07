@@ -11,7 +11,7 @@ error_log stderr notice;
 pcre_jit on;
 
 events {
-    worker_connections 4096;
+    worker_connections 4115;
 }
 
 http {
@@ -58,7 +58,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "b6c1cc6faf12f1ea",
+            conf_id = "adeef5323a6113a5",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
