@@ -55,6 +55,8 @@ services:
     environment:
       # Trust store for HTTPS origins (instead of the system bundle).
       EDGEWEIR_TRUSTED_CA: /etc/edgeweir-e2e/origin-ca.pem
+      # The cache usage reaches the heartbeat quickly.
+      EDGEWEIR_CACHE_USAGE_INTERVAL: 5s
     ports:
       - "127.0.0.1:${E2E_NODE_PORT:-28080}:80"
       - "127.0.0.1:${E2E_PP_PORT:-28081}:8081"

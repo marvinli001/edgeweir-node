@@ -44,6 +44,11 @@
 #      lines added with append, the cache status, a User-Agent wildcard, a
 #      Cookie block with {{time}} and {{path}} in its page, a 303 with a
 #      computed query parameter and a redirect to a query parameter;
+#  13b. site-content-v1 and cache-zone-v1: Set-Cookie of cached responses
+#      only on the fetched one, excluded cache key parameters, charset, body
+#      limits, gzip level and largest length, PURGE, error page classes and
+#      redirects, X-Cache, maintenance, origin tries, the node's own cache
+#      size and the cache usage in heartbeats;
 #  14. HTTP/2 to origins (h2c, h2 over TLS, request bodies, WebSocket
 #      still HTTP/1.1, no fallback, health probes over HTTP/2) and gRPC end
 #      to end (unary, bidirectional streaming, error trailers, past the CRS,
@@ -70,6 +75,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 NODE="http://127.0.0.1:${E2E_NODE_PORT:-28080}"
+# content.test's PURGE key (test/e2e/fakeconsole/content.go).
+PURGE_KEY=e2e-purge-key-0123456789
 HELPER="http://127.0.0.1:${E2E_HELPER_PORT:-28090}"
 # COMPOSE_PROJECT_NAME (if set) takes precedence over the file's name.
 compose() { docker compose -f compose.yml "$@"; }
@@ -889,6 +896,87 @@ r=$(hv v3.test '/go?to=dash')
 [ "$(status_of <<<"$r")" = 302 ] && case "$(header_of location <<<"$r")" in */dash) true ;; *) false ;; esac ||
   fail "redirect to a query parameter: $(status_of <<<"$r") $(header_of location <<<"$r")"
 pass "rules-v3: computed and skipped headers, Link lines, cache status, wildcard, Cookie block page, 303 and query parameter redirects"
+
+# site-content-v1 (content.test, nox.test, maint.test, retry.test,
+# noretry.test): cached Set-Cookie only on the fetched response, excluded
+# cache key parameters, charset, body limits, gzip level and the largest
+# compressed response, PURGE, error page classes and redirects, X-Cache,
+# maintenance, origin tries and status retries; cache-zone-v1: the node's
+# own cache size and the cache usage in heartbeats.
+grep -qx site-content-v1 <<<"$(curl -fsS "$HELPER/features")" || fail "site-content-v1 not reported"
+first=$(curl -s -D - -H 'Host: content.test' "$NODE/account/me" | tr -d '\r')
+[ "$(header_of x-cache <<<"$first")" = MISS ] || fail "first /account/ request not a MISS: $first"
+[ "$(header_of set-cookie <<<"$first" | paste -sd'|' -)" = 'sid=visitor-1; Path=/; HttpOnly|pref=a,b; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/' ] ||
+  fail "the fetched response lacks its Set-Cookie lines: $first"
+for _ in 1 2 3; do
+  hit=$(curl -s -D - -H 'Host: content.test' -H 'Cookie: other=visitor' "$NODE/account/me" | tr -d '\r')
+  [ "$(header_of x-cache <<<"$hit")" = HIT ] || fail "/account/ not cached: $hit"
+  if grep -qi '^set-cookie:\|^x-edgeweir-set-cookie:\|visitor-1' <<<"$(sed '/^$/q' <<<"$hit")"; then
+    fail "a cache hit carries another visitor's cookie: $hit"
+  fi
+done
+grep -q '^account 1$' <<<"$hit" || fail "the cached body: $hit"
+[ "$(curl -fsS -H 'Host: content.test' "$NODE/ck?id=1&utm_source=a" -o /dev/null -D - | tr -d '\r' | header_of x-cache)" = MISS ] || fail "/ck first not MISS"
+[ "$(hv content.test '/ck?utm_medium=b&id=1&utm_source=z' | header_of x-cache)" = HIT ] || fail "utm_* parameters vary the cache key"
+[ "$(hv content.test '/ck?id=2' | header_of x-cache)" = MISS ] || fail "other parameters must vary the cache key"
+[ "$(hv content.test /plain | header_of content-type)" = 'text/plain; charset=GBK' ] || fail "charset: $(hv content.test /plain | header_of content-type)"
+big=$(head -c 2000 /dev/zero | tr '\0' a)
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: content.test' --data-binary "$big" "$NODE/form")" = 413 ] || fail "a body over the site's limit"
+r=$(curl -s -D - -H 'Host: content.test' -H 'Accept-Language: en' --data-binary "$big" "$NODE/form" | tr -d '\r')
+[ "$(header_of x-edgeweir-error <<<"$r")" = body-too-large ] && grep -q '<p>c4 413</p>' <<<"$r" || fail "413 page (4xx class): $r"
+grep -q '^received 500 bytes$' <<<"$(curl -s -H 'Host: content.test' --data-binary "${big:0:500}" "$NODE/form")" || fail "a body within the limit"
+grep -q '^received 2000 bytes$' <<<"$(curl -s -H 'Host: content.test' --data-binary "$big" "$NODE/upload/x")" || fail "the config rule lifts the limit under /upload/"
+compose exec -T node grep -q 'gzip_comp_level 9;' /var/lib/edgeweir-node/nginx/conf/nginx.conf || fail "gzip_comp_level 9 not rendered"
+[ "$(hv content.test /text/1500 -H 'Accept-Encoding: gzip' | header_of content-encoding)" = gzip ] || fail "1500 bytes not compressed"
+[ -z "$(hv content.test /text/5000 -H 'Accept-Encoding: gzip' | header_of content-encoding)" ] || fail "5000 bytes compressed over the largest length"
+pass "content: Set-Cookie only on the fetched response, excluded utm_* parameters, charset, body limits, gzip level and largest length"
+
+r=$(curl -s -D - -X PURGE -H 'Host: content.test' -H "X-Purge-Key: $PURGE_KEY" "$NODE/purge/me?x=1" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 202 ] && grep -q '"task_id":"purge-1"' <<<"$r" || fail "PURGE with the key: $r"
+grep -q '"url":"http://content.test/purge/me?x=1"' <<<"$(curl -fsS "$HELPER/purges")" || fail "the purge did not reach the console: $(curl -fsS "$HELPER/purges")"
+r=$(curl -s -D - -X PURGE -H 'Host: content.test' -H 'X-Purge-Key: wrong-key-0123456789' "$NODE/purge/me" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 403 ] && [ "$(header_of x-edgeweir-error <<<"$r")" = purge-key-invalid ] || fail "PURGE with a wrong key: $r"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PURGE -H 'Host: content.test' "$NODE/x")" = 403 ] || fail "PURGE without a key"
+[ "$(curl -fsS "$HELPER/purges" | grep -o '"url"' | wc -l | tr -d ' ')" = 1 ] || fail "refused PURGE requests reached the console"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PURGE -H 'Host: demo.test' "$NODE/")" != 202 ] || fail "PURGE on a site without the method"
+# 40 at once: more than 20 within one second.
+codes=$(seq 1 40 | xargs -P 40 -I{} curl -s -o /dev/null -w '%{http_code}\n' -X PURGE -H 'Host: content.test' -H 'X-Purge-Key: wrong-key-0123456789' "$NODE/x" | sort | uniq -c)
+grep -q ' 429$' <<<"$codes" || fail "PURGE is not rate limited per site: $codes"
+pass "PURGE: 202 and a cluster purge with the key, 403 without, rate limited"
+
+r=$(curl -s -D - -H 'Host: content.test' "$NODE/status/404" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 302 ] && [[ "$(header_of location <<<"$r")" =~ ^/nf\?s=404\&id=[0-9a-f]{32}$ ]] || fail "404 redirect page: $r"
+r=$(curl -s -D - -H 'Host: content.test' "$NODE/status/410" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 410 ] && grep -q '<p>c4 410</p>' <<<"$r" || fail "4xx class page for an origin 410: $r"
+r=$(curl -s -D - -H 'Host: content.test' "$NODE/status/500" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 200 ] && grep -q '<p>c5 500</p>' <<<"$r" && [ "$(header_of x-edgeweir-error <<<"$r")" = origin-error ] || fail "5xx class page sent as 200: $r"
+[ -z "$(hv nox.test / | header_of x-cache)" ] || fail "nox.test sends X-Cache"
+[ -n "$(hv demo.test / | header_of x-cache)" ] || fail "demo.test lost X-Cache"
+pass "error pages: 4xx and 5xx classes, a redirect with placeholders, a replaced status; X-Cache hidden per site"
+
+r=$(curl -s -D - -H 'Host: maint.test' -H 'Accept-Language: zh-CN' "$NODE/" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 503 ] && [ "$(header_of retry-after <<<"$r")" = 30 ] && [ "$(header_of x-edgeweir-error <<<"$r")" = maintenance ] &&
+  [ "$(header_of cache-control <<<"$r")" = no-store ] && grep -q '<p>maint 503</p>' <<<"$r" || fail "maintenance page: $r"
+[ "$(status_code maint.test)" = 503 ] || fail "maintenance again"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: maint.test' "$NODE/open/x")" = 200 ] || fail "an allowed path during maintenance"
+pass "maintenance: 503 with the page and Retry-After, allowed paths pass"
+
+fails() { for _ in $(seq 1 12); do curl -s -o /dev/null -w '%{http_code}\n' -H "Host: $1" "$NODE/fail8082"; done | grep -c '^502$' || true; }
+[ "$(fails retry.test)" = 0 ] || fail "retry.test passed a 502 on"
+n=$(fails noretry.test)
+[ "$n" -ge 3 ] || fail "noretry.test retried 502 responses ($n of 12 were 502)"
+pass "origin tries: 502 retried on another origin, or not (status_retry_disabled: $n of 12)"
+
+WAIT_SECS=60 wait_for "cache usage in a heartbeat" sh -c "curl -fsS '$HELPER/cache-usage' | grep -q '\"name\":\"default\"'"
+usage=$(curl -fsS "$HELPER/cache-usage")
+grep -q '"max":268435456' <<<"$usage" && ! grep -q '"used":0[,}]' <<<"$usage" || fail "cache usage: $usage"
+rev=$(curl -fsS -X POST "$HELPER/cache-size?mb=1024")
+wait_for "revision $rev with this node's cache size" applied_is "$rev APPLY_STATE_APPLIED"
+compose exec -T node grep -q 'max_size=1024m' /var/lib/edgeweir-node/nginx/conf/nginx.conf || fail "the node's own cache size not rendered"
+WAIT_SECS=60 wait_for "cache usage with the node's size" sh -c "curl -fsS '$HELPER/cache-usage' | grep -q '\"max\":1073741824'"
+rev=$(curl -fsS -X POST "$HELPER/cache-size?mb=0")
+wait_for "revision $rev with the zone's size" applied_is "$rev APPLY_STATE_APPLIED"
+pass "cache zones: usage reported, the node's own size applied with a reload and dropped again"
 
 # HTTP/2 to origins (origin-http2-v1): with prior knowledge and over TLS
 # (ALPN h2), cached like any request, WebSocket still over HTTP/1.1, no

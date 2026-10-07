@@ -236,6 +236,9 @@ func serveTestOrigin(addr string) {
 		h := w.Header()
 		h.Set("X-Origin", port)
 		h.Set("X-Request-Id", "origin-"+port)
+		if serveContent(w, r, port) {
+			return
+		}
 		if doc, ok := sitemaps[r.URL.Path]; ok {
 			_, _ = w.Write(doc)
 			return
@@ -385,7 +388,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3, configir.FeatureSiteContent},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "disabled"},
 			{Name: "old.test", Reason: "disabled"},
@@ -436,7 +439,7 @@ func baseSites(origin string) []*nodev1.Site {
 		activeSite(),
 		rulesSite(origin),
 		v3Site(origin),
-	}, h2Sites()...)
+	}, append(h2Sites(), contentSites(origin)...)...)
 }
 
 // Expression IR helpers for the rules-v2 sites.
@@ -776,6 +779,7 @@ func main() {
 	for i, k := range challengeKeys {
 		c.SetChallengeKey(k.GetId(), []byte(fmt.Sprintf("e2e challenge key %d, 32 bytes!!", i+1)))
 	}
+	c.SetCredential(&nodev1.OriginCredential{Id: purgeKeyID, Version: 1, SecretAccessKey: purgeKey})
 	c.Publish(config(baseSites(*origin)...))
 
 	tlsCfg, err := c.TLSConfig(strings.Split(*names, ","), []net.IP{net.IPv4(127, 0, 0, 1)})
@@ -786,6 +790,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.CA.Pin()) })
+	contentHelpers(mux, c, c.Publish, func() *nodev1.NodeConfig { return config(baseSites(*origin)...) })
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
 	mux.HandleFunc("GET /grpc", grpcCheck)
 	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)
