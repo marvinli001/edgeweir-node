@@ -3900,8 +3900,8 @@ type Ban struct {
 	// At most 7 days after created_at.
 	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	Source    BanSource              `protobuf:"varint,6,opt,name=source,proto3,enum=edgeweir.node.v1.BanSource" json:"source,omitempty"`
-	// Reason code: abuse, attack, scanner, spam, other (manual) or cc_ip_rate
-	// (automatic).
+	// Reason code: abuse, attack, scanner, spam, other (manual), cc_ip_rate or
+	// unknown_host_scan (automatic).
 	Reason        string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -4148,8 +4148,9 @@ func (x *GetBansResponse) GetLiftedOwnBans() []*Ban {
 
 // AutoBan is a ban a node created by itself.
 type AutoBan struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	SiteId string                 `protobuf:"bytes,1,opt,name=site_id,json=siteId,proto3" json:"site_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The site of a site ban; empty with BAN_SCOPE_PLATFORM.
+	SiteId string `protobuf:"bytes,1,opt,name=site_id,json=siteId,proto3" json:"site_id,omitempty"`
 	// What the node banned: an IPv4 address ("/32") or an IPv6 /64 (since
 	// v0.17.0; earlier nodes banned single IPv6 addresses, "/128").
 	Cidr      string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
@@ -4162,6 +4163,10 @@ type AutoBan struct {
 	Observed      float64 `protobuf:"fixed64,7,opt,name=observed,proto3" json:"observed,omitempty"`
 	Threshold     float64 `protobuf:"fixed64,8,opt,name=threshold,proto3" json:"threshold,omitempty"`
 	WindowSeconds uint32  `protobuf:"varint,9,opt,name=window_seconds,json=windowSeconds,proto3" json:"window_seconds,omitempty"`
+	// BAN_SCOPE_PLATFORM: every site of the node, from scan protection
+	// (UnknownHosts, reason unknown_host_scan); unspecified is
+	// BAN_SCOPE_SITE. Added in v0.25.0.
+	Scope         BanScope `protobuf:"varint,10,opt,name=scope,proto3,enum=edgeweir.node.v1.BanScope" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4257,6 +4262,13 @@ func (x *AutoBan) GetWindowSeconds() uint32 {
 		return x.WindowSeconds
 	}
 	return 0
+}
+
+func (x *AutoBan) GetScope() BanScope {
+	if x != nil {
+		return x.Scope
+	}
+	return BanScope_BAN_SCOPE_UNSPECIFIED
 }
 
 // ReportBansRequest uploads automatic bans, at most 1000 per request.
@@ -5030,7 +5042,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"removedIds\x12\x1a\n" +
 	"\bsequence\x18\x04 \x01(\x04R\bsequence\x12\x12\n" +
 	"\x04more\x18\x05 \x01(\bR\x04more\x12=\n" +
-	"\x0flifted_own_bans\x18\x06 \x03(\v2\x15.edgeweir.node.v1.BanR\rliftedOwnBans\"\xbd\x02\n" +
+	"\x0flifted_own_bans\x18\x06 \x03(\v2\x15.edgeweir.node.v1.BanR\rliftedOwnBans\"\xef\x02\n" +
 	"\aAutoBan\x12\x17\n" +
 	"\asite_id\x18\x01 \x01(\tR\x06siteId\x12\x12\n" +
 	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x129\n" +
@@ -5042,7 +5054,9 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x06metric\x18\x06 \x01(\tR\x06metric\x12\x1a\n" +
 	"\bobserved\x18\a \x01(\x01R\bobserved\x12\x1c\n" +
 	"\tthreshold\x18\b \x01(\x01R\tthreshold\x12%\n" +
-	"\x0ewindow_seconds\x18\t \x01(\rR\rwindowSeconds\"B\n" +
+	"\x0ewindow_seconds\x18\t \x01(\rR\rwindowSeconds\x120\n" +
+	"\x05scope\x18\n" +
+	" \x01(\x0e2\x1a.edgeweir.node.v1.BanScopeR\x05scope\"B\n" +
 	"\x11ReportBansRequest\x12-\n" +
 	"\x04bans\x18\x01 \x03(\v2\x19.edgeweir.node.v1.AutoBanR\x04bans\"0\n" +
 	"\x12ReportBansResponse\x12\x1a\n" +
@@ -5288,52 +5302,53 @@ var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
 	54, // 55: edgeweir.node.v1.GetBansResponse.lifted_own_bans:type_name -> edgeweir.node.v1.Ban
 	69, // 56: edgeweir.node.v1.AutoBan.created_at:type_name -> google.protobuf.Timestamp
 	69, // 57: edgeweir.node.v1.AutoBan.expires_at:type_name -> google.protobuf.Timestamp
-	57, // 58: edgeweir.node.v1.ReportBansRequest.bans:type_name -> edgeweir.node.v1.AutoBan
-	61, // 59: edgeweir.node.v1.GetChallengeKeysResponse.keys:type_name -> edgeweir.node.v1.ChallengeKey
-	69, // 60: edgeweir.node.v1.SecurityEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	8,  // 61: edgeweir.node.v1.SecurityEvent.kind:type_name -> edgeweir.node.v1.SecurityEventKind
-	31, // 62: edgeweir.node.v1.SecurityEvent.top_ips:type_name -> edgeweir.node.v1.TopCounter
-	31, // 63: edgeweir.node.v1.SecurityEvent.top_paths:type_name -> edgeweir.node.v1.TopCounter
-	63, // 64: edgeweir.node.v1.ReportSecurityEventsRequest.events:type_name -> edgeweir.node.v1.SecurityEvent
-	15, // 65: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
-	17, // 66: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
-	19, // 67: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
-	21, // 68: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
-	23, // 69: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
-	32, // 70: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
-	34, // 71: edgeweir.node.v1.NodeService.ReportStatsV2:input_type -> edgeweir.node.v1.ReportStatsV2Request
-	51, // 72: edgeweir.node.v1.NodeService.ReportLogs:input_type -> edgeweir.node.v1.ReportLogsRequest
-	37, // 73: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
-	12, // 74: edgeweir.node.v1.NodeService.GetCertificates:input_type -> edgeweir.node.v1.GetCertificatesRequest
-	40, // 75: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
-	48, // 76: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
-	55, // 77: edgeweir.node.v1.NodeService.GetBans:input_type -> edgeweir.node.v1.GetBansRequest
-	58, // 78: edgeweir.node.v1.NodeService.ReportBans:input_type -> edgeweir.node.v1.ReportBansRequest
-	60, // 79: edgeweir.node.v1.NodeService.GetChallengeKeys:input_type -> edgeweir.node.v1.GetChallengeKeysRequest
-	64, // 80: edgeweir.node.v1.NodeService.ReportSecurityEvents:input_type -> edgeweir.node.v1.ReportSecurityEventsRequest
-	9,  // 81: edgeweir.node.v1.NodeService.SubmitPurge:input_type -> edgeweir.node.v1.SubmitPurgeRequest
-	16, // 82: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
-	18, // 83: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
-	20, // 84: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
-	22, // 85: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
-	29, // 86: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
-	33, // 87: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
-	36, // 88: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
-	52, // 89: edgeweir.node.v1.NodeService.ReportLogs:output_type -> edgeweir.node.v1.ReportLogsResponse
-	39, // 90: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
-	14, // 91: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
-	41, // 92: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
-	49, // 93: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
-	56, // 94: edgeweir.node.v1.NodeService.GetBans:output_type -> edgeweir.node.v1.GetBansResponse
-	59, // 95: edgeweir.node.v1.NodeService.ReportBans:output_type -> edgeweir.node.v1.ReportBansResponse
-	62, // 96: edgeweir.node.v1.NodeService.GetChallengeKeys:output_type -> edgeweir.node.v1.GetChallengeKeysResponse
-	65, // 97: edgeweir.node.v1.NodeService.ReportSecurityEvents:output_type -> edgeweir.node.v1.ReportSecurityEventsResponse
-	10, // 98: edgeweir.node.v1.NodeService.SubmitPurge:output_type -> edgeweir.node.v1.SubmitPurgeResponse
-	82, // [82:99] is the sub-list for method output_type
-	65, // [65:82] is the sub-list for method input_type
-	65, // [65:65] is the sub-list for extension type_name
-	65, // [65:65] is the sub-list for extension extendee
-	0,  // [0:65] is the sub-list for field type_name
+	6,  // 58: edgeweir.node.v1.AutoBan.scope:type_name -> edgeweir.node.v1.BanScope
+	57, // 59: edgeweir.node.v1.ReportBansRequest.bans:type_name -> edgeweir.node.v1.AutoBan
+	61, // 60: edgeweir.node.v1.GetChallengeKeysResponse.keys:type_name -> edgeweir.node.v1.ChallengeKey
+	69, // 61: edgeweir.node.v1.SecurityEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	8,  // 62: edgeweir.node.v1.SecurityEvent.kind:type_name -> edgeweir.node.v1.SecurityEventKind
+	31, // 63: edgeweir.node.v1.SecurityEvent.top_ips:type_name -> edgeweir.node.v1.TopCounter
+	31, // 64: edgeweir.node.v1.SecurityEvent.top_paths:type_name -> edgeweir.node.v1.TopCounter
+	63, // 65: edgeweir.node.v1.ReportSecurityEventsRequest.events:type_name -> edgeweir.node.v1.SecurityEvent
+	15, // 66: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
+	17, // 67: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
+	19, // 68: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
+	21, // 69: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
+	23, // 70: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
+	32, // 71: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
+	34, // 72: edgeweir.node.v1.NodeService.ReportStatsV2:input_type -> edgeweir.node.v1.ReportStatsV2Request
+	51, // 73: edgeweir.node.v1.NodeService.ReportLogs:input_type -> edgeweir.node.v1.ReportLogsRequest
+	37, // 74: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
+	12, // 75: edgeweir.node.v1.NodeService.GetCertificates:input_type -> edgeweir.node.v1.GetCertificatesRequest
+	40, // 76: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
+	48, // 77: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
+	55, // 78: edgeweir.node.v1.NodeService.GetBans:input_type -> edgeweir.node.v1.GetBansRequest
+	58, // 79: edgeweir.node.v1.NodeService.ReportBans:input_type -> edgeweir.node.v1.ReportBansRequest
+	60, // 80: edgeweir.node.v1.NodeService.GetChallengeKeys:input_type -> edgeweir.node.v1.GetChallengeKeysRequest
+	64, // 81: edgeweir.node.v1.NodeService.ReportSecurityEvents:input_type -> edgeweir.node.v1.ReportSecurityEventsRequest
+	9,  // 82: edgeweir.node.v1.NodeService.SubmitPurge:input_type -> edgeweir.node.v1.SubmitPurgeRequest
+	16, // 83: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
+	18, // 84: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
+	20, // 85: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
+	22, // 86: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
+	29, // 87: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
+	33, // 88: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
+	36, // 89: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
+	52, // 90: edgeweir.node.v1.NodeService.ReportLogs:output_type -> edgeweir.node.v1.ReportLogsResponse
+	39, // 91: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
+	14, // 92: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
+	41, // 93: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
+	49, // 94: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
+	56, // 95: edgeweir.node.v1.NodeService.GetBans:output_type -> edgeweir.node.v1.GetBansResponse
+	59, // 96: edgeweir.node.v1.NodeService.ReportBans:output_type -> edgeweir.node.v1.ReportBansResponse
+	62, // 97: edgeweir.node.v1.NodeService.GetChallengeKeys:output_type -> edgeweir.node.v1.GetChallengeKeysResponse
+	65, // 98: edgeweir.node.v1.NodeService.ReportSecurityEvents:output_type -> edgeweir.node.v1.ReportSecurityEventsResponse
+	10, // 99: edgeweir.node.v1.NodeService.SubmitPurge:output_type -> edgeweir.node.v1.SubmitPurgeResponse
+	83, // [83:100] is the sub-list for method output_type
+	66, // [66:83] is the sub-list for method input_type
+	66, // [66:66] is the sub-list for extension type_name
+	66, // [66:66] is the sub-list for extension extendee
+	0,  // [0:66] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_node_proto_init() }
