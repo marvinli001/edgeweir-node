@@ -69,6 +69,8 @@
 #      connection survives the reload that adds a port, an origin change
 #      applies without a reload (E2E_STATS=1: their minute statistics);
 #  18. restarting the container serves the last-known-good config.
+# (After 17: G10 suffix and pattern domains, unknown host handling and scan
+# protection, then the base configuration again.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1143,6 +1145,46 @@ r=$(l4 tcp port=9100 send=NAME)
 r=$(curl -fsS -X POST "$HELPER/l4/long?op=check")
 [ "$r" = ok ] || fail "the long connection did not survive the hot update: $r"
 pass "layer 4: an origin change applies to new connections without a reload"
+
+# G10 (domains-v2, unknown-host-v1): suffixes of any depth (the longest
+# wins), whole-host patterns, nginx's server names for them, unknown hosts
+# closed (444), node IP access and requests without Host handed to the
+# default site (also over HTTPS without SNI), offline suffixes keep their
+# page, and scan protection bans the 11th unknown host request of a client
+# at platform scope and reports it.
+rev=$(curl -fsS -X POST "$HELPER/g10")
+WAIT_SECS=60 wait_for "G10 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+g10_site() { curl -s -H "Host: $1" "$NODE${2:-/}" | tr -d '\r' | sed -n 's/^X-G10-Site: //Ip'; }
+[ "$(g10_site exact.sfx.test)" = site-sfx ] || fail "exact name of the suffix site"
+[ "$(g10_site a.b.sfx.test)" = site-sfx ] || fail "a subdomain two levels down a suffix"
+[ "$(g10_site x.deep.sfx.test)" = site-sfx-deep ] || fail "the longer suffix does not win"
+[ "$(g10_site api7.re.test)" = site-re ] || fail "the pattern site"
+[ "$(g10_site 10.20.30.40)" = site-default ] || fail "node IP access is not handed to the default site"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: sfx.test' "$NODE/" || true)
+[ "$code" = 000 ] || fail "the apex of a suffix is no subdomain: got $code, want a closed connection"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: apix.re.test' "$NODE/" || true)
+[ "$code" = 000 ] || fail "a host the pattern does not match: got $code"
+no_host=$(exec 3<>"/dev/tcp/127.0.0.1/${E2E_NODE_PORT:-28080}"; printf 'GET / HTTP/1.0\r\n\r\n' >&3; cat <&3)
+grep -qi '^X-G10-Site: site-default' <<<"$(tr -d '\r' <<<"$no_host")" || fail "a request without Host is not handed to the default site"
+no_sni=$(curl -fsS "$HELPER/tls-health?sni=&path=/&host=10.20.30.40")
+case "$no_sni" in "health.edgeweir.invalid 200 "*) ;; *) fail "HTTPS by node IP without SNI: $no_sni" ;; esac
+r=$(page_of x.y.gone-sfx.test /)
+[ "$(head -1 <<<"$r" | cut -d' ' -f1-2)" = "503 site-disabled" ] || fail "offline suffix host: $r"
+conf=$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)
+grep -q 'lua_regex_cache_max_entries' <<<"$conf" || fail "nginx.conf has no regex cache for the host patterns"
+grep -q 'server_name ~^.+\\.deep\\.sfx\\.test\$;' <<<"$conf" || fail "nginx.conf has no server for the suffix"
+grep -q 'server_name "~^(?:api\\d+\\.re\\.test)\$";' <<<"$conf" || fail "nginx.conf has no server for the pattern"
+for _ in $(seq 1 10); do pp_request nope.g10.test 198.51.100.77 / >/dev/null || true; done
+[ "$(pp_status demo.test 198.51.100.77)" = 200 ] || fail "banned before the threshold"
+pp_request nope.g10.test 198.51.100.77 / >/dev/null || true
+WAIT_SECS=10 wait_for "scan ban of 198.51.100.77" pp_banned demo.test 198.51.100.77
+[ "$(pp_status demo.test 198.51.100.78)" = 200 ] || fail "the scan ban hit another address"
+auto_ban() { curl -fsS "$HELPER/auto-bans" | grep -q "^platform - 198.51.100.77/32 unknown_host_scan unknown_host_requests 11/10$"; }
+WAIT_SECS=30 wait_for "scan ban reported" auto_ban
+rev=$(curl -fsS -X POST "$HELPER/g10?enabled=false")
+WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(status_code nope.g10.test)" = 404 ] || fail "unknown hosts did not get the page again"
+pass "G10: suffix and pattern hosts, unknown hosts closed, node IP access to the default site, scan protection"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

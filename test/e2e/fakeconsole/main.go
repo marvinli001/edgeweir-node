@@ -811,6 +811,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.CA.Pin()) })
 	contentHelpers(mux, c, c.Publish, func() *nodev1.NodeConfig { return config(baseSites(*origin)...) })
+	g10Handlers(mux, c, *origin)
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
 	mux.HandleFunc("GET /grpc", grpcCheck)
 	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)
