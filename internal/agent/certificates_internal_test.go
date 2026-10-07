@@ -64,3 +64,29 @@ func TestAttachCertificatesSkipsDomainsWaitingForIt(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Suffix and pattern domains are not checked when attaching: their hosts
+// are checked at the handshake against the DNS names the site table carries.
+func TestAttachCertificatesNamesForMatchDomains(t *testing.T) {
+	cert := testCertificate(t, "a.test", "*.Deep.test")
+	a := &Agent{certificates: map[string]configir.Certificate{"cert-a/" + cert.Fingerprint: cert}}
+	plan := &configir.Plan{
+		Certificates: map[string]string{"cert-a": cert.Fingerprint},
+		Sites: []configir.Site{
+			{ID: "a", CertificateID: "cert-a", Domains: []configir.Domain{
+				{Name: "a.test"}, {Name: "deep.test", Match: configir.MatchSuffix}, {Name: `x\d\.other\.test`, Match: configir.MatchRegex},
+			}},
+			{ID: "b", CertificateID: "cert-a", Domains: []configir.Domain{{Name: "a.test"}}},
+		},
+	}
+	if err := a.attachCertificates(plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Sites[0].Certificate.DNSNames; strings.Join(got, ",") != "a.test,*.deep.test" {
+		t.Fatalf("dns names %v", got)
+	}
+	// Only sites with such domains carry them; the stored material stays as it was.
+	if plan.Sites[1].Certificate.DNSNames != nil || a.certificates["cert-a/"+cert.Fingerprint].DNSNames != nil {
+		t.Fatal("dns names leaked")
+	}
+}

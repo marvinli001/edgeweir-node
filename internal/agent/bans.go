@@ -185,11 +185,17 @@ func (a *Agent) releaseOwnBans(ctx context.Context, lifted []*nodev1.Ban) {
 	for _, b := range lifted {
 		prefix, err := netip.ParsePrefix(b.GetCidr())
 		expires := b.GetExpiresAt().AsTime()
-		if err != nil || !ownBanPrefix(prefix) || !configir.ValidID(b.GetSiteId()) || b.GetExpiresAt() == nil {
+		// Scan protection's own bans are platform-wide ("*" in the data plane).
+		platform := b.GetScope() == nodev1.BanScope_BAN_SCOPE_PLATFORM && b.GetSiteId() == ""
+		if err != nil || !ownBanPrefix(prefix) || (!platform && !configir.ValidID(b.GetSiteId())) || b.GetExpiresAt() == nil {
 			a.log.Warn("ignoring an invalid lifted ban from the console", "id", b.GetId(), "cidr", b.GetCidr())
 			continue
 		}
-		a.banReleases = append(a.banReleases, dataplane.OwnBanRelease{SiteID: b.GetSiteId(), CIDR: prefix.String(),
+		site := b.GetSiteId()
+		if platform {
+			site = platformOwnBan
+		}
+		a.banReleases = append(a.banReleases, dataplane.OwnBanRelease{SiteID: site, CIDR: prefix.String(),
 			ExpiresAt: float64(expires.UnixMilli()) / 1000})
 	}
 	a.banReleases = slices.DeleteFunc(a.banReleases, func(r dataplane.OwnBanRelease) bool {
@@ -635,11 +641,17 @@ func ownBanPrefix(p netip.Prefix) bool {
 	return !p.Addr().Is4In6() && (p.Bits() == 64 || p.Bits() == 128)
 }
 
+// platformOwnBan is the site id of the data plane's platform-wide own
+// bans (scan protection, unknown-host-v1).
+const platformOwnBan = "*"
+
 // convertAutoBan turns a drained own ban into its report: the address and
-// prefix length the data plane banned, as a canonical CIDR.
+// prefix length the data plane banned, as a canonical CIDR. A platform-wide
+// one (site "*") is reported with scope BAN_SCOPE_PLATFORM and no site.
 func convertAutoBan(b dataplane.AutoBan) (*nodev1.AutoBan, bool) {
 	ip, err := netip.ParseAddr(b.IP)
-	if err != nil || !bans.ValidID(b.SiteID) || b.ExpiresAt <= 0 {
+	platform := b.SiteID == platformOwnBan
+	if err != nil || (!platform && !bans.ValidID(b.SiteID)) || b.ExpiresAt <= 0 {
 		return nil, false
 	}
 	bits := b.PrefixLen
@@ -657,8 +669,13 @@ func convertAutoBan(b dataplane.AutoBan) (*nodev1.AutoBan, bool) {
 	if reason == "" {
 		reason = "cc_ip_rate"
 	}
+	site, scope := b.SiteID, nodev1.BanScope_BAN_SCOPE_UNSPECIFIED
+	if platform {
+		site, scope = "", nodev1.BanScope_BAN_SCOPE_PLATFORM
+	}
 	return &nodev1.AutoBan{
-		SiteId:        b.SiteID,
+		Scope:         scope,
+		SiteId:        site,
 		Cidr:          prefix.String(),
 		CreatedAt:     timestamppb.New(unixTime(b.CreatedAt)),
 		ExpiresAt:     timestamppb.New(unixTime(b.ExpiresAt)),

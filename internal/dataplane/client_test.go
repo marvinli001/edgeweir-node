@@ -105,6 +105,18 @@ func TestSiteTableJSONShape(t *testing.T) {
 			t.Errorf("site JSON %s missing %s", b, want)
 		}
 	}
+	// Suffix and pattern domains (domains-v2) and the unknown host handling
+	// (unknown-host-v1) as edgeweir.store reads them.
+	site.Domains = []configir.Domain{{Name: "a.test", Match: configir.MatchSuffix}, {Name: `x\d`, Match: configir.MatchRegex, Order: 33}}
+	b, _ = json.Marshal(site)
+	if !strings.Contains(string(b), `"domains":[{"name":"a.test","match":"suffix"},{"name":"x\\d","match":"regex","order":33}]`) {
+		t.Errorf("site JSON %s", b)
+	}
+	table = dataplane.FromPlan(&configir.Plan{UnknownHosts: &configir.UnknownHosts{UnknownHost: "close", IPAccess: "site", DefaultSiteID: "s", ScanThreshold: 100, ScanBanSeconds: 60}})
+	b, _ = json.Marshal(table)
+	if !strings.Contains(string(b), `"unknown_hosts":{"unknown_host":"close","ip_access":"site","default_site_id":"s","scan_threshold":100,"scan_ban_seconds":60}`) {
+		t.Errorf("table JSON %s", b)
+	}
 }
 
 func TestClientSocketMissing(t *testing.T) {

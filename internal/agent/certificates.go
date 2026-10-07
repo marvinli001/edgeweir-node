@@ -125,9 +125,16 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 		if err != nil {
 			return err
 		}
+		matches := false
 		for _, domain := range site.Domains {
 			// Served over HTTP until a new certificate covers it.
 			if domain.TLSPending {
+				continue
+			}
+			// Suffix and pattern domains name no single host: each host they
+			// match is checked at the handshake (edgeweir.tls).
+			if domain.Match != "" {
+				matches = true
 				continue
 			}
 			name := domain.Name
@@ -146,6 +153,12 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 			}
 			if err := leaf.VerifyHostname(name); err != nil {
 				return fmt.Errorf("certificate does not cover site %s", site.ID)
+			}
+		}
+		if matches {
+			cert.DNSNames = nil
+			for _, name := range leaf.DNSNames {
+				cert.DNSNames = append(cert.DNSNames, strings.ToLower(name))
 			}
 		}
 		site.Certificate = &cert

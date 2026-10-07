@@ -52,6 +52,9 @@ type SiteTable struct {
 	// ClientAddress is the cluster's client address setting; the data
 	// plane uses its trusted proxies (never banned, not counted by CC).
 	ClientAddress *configir.ClientAddress `json:"client_address,omitempty"`
+	// UnknownHosts is the cluster's handling of unknown hosts and node IP
+	// access, and scan protection (unknown-host-v1).
+	UnknownHosts *configir.UnknownHosts `json:"unknown_hosts,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -64,6 +67,7 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.PlatformErrorPages = p.PlatformErrorPages
 	t.OfflineHosts = p.OfflineHosts
 	t.ClientAddress = p.ClientAddress
+	t.UnknownHosts = p.UnknownHosts
 	for _, z := range p.CacheZones {
 		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
 	}

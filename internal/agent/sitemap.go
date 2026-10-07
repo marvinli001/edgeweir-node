@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
@@ -88,12 +89,11 @@ func sitemapVariants(list []nodev1.DeviceVariant) []nodev1.DeviceVariant {
 	return out
 }
 
-// siteHosts tells whether the edge routes a host to one site: an exact
-// domain of any site wins, then the wildcard domain one label up.
+// siteHosts tells whether the edge routes a host to one site, by the
+// precedence of edgeweir.store.lookup_host (configir.HostMatcher).
 type siteHosts struct {
-	site  string
-	exact map[string]string // host -> site id
-	wild  map[string]string // wildcard domain -> site id
+	site    string
+	matcher *configir.HostMatcher
 }
 
 // siteHosts returns the hosts of a site the applied plan serves.
@@ -103,29 +103,15 @@ func (a *Agent) siteHosts(siteID string) (*siteHosts, bool) {
 	if a.plan == nil {
 		return nil, false
 	}
-	h := &siteHosts{site: siteID, exact: map[string]string{}, wild: map[string]string{}}
 	served := false
 	for _, s := range a.plan.Sites {
 		served = served || s.ID == siteID
-		for _, d := range s.Domains {
-			if d.Wildcard {
-				h.wild[d.Name] = s.ID
-			} else {
-				h.exact[d.Name] = s.ID
-			}
-		}
 	}
-	return h, served
+	return &siteHosts{site: siteID, matcher: configir.NewHostMatcher(a.plan.Sites)}, served
 }
 
 func (h *siteHosts) serves(host string) bool {
-	if id, ok := h.exact[host]; ok {
-		return id == h.site
-	}
-	if dot := strings.IndexByte(host, '.'); dot > 0 {
-		return h.wild[host[dot+1:]] == h.site
-	}
-	return false
+	return h.matcher.Match(host) == h.site
 }
 
 // url returns loc as an absolute http(s) URL without fragment when the

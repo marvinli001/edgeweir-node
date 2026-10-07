@@ -89,7 +89,16 @@ func TestConvertAutoBan(t *testing.T) {
 			t.Errorf("%s/%d converted = %v, %v; want %s", c.ip, c.bits, b, ok, c.want)
 		}
 	}
+	// Scan protection's platform-wide bans ("*") carry no site.
+	p, ok := convertAutoBan(dataplane.AutoBan{SiteID: "*", IP: "192.0.2.9", PrefixLen: 32, ExpiresAt: 1, Reason: "unknown_host_scan", Metric: "unknown_host_requests", Observed: 101, Threshold: 100, WindowSeconds: 60})
+	if !ok || p.GetSiteId() != "" || p.GetScope() != nodev1.BanScope_BAN_SCOPE_PLATFORM || p.GetReason() != "unknown_host_scan" || p.GetCidr() != "192.0.2.9/32" {
+		t.Fatalf("platform ban = %v, %v", p, ok)
+	}
+	if b, _ := convertAutoBan(dataplane.AutoBan{SiteID: "site-a", IP: "192.0.2.1", ExpiresAt: 1}); b.GetScope() != nodev1.BanScope_BAN_SCOPE_UNSPECIFIED || b.GetSiteId() != "site-a" {
+		t.Fatalf("site ban = %v", b)
+	}
 	for _, bad := range []dataplane.AutoBan{
+		{SiteID: "**", IP: "192.0.2.1", ExpiresAt: 1},
 		{SiteID: "site-a", IP: "not-an-ip", ExpiresAt: 1},
 		{SiteID: "site a", IP: "192.0.2.1", ExpiresAt: 1},
 		{SiteID: "site-a", IP: "192.0.2.1"},
