@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.24.0`）里的 `edgeweir.node.v1`。
+本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v0.25.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -161,7 +161,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - LKG 属于其他集群（重新注册到别的集群）时不作为 diff 基础。
 - 控制台返回比已应用更旧的 revision（例如从备份恢复）时忽略，继续服务 LKG；控制台恢复备份后凭节点保存的认证回执发布更高的 revision（见 §6「运维」）。
 
-**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 name，origins 按 id，cache_rules 按 (priority, id)，稳定排序；`gzip_types`、`brotli_types`、`zstd_types` 与 `excluded_rule_ids` 排序去重；`offline_hosts` 按 (name, wildcard) 排序，精确域名在前；站点内 `error_pages.pages` 按状态码；站点内 `bulk_redirects` 按来源，平台与站点规则动作里的 `set_query` 按名称、`remove_query` 按字节序；`l4_apps` 按 id、应用内 `origins` 按 id、`allow_list_ids` / `block_list_ids` 按字节序排序并去重（v0.15.0，与控制台一致：两边都把名单 id 当集合）），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）、`content_hash_vector_v0110.json`（v0.11.0）、`content_hash_vector_v0120.json`（v0.12.0：M2 向量加 Cache-Tag 保留、乱序的站点错误页、主动健康检查、会话保持、挑战密钥、平台错误页、乱序的离线 Host 与带重复的 required_features；与控制台测试夹具是同一份数据）、`content_hash_vector_v0130.json`（v0.13.0：M2 向量加源站组、带函数与值表达式的规则、乱序的查询参数编辑、config / Origin / compression 动作、浏览器 TTL 与类型化条件的缓存规则、乱序的批量重定向（来源按 UTF-8 字节排序，与 UTF-16 顺序不同）与带乱序 set_query 的平台规则；同样来自控制台）、`content_hash_vector_v0150.json`（v0.15.0：M2 向量加三个乱序的 IP 名单与三个乱序的四层应用，应用与源站 id 超出 ASCII（U+FF01、U+1F600），按 UTF-8 字节与按 UTF-16 排序不同，名单 id 乱序；来自控制台。节点只接受 `[A-Za-z0-9_-]` 的 id，测试另验证换成这类 id 后配置被接受）。
+**content_hash**：规范排序后（listeners 按 port，cache_zones 按 name，sites 按 id，certificates 按 id，`origin_allowed_cidrs` 按字节序排序并去重；站点内 domains 按 (name, wildcard, match)（v0.25.0），origins 按 id，cache_rules 按 (priority, id)，稳定排序；`gzip_types`、`brotli_types`、`zstd_types` 与 `excluded_rule_ids` 排序去重；`offline_hosts` 按 (name, wildcard, match) 排序，精确域名在前；站点内 `error_pages.pages` 按状态码；站点内 `bulk_redirects` 按来源，平台与站点规则动作里的 `set_query` 按名称、`remove_query` 按字节序；`l4_apps` 按 id、应用内 `origins` 按 id、`allow_list_ids` / `block_list_ids` 按字节序排序并去重（v0.15.0，与控制台一致：两边都把名单 id 当集合）），把 `revision` 置 0、`content_hash` 置空，`proto.MarshalOptions{Deterministic: true}` 编码后取 SHA-256 小写十六进制。控制台用 protobuf-es 的 `toBinary` 计算，两者都按字段号顺序编码并省略 proto3 默认值，NodeConfig 中没有 map 字段，因此字节一致。跨语言测试向量在 `internal/configir/testdata/`：`content_hash_vector.json`（Phase 0）、`content_hash_vector_m2.json`（M2）、`content_hash_vector_v021.json`（v0.2.1：M2 向量加乱序带重复的允许清单和 `cache_authorized`）、`content_hash_vector_v0110.json`（v0.11.0）、`content_hash_vector_v0120.json`（v0.12.0：M2 向量加 Cache-Tag 保留、乱序的站点错误页、主动健康检查、会话保持、挑战密钥、平台错误页、乱序的离线 Host 与带重复的 required_features；与控制台测试夹具是同一份数据）、`content_hash_vector_v0130.json`（v0.13.0：M2 向量加源站组、带函数与值表达式的规则、乱序的查询参数编辑、config / Origin / compression 动作、浏览器 TTL 与类型化条件的缓存规则、乱序的批量重定向（来源按 UTF-8 字节排序，与 UTF-16 顺序不同）与带乱序 set_query 的平台规则；同样来自控制台）、`content_hash_vector_v0150.json`（v0.15.0：M2 向量加三个乱序的 IP 名单与三个乱序的四层应用，应用与源站 id 超出 ASCII（U+FF01、U+1F600），按 UTF-8 字节与按 UTF-16 排序不同，名单 id 乱序；来自控制台。节点只接受 `[A-Za-z0-9_-]` 的 id，测试另验证换成这类 id 后配置被接受）。
 
 **校验策略**（`configir.Build`）：
 
@@ -177,7 +177,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 没有可用 listener | 使用默认端口（80）并告警 |
 | cache zone 名非法或与内部 shared dict 重名 | 跳过并告警；没有 zone 时使用内置 `edgeweir_default` |
 | 站点引用不存在的 zone / 未指定 zone | 使用第一个 zone |
-| 非法域名、单级顶级泛域名（如 `*.com`）、已被前面站点（按 id 顺序）占用的域名 | 丢弃该域名并告警；站点没有域名则跳过 |
+| 非法域名、单级顶级泛域名（如 `*.com`）、已被前面站点（按 id 顺序）占用的域名（同一写法）；后缀域名是单级顶级域名，正则域名为空、超过 256 字节或 PCRE 编译不过 | 丢弃该域名并告警；站点没有域名则跳过 |
 | 非法源站（地址、端口、Host 头、SNI、S3 设置、缺 id） | 丢弃该源站并告警；站点没有源站则跳过 |
 | 源站 IP 字面量属于特殊地址段且不在允许清单内（§3.5） | 保留但标记 `forbidden` 并告警，请求得到 502 而不是 404 |
 | 允许清单里不是 CIDR 的条目 | 忽略并告警 |
@@ -191,7 +191,8 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 已发布站点使用本节点 OpenResty 没有的模块（Brotli、Zstandard、OWASP CRS：`brotli-v1`、`zstd-v1`、`modsecurity-v1`） | 整个配置拒绝，消息写明站点与缺少的能力 |
 | 站点错误页（任一站点，含停用站点）：状态码不是 403 / 429 / 502 / 503 / 504、同一状态码出现两次、模板为空或超过 65536 字节；平台错误页超过 65536 字节 | 整个配置拒绝（没有模板时忽略 `intercept_origin_errors`） |
 | 离线 Host 的原因不是 `disabled` | 整个配置拒绝 |
-| 离线 Host 的名称非法（同域名规则）、单级顶级泛域名或重复 | 跳过该条并告警 |
+| 离线 Host 的名称非法（同域名规则，含后缀与正则写法）、单级顶级泛域名或重复 | 跳过该条并告警 |
+| `unknown_hosts` 的处理不是 `page` / `close` / `site`，或 `site` 而默认网站不在本节点的配置里 | 该项按 `page` 处理并告警 |
 | 主动健康检查（任一站点）：路径不是以 `/` 开头的 1–1024 字节可打印 ASCII（不含空格）、方法不是 GET / HEAD、期望状态码不满足 100 ≤ min ≤ max ≤ 599、Host 非法、间隔不在 5–300 秒、超时不在 1–60 秒或超过间隔、阈值不在 1–10；会话保持有效期不在 60–604800 秒 | 整个配置拒绝（数值为 0 取默认值：路径 `/`、GET、200–399、间隔 30 秒、超时 5 秒、阈值 2 / 3、有效期 3600 秒） |
 | 已发布站点使用会话保持而配置没有挑战密钥 | 整个配置拒绝 |
 | 四层应用（§3.23）：多于 1024 个、未按 id 严格升序（含重复）、id 不是 `[A-Za-z0-9_-]{1,128}`；协议不是 TCP / UDP；端口不在 1024–65535、是任一 listener 的端口（含被跳过的 listener 与 HTTP/3 的 UDP 端口）或同一协议重复；PROXY protocol 版本大于 2，或 UDP 应用接受 / 发送 PROXY protocol；源站不是 1–32 个、id 非法或重复、地址既不是主机名也不是 IP 字面量（含带 zone 的 IPv6）、端口不在 1–65535、权重不在 1–100；`max_fails` 不在 1–100、恢复时间不在 1–3600 秒、连接超时不在 100–60000 毫秒、空闲超时不在 1–86400 秒（都没有默认值）；放行 / 拦截名单引用不存在的 `ip_lists` 或未按字节序排序去重 | 整个配置拒绝 |
@@ -325,8 +326,9 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               · CDN-Loop 已含本节点 cdn-id → 508 loop-detected；否则追加 cdn-id
               · /.well-known/acme-challenge/<token>：节点自己证书的 token 在这里应答；其他 token
                 属于源站自己的证书，照常回源，但不缓存、不挑战（验证服务器解不了挑战）
-              · 按 Host 查站点：精确匹配 → 上一级域名的泛域名；查不到 → 离线 Host 503
-                site-disabled，否则 404 unknown-host（平台错误页，§3.19）
+              · 按 Host 查站点：精确匹配 → 上一级域名的泛域名 → 最长的后缀域名 → 正则域名（按 order，§3.26）；
+                查不到 → 离线 Host 503 site-disabled，否则按集群的未知域名处理：404 unknown-host（平台错误页，
+                §3.19）、444 关闭连接或交给默认网站，并计入扫描防护
               · 动态封禁：先平台范围、后站点范围；命中且不在平台 allow 名单 → 403 ip-banned
               · 开启 CC 的站点计数（§3.15，IPv4 按地址、IPv6 按 /64）；保留前缀 /.edgeweir/ 在这里应答，永不回源（§3.14）
               · 本地监听（$edgeweir_local，agent 的预热，§2.6）：不查封禁、不计 CC、不挑战，拒绝类规则与 CRS
@@ -494,7 +496,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 | `PUT /v1/bans` | 全量替换控制台条目 `{sequence, bans: [{id, cidr, scope, site_id, kind, expires_at}]}`，本机自动封禁保留；内容非法 400，另一次写入进行中 409 |
 | `POST /v1/bans` | 增量 `{base, sequence, upsert, remove}`：数据面持有的序号不等于 `base` 时 409；`remove` 只删除 id 相同的控制台条目 |
 | `POST /v1/bans/auto/drain` | 返回并删除最多 1000 条待上报的本机自动封禁 |
-| `POST /v1/bans/release` | 删除控制台解封的本机自动封禁 `{bans: [{site_id, cidr, expires_at}]}`；到期晚于 `expires_at` 的（解封后再次封禁）保留 |
+| `POST /v1/bans/release` | 删除控制台解封的本机自动封禁 `{bans: [{site_id, cidr, expires_at}]}`（平台范围的 `site_id` 为 `*`）；到期晚于 `expires_at` 的（解封后再次封禁）保留 |
 | `GET /v1/challenge` | `{keys_id, current, keys: [id], captchas, captchas_id, nonce_overflow}`；nginx 重启后为空 |
 | `PUT /v1/challenge/keys` | 替换挑战密钥 `{id, current, keys: [{id, secret}]}`（secret 为 base64，16–256 字节；`current` 必须在 `keys` 里或为空）；非法 400，内存不足 507 |
 | `PUT /v1/challenge/captchas` | 替换验证码池 `{id, images: [{answer, png}]}`（最多 1024 张，png 为 base64，≤ 64 KiB）；非法 400，内存不足 507 |
@@ -809,6 +811,17 @@ proto v0.23.0 的三项能力，设计见控制台仓库的 ADR-0033：
 - **访客 IP**（`client-ip-v1`）：`NodeConfig.client_address` 的 `proxy_protocol` 模式要求每个监听都带 `proxy_protocol`（`real_ip_header proxy_protocol`）；`header` 模式渲染 `set_real_ip_from <可信 CIDR>`、`real_ip_header`、`real_ip_recursive on`（`x-forwarded-for` / `x-real-ip` 写成 nginx 识别的大小写）；`direct` 只用于丢弃访客的 `X-Forwarded-For`。非直连时回源 `X-Forwarded-For` 为 `map` 出的「收到的链 + `$realip_remote_addr`」，直连为 `$proxy_add_x_forwarded_for`（或丢弃时为 `$remote_addr`）。规则字段 `ip.peer` 为 `$realip_remote_addr`（本地监听为 `$remote_addr`）。可信 CIDR 随站点表下发：封禁与 CC 单 IP 计数跳过它们。没有 `client_address` 而监听自带 `proxy_protocol` 的旧配置照常接受。
 - **四层补充**（`l4-v2`）：`L4App.port_end` 为端口段（≤ 1000 个端口），stream `listen 起-止`，TCP 端口段不带 `reuseport`；`edgeweir.l4` 对单端口查表、对端口段按协议二分查找。`L4Origin.port` 为 0 时取 `$server_port`。`L4App.certificate_id` 的应用在 stream server 上终结 TLS：`ssl_client_hello_by_lua` 校验 SNI 属于证书名称（没有 SNI 时放行）并按 `tls_minimum_version` 限制协议，`ssl_certificate_by_lua` 设置证书；agent 把证书材料与 DNS 名称附在 L4 表中（与站点证书同一状态文件）。
 - **资源**：`render` 按监听 socket 数（`reuseport` 的每个 worker 副本都算，`worker_processes auto` 按在线 CPU 数估算）提高 `worker_connections`；agent 启动时把自身 `RLIMIT_NOFILE` 软限制设为硬限制，nginx 主进程继承后才能打开端口段的全部监听。
+
+### 3.26 域名写法、未知域名与节点 IP 访问（`domains-v2`、`unknown-host-v1`）
+
+proto v0.25.0 的两项能力，设计见控制台仓库的 ADR-0036：
+
+- **域名写法**（`domains-v2`）：`Domain.match` 为 `SUFFIX`（`.a.com`：任意层级子域名，不含 `a.com` 本身）或 `REGEX`（`~` 后的模式匹配整个小写主机名，控制台与 TS / Go / Lua 共用的正则子集，≤ 256 字节）；`Domain.order` 是正则之间的顺序（网站创建毫秒 × 16 + 序号）。优先级：精确 > `*.`（一级）> 后缀（长的在前）> 正则（按 order）。三种实现共用 `test/lua/host-match-vectors.json`（与控制台的副本逐字节相同）（`configir.HostMatcher`、`store.lookup_host` 与控制台的 `matchHost`）。
+- **查找**：`edgeweir.store` 把后缀写成 `sfx:<名称>` 键，按标签由近到远查；正则每个站点表版本编译一次（`ngx.re` 的 `jo` 选项，换表时编译失败的整表拒绝），后缀与正则的命中结果进单独的 LRU（4096 项，随版本失效）。精确与泛域名的查找不变。
+- **server 块**：只有配置里有后缀或正则域名时 `render` 才改写 `server_name`：`*.x` 写成一级正则 `~^[^.]+\.x$`，后缀与正则各一个 server 块（后缀长的在前，正则按 order），保证 nginx 的 server 选择（精确 → 最长前导通配 → 正则按出现顺序）与 Lua 的优先级一致；有正则时设置 `lua_regex_cache_max_entries`（1024 + 2 × 模式数）。没有这两种写法的配置渲染结果逐字节不变。
+- **证书**：agent 为有后缀或正则域名的网站下发证书的 DNS 名称；`edgeweir.tls` 对后缀与正则主机按证书名称（含 `*.`）判断能否握手。
+- **未知域名与节点 IP 访问**（`unknown-host-v1`）：`NodeConfig.unknown_hosts` 分别给出未绑定域名与节点 IP / 空 Host 的处理：`page`（404 平台页）、`close`（`ngx.exit(444)`）、`site`（交给 `default_site_id`，按其端口绑定）。默认网站的 server 块为 `default_server`（QUIC 监听带 `reuseport`）。HTTPS 没有 SNI 或健康 SNI 而 Host 是 IP 时，处理不是 `page` 就按 IP 访问处理，否则仍是 421。`default_certificate` 时未知 SNI 用默认网站的证书握手，否则仍中止握手。
+- **扫描防护**：`scan_threshold` 与 `scan_ban_seconds` 都大于 0 时，未知域名与节点 IP 访问按客户端地址（IPv6 为 /64）在 `edgeweir_cc` 里计 60 秒窗口，超过阈值的那次请求写入平台范围的本机自动封禁（站点 id `*`，原因 `unknown_host_scan`，指标 `unknown_host_requests`），同一窗口只封一次；平台 allow 名单与可信代理地址不计。agent 经 `ReportBans` 以 `BAN_SCOPE_PLATFORM` 上报（`AutoBan.scope`），控制台解封后同样经 `POST /v1/bans/release` 删除。
 
 ## 4. 文件布局
 
