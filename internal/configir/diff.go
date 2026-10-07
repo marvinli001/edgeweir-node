@@ -69,6 +69,9 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 	if ca := d.GetClientAddress(); ca != nil {
 		out.ClientAddress = proto.CloneOf(ca)
 	}
+	if u := d.GetUnknownHosts(); u != nil {
+		out.UnknownHosts = proto.CloneOf(u)
+	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
 		removed[id] = true

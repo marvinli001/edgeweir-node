@@ -88,10 +88,11 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	})
 	slices.SortStableFunc(c.IpLists, func(a, b *nodev1.IpList) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	slices.SortStableFunc(c.ChallengeKeys, func(a, b *nodev1.ChallengeKeyRef) int { return cmp.Compare(a.GetId(), b.GetId()) })
-	// The console sorts by `${name}\0${wildcard ? 1 : 0}`: name first, then
-	// exact before wildcard.
+	// The console sorts by `${name}\0${wildcard ? 1 : 0}\0${match}`: name
+	// first, then exact before wildcard, then the match (v0.25.0).
 	slices.SortStableFunc(c.OfflineHosts, func(a, b *nodev1.OfflineHost) int {
-		return cmp.Or(cmp.Compare(a.GetName(), b.GetName()), compareBool(a.GetWildcard(), b.GetWildcard()))
+		return cmp.Or(cmp.Compare(a.GetName(), b.GetName()), compareBool(a.GetWildcard(), b.GetWildcard()),
+			cmp.Compare(a.GetMatch(), b.GetMatch()))
 	})
 	for _, l := range c.IpLists {
 		slices.Sort(l.Entries)
@@ -147,8 +148,10 @@ func CanonicalizeSite(s *nodev1.Site) {
 		slices.Sort(m.AllowedPathPrefixes)
 		m.AllowedPathPrefixes = slices.Compact(m.AllowedPathPrefixes)
 	}
+	// By (name, wildcard, match) like offline hosts (v0.25.0).
 	slices.SortStableFunc(s.Domains, func(a, b *nodev1.Domain) int {
-		return cmp.Compare(a.GetName(), b.GetName())
+		return cmp.Or(cmp.Compare(a.GetName(), b.GetName()), compareBool(a.GetWildcard(), b.GetWildcard()),
+			cmp.Compare(a.GetMatch(), b.GetMatch()))
 	})
 	if p := s.GetOriginPool(); p != nil {
 		slices.SortStableFunc(p.Origins, func(a, b *nodev1.Origin) int {

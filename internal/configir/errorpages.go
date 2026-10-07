@@ -51,7 +51,9 @@ type PlatformErrorPages struct {
 type OfflineHost struct {
 	Name     string `json:"name"`
 	Wildcard bool   `json:"wildcard,omitempty"`
-	Reason   string `json:"reason"`
+	// Match is MatchSuffix or MatchRegex (FeatureDomainsV2); empty: exact or wildcard.
+	Match  string `json:"match,omitempty"`
+	Reason string `json:"reason"`
 }
 
 // buildErrorPages validates a site's error pages: statuses and classes of
@@ -114,20 +116,27 @@ func buildOfflineHosts(hosts []*nodev1.OfflineHost) ([]OfflineHost, []string, er
 			return nil, nil, fmt.Errorf("%w: offline host %q has unknown reason %q", ErrRejected, h.GetName(), r)
 		}
 		name := h.GetName()
-		display := displayDomain(name, h.GetWildcard())
-		switch {
+		match, known := domainMatches[h.GetMatch()]
+		display := displayMatch(name, h.GetWildcard(), match)
+		switch why := domainProblem(name, h.GetWildcard(), match, known); {
+		case match != "" || !known:
+			if why != "" {
+				warnings = append(warnings, fmt.Sprintf("offline host %q skipped: %s", display, why))
+				continue
+			}
 		case name != strings.ToLower(name) || !ValidHostname(name):
 			warnings = append(warnings, fmt.Sprintf("invalid offline host %q skipped", display))
 			continue
 		case h.GetWildcard() && !strings.Contains(name, "."):
 			warnings = append(warnings, fmt.Sprintf("offline wildcard over a top-level label %q skipped", display))
 			continue
-		case seen[display]:
+		}
+		if seen[display] {
 			warnings = append(warnings, fmt.Sprintf("duplicate offline host %q skipped", display))
 			continue
 		}
 		seen[display] = true
-		out = append(out, OfflineHost{Name: name, Wildcard: h.GetWildcard(), Reason: h.GetReason()})
+		out = append(out, OfflineHost{Name: name, Wildcard: h.GetWildcard(), Match: match, Reason: h.GetReason()})
 	}
 	return out, warnings, nil
 }

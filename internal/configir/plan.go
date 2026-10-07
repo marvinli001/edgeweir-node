@@ -131,6 +131,9 @@ type Plan struct {
 	// ClientAddress is how the HTTP(S) listeners find the client address
 	// (nil: the TCP peer; feature client-ip-v1).
 	ClientAddress *ClientAddress
+	// UnknownHosts is the handling of unknown hosts and node IP access (nil:
+	// the platform's page, no scan protection; feature unknown-host-v1).
+	UnknownHosts *UnknownHosts
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -275,6 +278,10 @@ type Certificate struct {
 	Fingerprint   string `json:"fingerprint"`
 	OCSP          string `json:"ocsp,omitempty"`
 	OCSPUntil     int64  `json:"ocsp_until,omitempty"`
+	// DNSNames of the leaf, lowercase, for sites with suffix or pattern
+	// domains (FeatureDomainsV2): edgeweir.tls completes a handshake for a
+	// host they match only where these names cover it.
+	DNSNames []string `json:"dns_names,omitempty"`
 }
 
 type HTTPChallenge struct {
@@ -286,7 +293,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -394,13 +401,19 @@ type CacheKey struct {
 	ExcludeHost bool     `json:"exclude_host,omitempty"`
 }
 
-// Domain is a host name (exact) or a single-label wildcard suffix.
+// Domain is a host name (exact), a single-label wildcard suffix, a suffix
+// for any depth (MatchSuffix) or a pattern for the whole host (MatchRegex).
 type Domain struct {
 	Name     string `json:"name"`
 	Wildcard bool   `json:"wildcard,omitempty"`
 	// TLSPending: not covered by the site's certificate yet, served over
 	// HTTP only (FeatureTLSPendingDomains). Never set without a certificate.
 	TLSPending bool `json:"tls_pending,omitempty"`
+	// Match is MatchSuffix or MatchRegex (FeatureDomainsV2); empty: exact
+	// or wildcard.
+	Match string `json:"match,omitempty"`
+	// Order ranks patterns across sites, lower first (MatchRegex only).
+	Order uint64 `json:"order,omitempty"`
 }
 
 // Origin is an upstream server.
@@ -816,27 +829,50 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 
 		for _, d := range s.GetDomains() {
-			name := strings.ToLower(d.GetName())
-			if !ValidHostname(name) {
+			match, known := domainMatches[d.GetMatch()]
+			name := d.GetName()
+			if match != MatchRegex {
+				name = strings.ToLower(name)
+			}
+			if !known {
+				warn("site %s: domain %q of an unknown match skipped", id, d.GetName())
+				continue
+			}
+			if match == "" && !ValidHostname(name) {
 				warn("site %s: invalid domain %q skipped", id, d.GetName())
 				continue
 			}
-			if d.GetWildcard() && !strings.Contains(name, ".") {
+			if match == "" && d.GetWildcard() && !strings.Contains(name, ".") {
 				warn("site %s: wildcard over a top-level label %q skipped", id, name)
+				continue
+			}
+			if why := domainProblem(name, d.GetWildcard(), match, known); match != "" && why != "" {
+				warn("site %s: domain %q skipped: %s", id, displayMatch(name, false, match), why)
+				continue
+			}
+			if match != "" && d.GetTlsPending() {
+				warn("site %s: domain %q skipped: TLS-pending flag on a suffix or pattern", id, displayMatch(name, false, match))
 				continue
 			}
 			key := "exact:" + name
 			if d.GetWildcard() {
 				key = "wild:" + name
 			}
+			if match != "" {
+				key = match + ":" + name
+			}
 			if owner, dup := claimed[key]; dup {
 				if owner != id {
-					warn("site %s: domain %q already served by site %s, skipped", id, displayDomain(name, d.GetWildcard()), owner)
+					warn("site %s: domain %q already served by site %s, skipped", id, displayMatch(name, d.GetWildcard(), match), owner)
 				}
 				continue
 			}
 			claimed[key] = id
-			site.Domains = append(site.Domains, Domain{Name: name, Wildcard: d.GetWildcard(), TLSPending: d.GetTlsPending() && site.CertificateID != ""})
+			domain := Domain{Name: name, Wildcard: d.GetWildcard(), TLSPending: d.GetTlsPending() && site.CertificateID != "", Match: match}
+			if match == MatchRegex {
+				domain.Order = d.GetOrder()
+			}
+			site.Domains = append(site.Domains, domain)
 		}
 		if len(site.Domains) == 0 {
 			warn("site %s skipped: no valid domain", id)
@@ -859,6 +895,11 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		p.Sites = append(p.Sites, site)
 	}
+	var unknownWarnings []string
+	if p.UnknownHosts, unknownWarnings, err = buildUnknownHosts(c.GetUnknownHosts(), p.Sites); err != nil {
+		return nil, err
+	}
+	p.Warnings = append(p.Warnings, unknownWarnings...)
 	return p, nil
 }
 
@@ -899,6 +940,77 @@ func displayDomain(name string, wildcard bool) string {
 		return "*." + name
 	}
 	return name
+}
+
+// The domain matches of proto v0.25.0 (FeatureDomainsV2), as the site
+// table names them.
+const (
+	MatchSuffix = "suffix"
+	MatchRegex  = "regex"
+)
+
+var domainMatches = map[nodev1.DomainMatch]string{
+	nodev1.DomainMatch_DOMAIN_MATCH_UNSPECIFIED: "",
+	nodev1.DomainMatch_DOMAIN_MATCH_SUFFIX:      MatchSuffix,
+	nodev1.DomainMatch_DOMAIN_MATCH_REGEX:       MatchRegex,
+}
+
+func displayMatch(name string, wildcard bool, match string) string {
+	switch match {
+	case MatchSuffix:
+		return "." + name
+	case MatchRegex:
+		return "~" + name
+	}
+	return displayDomain(name, wildcard)
+}
+
+// domainProblem says why a domain (or offline host) cannot be served, ""
+// when it can: a lowercase host name with a dot under a wildcard or suffix,
+// or a pattern of the rule engine's subset with lowercase letters (escapes
+// aside) and no quote, escaped backslash or whitespace (it is rendered into
+// a quoted server_name). Suffix and regex domains never carry the wildcard
+// flag.
+func domainProblem(name string, wildcard bool, match string, known bool) string {
+	switch {
+	case !known:
+		return "unknown match"
+	case match != "" && wildcard:
+		return "wildcard flag on a suffix or pattern"
+	case match == MatchRegex:
+		if !validPattern(name) {
+			return "invalid pattern"
+		}
+		if strings.ContainsAny(name, "\" \t\r\n\f\v") || strings.Contains(name, `\\`) {
+			return "pattern with a quote, whitespace or an escaped backslash"
+		}
+		if strings.ContainsFunc(stripEscapes(name), func(r rune) bool { return r >= 'A' && r <= 'Z' }) {
+			return "pattern with uppercase letters"
+		}
+		return ""
+	case name != strings.ToLower(name) || !ValidHostname(name):
+		return "invalid host name"
+	case (match == MatchSuffix || wildcard) && !strings.Contains(name, "."):
+		return "wildcard or suffix over a top-level label"
+	}
+	return ""
+}
+
+// stripEscapes removes \xHH and backslash escapes from a pattern.
+func stripEscapes(p string) string {
+	var b strings.Builder
+	for i := 0; i < len(p); i++ {
+		if p[i] != '\\' {
+			b.WriteByte(p[i])
+			continue
+		}
+		if i+1 < len(p) && p[i+1] == 'x' {
+			i += 3
+		} else {
+			i++
+		}
+	}
+	return b.String()
 }
 
 func buildHealth(h *nodev1.PassiveHealthCheck) HealthCheck {
