@@ -89,10 +89,18 @@ local function matched()
 end
 
 -- host_pattern is the PCRE2 source of a "~pattern" domain: the whole host
--- (^(?:pattern)$, with expressions.pcre_pattern's bounds and `$` as \z).
+-- (^(?:pattern)$, `$` as \z) with a match limit high enough that a host of
+-- at most 253 characters never reaches it for a pattern the console
+-- accepts (its shape is bounded there): nginx tries the same pattern in
+-- server_name without a limit, and the two must agree.
 function _M.host_pattern(pattern)
-  return expressions.pcre_pattern("^(?:" .. pattern .. ")$")
+  local source = expressions.pcre_pattern("^(?:" .. pattern .. ")$")
+  return (source:gsub("^%(%*LIMIT_MATCH=%d+%)", "(*LIMIT_MATCH=1000000)", 1))
 end
+
+-- MAX_HOST is the longest host name looked up through suffixes and
+-- patterns (a DNS name): nginx's guard server takes longer ones first.
+_M.MAX_HOST = 253
 
 -- patterns lists the "~pattern" domains of the sites (and of offline hosts
 -- with offline = true) by precedence: order, then site id.
@@ -683,6 +691,12 @@ end
 -- it looked in (for config(ver)) and how the site was found: "exact",
 -- "wildcard" or "match" (a suffix or a pattern: TLS completes only where
 -- the site's certificate covers the host, edgeweir.tls).
+-- ip_host tells whether a host names no host: "_" (no Host), an IPv4
+-- address or an IPv6 address in brackets (node IP access).
+local function ip_host(host)
+  return host == "_" or find(host, "^%[") ~= nil or find(host, "^%d+%.%d+%.%d+%.%d+$") ~= nil
+end
+
 function _M.lookup_host(host)
   local ver = meta:get("version")
   if not ver or not host or host == "" then
@@ -701,6 +715,11 @@ function _M.lookup_host(host)
   if id then
     hc:set(host, { ver, id })
     return _M.site(ver, id), ver, "exact"
+  end
+  -- Node IP access (an IP literal, "_") is matched by exact names only: no
+  -- wildcard, suffix or pattern takes it.
+  if ip_host(host) then
+    return nil, ver
   end
   local dot = find(host, ".", 1, true)
   -- A host that starts with a dot has no parent (as nginx's server names,
@@ -735,7 +754,7 @@ function _M.lookup_host(host)
     end
     dot = find(host, ".", dot + 1, true)
   end
-  local patterns = _M.config(ver).patterns
+  local patterns = #host <= _M.MAX_HOST and _M.config(ver).patterns
   if patterns then
     for i = 1, #patterns do
       local p = patterns[i]

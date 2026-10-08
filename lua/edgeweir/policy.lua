@@ -142,13 +142,15 @@ function _M.names_cover(names, host)
   return false
 end
 
--- uncovered tells whether a request reached the site through a suffix or
--- pattern domain (found "match") or was handed to it as the default site
--- (found "handed") while its certificate does not name the host: HTTPS
--- would end in an aborted handshake (edgeweir.tls), so it gets no HTTPS
--- redirect.
-function _M.uncovered(site, host, found)
+-- uncovered tells whether an HTTPS request for host would not complete
+-- its handshake (edgeweir.tls), so the HTTP request gets no HTTPS
+-- redirect: one that reached the site through a suffix or pattern domain
+-- (found "match") whose certificate does not name the host, or one handed
+-- to the default site (found "handed") unless unknown names get the
+-- default site's certificate (default_certificate) and it names the host.
+function _M.uncovered(site, host, found, default_certificate)
   if found ~= "match" and found ~= "handed" then return false end
+  if found == "handed" and not default_certificate then return true end
   local cert = site and site.certificate
   return not _M.names_cover(cert and cert.dns_names, host)
 end
@@ -545,10 +547,13 @@ function _M.access(site, headers)
     end
   end
   if ctx.force_https and ngx.var.scheme ~= "https" and not _M.tls_pending(site, ngx.var.host)
-    and not _M.uncovered(site, ngx.var.host, ngx.ctx.edgeweir_found)
     and (ctx.force_https_rule or not _M.redirect_excluded(site, ngx.var.host)) then
+    -- Without a certificate nothing is served over HTTP either (fail closed).
     if not site.certificate_id or site.certificate_id == "" then return { status = 503 } end
-    return _M.https_redirect(site.tls, ngx.var.host, ngx.var.request_uri)
+    local gctx = ngx.ctx
+    if not _M.uncovered(site, ngx.var.host, gctx.edgeweir_found, gctx.edgeweir_default_certificate) then
+      return _M.https_redirect(site.tls, ngx.var.host, ngx.var.request_uri)
+    end
   end
   -- gzip switched off for a site the edge does not compress: the origin
   -- gets no Accept-Encoding, and the cache's Vary tells the variants apart

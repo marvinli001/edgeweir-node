@@ -283,8 +283,12 @@ local function access()
 
   ngx.ctx.edgeweir_site = site
   -- How the site was found (edgeweir.policy: no HTTPS redirect for a host
-  -- its certificate does not name).
+  -- whose HTTPS handshake would not complete).
   ngx.ctx.edgeweir_found = found
+  if handed then
+    local u = store.config().unknown
+    ngx.ctx.edgeweir_default_certificate = u and u.default_certificate and u.unknown_host == "site" or false
+  end
   if site.hide_x_cache then
     var.edgeweir_x_cache_off = "1"
   end

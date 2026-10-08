@@ -256,8 +256,29 @@ test("policy: suffix and pattern names are no exact hosts; uncovered hosts get n
   eq(policy.uncovered(site2, "c.b.a.test", "match"), true)
   eq(policy.uncovered(site2, "b.a.test", "match"), false)
   eq(policy.uncovered(site2, "c.b.a.test", "exact"), false, "exact and wildcard hosts are checked by tls_pending")
-  eq(policy.uncovered(site2, "203.0.113.5", "handed"), true, "a handed IP host")
-  eq(policy.uncovered({}, "b.a.test", "handed"), true, "no certificate")
+  -- Handed requests: only with the default site's certificate for unknown
+  -- names, and only where it names the host.
+  eq(policy.uncovered(site2, "b.a.test", "handed", false), true, "no default certificate: the handshake aborts")
+  eq(policy.uncovered(site2, "b.a.test", "handed", true), false)
+  eq(policy.uncovered(site2, "c.b.a.test", "handed", true), true)
+  eq(policy.uncovered(site2, "203.0.113.5", "handed", true), true, "a handed IP host")
+  eq(policy.uncovered({}, "b.a.test", "handed", true), true, "no certificate")
+end)
+
+test("lookup_host: IP access hosts by exact names only; long hosts skip patterns", function()
+  assert(store.replace({ revision = "9", sites = {
+    site("any", { { name = "[0-9.]+", match = "regex", order = 1 }, { name = "_+", match = "regex", order = 2 } }),
+    site("ip", { { name = "198.51.100.7" } }),
+  } }))
+  eq(store.lookup_host("203.0.113.5"), nil, "a pattern takes no IP literal")
+  eq(store.lookup_host("_"), nil)
+  eq(store.lookup_host("[2001:db8::1]"), nil)
+  eq(store.lookup_host("198.51.100.7").id, "ip", "an exact name still does")
+  eq(store.lookup_host("1.2.3.4.5").id, "any", "not an IP literal")
+  assert(store.replace({ revision = "10", sites = { site("long", { { name = "a+\\.test", match = "regex", order = 1 } }) } }))
+  eq(store.lookup_host(string.rep("a", 248) .. ".test").id, "long", "253 characters")
+  eq(store.lookup_host(string.rep("a", 249) .. ".test"), nil, "254: no pattern lookup")
+  assert(store.host_pattern("a"):find("LIMIT_MATCH=1000000", 1, true))
 end)
 
 test("cache key: a request handed to the default site keeps its host", function()

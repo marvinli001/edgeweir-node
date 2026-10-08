@@ -155,6 +155,11 @@ func (m *HostMatcher) Match(host string) string {
 	if id, ok := m.exact[host]; ok {
 		return id
 	}
+	// Node IP access ("_", an IPv4 address, an IPv6 address in brackets)
+	// is matched by exact names only.
+	if host == "_" || strings.HasPrefix(host, "[") || ipv4Host.MatchString(host) {
+		return ""
+	}
 	dot := strings.IndexByte(host, '.')
 	if dot > 0 {
 		if id, ok := m.wild[host[dot+1:]]; ok {
@@ -171,6 +176,10 @@ func (m *HostMatcher) Match(host string) string {
 		}
 		dot += next + 1
 	}
+	// No pattern sees a host longer than a DNS name (nginx's guard server).
+	if len(host) > MaxHost {
+		return ""
+	}
 	for _, p := range m.patterns {
 		if p.re.MatchString(host) {
 			return p.site
@@ -178,3 +187,8 @@ func (m *HostMatcher) Match(host string) string {
 	}
 	return ""
 }
+
+// MaxHost is the longest host name patterns are tried on (a DNS name).
+const MaxHost = 253
+
+var ipv4Host = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)

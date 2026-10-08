@@ -687,7 +687,7 @@ function _M.offline_reason(cfg, host)
     reason = offline.suffix[sub(host, dot + 1)]
     dot = find(host, ".", dot + 1, true)
   end
-  if not reason and offline.patterns then
+  if not reason and offline.patterns and #host <= 253 then
     for _, p in ipairs(offline.patterns) do
       if ngx.re.find(host, p.source, "jo") then
         return p.reason
