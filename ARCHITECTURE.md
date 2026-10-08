@@ -505,7 +505,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 | `PUT /v1/bans` | 全量替换控制台条目 `{sequence, bans: [{id, cidr, scope, site_id, kind, expires_at}]}`，本机自动封禁保留；内容非法 400，另一次写入进行中 409 |
 | `POST /v1/bans` | 增量 `{base, sequence, upsert, remove}`：数据面持有的序号不等于 `base` 时 409；`remove` 只删除 id 相同的控制台条目 |
 | `POST /v1/bans/auto/drain` | 返回并删除最多 1000 条待上报的本机自动封禁 |
-| `POST /v1/bans/release` | 删除控制台解封的本机自动封禁 `{bans: [{site_id, cidr, expires_at}]}`（平台范围的 `site_id` 为 `*`）；到期晚于 `expires_at` 的（解封后再次封禁）保留 |
+| `POST /v1/bans/release` | 删除控制台解封的本机自动封禁 `{bans: [{site_id, cidr, expires_at}]}`（平台范围的 `site_id` 为 `*`）；到期晚于 `expires_at` 的（解封后再次封禁）保留；删除的网站封禁，其地址由 CC 重新计数（§3.15） |
 | `GET /v1/challenge` | `{keys_id, current, keys: [id], captchas, captchas_id, nonce_overflow}`；nginx 重启后为空 |
 | `PUT /v1/challenge/keys` | 替换挑战密钥 `{id, current, keys: [{id, secret}]}`（secret 为 base64，16–256 字节；`current` 必须在 `keys` 里或为空）；非法 400，内存不足 507 |
 | `PUT /v1/challenge/captchas` | 替换验证码池 `{id, images: [{answer, png}]}`（最多 1024 张，png 为 base64，≤ 64 KiB）；非法 400，内存不足 507 |
@@ -613,6 +613,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 - **查找**：边缘层解析站点之后、规则之前。每个请求读一次 `#ver`；平台与站点范围都没有长度时到此为止。否则按各长度掩码客户端地址逐个查找（IPv4 映射的 IPv6 地址也按 IPv4 查），先平台后站点。平台 `allow` 名单命中的地址不受封禁，其余返回 `403`、`X-Edgeweir-Error: ip-banned`。
 - **容量与内存**：所有写入用 `safe_set` / `safe_add`，共享内存不会自行淘汰封禁。新条目超出容量或内存不足时，先按写入顺序淘汰最早的本机自动封禁；控制台条目从不在数据面被淘汰。仍然写不下时，手动封禁记为未生效并上报，控制台自动封禁丢弃并计数。
 - **本机自动封禁**：`bans.add_auto(site_id, client, ttl_seconds, trigger)` 写入站点范围的封禁：IPv4 地址（/32）或 IPv6 /64（`ipaddr.client_network`；给出 IPv6 地址时取它的 /64），已有控制台条目时只上报；回环与未指定网络（`127.0.0.0/8`、`0.0.0.0`、`::/64`，即节点自己的流量）一律拒绝。排入上报队列（最多 10000 条，满了丢弃最旧的），上报的 `AutoBan.cidr` 即该网络。
+- **解封后重新计数**：控制台解封站点范围的自动封禁时，未共享的本机条目经 `bans.release`（`POST /v1/bans/release`）删除，共享的控制台自动条目（`c`）随增量或全量更新删除；两种删除都调用 `cc.lifted`，该地址由 CC 重新计数（§3.15），继续超限会再次封禁。手动封禁的删除不影响 CC。
 - **重启**：reload 保留字典，nginx 重启后字典为空、序号为 0，agent 在 5 秒内全量重推；本机自动封禁与未上报队列随之丢失。
 
 ### 3.13 内核封禁（nftables）
@@ -674,7 +675,7 @@ table inet edgeweir {
 
 - **计数**（`lua_shared_dict edgeweir_cc`，`--cc-dict-mb`，默认 32 MiB）：两个相邻窗口加权的滑动窗口，`上一窗口 × (1 − 已过比例) + 当前窗口`。每个请求对站点一次 `incr`（站点 QPS 开启时），对客户端一次 `incr`（单 IP QPS 开启时；当前窗口计数超过限额一半时才读上一窗口）。客户端按 IPv4 地址或 IPv6 /64 计（`ipaddr.client_network`，如 `2001:db8:1:2::/64`）：持有 /64 的客户端每个请求换一个地址也仍是同一个客户端，也无法用地址填满 CC 存储（挑战凭证同样按 /64 绑定），再读一次站点级别；源站请求与错误（5xx，含全部尝试失败）在 log 阶段计数，缓存命中不计。路径与地址在每个 worker 的有界 Space-Saving（每站点 64 个候选）里计数，每秒把路径计数加到共享字典、提交候选路径和最重的 10 个地址。没有 CC 的站点不做任何额外工作。
 - **求值**：每秒由第一个拿到 `#eval|<秒>` 的 worker（不含正在退出的）对每个开启 CC 的站点求值。站点级取站点 QPS 与源站错误率（达到最小请求数才计算）中超出比例最大的条件；条件持续 N 秒升一级（不超过最高级别），全部低于阈值 80% 持续 M 秒降一级，80%–100% 之间两个计时都重置。路径级按单 URL QPS 同样计算，只跟踪 64 条路径（已升级的优先，其次速率最高的），按精确路径（nginx 规范化后的 `$uri`，不含查询串）匹配。请求需要的 CC 级别是站点级与该路径级的较大者。
-- **单 IP**：客户端（IPv4 地址或 IPv6 /64）的滑动窗口计数超过 `ip_qps × W` 时，经 `bans.add_auto` 写入站点范围的本机自动封禁（原因 `cc_ip_rate`，指标 `ip_qps`），同一地址在封禁期内只封一次，本次请求返回 403 `ip-banned`。allow 规则或平台 allow 名单命中的请求不触发。
+- **单 IP**：客户端（IPv4 地址或 IPv6 /64）的滑动窗口计数超过 `ip_qps × W` 时，经 `bans.add_auto` 写入站点范围的本机自动封禁（原因 `cc_ip_rate`，指标 `ip_qps`），同一地址在封禁期内只封一次（`b|<站点>|<地址>`，TTL 为封禁时长），本次请求返回 403 `ip-banned`。allow 规则或平台 allow 名单命中的请求不触发。控制台解封该封禁后（§3.12），`cc.lifted` 删除这个标记以及该地址当前与上一窗口的计数：地址重新计数，再次超过限额时再次封禁并上报；不保留封禁前的计数，否则在窗口内解封时解封后的第一个请求就会再次封禁。
 - **事件**：站点级变化（`site_level`，升级时指标为触发条件，降级为 `cooldown`）、路径级变化（`path_level`）、自动封禁（`ip_banned`）排入队列（最多 10000 条，满了丢弃最旧的并计数），带当时的 Top IP 与 Top 路径（各 ≤ 10，近似值），agent 上报（§2.9）。
 - **状态**：级别、跟踪与升级路径、Top 地址在 reload 和阈值变更后保留；nginx 重启后计数、级别与未上报事件丢失。站点关闭 CC（或被删除）后，下一次求值（1 秒内）清除它的级别、跟踪与升级路径和 Top 地址，重新开启时从 `normal` 开始；窗口计数在 2W + 2 秒后自行过期，已写入的自动封禁按各自时长到期。
 
