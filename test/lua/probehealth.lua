@@ -10,6 +10,7 @@
 local tls_state = {}
 package.loaded["ngx.ssl"] = {
   server_name = function() return tls_state.name end,
+  server_port = function() return tls_state.port end,
   parse_pem_cert = function(pem) return "cert:" .. pem end,
   parse_pem_priv_key = function(pem) return "key:" .. pem end,
   clear_certs = function() return true end,
@@ -188,6 +189,36 @@ test("TLS: the health certificate of the site table for the health SNI and no SN
   assert(store.replace({ revision = "3", content_hash = "c", sites = {}, health_certificate = { chain_pem = "x" } }))
   eq(store.config().health_certificate, nil)
   eq((tls_phase(tls.client_hello, nil)), true)
+end)
+
+test("TLS: a site bound to other ports is a name no site serves there", function()
+  local function site(id, name, extra)
+    local s = { id = id, cache_zone = "edgeweir_default", cache_generation = "1", load_balance = "weighted_random",
+      domains = { { name = name } }, origins = { { id = "o1", scheme = "http", address = "origin.test", port = 80, weight = 1 } } }
+    for k, v in pairs(extra or {}) do s[k] = v end
+    return s
+  end
+  local unknown = { unknown_host = "site", ip_access = "page", default_site_id = "d", default_certificate = true }
+  local function table(revision, default_certificate)
+    unknown.default_certificate = default_certificate
+    return { revision = revision, content_hash = revision, unknown_hosts = unknown, sites = {
+      -- HTTP only, bound to 8080: on 443 its host goes to the default site.
+      site("u", "u.example.test", { ports = { 8080 } }),
+      site("d", "d.example.test", { certificate = { chain_pem = "D-CHAIN", private_key_pem = "D-KEY", fingerprint = "fd", dns_names = { "*.example.test" } } }),
+    } }
+  end
+  assert(store.replace(table("4", true)))
+  tls_state.port = 443
+  eq((tls_phase(tls.client_hello, "u.example.test")), false, "443: the default site's certificate")
+  local aborted, cert = tls_phase(tls.certificate, "u.example.test")
+  eq(aborted, false)
+  eq(cert, "cert:D-CHAIN")
+  tls_state.port = 8080
+  eq((tls_phase(tls.client_hello, "u.example.test")), true, "8080: its own site, without a certificate")
+  tls_state.port = 443
+  assert(store.replace(table("5", false)))
+  eq((tls_phase(tls.client_hello, "u.example.test")), true, "without the default certificate")
+  tls_state.port = nil
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

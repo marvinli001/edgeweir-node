@@ -670,12 +670,22 @@ end
 -- when it is a domain of an offline site (exact, a wildcard on its parent
 -- domain, a suffix of any depth or a pattern, like site domains), or nil.
 -- cfg is the site table's settings (edgeweir.store.config).
+-- ip_host tells whether a host names no host: "_" (no Host), an IPv4
+-- address or an IPv6 address in brackets (node IP access). Such hosts are
+-- looked up by exact name only (edgeweir.store, nginx's server names).
+function _M.ip_host(host)
+  return host == "_" or find(host, "^%[") ~= nil or find(host, "^%d+%.%d+%.%d+%.%d+$") ~= nil
+end
+
 function _M.offline_reason(cfg, host)
   local offline = cfg and cfg.offline
   if not offline or type(host) ~= "string" then
     return nil
   end
   local reason = offline.exact[host]
+  if reason or _M.ip_host(host) then
+    return reason
+  end
   local dot = find(host, ".", 1, true)
   if dot == 1 then
     dot = nil

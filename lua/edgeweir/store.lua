@@ -98,8 +98,8 @@ function _M.host_pattern(pattern)
   return (source:gsub("^%(%*LIMIT_MATCH=%d+%)", "(*LIMIT_MATCH=1000000)", 1))
 end
 
--- MAX_HOST is the longest host name looked up through suffixes and
--- patterns (a DNS name): nginx's guard server takes longer ones first.
+-- MAX_HOST is the longest host name looked up through patterns (a DNS
+-- name; nginx's pattern server names skip longer ones too).
 _M.MAX_HOST = 253
 
 -- patterns lists the "~pattern" domains of the sites (and of offline hosts
@@ -691,11 +691,7 @@ end
 -- it looked in (for config(ver)) and how the site was found: "exact",
 -- "wildcard" or "match" (a suffix or a pattern: TLS completes only where
 -- the site's certificate covers the host, edgeweir.tls).
--- ip_host tells whether a host names no host: "_" (no Host), an IPv4
--- address or an IPv6 address in brackets (node IP access).
-local function ip_host(host)
-  return host == "_" or find(host, "^%[") ~= nil or find(host, "^%d+%.%d+%.%d+%.%d+$") ~= nil
-end
+local ip_host = errorpages.ip_host
 
 function _M.lookup_host(host)
   local ver = meta:get("version")

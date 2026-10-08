@@ -121,6 +121,22 @@ test("offline hosts: suffix and pattern domains of disabled sites keep their pag
   eq(errorpages.offline_reason(cfg, "p.test"), nil)
 end)
 
+test("offline hosts: node IP access hosts by exact names only", function()
+  assert(store.replace({ revision = "4b", sites = { site("s1", { { name = "a.test" } }) }, offline_hosts = {
+    { name = ".*", match = "regex", reason = "disabled" },
+    { name = "198.51.100.7", reason = "disabled" },
+    { name = "100.7", match = "suffix", reason = "disabled" },
+  } }))
+  local cfg = store.config()
+  eq(errorpages.offline_reason(cfg, "198.51.100.7"), "disabled", "an exact name")
+  eq(errorpages.offline_reason(cfg, "203.0.113.5"), nil, "no pattern")
+  eq(errorpages.offline_reason(cfg, "198.51.100.8"), nil)
+  eq(errorpages.offline_reason(cfg, "10.0.100.7"), nil, "no suffix")
+  eq(errorpages.offline_reason(cfg, "_"), nil)
+  eq(errorpages.offline_reason(cfg, "[2001:db8::1]"), nil)
+  eq(errorpages.offline_reason(cfg, "x.test"), "disabled", "other hosts still")
+end)
+
 test("unknown_hosts: the table's handling, defaults for anything else", function()
   assert(store.replace({ revision = "5", sites = { site("s1", { { name = "a.test" } }) },
     unknown_hosts = { unknown_host = "close", ip_access = "site", default_site_id = "s1", default_certificate = true,

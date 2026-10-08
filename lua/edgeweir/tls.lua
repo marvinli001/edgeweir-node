@@ -3,7 +3,8 @@
 -- health.edgeweir.invalid and handshakes without SNI
 -- (edgeweir.probehealth); any other name, a domain its site's certificate
 -- does not cover yet (tls_pending) and a site's domain on a listener port
--- the site is not bound to (edge-ports-v1) abort the handshake. A host
+-- the site is not bound to (edge-ports-v1: a name no site serves there)
+-- abort the handshake. A host
 -- found through a suffix or pattern domain (domains-v2) completes only
 -- where the site's certificate names it (its dns_names: the host, or "*."
 -- and its parent). With the cluster's unknown host handling
@@ -28,14 +29,15 @@ end
 
 -- choose returns the site whose certificate a handshake for host gets
 -- (nil: abort): the site serving the host, else (for names no site serves
--- here) the default site when the cluster hands unknown hosts to it with
+-- here, a site bound to other ports included, as edgeweir.router sees
+-- them) the default site when the cluster hands unknown hosts to it with
 -- its certificate.
 local function choose(host)
   local site, ver, how = store.lookup_host(host)
-  if site then
+  if site and on_port(site) then
     if not site.certificate or policy.tls_pending(site, host) then return nil end
     if how == "match" and not policy.names_cover(site.certificate.dns_names, host) then return nil end
-    if on_port(site) then return site end
+    return site
   end
   local u = store.config(not site and ver or nil).unknown
   if not (u and u.default_certificate and u.unknown_host == "site" and u.default_site_id) then return nil end
