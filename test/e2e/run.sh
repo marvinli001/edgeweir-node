@@ -1172,7 +1172,7 @@ r=$(page_of x.y.gone-sfx.test /)
 [ "$(head -1 <<<"$r" | cut -d' ' -f1-2)" = "503 site-disabled" ] || fail "offline suffix host: $r"
 conf=$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)
 grep -q 'lua_regex_cache_max_entries' <<<"$conf" || fail "nginx.conf has no regex cache for the host patterns"
-grep -q 'server_name ~^.+\\.deep\\.sfx\\.test\$;' <<<"$conf" || fail "nginx.conf has no server for the suffix"
+grep -qF 'server_name ~^[^.].*\.deep\.sfx\.test$;' <<<"$conf" || fail "nginx.conf has no server for the suffix"
 grep -qF 'server_name "~(?-i)^(?:api\d+\.re\.test)$";' <<<"$conf" || fail "nginx.conf has no server for the pattern"
 grep -qF 'server_name "~^.{254}";' <<<"$conf" || fail "nginx.conf has no guard for hosts longer than a DNS name"
 # Unknown hosts to the default site, node IP access closed: the default
