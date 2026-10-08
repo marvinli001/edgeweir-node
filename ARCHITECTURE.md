@@ -821,7 +821,7 @@ proto v0.25.0 的两项能力，设计见控制台仓库的 ADR-0036：
 - **server 块**：只有配置里有后缀或正则域名时 `render` 才改写 `server_name`：`*.x` 写成一级正则 `~^[^.]+\.x$`，后缀与正则各一个 server 块（后缀长的在前，正则按 order），保证 nginx 的 server 选择（精确 → 最长前导通配 → 正则按出现顺序）与 Lua 的优先级一致；有正则时设置 `lua_regex_cache_max_entries`（1024 + 2 × 模式数）。没有这两种写法的配置渲染结果逐字节不变。
 - **证书**：agent 为有后缀或正则域名的网站下发证书的 DNS 名称；`edgeweir.tls` 对后缀与正则主机按证书名称（含 `*.`）判断能否握手。
 - **未知域名与节点 IP 访问**（`unknown-host-v1`）：`NodeConfig.unknown_hosts` 分别给出未绑定域名与节点 IP / 空 Host 的处理：`page`（404 平台页）、`close`（`ngx.exit(444)`）、`site`（交给 `default_site_id`，按其端口绑定）。默认网站的 server 块为 `default_server`（QUIC 监听带 `reuseport`）。HTTPS 没有 SNI 或健康 SNI 而 Host 是 IP 时，处理不是 `page` 就按 IP 访问处理，否则仍是 421。`default_certificate` 时未知 SNI 用默认网站的证书握手，否则仍中止握手。
-- **扫描防护**：`scan_threshold` 与 `scan_ban_seconds` 都大于 0 时，未知域名与节点 IP 访问按客户端地址（IPv6 为 /64）在 `edgeweir_cc` 里计 60 秒窗口，超过阈值的那次请求写入平台范围的本机自动封禁（站点 id `*`，原因 `unknown_host_scan`，指标 `unknown_host_requests`），同一窗口只封一次；平台 allow 名单与可信代理地址不计。agent 经 `ReportBans` 以 `BAN_SCOPE_PLATFORM` 上报（`AutoBan.scope`），控制台解封后同样经 `POST /v1/bans/release` 删除，并清掉该网络的计数与 `ub|` 标记（继续扫描会在新的窗口里再次封禁）。
+- **扫描防护**：`scan_threshold` 与 `scan_ban_seconds` 都大于 0 时，未知域名与节点 IP 访问按客户端地址（IPv6 为 /64）在 `edgeweir_cc` 里计 60 秒窗口，超过阈值的那次请求写入平台范围的本机自动封禁（站点 id `*`，原因 `unknown_host_scan`，指标 `unknown_host_requests`），已在平台范围封禁的地址不重复封禁（`ub|` 只是并发 worker 之间 5 秒的去重）；平台 allow 名单与可信代理地址不计。agent 经 `ReportBans` 以 `BAN_SCOPE_PLATFORM` 上报（`AutoBan.scope`），控制台解封后同样经 `POST /v1/bans/release` 删除并清掉该网络的计数；共享的封禁由控制台的增量删除。解封后继续扫描会再次封禁。
 
 ## 4. 文件布局
 
