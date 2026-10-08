@@ -6,7 +6,11 @@
     { "id": "s-suffix", "created": 3000, "domains": [".a.test", ".b.test"] },
     { "id": "s-deep", "created": 4000, "domains": [".x.a.test", ".d.c.b.test"] },
     { "id": "s-late", "created": 9000, "domains": ["~.*\\.org", "~api\\d+\\.e\\.test"] },
-    { "id": "s-early", "created": 5000, "domains": ["~(www|m)\\.e\\.test", "~api7\\.e\\.test", "~.*\\.e\\.test"] },
+    {
+      "id": "s-early",
+      "created": 5000,
+      "domains": ["~(www|m)\\.e\\.test", "~api7\\.e\\.test", "~.*\\.e\\.test"]
+    },
     { "id": "s-same-a", "created": 7000, "domains": ["~same\\.test"] },
     { "id": "s-same-b", "created": 7000, "domains": ["~sam.\\.test"] }
   ],
