@@ -1224,13 +1224,15 @@ r=$(cert_of a.g11.test -tls1_2 -cipher ECDHE-ECDSA-AES128-GCM-SHA256)
 [ "$r" = "a.g11.test id-ecPublicKey" ] || fail "an ECDSA TLS 1.2 client did not get the ECDSA certificate: $r"
 pass "G11: two certificates of different names, ECDSA or RSA by the client's ClientHello"
 
-# https_req SNI HOST PATH [s_client options]: one request over TLS (with
-# the visitor's own X-Client-* headers), the whole s_client output.
+# https_req SNI HOST PATH [s_client options]: the response to one request
+# over TLS (with the visitor's own X-Client-* headers). -brief sends the
+# connection summary to stderr: stdout is the response alone (s_client's
+# session printouts would interleave with it).
 https_req() {
   local sni=$1 host=$2 path=$3; shift 3
   compose exec -T node sh -c 'sni=$1 host=$2 path=$3; shift 3
     printf "GET %s HTTP/1.1\r\nHost: %s\r\nX-Client-Verify: FORGED\r\nX-Client-Cert-Subject: CN=forged\r\nX-Client-Cert-SHA256: forged\r\nX-Client-Cert-Serial: 00\r\nConnection: close\r\n\r\n" "$path" "$host" |
-      openssl s_client -connect 127.0.0.1:8443 -servername "$sni" -ign_eof "$@" 2>&1' sh "$sni" "$host" "$path" "$@" | tr -d '\r'
+      openssl s_client -connect 127.0.0.1:8443 -servername "$sni" -brief -ign_eof "$@" 2>/dev/null' sh "$sni" "$host" "$path" "$@" | tr -d '\r'
 }
 status_line() { grep -m1 '^HTTP/1.1 ' | cut -d' ' -f2; }
 CLIENT="-cert /etc/edgeweir-e2e/g11-client.crt -key /etc/edgeweir-e2e/g11-client.key"
@@ -1284,16 +1286,18 @@ for v in 2 3; do
   [ "$(sess c2.g11.test /tmp/g11-s1$v in -tls1_$v)" = "Reused, TLSv1.$v" ] || fail "TLS 1.$v session not resumed for another name of the site"
   [ "$(sess a.g11.test /tmp/g11-s1$v in -tls1_$v)" = "New, TLSv1.$v" ] || fail "TLS 1.$v session of site-g11c resumed for site-g11a"
 done
-# A session with a verified client certificate keeps it; one without
+# A session with a verified client certificate keeps it (SUCCESS without
+# presenting one again: only a resumed session can say so); one without
 # stays without.
 # shellcheck disable=SC2086
 [ "$(sess m.g11.test /tmp/g11-m13 out -tls1_3 $CLIENT)" = "New, TLSv1.3" ] || fail "mTLS handshake"
+[ "$(sess m.g11.test /tmp/g11-m13 in -tls1_3)" = "Reused, TLSv1.3" ] || fail "the mTLS session not resumed"
 r=$(https_req m.g11.test m.g11.test /resumed -tls1_3 -sess_in /tmp/g11-m13)
-grep -q '^Reused, TLSv1.3' <<<"$r" && [ "$(status_line <<<"$r")" = 200 ] && grep -qi '^X-Client-Verify: SUCCESS$' <<<"$r" ||
-  fail "a resumed mTLS session: $(grep -E '^(New|Reused)' <<<"$r") $(status_line <<<"$r")"
+[ "$(status_line <<<"$r")" = 200 ] && grep -qi '^X-Client-Verify: SUCCESS$' <<<"$r" || fail "a resumed mTLS session: $(status_line <<<"$r")"
 [ "$(sess m.g11.test /tmp/g11-n13 out -tls1_3)" = "New, TLSv1.3" ] || fail "handshake without a client certificate"
+[ "$(sess m.g11.test /tmp/g11-n13 in -tls1_3)" = "Reused, TLSv1.3" ] || fail "the session without a certificate not resumed"
 r=$(https_req m.g11.test m.g11.test /resumed-none -tls1_3 -sess_in /tmp/g11-n13)
-grep -q '^Reused, TLSv1.3' <<<"$r" && [ "$(status_line <<<"$r")" = 403 ] || fail "a resumed session without a certificate: $(grep -E '^(New|Reused)' <<<"$r") $(status_line <<<"$r")"
+[ "$(status_line <<<"$r")" = 403 ] || fail "a resumed session without a certificate: $(status_line <<<"$r")"
 early=$(compose exec -T node sh -c 'printf "GET / HTTP/1.1\r\nHost: c.g11.test\r\n\r\n" >/tmp/g11-early; (sleep 1; echo Q) | openssl s_client -connect 127.0.0.1:8443 -servername c.g11.test -tls1_3 -sess_in /tmp/g11-s13 -early_data /tmp/g11-early 2>&1' | tr -d '\r')
 grep -q 'Early data was accepted' <<<"$early" && fail "early data accepted"
 grep -Eq 'Early data was (rejected|not sent)' <<<"$early" || fail "no early data status: $(grep -i early <<<"$early")"

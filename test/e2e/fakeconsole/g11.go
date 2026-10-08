@@ -161,7 +161,9 @@ func g11Setup(c *fakeconsole.Console, dir string) string {
 // g11Config is the base configuration with the G11 sites and session
 // ticket keys (rotated: one rotation later).
 func g11Config(origin, clientCA string, rotated bool) *nodev1.NodeConfig {
-	tls := func() *nodev1.TlsOptions { return &nodev1.TlsOptions{MinimumVersion: "1.2", CipherProfile: "modern", Http2: true} }
+	tls := func() *nodev1.TlsOptions {
+		return &nodev1.TlsOptions{MinimumVersion: "1.2", CipherProfile: "modern", Http2: true}
+	}
 	a := site("site-g11a", "a.g11.test", origin, 80)
 	a.Domains = append(a.Domains, &nodev1.Domain{Name: "b.g11.test"})
 	a.CertificateId, a.AdditionalCertificateIds, a.Tls = "g11-ec", []string{"g11-rsa", "g11-b"}, tls()
