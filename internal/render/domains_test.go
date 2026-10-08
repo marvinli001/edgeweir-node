@@ -49,10 +49,11 @@ func TestRenderDomainsGolden(t *testing.T) {
 
 // TestRenderDomainServers: with suffix or pattern domains, wildcards match
 // one label, suffixes and patterns get servers of their own after every
-// site's server (longest suffix first, patterns by order, with match
-// limits and case-sensitive), and the default site's server is the
-// default_server, named "_" first (a request without a Host keeps $host
-// "_").
+// site's server (longest suffix first, never a Host that starts with a
+// dot; patterns by order, case-sensitive), a guard takes Hosts longer than
+// 253 characters before any regex name, the default site's server is the
+// default_server and the generic server keeps requests without a Host
+// (named `_ ""`).
 func TestRenderDomainServers(t *testing.T) {
 	got, err := Render(params(), domainsPlan())
 	if err != nil {
@@ -81,20 +82,21 @@ func TestRenderDomainServers(t *testing.T) {
 		}
 	}
 	want := []string{
-		"_",
+		`_ ""`,
+		`"~^.{254}"`,
 		`a.test ~^[^.]+\.a\.test$`,
-		"_ c.test",
+		"c.test",
 		// Longest first: a nested suffix always comes before the one it is under.
-		`~^.+\.deep\.test$`,
-		`~^.+\.x\.a\.test$`,
-		`~^.+\.a\.test$`,
-		`"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:(www|m)\.e\.test)$"`,
-		`"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:api\d+\.test)$"`,
+		`~^[^.].*\.deep\.test$`,
+		`~^[^.].*\.x\.a\.test$`,
+		`~^[^.].*\.a\.test$`,
+		`"~(?-i)^(?:(www|m)\.e\.test)$"`,
+		`"~(?-i)^(?:api\d+\.test)$"`,
 	}
 	if strings.Join(names, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("443 server names\n%s\nwant\n%s", strings.Join(names, "\n"), strings.Join(want, "\n"))
 	}
-	if len(defaults) != 1 || !defaults["_ c.test"] {
+	if len(defaults) != 1 || !defaults["c.test"] {
 		t.Fatalf("default servers on 443: %v", defaults)
 	}
 	for _, want := range []string{"listen 443 quic reuseport default_server;", "lua_regex_cache_max_entries 1028;"} {
@@ -139,7 +141,7 @@ func TestRenderDefaultSiteServer(t *testing.T) {
 	conf := string(got)
 	var server string
 	for _, block := range strings.Split(conf, "    server {")[1:] {
-		if strings.Contains(block, "server_name _ d.test;") && strings.Contains(block, "listen 80 default_server") {
+		if strings.Contains(block, "server_name d.test;") && strings.Contains(block, "listen 80 default_server") {
 			server = block
 		}
 	}
@@ -151,5 +153,45 @@ func TestRenderDefaultSiteServer(t *testing.T) {
 	}
 	if !strings.Contains(conf, `server_name ~^[^.]+\.w\.test$;`) || strings.Contains(conf, "*.w.test") {
 		t.Errorf("wildcard not one label with a default site")
+	}
+}
+
+// TestRenderUnboundSiteNames: a site not bound to a listener's port has no
+// server there; its names go to the server its hosts are served by
+// (edgeweir.router: unknown), the default site's while unknown hosts are
+// handed to it, else the generic server.
+func TestRenderUnboundSiteNames(t *testing.T) {
+	plan := domainsPlan()
+	tls := plan.Sites[0].TLS
+	plan.Sites = []configir.Site{
+		{ID: "u", TLS: tls, Ports: []uint32{8080}, Domains: []configir.Domain{
+			{Name: "u.test"}, {Name: "u.test", Match: configir.MatchSuffix},
+		}},
+		{ID: "d", TLS: tls, Domains: []configir.Domain{{Name: "d.test"}}},
+	}
+	plan.Listeners = []configir.Listener{{Port: 80}, {Port: 8080}}
+	plan.UnknownHosts = &configir.UnknownHosts{UnknownHost: "site", IPAccess: "page", DefaultSiteID: "d"}
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	for _, want := range []string{
+		"server_name d.test u.test;",
+		`server_name ~^[^.].*\.u\.test$;`,
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// Unknown hosts get the page: the generic server takes the names.
+	plan.UnknownHosts.UnknownHost = "page"
+	plan.UnknownHosts.IPAccess = "site"
+	got, err = Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `server_name _ "" u.test;`) {
+		t.Errorf("unbound names not on the generic server")
 	}
 }

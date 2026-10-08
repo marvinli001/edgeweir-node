@@ -451,6 +451,9 @@ type matchServer struct {
 	suffix  string
 	pattern bool
 	order   uint64
+	// generic: the server of an unbound site's domain that unknown hosts
+	// go to on the generic server's settings.
+	generic bool
 }
 
 // regexCacheEntries is lua_regex_cache_max_entries for a plan with host
@@ -578,17 +581,19 @@ type edgeServer struct {
 // default site the names are rendered as before. With them, "*.x" becomes
 // ~^[^.]+\.x$ (one label, as edgeweir.store matches it; nginx's "*.x"
 // takes any depth, which would give hosts the store does not know
-// another site's settings), and after every site's server each ".x"
-// (longest first) and each pattern (by order and site id) gets a server
-// of its own with the settings of its site. Patterns carry the match
-// limits of edgeweir.expressions and (?-i): nginx compiles a server name
-// regex caseless when its source holds an uppercase letter, the other
-// implementations match case-sensitively. When unknown hosts or node IP
-// access go to the default site (unknown-host-v1), its server is the
-// listener's default_server, named "_" first so a request without a Host
-// keeps $host "_" (node IP access), and on plain listeners keeps the
-// listener's HTTP/2 (h2c for gRPC sites: nginx takes the connection
-// preface by the default server).
+// another site's settings), a guard server takes Hosts longer than 253
+// characters before any regex name, and after every site's server each
+// ".x" (longest first, never a Host that starts with a dot) and each
+// pattern (by order and site id, case-sensitive) gets a server of its own
+// with the settings of its site. Domains of a site not bound to the
+// listener's port go to the server its (unknown) hosts are served by: the
+// default site's when unknown hosts are handed to it, else the generic
+// one. When unknown hosts or node IP access go to the default site
+// (unknown-host-v1), its server is the listener's default_server and keeps
+// the listener's HTTP/2 on plain listeners (h2c for gRPC sites: nginx
+// takes the connection preface by the default server); the generic
+// server is named `_ ""`, so a request without a Host still goes to it
+// with $host "_" (node IP access).
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
 	hasTLS := false
@@ -623,19 +628,41 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			}
 		}
 		generic := len(out)
+		if defaultSite != "" {
+			// Requests without a Host take the server named "" (nginx): the
+			// generic one, $host "_" (node IP access in edgeweir.router),
+			// also once the default site holds default_server.
+			s.ServerName = `_ ""`
+		}
 		out = append(out, s)
+		if oneLabel {
+			// No regular expression sees a Host longer than a DNS name (253):
+			// nginx tries regex names in order, this one first.
+			guard := s
+			guard.Listen = withoutDefault(s.Listen, false)
+			guard.QUICListen = withoutDefault(s.QUICListen, true)
+			guard.ServerName = `"~^.{254}"`
+			out = append(out, guard)
+		}
 		var matches []matchServer
+		// Names of sites not bound to this port (edge-ports-v1): their hosts
+		// are unknown here (edgeweir.router), so they belong to the server
+		// unknown hosts are served by, the default site's or the generic one.
+		var foreign []string
+		var foreignMatches []matchServer
+		defaultIndex := -1
+		var defaultServed configir.Site
 		for _, site := range plan.Sites {
 			if site.TLS == nil || (l.TLS && site.CertificateID == "") {
 				continue
 			}
-			// Sites bound to other ports (edge-ports-v1) have no server here:
-			// their hosts reach the default server, which answers them like
-			// unknown hosts (edgeweir.router).
-			if len(site.Ports) > 0 && !slices.Contains(site.Ports, l.Port) {
+			bound := len(site.Ports) == 0 || slices.Contains(site.Ports, l.Port)
+			if !bound && !oneLabel {
+				// As before domains-v2 and unknown-host-v1: no server here.
 				continue
 			}
 			var names []string
+			var own []matchServer
 			for _, domain := range site.Domains {
 				// No HTTPS for a domain the certificate does not cover yet.
 				if l.TLS && domain.TLSPending {
@@ -643,9 +670,11 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				}
 				switch {
 				case domain.Match == configir.MatchSuffix:
-					matches = append(matches, matchServer{site: site, name: `~^.+\.` + regexp.QuoteMeta(domain.Name) + `$`, suffix: domain.Name})
+					// [^.] first: a Host that starts with a dot has no parent
+					// (edgeweir.store).
+					own = append(own, matchServer{site: site, name: `~^[^.].*\.` + regexp.QuoteMeta(domain.Name) + `$`, suffix: domain.Name})
 				case domain.Match == configir.MatchRegex:
-					matches = append(matches, matchServer{site: site, name: patternServerName(domain.Name), pattern: true, order: domain.Order})
+					own = append(own, matchServer{site: site, name: patternServerName(domain.Name), pattern: true, order: domain.Order})
 				case domain.Wildcard && oneLabel:
 					names = append(names, `~^[^.]+\.`+regexp.QuoteMeta(domain.Name)+`$`)
 				case domain.Wildcard:
@@ -654,12 +683,18 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 					names = append(names, domain.Name)
 				}
 			}
+			if !bound {
+				foreign = append(foreign, names...)
+				foreignMatches = append(foreignMatches, own...)
+				continue
+			}
+			matches = append(matches, own...)
 			isDefault := site.ID == defaultSite
 			if len(names) == 0 && !isDefault {
 				continue
 			}
-			if isDefault {
-				names = append([]string{"_"}, names...)
+			if len(names) == 0 {
+				names = []string{"default.edgeweir.invalid"}
 			}
 			custom := siteServer(s, site, l, names)
 			if isDefault {
@@ -671,8 +706,25 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				}
 				out[generic].Listen = withoutDefault(s.Listen, false)
 				out[generic].QUICListen = withoutDefault(s.QUICListen, true)
+				defaultIndex, defaultServed = len(out), site
 			}
 			out = append(out, custom)
+		}
+		toDefault := defaultIndex >= 0 && plan.UnknownHosts.UnknownHost == configir.UnknownHostSite
+		if len(foreign) > 0 {
+			target := generic
+			if toDefault {
+				target = defaultIndex
+			}
+			out[target].ServerName += " " + strings.Join(foreign, " ")
+		}
+		for _, m := range foreignMatches {
+			if toDefault {
+				m.site = defaultServed
+			} else {
+				m.generic = true
+			}
+			matches = append(matches, m)
 		}
 		// Suffixes longest first (then by name), patterns by order and site.
 		slices.SortStableFunc(matches, func(a, b matchServer) int {
@@ -685,6 +737,14 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			return cmp.Or(cmp.Compare(len(b.suffix), len(a.suffix)), cmp.Compare(a.suffix, b.suffix))
 		})
 		for _, m := range matches {
+			if m.generic {
+				g := s
+				g.Listen = withoutDefault(s.Listen, false)
+				g.QUICListen = withoutDefault(s.QUICListen, true)
+				g.ServerName = m.name
+				out = append(out, g)
+				continue
+			}
 			out = append(out, siteServer(s, m.site, l, []string{m.name}))
 		}
 	}
@@ -697,13 +757,14 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	return out
 }
 
-// patternServerName is the server_name of a pattern domain: anchored, with
-// the PCRE match limits edgeweir.expressions puts on the same pattern in
-// Lua (the server name is tried for every Host no exact or wildcard name
-// takes) and case-sensitive like the store's, Go's and the console's
-// matching.
+// patternServerName is the server_name of a pattern domain: anchored and
+// case-sensitive like the store's, Go's and the console's matching (nginx
+// compiles a regex name caseless when its source holds an uppercase
+// letter). No PCRE match limit: nginx fails the request when one is hit
+// rather than trying the next name; the console bounds the pattern's shape
+// and the guard server keeps Hosts longer than 253 characters away.
 func patternServerName(pattern string) string {
-	return `"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:` + pattern + `)$"`
+	return `"~(?-i)^(?:` + pattern + `)$"`
 }
 
 // Protocols of the origin layers towards the origins.
