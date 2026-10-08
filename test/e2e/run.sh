@@ -70,7 +70,9 @@
 #      applies without a reload (E2E_STATS=1: their minute statistics);
 #  18. restarting the container serves the last-known-good config.
 # (After 17: G10 suffix and pattern domains, unknown host handling and scan
-# protection, then the base configuration again.)
+# protection; G11 several certificates per site chosen by the ClientHello,
+# client certificates, TLS session resumption, ticket key rotation and no
+# early data; then the base configuration again.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1196,6 +1198,123 @@ rev=$(curl -fsS -X POST "$HELPER/g10?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 [ "$(status_code nope.g10.test)" = 404 ] || fail "unknown hosts did not get the page again"
 pass "G10: suffix and pattern hosts, unknown hosts closed, node IP access to the default site, scan protection"
+
+# G11 (multi-certificate-v1, client-cert-v1, session resumption, ADR-0037):
+# openssl s_client of the node image (Debian bookworm, OpenSSL 3.0) against
+# the HTTPS listener :8443 from inside the node container. site-g11a has an
+# ECDSA and an RSA certificate for a.g11.test and a third for b.g11.test,
+# site-g11c one for c.g11.test and c2.g11.test, site-g11m requires client
+# certificates of the e2e client CA and forwards them (g11.go).
+rev=$(curl -fsS -X POST "$HELPER/g11")
+WAIT_SECS=60 wait_for "G11 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+# cert_of SNI [s_client options]: "<CN> <public key algorithm>" of the
+# certificate the node presents.
+cert_of() {
+  local sni=$1; shift
+  compose exec -T node sh -c 'sni=$1; shift; openssl s_client -connect 127.0.0.1:8443 -servername "$sni" "$@" </dev/null 2>/dev/null | openssl x509 -noout -subject -text 2>/dev/null' sh "$sni" "$@" |
+    tr -d '\r' | awk '/^subject=/{sub(/.*CN ?= ?/, ""); cn=$0} /Public Key Algorithm:/{alg=$NF} END{print cn, alg}'
+}
+[ "$(cert_of a.g11.test)" = "a.g11.test id-ecPublicKey" ] || fail "a default client did not get the ECDSA certificate: $(cert_of a.g11.test)"
+[ "$(cert_of b.g11.test)" = "b.g11.test id-ecPublicKey" ] || fail "the second name of the site did not get its own certificate: $(cert_of b.g11.test)"
+r=$(cert_of a.g11.test -tls1_2 -cipher ECDHE-RSA-AES128-GCM-SHA256 -sigalgs rsa_pss_rsae_sha256:rsa_pkcs1_sha256)
+[ "$r" = "a.g11.test rsaEncryption" ] || fail "an RSA-only TLS 1.2 client did not get the RSA certificate: $r"
+r=$(cert_of a.g11.test -tls1_3 -sigalgs rsa_pss_rsae_sha256)
+[ "$r" = "a.g11.test rsaEncryption" ] || fail "an RSA-only TLS 1.3 client did not get the RSA certificate: $r"
+r=$(cert_of a.g11.test -tls1_2 -cipher ECDHE-ECDSA-AES128-GCM-SHA256)
+[ "$r" = "a.g11.test id-ecPublicKey" ] || fail "an ECDSA TLS 1.2 client did not get the ECDSA certificate: $r"
+pass "G11: two certificates of different names, ECDSA or RSA by the client's ClientHello"
+
+# https_req SNI HOST PATH [s_client options]: one request over TLS (with
+# the visitor's own X-Client-* headers), the whole s_client output.
+https_req() {
+  local sni=$1 host=$2 path=$3; shift 3
+  compose exec -T node sh -c 'sni=$1 host=$2 path=$3; shift 3
+    printf "GET %s HTTP/1.1\r\nHost: %s\r\nX-Client-Verify: FORGED\r\nX-Client-Cert-Subject: CN=forged\r\nX-Client-Cert-SHA256: forged\r\nX-Client-Cert-Serial: 00\r\nConnection: close\r\n\r\n" "$path" "$host" |
+      openssl s_client -connect 127.0.0.1:8443 -servername "$sni" -ign_eof "$@" 2>&1' sh "$sni" "$host" "$path" "$@" | tr -d '\r'
+}
+status_line() { grep -m1 '^HTTP/1.1 ' | cut -d' ' -f2; }
+CLIENT="-cert /etc/edgeweir-e2e/g11-client.crt -key /etc/edgeweir-e2e/g11-client.key"
+ROGUE="-cert /etc/edgeweir-e2e/g11-rogue.crt -key /etc/edgeweir-e2e/g11-rogue.key"
+r=$(https_req m.g11.test m.g11.test /no-cert)
+[ "$(status_line <<<"$r")" = 403 ] && grep -qi '^X-Edgeweir-Error: client-cert-required$' <<<"$r" || fail "no client certificate: $(status_line <<<"$r")"
+# shellcheck disable=SC2086
+r=$(https_req m.g11.test m.g11.test /rogue $ROGUE)
+[ "$(status_line <<<"$r")" = 403 ] && grep -qi '^X-Edgeweir-Error: client-cert-required$' <<<"$r" || fail "a certificate of another CA: $(status_line <<<"$r")"
+code=$(curl -s -o /dev/null -D - -H 'Host: m.g11.test' "$NODE/plain" | tr -d '\r')
+[ "$(status_line <<<"$code")" = 403 ] && grep -qi '^X-Edgeweir-Error: client-cert-required$' <<<"$code" || fail "plain HTTP to a site that requires client certificates: $(head -1 <<<"$code")"
+client_sha=$(compose exec -T node sh -c 'openssl x509 -in /etc/edgeweir-e2e/g11-client.crt -outform der | sha256sum | cut -d" " -f1' | tr -d '\r')
+client_serial=$(compose exec -T node openssl x509 -in /etc/edgeweir-e2e/g11-client.crt -noout -serial | tr -d '\r' | cut -d= -f2)
+# shellcheck disable=SC2086
+r=$(https_req m.g11.test m.g11.test /with-cert $CLIENT)
+[ "$(status_line <<<"$r")" = 200 ] || fail "a valid client certificate: $(status_line <<<"$r")"
+grep -qi '^X-Client-Verify: SUCCESS$' <<<"$r" || fail "the origin did not get X-Client-Verify: SUCCESS: $(grep -i '^X-Client' <<<"$r")"
+grep -qix "X-Client-Cert-Sha256: $client_sha" <<<"$r" || fail "X-Client-Cert-SHA256 is not $client_sha: $(grep -i '^X-Client' <<<"$r")"
+grep -qix 'X-Client-Cert-Subject: CN=e2e-client,OU=Ops' <<<"$r" || fail "X-Client-Cert-Subject: $(grep -i '^X-Client' <<<"$r")"
+grep -qix "X-Client-Cert-Serial: $client_serial" <<<"$r" || fail "X-Client-Cert-Serial is not $client_serial: $(grep -i '^X-Client' <<<"$r")"
+if grep -qi 'forged\|: 00$' <<<"$(grep -i '^X-Client' <<<"$r")"; then fail "the visitor's X-Client-* headers reached the origin: $(grep -i '^X-Client' <<<"$r")"; fi
+r=$(https_req c.g11.test c.g11.test /strip)
+[ "$(status_line <<<"$r")" = 200 ] || fail "c.g11.test: $(status_line <<<"$r")"
+if grep -qi '^X-Client-' <<<"$r"; then fail "a site without client certificates passed X-Client-* on: $(grep -i '^X-Client' <<<"$r")"; fi
+r=$(curl -s -H 'Host: demo.test' -H 'X-Client-Verify: SUCCESS' -H 'X-Client-Cert-Subject: CN=forged' "$NODE/g11-strip")
+if grep -qi '^X-Client-' <<<"$(tr -d '\r' <<<"$r")"; then fail "plain HTTP passed the visitor's X-Client-* on"; fi
+pass "G11: client certificates required (403 without one or from another CA, plain HTTP too), forwarded to the origin, the visitor's X-Client-* removed"
+
+# sess SNI FILE out|in [s_client options]: "New, TLSv1.x" or "Reused,
+# TLSv1.x" (stdin stays open a second: TLS 1.3 tickets come after the
+# handshake).
+sess() {
+  local sni=$1 file=$2 mode=$3; shift 3
+  compose exec -T node sh -c 'sni=$1 file=$2 mode=$3; shift 3; (sleep 1; echo Q) | openssl s_client -connect 127.0.0.1:8443 -servername "$sni" -sess_$mode "$file" "$@" 2>&1' sh "$sni" "$file" "$mode" "$@" |
+    tr -d '\r' | grep -Eo '^(New|Reused), TLSv1\.[23]' | head -1
+}
+conf=$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)
+grep -qF 'ssl_session_cache shared:edgeweir_tls:16m;' <<<"$conf" || fail "nginx.conf has no session cache"
+[ "$(grep -o 'ssl_session_ticket_key [^;]*' <<<"$conf" | sed 's|.*/||' | tr '\n' ' ')" = "g11-k2.key g11-k1.key g11-k3.key " ] ||
+  fail "ticket keys not in the order current, previous, next: $(grep -o 'ssl_session_ticket_key [^;]*' <<<"$conf")"
+grep -q 'ssl_early_data on' <<<"$conf" && fail "early data on"
+grep -qF 'ssl_early_data off;' <<<"$conf" || fail "nginx.conf does not turn early data off"
+keys=$(compose exec -T node sh -c 'cd /var/lib/edgeweir-node/nginx/conf/tls-tickets && stat -c "%n %a %s" *.key' | tr -d '\r' | tr '\n' ' ')
+[ "$keys" = "g11-k1.key 600 80 g11-k2.key 600 80 g11-k3.key 600 80 " ] || fail "ticket key files: $keys"
+[ "$(compose exec -T node stat -c %a /var/lib/edgeweir-node/session-ticket-keys.json | tr -d '\r')" = 600 ] || fail "session-ticket-keys.json mode"
+for v in 2 3; do
+  [ "$(sess c.g11.test /tmp/g11-s1$v out -tls1_$v)" = "New, TLSv1.$v" ] || fail "first TLS 1.$v handshake"
+  [ "$(sess c.g11.test /tmp/g11-s1$v in -tls1_$v)" = "Reused, TLSv1.$v" ] || fail "TLS 1.$v session not resumed"
+  # The same site's other name resumes (the client does offer it); another
+  # site's name never does.
+  [ "$(sess c2.g11.test /tmp/g11-s1$v in -tls1_$v)" = "Reused, TLSv1.$v" ] || fail "TLS 1.$v session not resumed for another name of the site"
+  [ "$(sess a.g11.test /tmp/g11-s1$v in -tls1_$v)" = "New, TLSv1.$v" ] || fail "TLS 1.$v session of site-g11c resumed for site-g11a"
+done
+# A session with a verified client certificate keeps it; one without
+# stays without.
+# shellcheck disable=SC2086
+[ "$(sess m.g11.test /tmp/g11-m13 out -tls1_3 $CLIENT)" = "New, TLSv1.3" ] || fail "mTLS handshake"
+r=$(https_req m.g11.test m.g11.test /resumed -tls1_3 -sess_in /tmp/g11-m13)
+grep -q '^Reused, TLSv1.3' <<<"$r" && [ "$(status_line <<<"$r")" = 200 ] && grep -qi '^X-Client-Verify: SUCCESS$' <<<"$r" ||
+  fail "a resumed mTLS session: $(grep -E '^(New|Reused)' <<<"$r") $(status_line <<<"$r")"
+[ "$(sess m.g11.test /tmp/g11-n13 out -tls1_3)" = "New, TLSv1.3" ] || fail "handshake without a client certificate"
+r=$(https_req m.g11.test m.g11.test /resumed-none -tls1_3 -sess_in /tmp/g11-n13)
+grep -q '^Reused, TLSv1.3' <<<"$r" && [ "$(status_line <<<"$r")" = 403 ] || fail "a resumed session without a certificate: $(grep -E '^(New|Reused)' <<<"$r") $(status_line <<<"$r")"
+early=$(compose exec -T node sh -c 'printf "GET / HTTP/1.1\r\nHost: c.g11.test\r\n\r\n" >/tmp/g11-early; (sleep 1; echo Q) | openssl s_client -connect 127.0.0.1:8443 -servername c.g11.test -tls1_3 -sess_in /tmp/g11-s13 -early_data /tmp/g11-early 2>&1' | tr -d '\r')
+grep -q 'Early data was accepted' <<<"$early" && fail "early data accepted"
+grep -Eq 'Early data was (rejected|not sent)' <<<"$early" || fail "no early data status: $(grep -i early <<<"$early")"
+pass "G11: TLS 1.2 and 1.3 sessions resume for the site only, keep the client certificate, no early data"
+
+# Ticket key rotation: nginx.conf names other files (a reload), the old
+# current key still decrypts.
+conf_before=$(conf_id)
+rev=$(curl -fsS -X POST "$HELPER/g11?rotate=1")
+WAIT_SECS=60 wait_for "G11 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(conf_id)" != "$conf_before" ] || fail "the ticket key rotation did not reload nginx"
+keys=$(compose exec -T node sh -c 'ls /var/lib/edgeweir-node/nginx/conf/tls-tickets' | tr -d '\r' | tr '\n' ' ')
+[ "$keys" = "g11-k2.key g11-k3.key g11-k4.key " ] || fail "ticket key files after the rotation: $keys"
+for v in 2 3; do
+  [ "$(sess c.g11.test /tmp/g11-s1$v in -tls1_$v)" = "Reused, TLSv1.$v" ] || fail "TLS 1.$v ticket of the previous key not resumed after the rotation"
+done
+pass "G11: ticket key rotation reloads, tickets of the previous key still resume"
+rev=$(curl -fsS -X POST "$HELPER/g11?enabled=false")
+WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+[ -z "$(compose exec -T node sh -c 'ls /var/lib/edgeweir-node/nginx/conf/tls-tickets 2>/dev/null' | tr -d '\r')" ] || fail "ticket key files left without keys"
+grep -qF 'ssl_session_tickets off;' <<<"$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)" || fail "tickets not off without keys"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

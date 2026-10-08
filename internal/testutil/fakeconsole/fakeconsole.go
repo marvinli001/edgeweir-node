@@ -105,6 +105,7 @@ type Console struct {
 	keyRequests        [][]string
 	ticketKeys         map[string][]byte
 	ticketKeyRequests  [][]string
+	certificates       map[string]*nodev1.CertificateMaterial
 	securityEvents     []*nodev1.SecurityEvent
 	securitySeen       map[string]bool
 	securityCalls      []int
@@ -164,6 +165,7 @@ func New(opts Options) (*Console, error) {
 		credentials:   map[string]*nodev1.OriginCredential{},
 		challengeKeys: map[string][]byte{},
 		ticketKeys:    map[string][]byte{},
+		certificates:  map[string]*nodev1.CertificateMaterial{},
 		securitySeen:  map[string]bool{},
 		mtlsCalls:     map[string]int{},
 		probe:         probeState{tokens: map[string]bool{}},
@@ -955,6 +957,27 @@ func (c *Console) GetChallengeKeys(_ context.Context, req *connect.Request[nodev
 	for _, id := range req.Msg.GetIds() {
 		if secret, ok := c.challengeKeys[id]; ok {
 			resp.Keys = append(resp.Keys, &nodev1.ChallengeKey{Id: id, Secret: slices.Clone(secret)})
+		}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// SetCertificate makes GetCertificates hand out a site certificate.
+func (c *Console) SetCertificate(m *nodev1.CertificateMaterial) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.certificates[m.GetId()] = proto.CloneOf(m)
+}
+
+// GetCertificates implements NodeService: the certificates it knows,
+// others left out.
+func (c *Console) GetCertificates(_ context.Context, req *connect.Request[nodev1.GetCertificatesRequest]) (*connect.Response[nodev1.GetCertificatesResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp := &nodev1.GetCertificatesResponse{}
+	for _, id := range req.Msg.GetIds() {
+		if m, ok := c.certificates[id]; ok {
+			resp.Certificates = append(resp.Certificates, proto.CloneOf(m))
 		}
 	}
 	return connect.NewResponse(resp), nil

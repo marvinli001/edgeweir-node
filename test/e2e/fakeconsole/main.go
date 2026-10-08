@@ -69,6 +69,10 @@
 // Every revision carries three challenge keys (e2e-key-1..3, current
 // e2e-key-2) that GetChallengeKeys hands out.
 //
+// POST /g11 publishes the G11 sites (several certificates, client
+// certificates, session ticket keys; g11.go), whose certificates and
+// ticket keys GetCertificates and GetSessionTicketKeys hand out.
+//
 // The HTTPS origin's certificate comes from a separate CA that is written
 // to --origin-ca-out; the node trusts it through --trusted-ca.
 //
@@ -148,6 +152,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -800,6 +805,7 @@ func main() {
 		c.SetChallengeKey(k.GetId(), []byte(fmt.Sprintf("e2e challenge key %d, 32 bytes!!", i+1)))
 	}
 	c.SetCredential(&nodev1.OriginCredential{Id: purgeKeyID, Version: 1, SecretAccessKey: purgeKey})
+	clientCA := g11Setup(c, filepath.Dir(*caOut))
 	c.Publish(config(baseSites(*origin)...))
 
 	tlsCfg, err := c.TLSConfig(strings.Split(*names, ","), []net.IP{net.IPv4(127, 0, 0, 1)})
@@ -812,6 +818,7 @@ func main() {
 	mux.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.CA.Pin()) })
 	contentHelpers(mux, c, c.Publish, func() *nodev1.NodeConfig { return config(baseSites(*origin)...) })
 	g10Handlers(mux, c, *origin)
+	g11Handlers(mux, c, *origin, clientCA)
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
 	mux.HandleFunc("GET /grpc", grpcCheck)
 	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)
