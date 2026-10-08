@@ -108,6 +108,13 @@ func (a *Agent) ensureCertificates(ctx context.Context, plan *configir.Plan) err
 func (a *Agent) attachCertificates(plan *configir.Plan) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Unknown names handed to the default site with its certificate
+	// (unknown-host-v1): edgeweir.policy redirects them to HTTPS only where
+	// the certificate names them.
+	defaultSite := ""
+	if u := plan.UnknownHosts; u != nil && u.UnknownHost == configir.UnknownHostSite && u.DefaultCertificate {
+		defaultSite = u.DefaultSiteID
+	}
 	for i := range plan.Sites {
 		site := &plan.Sites[i]
 		if site.CertificateID == "" {
@@ -155,7 +162,7 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 				return fmt.Errorf("certificate does not cover site %s", site.ID)
 			}
 		}
-		if matches {
+		if matches || site.ID == defaultSite {
 			cert.DNSNames = nil
 			for _, name := range leaf.DNSNames {
 				cert.DNSNames = append(cert.DNSNames, strings.ToLower(name))

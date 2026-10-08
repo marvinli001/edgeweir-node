@@ -89,4 +89,13 @@ func TestAttachCertificatesNamesForMatchDomains(t *testing.T) {
 	if plan.Sites[1].Certificate.DNSNames != nil || a.certificates["cert-a/"+cert.Fingerprint].DNSNames != nil {
 		t.Fatal("dns names leaked")
 	}
+	// The default site that gets unknown names with its certificate carries them too.
+	plan.Sites[1].Certificate = nil
+	plan.UnknownHosts = &configir.UnknownHosts{UnknownHost: configir.UnknownHostSite, IPAccess: "page", DefaultSiteID: "b", DefaultCertificate: true}
+	if err := a.attachCertificates(plan); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Sites[1].Certificate.DNSNames; strings.Join(got, ",") != "a.test,*.deep.test" {
+		t.Fatalf("default site's dns names %v", got)
+	}
 }
