@@ -192,7 +192,8 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | 站点错误页（任一站点，含停用站点）：状态码不是 403 / 429 / 502 / 503 / 504、同一状态码出现两次、模板为空或超过 65536 字节；平台错误页超过 65536 字节 | 整个配置拒绝（没有模板时忽略 `intercept_origin_errors`） |
 | 离线 Host 的原因不是 `disabled` | 整个配置拒绝 |
 | 离线 Host 的名称非法（同域名规则，含后缀与正则写法）、单级顶级泛域名或重复 | 跳过该条并告警 |
-| `unknown_hosts` 的处理不是 `page` / `close` / `site`，或 `site` 而默认网站不在本节点的配置里 | 该项按 `page` 处理并告警 |
+| `unknown_hosts`：处理不是 `page` / `close` / `site`，扫描防护的阈值或封禁秒数越界（非 0 时 10–10000、60–86400），`default_certificate` 而未知域名不交给默认网站，或有 `default_site_id` 而没有任何处理交给默认网站 | 整个配置拒绝 |
+| `unknown_hosts` 交给的默认网站不在本节点的配置里（停用、删除或未绑定） | 交给它的请求按 `page` 处理并告警 |
 | 主动健康检查（任一站点）：路径不是以 `/` 开头的 1–1024 字节可打印 ASCII（不含空格）、方法不是 GET / HEAD、期望状态码不满足 100 ≤ min ≤ max ≤ 599、Host 非法、间隔不在 5–300 秒、超时不在 1–60 秒或超过间隔、阈值不在 1–10；会话保持有效期不在 60–604800 秒 | 整个配置拒绝（数值为 0 取默认值：路径 `/`、GET、200–399、间隔 30 秒、超时 5 秒、阈值 2 / 3、有效期 3600 秒） |
 | 已发布站点使用会话保持而配置没有挑战密钥 | 整个配置拒绝 |
 | 四层应用（§3.23）：多于 1024 个、未按 id 严格升序（含重复）、id 不是 `[A-Za-z0-9_-]{1,128}`；协议不是 TCP / UDP；端口不在 1024–65535、是任一 listener 的端口（含被跳过的 listener 与 HTTP/3 的 UDP 端口）或同一协议重复；PROXY protocol 版本大于 2，或 UDP 应用接受 / 发送 PROXY protocol；源站不是 1–32 个、id 非法或重复、地址既不是主机名也不是 IP 字面量（含带 zone 的 IPv6）、端口不在 1–65535、权重不在 1–100；`max_fails` 不在 1–100、恢复时间不在 1–3600 秒、连接超时不在 100–60000 毫秒、空闲超时不在 1–86400 秒（都没有默认值）；放行 / 拦截名单引用不存在的 `ip_lists` 或未按字节序排序去重 | 整个配置拒绝 |
@@ -817,11 +818,11 @@ proto v0.23.0 的三项能力，设计见控制台仓库的 ADR-0033：
 proto v0.25.0 的两项能力，设计见控制台仓库的 ADR-0036：
 
 - **域名写法**（`domains-v2`）：`Domain.match` 为 `SUFFIX`（`.a.com`：任意层级子域名，不含 `a.com` 本身）或 `REGEX`（`~` 后的模式匹配整个小写主机名，控制台与 TS / Go / Lua 共用的正则子集，≤ 256 字节）；`Domain.order` 是正则之间的顺序（网站创建毫秒 × 16 + 序号）。优先级：精确 > `*.`（一级）> 后缀（长的在前）> 正则（按 order）。三种实现共用 `test/lua/host-match-vectors.json`（与控制台的副本逐字节相同）（`configir.HostMatcher`、`store.lookup_host` 与控制台的 `matchHost`）。
-- **查找**：`edgeweir.store` 把后缀写成 `sfx:<名称>` 键，按标签由近到远查；正则每个站点表版本编译一次（`ngx.re` 的 `jo` 选项，换表时编译失败的整表拒绝），后缀与正则的命中结果进单独的 LRU（4096 项，随版本失效）。精确与泛域名的查找不变。
-- **server 块**：只有配置里有后缀或正则域名时 `render` 才改写 `server_name`：`*.x` 写成一级正则 `~^[^.]+\.x$`，后缀与正则各一个 server 块（后缀长的在前，正则按 order），保证 nginx 的 server 选择（精确 → 最长前导通配 → 正则按出现顺序）与 Lua 的优先级一致；有正则时设置 `lua_regex_cache_max_entries`（1024 + 2 × 模式数）。没有这两种写法的配置渲染结果逐字节不变。
-- **证书**：agent 为有后缀或正则域名的网站下发证书的 DNS 名称；`edgeweir.tls` 对后缀与正则主机按证书名称（含 `*.`）判断能否握手。
-- **未知域名与节点 IP 访问**（`unknown-host-v1`）：`NodeConfig.unknown_hosts` 分别给出未绑定域名与节点 IP / 空 Host 的处理：`page`（404 平台页）、`close`（`ngx.exit(444)`）、`site`（交给 `default_site_id`，按其端口绑定）。默认网站的 server 块为 `default_server`（QUIC 监听带 `reuseport`）。HTTPS 没有 SNI 或健康 SNI 而 Host 是 IP 时，处理不是 `page` 就按 IP 访问处理，否则仍是 421。`default_certificate` 时未知 SNI 用默认网站的证书握手，否则仍中止握手。
-- **扫描防护**：`scan_threshold` 与 `scan_ban_seconds` 都大于 0 时，未知域名与节点 IP 访问按客户端地址（IPv6 为 /64）在 `edgeweir_cc` 里计 60 秒窗口，超过阈值的那次请求写入平台范围的本机自动封禁（站点 id `*`，原因 `unknown_host_scan`，指标 `unknown_host_requests`），已在平台范围封禁的地址不重复封禁（`ub|` 只是并发 worker 之间 1 秒的去重）；平台 allow 名单与可信代理地址不计。agent 经 `ReportBans` 以 `BAN_SCOPE_PLATFORM` 上报（`AutoBan.scope`），控制台解封后同样经 `POST /v1/bans/release` 删除，共享的封禁由控制台的增量删除；计数保留它的窗口，解封后下一个超过阈值的请求再次封禁。
+- **查找**：`edgeweir.store` 把后缀写成 `sfx:<名称>` 键，按标签由近到远查（以 `.` 开头的主机名没有上级，只匹配正则）；正则每个站点表版本编译一次（`ngx.re` 的 `jo` 选项，换表时编译失败的整表拒绝），后缀与正则的命中结果进单独的 LRU（4096 项，随版本失效）。精确与泛域名的查找不变。
+- **server 块**：只有配置里有后缀或正则域名（或交给默认网站）时 `render` 才改写 `server_name`：`*.x` 写成一级正则 `~^[^.]+\.x$`，后缀与正则各一个 server 块（后缀长的在前，正则按 order），保证 nginx 的 server 选择（精确 → 最长前导通配 → 正则按出现顺序）与 Lua 的优先级一致；正则写成 `"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:模式)$"`：与 Lua 相同的 PCRE 回溯上限（每个不属于精确或通配名称的 Host 都要试这些正则），`(?-i)` 让 nginx 区分大小写（源码含大写字母时 nginx 默认不区分，例如 `\x4F`）。有正则时设置 `lua_regex_cache_max_entries`（1024 + 2 × 模式数）。没有这些写法的配置渲染结果逐字节不变。
+- **证书**：agent 为有后缀或正则域名的网站下发证书的 DNS 名称；`edgeweir.tls` 对后缀与正则主机按证书名称（含 `*.`）判断能否握手，`edgeweir.policy` 不把证书不覆盖的这类主机跳转到 HTTPS。后缀与正则域名的名称不是主机名：TLS 等待与「不跳转的域名」只把精确域名当作主机名。
+- **未知域名与节点 IP 访问**（`unknown-host-v1`）：`NodeConfig.unknown_hosts` 分别给出未绑定域名与节点 IP / 空 Host 的处理：`page`（404 平台页）、`close`（`ngx.exit(444)`）、`site`（交给 `default_site_id`，按其端口绑定）。默认网站的 server 块为 `default_server`（QUIC 监听带 `reuseport`），第一个名称为 `_`（没有 Host 的请求 `$host` 仍是 `_`，按节点 IP 访问处理），明文监听上保留通用 server 的 HTTP/2（有 gRPC 网站时的 h2c：nginx 按默认 server 接受连接前言）。交给默认网站的请求保留原 Host，缓存键总是包含 Host（网站的缓存键不含 Host 时也一样）；证书不覆盖其主机名时不做强制 HTTPS 跳转。HTTPS 没有 SNI 或健康 SNI 而 Host 是 IP 时，处理不是 `page` 就按 IP 访问处理，否则仍是 421。`default_certificate` 时未知 SNI 用默认网站的证书握手，否则仍中止握手。
+- **扫描防护**：`scan_threshold` 与 `scan_ban_seconds` 都大于 0 时，未知域名与节点 IP 访问按客户端地址（IPv6 为 /64）在 `edgeweir_cc` 里计 60 秒窗口，超过阈值的那次请求写入平台范围的本机自动封禁（站点 id `*`，原因 `unknown_host_scan`，指标 `unknown_host_requests`），已在平台范围封禁的地址不重复封禁（`ub|` 只是并发 worker 之间 1 秒的去重）；平台 allow 名单与可信代理地址不计；nftables 的受保护地址也包含本集群 `client_address` 的可信代理，其他集群的扫描封禁不会在内核层丢弃它们。agent 经 `ReportBans` 以 `BAN_SCOPE_PLATFORM` 上报（`AutoBan.scope`），控制台解封后同样经 `POST /v1/bans/release` 删除，共享的封禁由控制台的增量删除；计数保留它的窗口，解封后下一个超过阈值的请求再次封禁。
 
 ## 4. 文件布局
 
