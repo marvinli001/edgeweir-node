@@ -500,8 +500,10 @@ func (a *Agent) syncKernel(ctx context.Context) time.Time {
 }
 
 // protectedPrefixes are the addresses nftables never drops: loopback,
-// every local interface address, the console's addresses and the
-// platform allow lists of the applied configuration.
+// every local interface address, the console's addresses, the platform
+// allow lists of the applied configuration and the trusted proxies of its
+// client address setting (client-ip-v1: a platform-wide ban, e.g. another
+// cluster's scan ban, must not cut the cluster off from its own proxies).
 func (a *Agent) protectedPrefixes(ctx context.Context) []netip.Prefix {
 	out := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
 	if addrs, err := net.InterfaceAddrs(); err == nil {
@@ -515,7 +517,13 @@ func (a *Agent) protectedPrefixes(ctx context.Context) []netip.Prefix {
 		}
 	}
 	out = append(out, a.consoleAddrs(ctx)...)
-	for _, list := range a.appliedConfig().GetIpLists() {
+	cfg := a.appliedConfig()
+	for _, entry := range cfg.GetClientAddress().GetTrustedCidrs() {
+		if p, err := netip.ParsePrefix(entry); err == nil {
+			out = append(out, p)
+		}
+	}
+	for _, list := range cfg.GetIpLists() {
 		if !list.GetPlatform() || list.GetKind() != "allow" {
 			continue
 		}

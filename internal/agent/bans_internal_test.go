@@ -30,11 +30,11 @@ func TestProtectedPrefixes(t *testing.T) {
 		{Id: "platform-allow", Kind: "allow", Platform: true, Entries: []string{"203.0.113.0/24", "2001:db8:7::/48"}},
 		{Id: "site-allow", Kind: "allow", Entries: []string{"198.51.100.0/24"}},
 		{Id: "platform-block", Kind: "block", Platform: true, Entries: []string{"198.51.101.0/24"}},
-	}}
+	}, ClientAddress: &nodev1.ClientAddress{Mode: "header", TrustedCidrs: []string{"192.0.2.128/25"}}}
 
 	// Before enrollment there is no console address.
 	got := a.protectedPrefixes(context.Background())
-	for _, want := range []string{"127.0.0.0/8", "::1/128", "203.0.113.0/24", "2001:db8:7::/48"} {
+	for _, want := range []string{"127.0.0.0/8", "::1/128", "203.0.113.0/24", "2001:db8:7::/48", "192.0.2.128/25"} {
 		if !slices.Contains(got, netip.MustParsePrefix(want)) {
 			t.Errorf("protected set lacks %s: %v", want, got)
 		}
