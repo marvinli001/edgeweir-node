@@ -15,10 +15,9 @@
 -- platform scope for scan_ban_seconds (edgeweir.bans.add_auto with "*",
 -- reason unknown_host_scan) unless the address is banned at platform scope
 -- already; "ub|<network>" keeps concurrent workers from banning it twice.
--- A lifted ban (by the node's own entry, edgeweir.bans.release, or a
--- shared one the console removed) lets the next request over the threshold
--- ban again; release also clears the count (forget), so the network starts
--- a new window.
+-- Once the ban is lifted (the node's own entry by edgeweir.bans.release,
+-- or a shared one the console removed), the next request over the
+-- threshold bans again; the count keeps its window.
 -- Loopback, trusted proxies and addresses the platform rules allow are
 -- never counted.
 local bans = require("edgeweir.bans")
@@ -91,17 +90,6 @@ function _M.count(cfg, addr)
     end
   end
   return n
-end
-
--- forget clears the scan count and the once-per-ban mark of the network
--- of addr (an address, or the network's first address).
-function _M.forget(addr)
-  local network = ipaddr.client_network(addr)
-  if network then
-    local dict = ngx.shared.edgeweir_cc
-    dict:delete("u|" .. network)
-    dict:delete("ub|" .. network)
-  end
 end
 
 -- action returns the handling of a request with this Host: "page",

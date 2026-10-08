@@ -159,6 +159,12 @@ test("action: node IP access and unknown hosts each by their setting", function(
   eq(unknownhost.action({}, "x.test"), "page", "no setting")
 end)
 
+-- expire_guard stands for BAN_GUARD seconds passing: the mark that keeps
+-- concurrent workers from banning a network twice is gone.
+local function expire_guard(addr)
+  ngx.shared.edgeweir_cc:delete("ub|" .. addr)
+end
+
 -- banned tells whether addr is banned on a site (bans.match returns the ban's kind).
 local function banned(site_id, addr)
   return bans.match(site_id, function() return addr end) ~= nil
@@ -166,8 +172,6 @@ end
 
 test("scan protection: the request after the threshold bans at platform scope, once", function()
   bans.clock = function() return 1791331200 end
-  -- A short guard against concurrent bans, so the test can wait it out.
-  unknownhost.BAN_GUARD = 1
   local cfg = policy.prepare_config({ ip_lists = { { id = "allow", platform = true, kind = "allow", entries = { "192.0.2.200/32" } } } })
   cfg.trusted = expressions.ip_set({ "10.0.0.0/8" })
   cfg.unknown = { unknown_host = "page", ip_access = "page", scan_threshold = 3, scan_ban_seconds = 600 }
@@ -197,29 +201,29 @@ test("scan protection: the request after the threshold bans at platform scope, o
     eq(unknownhost.count(cfg, "10.1.2.3"), nil, "trusted proxy")
   end
   eq(unknownhost.count({ unknown = { scan_threshold = 0 } }, "192.0.2.51"), nil, "off")
-  -- The console lifts the node's own platform ban: the address is counted
-  -- afresh and banned again if it keeps scanning.
+  -- The console lifts the node's own platform ban: the next request over
+  -- the threshold (the count keeps its window) bans again.
   eq(bans.release({ { site_id = "*", cidr = "192.0.2.50/32", expires_at = 1791331200 + 600 } }), 1)
   eq(banned("any-site", "192.0.2.50"), false, "lifted")
-  for i = 1, 3 do eq(unknownhost.count(cfg, "192.0.2.50"), i, "a new window") end
-  eq(banned("any-site", "192.0.2.50"), false, "not yet again")
-  eq(unknownhost.count(cfg, "192.0.2.50"), 4)
+  -- Within the guard (BAN_GUARD seconds after the ban) no second ban.
+  eq(unknownhost.count(cfg, "192.0.2.50"), 6, "still counted")
+  eq(banned("any-site", "192.0.2.50"), false, "the guard holds")
+  expire_guard("192.0.2.50")
+  eq(unknownhost.count(cfg, "192.0.2.50"), 7, "still counted")
   eq(banned("any-site", "192.0.2.50"), true, "banned again")
   reports = bans.drain()
   eq(#reports, 2, "the IPv6 ban and the new one")
   eq(reports[2].ip, "192.0.2.50")
-  -- The same for an IPv6 /64.
-  eq(bans.release({ { site_id = "*", cidr = "2001:db8:1:2::/64", expires_at = 1791331200 + 600 } }), 1)
-  eq(unknownhost.count(cfg, "2001:db8:1:2::9"), 1, "the /64 counted afresh")
+  eq(reports[2].observed, 7)
   -- A shared ban (the console's copy took the node's entry) lifted by the
-  -- console: the next request over the threshold bans again.
+  -- console: the same.
   local shared = { id = "shared-1", cidr = "192.0.2.50/32", scope = "platform", kind = "c", expires_at = 1791331200 + 600 }
   assert(bans.replace({ sequence = "77", bans = { shared } }))
   eq(banned("any-site", "192.0.2.50"), true, "the shared copy")
   assert(bans.add({ base = "77", sequence = "78", upsert = {}, remove = { shared } }))
   eq(banned("any-site", "192.0.2.50"), false, "no ban left")
-  ngx.sleep(1.1)
-  eq(unknownhost.count(cfg, "192.0.2.50"), 5, "still counted, the guard expired")
+  expire_guard("192.0.2.50")
+  eq(unknownhost.count(cfg, "192.0.2.50"), 8, "still counted")
   eq(banned("any-site", "192.0.2.50"), true, "banned again after the shared ban was lifted")
 end)
 
