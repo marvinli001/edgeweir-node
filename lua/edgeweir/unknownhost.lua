@@ -11,12 +11,14 @@
 -- Scan protection counts every such request by client network (the IPv4
 -- address or the IPv6 /64, as edgeweir.cc counts) in lua_shared_dict
 -- "edgeweir_cc" ("u|<network>", a 60-second window from the first
--- request): the request after scan_threshold within it bans the network
--- at platform scope for scan_ban_seconds (edgeweir.bans.add_auto with
--- "*", reason unknown_host_scan), once per ban ("ub|<network>"). When the
--- console lifts that ban (edgeweir.bans.release), forget() clears both
--- keys: the network starts a new window and is banned again if it keeps
--- scanning.
+-- request): a request after scan_threshold within it bans the network at
+-- platform scope for scan_ban_seconds (edgeweir.bans.add_auto with "*",
+-- reason unknown_host_scan) unless the address is banned at platform scope
+-- already; "ub|<network>" keeps concurrent workers from banning it twice.
+-- A lifted ban (by the node's own entry, edgeweir.bans.release, or a
+-- shared one the console removed) lets the next request over the threshold
+-- ban again; release also clears the count (forget), so the network starts
+-- a new window.
 -- Loopback, trusted proxies and addresses the platform rules allow are
 -- never counted.
 local bans = require("edgeweir.bans")
@@ -25,6 +27,8 @@ local ipaddr = require("edgeweir.ipaddr")
 local _M = {}
 
 _M.WINDOW = 60
+-- How long "ub|<network>" holds back another ban of the same network.
+_M.BAN_GUARD = 5
 
 local find, match = string.find, string.match
 
@@ -69,7 +73,12 @@ function _M.count(cfg, addr)
   end
   local dict = ngx.shared.edgeweir_cc
   local n = dict:incr("u|" .. network, 1, 0, _M.WINDOW)
-  if n and n > u.scan_threshold and dict:safe_add("ub|" .. network, true, u.scan_ban_seconds) then
+  if
+    n
+    and n > u.scan_threshold
+    and not bans.match(nil, addr)
+    and dict:safe_add("ub|" .. network, true, _M.BAN_GUARD)
+  then
     local ok, err = bans.add_auto("*", addr, u.scan_ban_seconds, {
       reason = "unknown_host_scan",
       metric = "unknown_host_requests",
