@@ -677,6 +677,9 @@ function _M.offline_reason(cfg, host)
   end
   local reason = offline.exact[host]
   local dot = find(host, ".", 1, true)
+  if dot == 1 then
+    dot = nil
+  end
   if not reason and dot then
     reason = offline.wild[sub(host, dot + 1)]
   end

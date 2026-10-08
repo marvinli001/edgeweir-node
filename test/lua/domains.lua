@@ -227,6 +227,50 @@ test("scan protection: the request after the threshold bans at platform scope, o
   eq(banned("any-site", "192.0.2.50"), true, "banned again after the shared ban was lifted")
 end)
 
+test("lookup_host: a host that starts with a dot has no parent", function()
+  assert(store.replace({ revision = "8", sites = {
+    site("s1", { { name = "a.test", wildcard = true }, { name = "a.test", match = "suffix" } }),
+  } }))
+  eq(store.lookup_host(".a.test"), nil, "neither wildcard nor suffix")
+  eq(store.lookup_host("x.a.test").id, "s1")
+  local cfg = { offline = { exact = {}, wild = { ["b.test"] = "disabled" }, suffix = { ["b.test"] = "disabled" } } }
+  eq(errorpages.offline_reason(cfg, ".b.test"), nil)
+  eq(errorpages.offline_reason(cfg, "x.b.test"), "disabled")
+end)
+
+test("policy: suffix and pattern names are no exact hosts; uncovered hosts get no HTTPS redirect", function()
+  local domains = {
+    { name = "a.test", wildcard = true, tls_pending = true },
+    { name = "x.a.test", match = "suffix" },
+    { name = "y\\.a\\.test", match = "regex", order = 1 },
+  }
+  local pending = policy.prepare_tls_pending(domains)
+  local s = { domains = domains, _tls_pending = pending, _redirect_excluded = { ["*.a.test"] = true } }
+  eq(policy.tls_pending(s, "x.a.test"), true, "x.a.test reaches the site through the pending wildcard")
+  eq(policy.redirect_excluded(s, "x.a.test"), true, "and through the excluded wildcard")
+  local cert = { dns_names = { "*.a.test" } }
+  eq(policy.names_cover(cert.dns_names, "b.a.test"), true)
+  eq(policy.names_cover(cert.dns_names, "c.b.a.test"), false)
+  eq(policy.names_cover(cert.dns_names, ".a.test"), false, "no parent")
+  local site2 = { certificate = cert }
+  eq(policy.uncovered(site2, "c.b.a.test", "match"), true)
+  eq(policy.uncovered(site2, "b.a.test", "match"), false)
+  eq(policy.uncovered(site2, "c.b.a.test", "exact"), false, "exact and wildcard hosts are checked by tls_pending")
+  eq(policy.uncovered(site2, "203.0.113.5", "handed"), true, "a handed IP host")
+  eq(policy.uncovered({}, "b.a.test", "handed"), true, "no certificate")
+end)
+
+test("cache key: a request handed to the default site keeps its host", function()
+  local cachekey = require("edgeweir.cachekey")
+  local s = { id = "d", cache_generation = "1", cache_key = cachekey.prepare({ query = "all", exclude_host = true }) }
+  local req = { scheme = "http", host = "evil.test", path = "/", args = "" }
+  local plain = cachekey.build(s, req, 0)
+  req.handed = true
+  local handed = cachekey.build(s, req, 0)
+  assert(not plain:find("evil.test", 1, true), plain)
+  assert(handed:find("evil.test", 1, true), handed)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

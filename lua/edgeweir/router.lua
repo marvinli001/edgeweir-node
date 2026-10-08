@@ -261,7 +261,7 @@ local function access()
   -- there, never cached and never challenged (validation servers cannot
   -- solve challenges).
   local acme = token ~= nil
-  local site, ver = store.lookup_host(host)
+  local site, ver, found = store.lookup_host(host)
   -- A site bound to other listener ports (edge-ports-v1) is unknown here;
   -- the origin's own HTTP-01 tokens still reach it on port 80.
   local unbound = site and not is_local and not store.serves_port(site, var.server_port) and not (acme and var.server_port == "80")
@@ -278,9 +278,13 @@ local function access()
       return
     end
     handed = true
+    found = "handed"
   end
 
   ngx.ctx.edgeweir_site = site
+  -- How the site was found (edgeweir.policy: no HTTPS redirect for a host
+  -- its certificate does not name).
+  ngx.ctx.edgeweir_found = found
   if site.hide_x_cache then
     var.edgeweir_x_cache_off = "1"
   end
@@ -424,6 +428,7 @@ local function access()
     var.edgeweir_range_mode = "pass"
     return true
   end
+  req.handed = ngx.ctx.edgeweir_found == "handed"
   if site._browser_ttl then
     -- For the browser TTL of the rule that decides the response.
     local ctx = ngx.ctx

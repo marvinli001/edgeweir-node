@@ -703,6 +703,11 @@ function _M.lookup_host(host)
     return _M.site(ver, id), ver, "exact"
   end
   local dot = find(host, ".", 1, true)
+  -- A host that starts with a dot has no parent (as nginx's server names,
+  -- Go's HostMatcher and the console see it): only patterns can match it.
+  if dot == 1 then
+    dot = nil
+  end
   if dot then
     local parent = sub(host, dot + 1)
     local wk = "*." .. parent

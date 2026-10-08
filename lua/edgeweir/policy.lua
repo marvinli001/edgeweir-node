@@ -80,11 +80,13 @@ end
 -- not cover yet (tls_pending, proto v0.19.0, feature
 -- tls-pending-domains-v1): exact names, parents of wildcards, and every
 -- exact name of the site (an exact name wins over a wildcard); nil when
--- there are none.
+-- there are none. Suffix and pattern domains (domains-v2) are neither:
+-- their names are no hosts, and their hosts complete TLS only where the
+-- certificate names them (names_cover).
 function _M.prepare_tls_pending(domains)
   local pending, any = { exact = {}, wild = {}, hosts = {} }, false
   for _, d in ipairs(domains or {}) do
-    if type(d) == "table" and type(d.name) == "string" then
+    if type(d) == "table" and type(d.name) == "string" and not d.match then
       local wildcard = d.wildcard == true
       if not wildcard then pending.hosts[d.name] = true end
       if d.tls_pending == true then
@@ -118,13 +120,37 @@ function _M.redirect_excluded(site, host)
   if hosts == nil then
     hosts = {}
     for _, d in ipairs(site.domains or {}) do
-      if type(d) == "table" and d.wildcard ~= true and type(d.name) == "string" then hosts[d.name] = true end
+      if type(d) == "table" and d.wildcard ~= true and not d.match and type(d.name) == "string" then hosts[d.name] = true end
     end
     site._exact_hosts = hosts
   end
   if hosts[host] then return false end
   local dot = find(host, ".", 1, true)
   return dot ~= nil and excluded["*." .. sub(host, dot + 1)] == true
+end
+
+-- names_cover tells whether a certificate's DNS names cover host: the
+-- same name, or a wildcard over its parent (a host that starts with a dot
+-- has none).
+function _M.names_cover(names, host)
+  if type(names) ~= "table" or type(host) ~= "string" then return false end
+  local dot = find(host, ".", 1, true)
+  local wild = dot and dot > 1 and "*." .. sub(host, dot + 1)
+  for i = 1, #names do
+    if names[i] == host or names[i] == wild then return true end
+  end
+  return false
+end
+
+-- uncovered tells whether a request reached the site through a suffix or
+-- pattern domain (found "match") or was handed to it as the default site
+-- (found "handed") while its certificate does not name the host: HTTPS
+-- would end in an aborted handshake (edgeweir.tls), so it gets no HTTPS
+-- redirect.
+function _M.uncovered(site, host, found)
+  if found ~= "match" and found ~= "handed" then return false end
+  local cert = site and site.certificate
+  return not _M.names_cover(cert and cert.dns_names, host)
 end
 
 -- https_redirect is the HTTPS redirect of a request for host with
@@ -519,6 +545,7 @@ function _M.access(site, headers)
     end
   end
   if ctx.force_https and ngx.var.scheme ~= "https" and not _M.tls_pending(site, ngx.var.host)
+    and not _M.uncovered(site, ngx.var.host, ngx.ctx.edgeweir_found)
     and (ctx.force_https_rule or not _M.redirect_excluded(site, ngx.var.host)) then
     if not site.certificate_id or site.certificate_id == "" then return { status = 503 } end
     return _M.https_redirect(site.tls, ngx.var.host, ngx.var.request_uri)

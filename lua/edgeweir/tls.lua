@@ -26,18 +26,6 @@ local function on_port(site)
   return not port or store.serves_port(site, port)
 end
 
--- names_cover tells whether a certificate's DNS names cover host: the
--- same name, or a wildcard over its parent.
-local function names_cover(names, host)
-  if type(names) ~= "table" then return false end
-  local dot = string.find(host, ".", 1, true)
-  local wild = dot and "*." .. string.sub(host, dot + 1)
-  for i = 1, #names do
-    if names[i] == host or names[i] == wild then return true end
-  end
-  return false
-end
-
 -- choose returns the site whose certificate a handshake for host gets
 -- (nil: abort): the site serving the host, else (for names no site serves
 -- here) the default site when the cluster hands unknown hosts to it with
@@ -46,7 +34,7 @@ local function choose(host)
   local site, ver, how = store.lookup_host(host)
   if site then
     if not site.certificate or policy.tls_pending(site, host) then return nil end
-    if how == "match" and not names_cover(site.certificate.dns_names, host) then return nil end
+    if how == "match" and not policy.names_cover(site.certificate.dns_names, host) then return nil end
     if on_port(site) then return site end
   end
   local u = store.config(not site and ver or nil).unknown

@@ -251,11 +251,14 @@ end
 -- build returns the cache key. req = { scheme, host, path (normalized
 -- $uri), args (raw query string), user_agent, headers (lowercase name ->
 -- value or list, e.g. ngx.req.get_headers(0)), cookie (name -> value, see
--- key_cookies) }.
+-- key_cookies), handed (the request was handed to the site as the default
+-- site, unknown-host-v1) }. A handed request keeps its host in the key
+-- even where the site's key leaves the host out: any Host reaches the
+-- default site, and its origin may answer by Host.
 function _M.build(site, req, epoch)
   local key = site.cache_key
   local parts = { site.id, ":", site.cache_generation, ":", req.scheme, "://" }
-  if not key.exclude_host then
+  if not key.exclude_host or req.handed then
     parts[#parts + 1] = escape(req.host or "", ESC_HOST)
   end
   parts[#parts + 1] = escape(req.path, ESC_PATH)
