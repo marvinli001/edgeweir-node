@@ -74,6 +74,7 @@ local probehealth = require("edgeweir.probehealth")
 local setcookie = require("edgeweir.setcookie")
 local charset = require("edgeweir.charset")
 local purgemethod = require("edgeweir.purgemethod")
+local clientcert = require("edgeweir.clientcert")
 
 local _M = {}
 
@@ -96,14 +97,18 @@ local function deny(status, code, message)
 end
 
 -- strip_internal_headers removes client-supplied X-Edgeweir-* headers so
--- that clients can never inject internal routing or caching hints. It
+-- that clients can never inject internal routing or caching hints, and
+-- their X-Client-Verify, X-Client-Cert-SHA256, X-Client-Cert-Subject and
+-- X-Client-Cert-Serial on every site (only the node sends those, for
+-- sites that forward client certificates, edgeweir.clientcert). It
 -- reads every request header (no limit) and returns them: the cache key
 -- is built from the same table, so a header can never be invisible to
 -- one and visible to the other.
 local function strip_internal_headers()
   local headers = ngx.req.get_headers(0)
+  local client = clientcert.STRIP
   for name in pairs(headers) do
-    if sub(name, 1, 11) == "x-edgeweir-" then
+    if sub(name, 1, 11) == "x-edgeweir-" or client[name] then
       ngx.req.clear_header(name)
       headers[name] = nil
     end
@@ -298,6 +303,17 @@ local function access()
   if var.scheme == "https" and not handed and (not var.ssl_server_name or string.lower(var.ssl_server_name) ~= host) then
     return deny(421, "sni-host-mismatch", "SNI and Host must match")
   end
+  -- Sites that require client certificates (client-cert-v1): 403 without
+  -- a verified one, plain HTTP after the site's HTTPS redirect; the local
+  -- listeners (the agent's prefetches) are the operator's own.
+  local client = not is_local and clientcert.decision(site, var.scheme, var.ssl_client_verify, acme)
+  if client then
+    if client == "http" then
+      local r = policy.site_https_redirect(site, host, var.request_uri, found, ngx.ctx.edgeweir_default_certificate)
+      if r then return ngx.redirect(r.location, r.status) end
+    end
+    return deny(ngx.HTTP_FORBIDDEN, "client-cert-required", "client certificate required")
+  end
   -- Dynamic bans: platform scope, then the site's; addresses on a
   -- platform allow list and trusted proxies of the client address
   -- setting are never banned.
@@ -364,6 +380,11 @@ local function access()
     if level > 0 and challenge.pass_level(site) < level then
       return run_challenge(site, kind, level)
     end
+  end
+  -- The client certificate towards the origin (after the rules: they
+  -- never overwrite it).
+  if site._client and site._client.forward then
+    clientcert.forward(clientcert.values())
   end
   headers = ngx.req.get_headers(0)
   -- The variable's default is "": only origin and timeout overrides set it.

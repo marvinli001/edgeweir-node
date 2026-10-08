@@ -26,6 +26,9 @@ local probehealth = require("edgeweir.probehealth")
 local router = require("edgeweir.router")
 local store = require("edgeweir.store")
 local tls = require("edgeweir.tls")
+-- The session id context goes through FFI on a real connection
+-- (test/lua/tls.lua checks which one each handshake gets).
+tls.set_session_context = function() return true end
 
 local passed, failed = 0, 0
 
@@ -204,7 +207,8 @@ test("TLS: a site bound to other ports is a name no site serves there", function
     return { revision = revision, content_hash = revision, unknown_hosts = unknown, sites = {
       -- HTTP only, bound to 8080: on 443 its host goes to the default site.
       site("u", "u.example.test", { ports = { 8080 } }),
-      site("d", "d.example.test", { certificate = { chain_pem = "D-CHAIN", private_key_pem = "D-KEY", fingerprint = "fd", dns_names = { "*.example.test" } } }),
+      site("d", "d.example.test", { certificate = { chain_pem = "D-CHAIN", private_key_pem = "D-KEY", fingerprint = "fd", dns_names = { "*.example.test" } },
+        tls_session_context = string.rep("0d", 32) }),
     } }
   end
   assert(store.replace(table("4", true)))

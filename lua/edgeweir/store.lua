@@ -44,6 +44,8 @@ local cc = require("edgeweir.cc")
 local errorpages = require("edgeweir.errorpages")
 local expressions = require("edgeweir.expressions")
 local probehealth = require("edgeweir.probehealth")
+local resty_sha256 = require("resty.sha256")
+local to_hex = require("resty.string").to_hex
 
 local _M = {}
 
@@ -249,6 +251,50 @@ local REQUEST_V3 = { ["http.referer"] = true, ["http.user_agent"] = true, ["http
   ["http.request.scheme"] = true, ["http.request.id"] = true, ["http.request.timestamp.sec"] = true, ["edge.server_port"] = true }
 local function is_request_v3(field) return REQUEST_V3[field] == true end
 local is_peer = is_field("ip.peer")
+local function is_client(field) return field:sub(1, 11) == "tls.client." end
+
+-- unhex decodes a hex string of n bytes (nil when it is not one).
+local function unhex(s, n)
+  if type(s) ~= "string" or #s ~= 2 * n or s:find("[^0-9a-fA-F]") then return nil end
+  return (s:gsub("..", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+-- prepare_tls precomputes a site's TLS data: its certificates in the
+-- site's order (_certs: certificates, or the one certificate), whether
+-- they mix ECDSA with other keys (_mixed_keys: the ClientHello computes
+-- which the client can use), the union of their names (_cert_names), the
+-- session id context (_sid_ctx, 32 raw bytes) and the client certificate
+-- setting (_client: CA bundle, its SHA-256 as the cache key, depth;
+-- _client_required for mode "required", even when the setting is broken:
+-- requests then fail closed).
+local function prepare_tls(s)
+  local certs = type(s.certificates) == "table" and #s.certificates > 1 and s.certificates or nil
+  if not certs and type(s.certificate) == "table" then certs = { s.certificate } end
+  s._certs, s._mixed_keys, s._cert_names = certs, nil, nil
+  if certs then
+    local ec, other, names = false, false, nil
+    for _, c in ipairs(certs) do
+      if c.key_type == "ec" then ec = true else other = true end
+      if type(c.dns_names) == "table" then
+        names = names or {}
+        for _, n in ipairs(c.dns_names) do names[#names + 1] = n end
+      end
+    end
+    s._mixed_keys = (ec and other) or nil
+    s._cert_names = names
+  end
+  s._sid_ctx = unhex(s.tls_session_context, 32)
+  local cc = s.client_certificate
+  s._client, s._client_required = nil, nil
+  if type(cc) == "table" and (cc.mode == "optional" or cc.mode == "required") then
+    s._client_required = cc.mode == "required" or nil
+    if type(cc.ca_pem) == "string" and cc.ca_pem ~= "" then
+      local h = resty_sha256:new()
+      h:update(cc.ca_pem)
+      s._client = { ca_pem = cc.ca_pem, key = to_hex(h:final()), depth = tonumber(cc.depth) or 2, forward = cc.forward_headers == true }
+    end
+  end
+end
 
 -- prepare precomputes per-site data used on the hot path. Missing fields
 -- (site tables pushed by older agents) take the defaults.
@@ -286,6 +332,10 @@ function _M.prepare(s, cfg)
   s._cache_status = reads_field(rule_lists, s.cache_rules, is_cache_status) or nil
   s._request_v3 = reads_field(rule_lists, s.cache_rules, is_request_v3) or nil
   s._peer = reads_field(rule_lists, s.cache_rules, is_peer) or nil
+  -- tls.client.* (client-cert-v1) come from the connection's client
+  -- certificate (edgeweir.clientcert).
+  s._client_fields = reads_field(rule_lists, s.cache_rules, is_client) or nil
+  prepare_tls(s)
   s._cookies = field_names(rule_lists, s.cache_rules, "http.request.cookies.")
   s._args = field_names(rule_lists, s.cache_rules, "http.request.uri.args.")
   local platform_groups = s._config.groups or {}

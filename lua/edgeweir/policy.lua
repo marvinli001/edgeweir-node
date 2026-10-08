@@ -26,6 +26,7 @@
 local expressions = require("edgeweir.expressions")
 local ratelimit = require("edgeweir.ratelimit")
 local compress = require("edgeweir.compress")
+local clientcert = require("edgeweir.clientcert")
 local _M = {}
 _M.phases = { "request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin" }
 
@@ -151,8 +152,28 @@ end
 function _M.uncovered(site, host, found, default_certificate)
   if found ~= "match" and found ~= "handed" then return false end
   if found == "handed" and not default_certificate then return true end
-  local cert = site and site.certificate
-  return not _M.names_cover(cert and cert.dns_names, host)
+  -- The names of all of the site's certificates (edgeweir.store).
+  local names = site and site._cert_names
+  if names == nil then
+    local cert = site and site.certificate
+    names = cert and cert.dns_names
+  end
+  return not _M.names_cover(names, host)
+end
+
+-- site_https_redirect is the HTTPS redirect the site's own Force HTTPS
+-- gives a plain HTTP request for host (nil: none): not for domains waiting
+-- for the certificate, excluded domains or hosts its certificates do not
+-- cover. Config rules are not run (edgeweir.router asks before the site
+-- logic, for sites that require client certificates).
+function _M.site_https_redirect(site, host, request_uri, found, default_certificate)
+  local tls = site.tls
+  if not (tls and tls.force_https) or not site.certificate_id or site.certificate_id == ""
+    or _M.tls_pending(site, host) or _M.redirect_excluded(site, host)
+    or _M.uncovered(site, host, found, default_certificate) then
+    return nil
+  end
+  return _M.https_redirect(tls, host, request_uri)
 end
 
 -- https_redirect is the HTTPS redirect of a request for host with
@@ -329,6 +350,12 @@ function _M.request(site, headers)
   if site._args then set_named(values, "http.request.uri.args.", site._args, expressions.args, values["http.request.uri.query"]) end
   -- JA4 comes from the TLS handshake (edgeweir.ja4); "" on plain HTTP.
   if site._ja4 then values["tls.ja4"] = require("edgeweir.ja4").value() end
+  -- The client certificate of the connection (client-cert-v1): false and
+  -- "" without a verified one.
+  if site._client_fields then
+    local client = clientcert.values()
+    values["tls.client.verified"], values["tls.client.cert_sha256"], values["tls.client.subject"] = client.verified, client.sha256, client.subject
+  end
   -- GeoIP is read once in the access phase; response filters cannot yield.
   if site._geo then
     local geo = assert(require("edgeweir.geoip").lookup(var.remote_addr), "GeoIP unavailable")
