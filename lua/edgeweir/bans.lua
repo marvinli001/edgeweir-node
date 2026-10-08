@@ -3,7 +3,9 @@
 -- Console bans arrive from the agent through the control API (PUT replaces
 -- the whole set, POST applies a delta); the node's own automatic bans are
 -- added with add_auto() and queued for the agent to report, and deleted
--- with release() when the console lifts them. Nothing here reloads nginx.
+-- with release() when the console lifts them. When a site's automatic ban
+-- goes (own or console automatic), CC counts its client afresh
+-- (edgeweir.cc.lifted). Nothing here reloads nginx.
 --
 -- lua_shared_dict "edgeweir_bans" (size: the agent's --ban-dict-mb):
 --
@@ -101,6 +103,15 @@ local function parse_value(v)
     return nil
   end
   return sub(v, 1, 1), sub(v, 3, p2 - 1), tonumber(sub(v, p2 + 1, p3 - 1)), sub(v, p3 + 1)
+end
+
+-- lifted tells CC that an automatic ban of scope went: ip is its IPv4
+-- address or the first address of its IPv6 /64 (the text of a CIDR is
+-- cut at the "/").
+local function lifted(scope, ip)
+  if scope ~= PLATFORM then
+    require("edgeweir.cc").lifted(scope, match(ip, "^[^/]+"))
+  end
 end
 
 -- ---------------------------------------------------------------------
@@ -570,11 +581,14 @@ function _M.replace(doc)
     local prefix = sub(k, 1, 2)
     if prefix == "e|" and not wanted[k] then
       local v = dict:get(k)
-      local kind, _, expires = parse_value(v)
+      local kind, _, expires, cidr = parse_value(v)
       if kind and kind ~= "a" then
         dict:delete(k)
         if expires then
           account(dict, expires, -1)
+        end
+        if kind == "c" then
+          lifted(sub(k, 3, find(k, "|", 3, true) - 1), cidr)
         end
       end
     elseif sub(k, 1, 5) == "#len|" then
@@ -665,11 +679,14 @@ function _M.add(doc)
     local e = remove[i]
     un[e.id] = nil
     local v = dict:get(e.key)
-    local kind, id, expires = parse_value(v)
+    local kind, id, expires, cidr = parse_value(v)
     if kind and kind ~= "a" and id == e.id then
       dict:delete(e.key)
       if expires then
         account(dict, expires, -1)
+      end
+      if kind == "c" then
+        lifted(e.scope, cidr)
       end
     end
   end
@@ -804,8 +821,9 @@ end
 -- /128 of older own bans). An own ban there
 -- is deleted only if it expires no later than expires_at (one second of
 -- slack for rounding): an own ban of the address made after the lift
--- lasts longer and stays. Console bans are not touched. Returns how many
--- were deleted, or nil, an error and a status.
+-- lasts longer and stays. Console bans are not touched. CC counts the
+-- address of a deleted ban afresh. Returns how many were deleted, or nil,
+-- an error and a status.
 function _M.release(list)
   if type(list) ~= "table" then
     return nil, "bans must be an array", 400
@@ -824,7 +842,7 @@ function _M.release(list)
     if not expires then
       return nil, "#" .. i .. ": invalid expires_at", 400
     end
-    items[i] = { key = key_for(b.site_id, bytes, len), expires = expires }
+    items[i] = { key = key_for(b.site_id, bytes, len), expires = expires, scope = b.site_id, ip = ip }
   end
   local dict = shdict()
   local ok, lerr, code = lock(dict)
@@ -838,6 +856,7 @@ function _M.release(list)
       dict:delete(items[i].key)
       account(dict, expires, -1)
       n = n + 1
+      lifted(items[i].scope, items[i].ip)
     end
   end
   dict:delete("#lock")

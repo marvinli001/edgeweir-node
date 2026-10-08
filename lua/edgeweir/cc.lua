@@ -10,6 +10,8 @@
 --   url_qps        level of that exact path only (attacked paths)
 --   ip_qps         the address is banned for ip_ban seconds
 --                  (edgeweir.bans.add_auto, reason cc_ip_rate), once per ban
+--                  (b|<site>|<ip>); when the console lifts the ban,
+--                  lifted() clears that mark and the address's counts
 --
 -- An address is a client's IPv4 address or IPv6 /64
 -- (edgeweir.ipaddr.client_network: "2001:db8:1:2::/64"): one client that
@@ -52,6 +54,7 @@
 -- version must keep rising for the workers' cached path maps); window
 -- counters expire on their own and automatic bans at their own expiry.
 local cjson = require("cjson.safe")
+local ipaddr = require("edgeweir.ipaddr")
 
 local _M = {}
 
@@ -515,6 +518,26 @@ function _M.check_ip(site, addr, n, w, now)
   return true
 end
 
+-- lifted counts an address afresh once the console lifts its ban on
+-- site_id (edgeweir.bans; addr is an IPv4 address or the first address of
+-- an IPv6 /64): the once-per-ban mark goes, so that the address is banned
+-- again on its next breach, and so do its counts of the current and the
+-- previous window, so that requests from before the ban do not ban it
+-- again on its first request.
+function _M.lifted(site_id, addr)
+  local d = dict()
+  local network = ipaddr.client_network(addr)
+  if not d or not network then return end
+  d:delete("b|" .. site_id .. "|" .. network)
+  local site = _M.site(site_id)
+  local cc = site and site._cc
+  if cc then
+    local w = floor(_M.clock() / cc.window)
+    d:delete("i|" .. site_id .. "|" .. network .. "|" .. w)
+    d:delete("i|" .. site_id .. "|" .. network .. "|" .. (w - 1))
+  end
+end
+
 local pmaps = {}
 
 -- level returns the CC level of a request: the site's, or the path's when
@@ -543,6 +566,12 @@ end
 -- forget drops worker-local state (tests).
 function _M.forget()
   locals, pmaps = {}, {}
+end
+
+-- site returns the site with id from the current site table, or nil
+-- (replaced in tests).
+_M.site = function(id)
+  return require("edgeweir.store").site_current(id)
 end
 
 -- sites returns the current sites with CC (from the site table), or nil

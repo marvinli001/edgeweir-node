@@ -9,6 +9,7 @@ local dict = ngx.shared.edgeweir_cc
 local passed, failed = 0, 0
 local T = 1790000000
 local table_sites = cc.sites
+local table_site = cc.site
 
 local function reset()
   dict:flush_all()
@@ -18,6 +19,7 @@ local function reset()
   bans.forget()
   cc.forget()
   cc.sites = table_sites
+  cc.site = table_site
   T = 1790000000
   cc.clock = function() return T end
   bans.clock = function() return T end
@@ -321,6 +323,80 @@ test("an IPv6 client counts and is banned by its /64", function()
   local reported = bans.drain(10)
   eq(#reported, 1); eq(reported[1].ip, "2001:db8:7:8::"); eq(reported[1].prefix_len, 64)
   eq(events("ip_banned")[1].address, "2001:db8:7:8::/64")
+end)
+
+-- burst sends count requests of addr 10 ms apart and returns how many
+-- were refused.
+local function burst(s, addr, count)
+  local denied = 0
+  for _ = 1, count do
+    T = T + 0.01
+    local n, w, now = cc.count(s, addr, "/")
+    if cc.check_ip(s, addr, n, w, now) then denied = denied + 1 end
+  end
+  return denied
+end
+
+test("a lifted own ban counts the address afresh and bans it again on the next breach", function()
+  local ipaddr = require("edgeweir.ipaddr")
+  local s = site({ window = 5, ip_qps = 5, ip_ban = 120 })
+  cc.site = function(id) return id == "site-a" and s or nil end
+  eq(burst(s, "198.51.100.40", 26), 1, "the 26th request bans")
+  local r = bans.drain(10)[1]
+  -- The console lifts it within the window: the node deletes its own ban.
+  eq(bans.release({ { site_id = "site-a", cidr = r.ip .. "/" .. r.prefix_len, expires_at = r.expires_at } }), 1)
+  eq(bans.match("site-a", "198.51.100.40"), nil, "lifted")
+  eq(burst(s, "198.51.100.40", 25), 0, "counted afresh: 25 requests are within the limit")
+  eq(bans.match("site-a", "198.51.100.40"), nil, "not yet again")
+  eq(burst(s, "198.51.100.40", 1), 1, "the next breach")
+  eq(bans.match("site-a", "198.51.100.40"), "a", "banned again")
+  eq(#bans.drain(10), 1, "reported again")
+  eq(#events("ip_banned"), 2, "two ban events")
+  -- The same for an IPv6 /64, lifted by its network.
+  local v6 = ipaddr.client_network("2001:db8:7:9::1")
+  eq(burst(s, v6, 26), 1)
+  r = bans.drain(10)[1]
+  eq(bans.release({ { site_id = "site-a", cidr = r.ip .. "/" .. r.prefix_len, expires_at = r.expires_at } }), 1)
+  eq(burst(s, v6, 25), 0, "the /64 counted afresh")
+  eq(burst(s, v6, 1), 1)
+  eq(bans.match("site-a", "2001:db8:7:9::2"), "a", "the /64 banned again")
+  eq(#bans.drain(10), 1)
+  -- Without the site's CC the mark still goes.
+  eq(burst(s, "198.51.100.42", 26), 1)
+  r = bans.drain(10)[1]
+  cc.site = function() return nil end
+  eq(bans.release({ { site_id = "site-a", cidr = r.ip .. "/32", expires_at = r.expires_at } }), 1)
+  eq(dict:get("b|site-a|198.51.100.42"), nil, "mark cleared")
+end)
+
+test("a lifted shared ban counts the address afresh", function()
+  local s = site({ window = 5, ip_qps = 5, ip_ban = 120 })
+  cc.site = function(id) return id == "site-a" and s or nil end
+  local function shared(id, addr)
+    return { id = id, cidr = addr .. "/32", scope = "site", site_id = "site-a", kind = "c", expires_at = T + 120 }
+  end
+  eq(burst(s, "198.51.100.43", 26), 1)
+  eq(burst(s, "198.51.100.44", 26), 1)
+  -- The console shares both bans back as automatic console bans.
+  assert(bans.replace({ sequence = 1, bans = { shared("b43", "198.51.100.43"), shared("b44", "198.51.100.44") } }))
+  eq(bans.match("site-a", "198.51.100.43"), "c")
+  -- Lifting one removes it in a delta.
+  assert(bans.add({ base = 1, sequence = 2, remove = { { id = "b43", cidr = "198.51.100.43/32", scope = "site", site_id = "site-a" } } }))
+  eq(bans.match("site-a", "198.51.100.43"), nil, "lifted")
+  eq(burst(s, "198.51.100.43", 25), 0, "counted afresh")
+  eq(burst(s, "198.51.100.43", 1), 1)
+  eq(bans.match("site-a", "198.51.100.43"), "a", "banned again")
+  -- The other one goes with a full replacement that no longer holds it.
+  assert(bans.replace({ sequence = 3, bans = {} }))
+  eq(bans.match("site-a", "198.51.100.44"), nil, "lifted")
+  eq(burst(s, "198.51.100.44", 25), 0, "counted afresh")
+  eq(burst(s, "198.51.100.44", 1), 1)
+  eq(bans.match("site-a", "198.51.100.44"), "a", "banned again")
+  -- A lifted manual ban leaves CC alone.
+  assert(bans.add({ base = 3, sequence = 4, upsert = { { id = "m45", cidr = "198.51.100.45/32", scope = "site", site_id = "site-a", kind = "m", expires_at = T + 120 } } }))
+  dict:set("b|site-a|198.51.100.45", true, 120)
+  assert(bans.add({ base = 4, sequence = 5, remove = { { id = "m45", cidr = "198.51.100.45/32", scope = "site", site_id = "site-a" } } }))
+  eq(dict:get("b|site-a|198.51.100.45"), true, "mark kept")
 end)
 
 test("the previous window counts for addresses past half their limit", function()
