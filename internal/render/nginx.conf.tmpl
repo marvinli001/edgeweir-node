@@ -96,6 +96,25 @@ http {
     # Nameservers from {{ .ResolvConf }} (origins are resolved in Lua).
     resolver {{ join .Resolvers " " }} valid=30s{{ if not .ResolverIPv6 }} ipv6=off{{ end }};
     resolver_timeout 5s;
+{{- if .TLSSessions }}
+
+    # TLS session resumption on the HTTPS listeners: one session cache
+    # (about 64000 sessions). edgeweir.tls gives every handshake its site's
+    # session id context, so a session resumes only for the site, minimum
+    # version, client certificate setting and certificates it was made
+    # with. Early data (0-RTT) stays off on every server.
+    ssl_session_cache shared:edgeweir_tls:16m;
+    ssl_session_timeout 1h;
+{{- if .TicketKeyFiles }}
+    # The cluster's ticket keys: the first (current) encrypts, all decrypt.
+    ssl_session_tickets on;
+{{- range .TicketKeyFiles }}
+    ssl_session_ticket_key {{ . }};
+{{- end }}
+{{- else }}
+    ssl_session_tickets off;
+{{- end }}
+{{- end }}
 {{ range .CacheZones }}
     proxy_cache_path {{ $.CacheDir }}/{{ .Name }} levels=1:2 keys_zone={{ .Name }}:{{ .KeysZoneMB }}m max_size={{ .MaxSizeMB }}m inactive={{ .InactiveSeconds }}s use_temp_path=off;
 {{- end }}
@@ -304,7 +323,7 @@ http {
 {{- else }}
         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
 {{- end }}
-        ssl_session_tickets off;
+        ssl_early_data off;
         ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
         ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
 {{- end }}

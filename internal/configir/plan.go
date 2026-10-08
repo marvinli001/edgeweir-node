@@ -48,6 +48,9 @@ const (
 	// second (lua/edgeweir/purgemethod.lua). Its keys are chosen by clients,
 	// so they live apart from the data plane's own state in DictMeta.
 	DictPurgeRate = "edgeweir_purge_rate"
+	// ZoneTLSSessions is the TLS session cache of the HTTPS listeners
+	// (ssl_session_cache shared:edgeweir_tls), not a lua_shared_dict.
+	ZoneTLSSessions = "edgeweir_tls"
 )
 
 // SharedDicts lists the static lua_shared_dicts in declaration order.
@@ -59,7 +62,7 @@ var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.
 func reservedZoneName(name string) bool {
-	return slices.Contains(SharedDicts, name) || name == DictLimits || strings.HasPrefix(name, RateLimitDictPrefix)
+	return slices.Contains(SharedDicts, name) || name == DictLimits || name == ZoneTLSSessions || strings.HasPrefix(name, RateLimitDictPrefix)
 }
 
 var zoneNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
@@ -138,6 +141,10 @@ type Plan struct {
 	// v0.26.0); the secrets come from GetSessionTicketKeys. Without them the
 	// HTTPS listeners issue no tickets.
 	SessionTicketKeys []SessionTicketKeyRef
+	// TicketKeys are the ids of SessionTicketKeyIDs the node holds, in
+	// nginx's order (current first): the agent fills it in and writes their
+	// files before rendering (render.TicketKeyPath).
+	TicketKeys []string
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.

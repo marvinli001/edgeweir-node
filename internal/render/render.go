@@ -355,6 +355,19 @@ type data struct {
 	// ClientMaxBodySize is client_max_body_size of the http block
 	// (configir.Plan.MaxRequestBody).
 	ClientMaxBodySize string
+	// TLSSessions: an HTTPS listener exists, the http block caches TLS
+	// sessions; TicketKeyFiles are the session ticket key files in nginx's
+	// order (none: no tickets).
+	TLSSessions    bool
+	TicketKeyFiles []string
+}
+
+// TicketKeyDir is the directory of the session ticket key files under the
+// nginx prefix; TicketKeyPath the file of one key (the agent writes it).
+const TicketKeyDir = "conf/tls-tickets"
+
+func TicketKeyPath(prefix, id string) string {
+	return prefix + "/" + TicketKeyDir + "/" + id + ".key"
 }
 
 // originProxy is the data of one origin layer location (template
@@ -949,6 +962,17 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	}
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()
+	}
+	for _, l := range plan.Listeners {
+		d.TLSSessions = d.TLSSessions || l.TLS
+	}
+	if d.TLSSessions {
+		for _, id := range plan.TicketKeys {
+			if !safeWord.MatchString(id) {
+				return nil, fmt.Errorf("invalid session ticket key id %q", id)
+			}
+			d.TicketKeyFiles = append(d.TicketKeyFiles, TicketKeyPath(p.Prefix, id))
+		}
 	}
 	// The configuration id is the hash of the file rendered without it:
 	// equal settings give equal files, and the data plane reports the id
