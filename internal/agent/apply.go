@@ -41,11 +41,11 @@ func permanentUnless(ctx context.Context, err error) error {
 }
 
 // applyTimeout bounds one apply: the console RPCs for credentials,
-// challenge keys and certificates, `nginx -t`, the reload and the pushes,
-// each within its own timeout. It starts after the configuration was
-// fetched.
+// challenge keys, session ticket keys and certificates, `nginx -t`, the
+// reload and the pushes, each within its own timeout. It starts after the
+// configuration was fetched.
 func (a *Agent) applyTimeout() time.Duration {
-	return 3*a.cfg.RPCTimeout + a.cfg.TestTimeout + a.cfg.ReloadTimeout + 4*a.cfg.PushTimeout + 30*time.Second
+	return 4*a.cfg.RPCTimeout + a.cfg.TestTimeout + a.cfg.ReloadTimeout + 4*a.cfg.PushTimeout + 30*time.Second
 }
 
 // applyPlan makes the data plane serve plan:
@@ -67,6 +67,10 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	conf, err := render.Render(a.cfg.Render, plan)
 	if err != nil {
 		return &permanentError{err}
+	}
+	// The session ticket key files nginx.conf names, before `openresty -t`.
+	if err := a.writeTicketKeyFiles(plan); err != nil {
+		return err
 	}
 	modsecConf, err := a.installModSecurityConf(plan)
 	if err != nil {
@@ -182,6 +186,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.desiredL4 = l4
 	a.plan = plan
 	a.mu.Unlock()
+	a.removeStaleTicketKeyFiles(plan)
 	// Checks of the plan start (or stop); the marks' lifetime follows
 	// their intervals.
 	a.health.Update(plan)
@@ -578,6 +583,12 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		a.fail(cfg, key, err) // transient: retried with the next sync
 		return
 	}
+	// Ticket key files are named in nginx.conf: they come before rendering.
+	if err := a.ensureSessionTicketKeys(ctx, plan); err != nil {
+		a.fail(cfg, key, err) // transient: retried with the next sync
+		return
+	}
+	a.attachSessionTicketKeys(plan)
 	if err := a.ensureCertificates(ctx, plan); err != nil {
 		a.fail(cfg, key, err)
 		return
@@ -619,6 +630,7 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.mu.Unlock()
 	a.pruneSecrets(cfg, previousConfig)
 	a.pruneChallengeKeys(cfg, previousConfig)
+	a.pruneSessionTicketKeys(cfg, previousConfig)
 	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings))
 	a.triggerKernel() // platform allow lists may have changed
 	a.triggerOCSP()

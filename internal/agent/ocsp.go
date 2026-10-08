@@ -129,33 +129,37 @@ func (a *Agent) refreshOCSP(ctx context.Context, plan *configir.Plan) bool {
 	changed := false
 	seen := map[string]bool{}
 	for _, site := range plan.Sites {
-		if site.TLS == nil || !site.TLS.OCSPStapling || site.CertificateID == "" {
+		if site.TLS == nil || !site.TLS.OCSPStapling {
 			continue
 		}
-		key := site.CertificateID + "/" + plan.Certificates[site.CertificateID]
-		if seen[key] {
-			continue
+		// Each certificate of the site staples its own response: the
+		// handshake sets one certificate and that one's response.
+		for _, id := range site.CertificateIDs() {
+			key := id + "/" + plan.Certificates[id]
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			a.mu.Lock()
+			material, ok := a.certificates[key]
+			a.mu.Unlock()
+			if !ok || material.OCSPUntil > time.Now().Add(time.Hour).Unix() {
+				continue
+			}
+			body, until, err := fetchOCSP(ctx, material)
+			if err != nil {
+				a.log.Warn("OCSP response unavailable", "certificate_id", id)
+				continue
+			}
+			if body == material.OCSP && until == material.OCSPUntil {
+				continue
+			}
+			material.OCSP, material.OCSPUntil = body, until
+			a.mu.Lock()
+			a.certificates[key] = material
+			a.mu.Unlock()
+			changed = true
 		}
-		seen[key] = true
-		a.mu.Lock()
-		material, ok := a.certificates[key]
-		a.mu.Unlock()
-		if !ok || material.OCSPUntil > time.Now().Add(time.Hour).Unix() {
-			continue
-		}
-		body, until, err := fetchOCSP(ctx, material)
-		if err != nil {
-			a.log.Warn("OCSP response unavailable", "certificate_id", site.CertificateID)
-			continue
-		}
-		if body == material.OCSP && until == material.OCSPUntil {
-			continue
-		}
-		material.OCSP, material.OCSPUntil = body, until
-		a.mu.Lock()
-		a.certificates[key] = material
-		a.mu.Unlock()
-		changed = true
 	}
 	if changed {
 		a.mu.Lock()

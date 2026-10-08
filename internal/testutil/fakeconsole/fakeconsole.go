@@ -103,6 +103,8 @@ type Console struct {
 	// Challenges and CC events.
 	challengeKeys      map[string][]byte
 	keyRequests        [][]string
+	ticketKeys         map[string][]byte
+	ticketKeyRequests  [][]string
 	securityEvents     []*nodev1.SecurityEvent
 	securitySeen       map[string]bool
 	securityCalls      []int
@@ -161,6 +163,7 @@ func New(opts Options) (*Console, error) {
 		bans:          map[string]*banRow{},
 		credentials:   map[string]*nodev1.OriginCredential{},
 		challengeKeys: map[string][]byte{},
+		ticketKeys:    map[string][]byte{},
 		securitySeen:  map[string]bool{},
 		mtlsCalls:     map[string]int{},
 		probe:         probeState{tokens: map[string]bool{}},
@@ -952,6 +955,36 @@ func (c *Console) GetChallengeKeys(_ context.Context, req *connect.Request[nodev
 	for _, id := range req.Msg.GetIds() {
 		if secret, ok := c.challengeKeys[id]; ok {
 			resp.Keys = append(resp.Keys, &nodev1.ChallengeKey{Id: id, Secret: slices.Clone(secret)})
+		}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// SetSessionTicketKey makes GetSessionTicketKeys hand out a key.
+func (c *Console) SetSessionTicketKey(id string, secret []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ticketKeys[id] = slices.Clone(secret)
+}
+
+// SessionTicketKeyRequests returns the ids of every GetSessionTicketKeys
+// call.
+func (c *Console) SessionTicketKeyRequests() [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.ticketKeyRequests)
+}
+
+// GetSessionTicketKeys implements NodeService: the keys it knows, others
+// left out.
+func (c *Console) GetSessionTicketKeys(_ context.Context, req *connect.Request[nodev1.GetSessionTicketKeysRequest]) (*connect.Response[nodev1.GetSessionTicketKeysResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ticketKeyRequests = append(c.ticketKeyRequests, slices.Clone(req.Msg.GetIds()))
+	resp := &nodev1.GetSessionTicketKeysResponse{}
+	for _, id := range req.Msg.GetIds() {
+		if secret, ok := c.ticketKeys[id]; ok {
+			resp.Keys = append(resp.Keys, &nodev1.SessionTicketKey{Id: id, Secret: slices.Clone(secret)})
 		}
 	}
 	return connect.NewResponse(resp), nil

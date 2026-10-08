@@ -322,6 +322,10 @@ type Agent struct {
 	keysFetchedAt       time.Time // data plane loop only
 	securityUnsupported sync.Once
 
+	// TLS session ticket keys by id (tickets.go).
+	ticketMu   sync.Mutex
+	ticketKeys map[string][]byte
+
 	// Active health checks (activehealth.go). activeMu serializes the
 	// pushes; activeMarks: the data plane may hold marks (unknown at
 	// startup); activeDown: the origins of the last push.
@@ -370,6 +374,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		nft:            kernelManager(cfg.Kernel, log),
 
 		challengeKeys: map[string][]byte{},
+		ticketKeys:    map[string][]byte{},
 		captchaCh:     make(chan struct{}, 1),
 		ocspCh:        make(chan struct{}, 1),
 
@@ -464,6 +469,7 @@ func (a *Agent) Run(parent context.Context) error {
 	a.loadCertificates()
 	a.loadPurge()
 	a.loadChallengeKeys()
+	a.loadSessionTicketKeys()
 	defer a.health.Close()
 	a.serveInitialConfig(ctx)
 	a.startBans(ctx)
@@ -663,6 +669,7 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 		if perr == nil {
 			// No console yet: S3 origins use the stored credentials.
 			a.attachCredentials(plan)
+			a.attachSessionTicketKeys(plan)
 			perr = a.attachCertificates(plan)
 			if perr == nil {
 				perr = a.applyPlan(ctx, plan)

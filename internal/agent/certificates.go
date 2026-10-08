@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -16,7 +17,9 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,58 +120,50 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 	}
 	for i := range plan.Sites {
 		site := &plan.Sites[i]
-		if site.CertificateID == "" {
+		ids := site.CertificateIDs()
+		if len(ids) == 0 {
 			continue
 		}
-		cert, ok := a.certificates[site.CertificateID+"/"+plan.Certificates[site.CertificateID]]
-		if !ok {
-			return fmt.Errorf("missing certificate for site %s", site.ID)
+		certs := make([]configir.Certificate, 0, len(ids))
+		leaves := make([]*x509.Certificate, 0, len(ids))
+		for _, id := range ids {
+			cert, ok := a.certificates[id+"/"+plan.Certificates[id]]
+			if !ok {
+				return fmt.Errorf("missing certificate for site %s", site.ID)
+			}
+			if err := validMaterial(cert); err != nil {
+				return err
+			}
+			pair, _ := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
+			leaf, err := x509.ParseCertificate(pair.Certificate[0])
+			if err != nil {
+				return err
+			}
+			cert.KeyType, cert.Curve = keyType(leaf)
+			certs = append(certs, cert)
+			leaves = append(leaves, leaf)
 		}
-		if err := validMaterial(cert); err != nil {
-			return err
-		}
-		pair, _ := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
-		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		matches, err := checkCoverage(site, leaves)
 		if err != nil {
 			return err
 		}
-		matches := false
-		for _, domain := range site.Domains {
-			// Served over HTTP until a new certificate covers it.
-			if domain.TLSPending {
-				continue
-			}
-			// Suffix and pattern domains name no single host: each host they
-			// match is checked at the handshake (edgeweir.tls).
-			if domain.Match != "" {
-				matches = true
-				continue
-			}
-			name := domain.Name
-			if domain.Wildcard {
-				matched := false
-				for _, san := range leaf.DNSNames {
-					if san == "*."+name {
-						matched = true
-						break
-					}
+		// The names of the leaves: for hosts of suffix and pattern domains,
+		// the default site's handed names and, with more than one
+		// certificate, the handshake's choice among those that name the SNI.
+		if matches || site.ID == defaultSite || len(certs) > 1 {
+			for j := range certs {
+				certs[j].DNSNames = nil
+				for _, name := range leaves[j].DNSNames {
+					certs[j].DNSNames = append(certs[j].DNSNames, strings.ToLower(name))
 				}
-				if !matched {
-					return fmt.Errorf("certificate does not cover wildcard of site %s", site.ID)
-				}
-				continue
-			}
-			if err := leaf.VerifyHostname(name); err != nil {
-				return fmt.Errorf("certificate does not cover site %s", site.ID)
 			}
 		}
-		if matches || site.ID == defaultSite {
-			cert.DNSNames = nil
-			for _, name := range leaf.DNSNames {
-				cert.DNSNames = append(cert.DNSNames, strings.ToLower(name))
-			}
+		site.Certificate = &certs[0]
+		site.Certificates = nil
+		if len(certs) > 1 {
+			site.Certificates = certs
 		}
-		site.Certificate = &cert
+		site.TLSSessionContext = sessionContext(site, certs)
 	}
 	// TCP applications that terminate TLS (l4-v2): any name of the
 	// certificate is accepted (edgeweir.l4 checks the SNI against them).
@@ -196,6 +191,90 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 		}
 	}
 	return nil
+}
+
+// checkCoverage checks that the site's certificates together cover each of
+// its domains (a domain waiting for a certificate aside): an exact name
+// one of them verifies for, a wildcard one of them names as "*.<parent>".
+// matches reports suffix and pattern domains, whose hosts the handshake
+// checks against the certificates' names.
+func checkCoverage(site *configir.Site, leaves []*x509.Certificate) (matches bool, err error) {
+	for _, domain := range site.Domains {
+		// Served over HTTP until a new certificate covers it.
+		if domain.TLSPending {
+			continue
+		}
+		// Suffix and pattern domains name no single host: each host they
+		// match is checked at the handshake (edgeweir.tls).
+		if domain.Match != "" {
+			matches = true
+			continue
+		}
+		covered := false
+		for _, leaf := range leaves {
+			if domain.Wildcard {
+				covered = slices.Contains(leaf.DNSNames, "*."+domain.Name)
+			} else {
+				covered = leaf.VerifyHostname(domain.Name) == nil
+			}
+			if covered {
+				break
+			}
+		}
+		switch {
+		case !covered && domain.Wildcard:
+			return false, fmt.Errorf("certificate does not cover wildcard of site %s", site.ID)
+		case !covered:
+			return false, fmt.Errorf("certificate does not cover site %s", site.ID)
+		}
+	}
+	return matches, nil
+}
+
+// keyType names the leaf's key for edgeweir.tls: "ec" with its curve, or
+// "rsa"; other keys get "" (always offered, like RSA).
+func keyType(leaf *x509.Certificate) (string, string) {
+	switch key := leaf.PublicKey.(type) {
+	case *ecdsa.PublicKey:
+		return "ec", key.Curve.Params().Name
+	case *rsa.PublicKey:
+		return "rsa", ""
+	}
+	return "", ""
+}
+
+// sessionContextPrefix starts every session id context: a site's (below)
+// and the health certificate's, SHA-256("edgeweir-tls-v1\0health"), which
+// edgeweir.tls computes itself.
+const sessionContextPrefix = "edgeweir-tls-v1\x00"
+
+// sessionContext is the site's TLS session id context (hex SHA-256):
+// sessions resume only for the same site, minimum version, client
+// certificate setting and certificates. Its input is
+//
+//	"edgeweir-tls-v1\0" site id "\0" minimum version "\0" client
+//	certificate mode "\0" hex SHA-256 of the CA PEM "\0" depth "\0"
+//	certificate fingerprints in the site's order, joined by ","
+//
+// with "1.2" for sites without TLS options and "off", "" and "0" without
+// client certificates. Ids are [A-Za-z0-9_-], the other parts fixed words,
+// numbers and hex, so the input is unambiguous.
+func sessionContext(site *configir.Site, certs []configir.Certificate) string {
+	minimum := "1.2"
+	if site.TLS != nil && site.TLS.MinimumVersion != "" {
+		minimum = site.TLS.MinimumVersion
+	}
+	mode, ca, depth := "off", "", "0"
+	if cc := site.ClientCertificate; cc != nil {
+		sum := sha256.Sum256([]byte(cc.CAPEM))
+		mode, ca, depth = cc.Mode, hex.EncodeToString(sum[:]), strconv.FormatUint(uint64(cc.Depth), 10)
+	}
+	fingerprints := make([]string, len(certs))
+	for i, c := range certs {
+		fingerprints[i] = c.Fingerprint
+	}
+	sum := sha256.Sum256([]byte(sessionContextPrefix + site.ID + "\x00" + minimum + "\x00" + mode + "\x00" + ca + "\x00" + depth + "\x00" + strings.Join(fingerprints, ",")))
+	return hex.EncodeToString(sum[:])
 }
 
 // The durable store retains current and previous configurations, so keep
