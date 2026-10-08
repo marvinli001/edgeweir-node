@@ -60,7 +60,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "d1126e06287059ba",
+            conf_id = "9d07e39b4703cc71",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -919,7 +919,7 @@ http {
     # requests.
     server {
         listen 80;
-        server_name _ "";
+        server_name generic.edgeweir.invalid;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -1057,7 +1057,7 @@ http {
     }
     server {
         listen 80;
-        server_name "~^.{254}";
+        server_name _ "" "~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$";
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -1903,7 +1903,7 @@ http {
     }
     server {
         listen 80;
-        server_name "~(?-i)^(?:(www|m)\.e\.test)$";
+        server_name "~(?-i)^(?!.{254})(?:(www|m)\.e\.test)$";
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -2046,7 +2046,7 @@ http {
         brotli on;
         brotli_comp_level 4;
         brotli_min_length 1;
-        server_name "~(?-i)^(?:api\d+\.test)$";
+        server_name "~(?-i)^(?!.{254})(?:api\d+\.test)$";
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -2195,7 +2195,7 @@ http {
         ssl_session_tickets off;
         ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
         ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
-        server_name _ "";
+        server_name generic.edgeweir.invalid;
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -2334,7 +2334,7 @@ http {
     server {
         listen 443 ssl;
         listen 443 quic;
-        http3 on;
+        http3 off;
         http2 on;
         ssl_certificate /var/lib/edgeweir-node/nginx/conf/bootstrap.crt;
         ssl_certificate_key /var/lib/edgeweir-node/nginx/conf/bootstrap.key;
@@ -2343,7 +2343,7 @@ http {
         ssl_session_tickets off;
         ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
         ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
-        server_name "~^.{254}";
+        server_name _ "" "~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$";
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -3249,7 +3249,7 @@ http {
         ssl_session_tickets off;
         ssl_client_hello_by_lua_block { require("edgeweir.tls").client_hello() }
         ssl_certificate_by_lua_block { require("edgeweir.tls").certificate() }
-        server_name "~(?-i)^(?:(www|m)\.e\.test)$";
+        server_name "~(?-i)^(?!.{254})(?:(www|m)\.e\.test)$";
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over
@@ -3402,7 +3402,7 @@ http {
         brotli on;
         brotli_comp_level 4;
         brotli_min_length 1;
-        server_name "~(?-i)^(?:api\d+\.test)$";
+        server_name "~(?-i)^(?!.{254})(?:api\d+\.test)$";
         # nginx's own errors get error pages (edgeweir.router.error_page):
         # malformed requests and CRS blocks with status 400, request headers
         # (494) and URIs (414) that are too long, bodies over

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,10 +51,11 @@ func TestRenderDomainsGolden(t *testing.T) {
 // TestRenderDomainServers: with suffix or pattern domains, wildcards match
 // one label, suffixes and patterns get servers of their own after every
 // site's server (longest suffix first, never a Host that starts with a
-// dot; patterns by order, case-sensitive), a guard takes Hosts longer than
-// 253 characters before any regex name, the default site's server is the
-// default_server and the generic server keeps requests without a Host
-// (named `_ ""`).
+// dot; patterns by order, case-sensitive, never a Host longer than 253
+// characters), the default site's server is the default_server and, node
+// IP access being handed to it, a server with its settings takes requests
+// without a Host and IP hosts before any other regex name while the
+// generic server gets a name of its own.
 func TestRenderDomainServers(t *testing.T) {
 	got, err := Render(params(), domainsPlan())
 	if err != nil {
@@ -82,16 +84,16 @@ func TestRenderDomainServers(t *testing.T) {
 		}
 	}
 	want := []string{
-		`_ ""`,
-		`"~^.{254}"`,
+		"generic.edgeweir.invalid",
+		`_ "" "~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"`,
 		`a.test ~^[^.]+\.a\.test$`,
 		"c.test",
 		// Longest first: a nested suffix always comes before the one it is under.
 		`~^[^.].*\.deep\.test$`,
 		`~^[^.].*\.x\.a\.test$`,
 		`~^[^.].*\.a\.test$`,
-		`"~(?-i)^(?:(www|m)\.e\.test)$"`,
-		`"~(?-i)^(?:api\d+\.test)$"`,
+		`"~(?-i)^(?!.{254})(?:(www|m)\.e\.test)$"`,
+		`"~(?-i)^(?!.{254})(?:api\d+\.test)$"`,
 	}
 	if strings.Join(names, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("443 server names\n%s\nwant\n%s", strings.Join(names, "\n"), strings.Join(want, "\n"))
@@ -191,7 +193,80 @@ func TestRenderUnboundSiteNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `server_name _ "" u.test;`) {
+	if !strings.Contains(string(got), `server_name generic.edgeweir.invalid u.test;`) {
 		t.Errorf("unbound names not on the generic server")
+	}
+}
+
+// TestRenderNodeIPAccess: IP hosts and requests without a Host are node IP
+// access, looked up by exact name only (edgeweir.store): a regex name for
+// them comes before every other one, on a server with the default site's
+// settings while node IP access is handed to it, else on the generic
+// server; an unbound site's IP name follows node IP access, its other
+// names unknown hosts.
+func TestRenderNodeIPAccess(t *testing.T) {
+	tls := func(http2, brotli bool) *configir.TLSOptions {
+		return &configir.TLSOptions{MinimumVersion: "1.2", CipherProfile: "modern", HTTP2: http2, Brotli: brotli, BrotliLevel: 4}
+	}
+	plan := &configir.Plan{
+		Listeners:  []configir.Listener{{Port: 80}, {Port: 8080}},
+		CacheZones: []configir.CacheZone{{Name: "default", MaxSizeMB: 1024, KeysZoneMB: 16, InactiveSeconds: 3600}},
+		Sites: []configir.Site{
+			{ID: "p", TLS: tls(false, false), Domains: []configir.Domain{{Name: `[0-9._]+`, Match: configir.MatchRegex, Order: 16}}},
+			{ID: "u", TLS: tls(false, false), Ports: []uint32{8080}, Domains: []configir.Domain{{Name: "198.51.100.7"}, {Name: "u.test"}}},
+			{ID: "d", TLS: tls(true, true), Domains: []configir.Domain{{Name: "d.test"}}},
+		},
+		UnknownHosts: &configir.UnknownHosts{UnknownHost: "page", IPAccess: "site", DefaultSiteID: "d"},
+	}
+	servers := func() []string {
+		t.Helper()
+		got, err := Render(params(), plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, block := range strings.Split(string(got), "    server {")[1:] {
+			if !strings.Contains(block, "listen 80;") && !strings.Contains(block, "listen 80 ") {
+				continue
+			}
+			var name string
+			for _, line := range strings.Split(block, "\n") {
+				if v, ok := strings.CutPrefix(strings.TrimSpace(line), "server_name "); ok {
+					name = strings.TrimSuffix(v, ";")
+				}
+			}
+			out = append(out, name+" brotli="+fmt.Sprint(strings.Contains(block, "brotli on;")))
+		}
+		return out
+	}
+	ip := `"~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"`
+	want := []string{
+		"generic.edgeweir.invalid u.test brotli=false",
+		`_ "" ` + ip + " 198.51.100.7 brotli=true",
+		"d.test brotli=true",
+		`"~(?-i)^(?!.{254})(?:[0-9._]+)$" brotli=false`,
+	}
+	if got := servers(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("servers on 80\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// Node IP access closed, unknown hosts to the default site.
+	plan.UnknownHosts.UnknownHost, plan.UnknownHosts.IPAccess = "site", "close"
+	want = []string{
+		`_ "" ` + ip + " 198.51.100.7 brotli=false",
+		"d.test u.test brotli=true",
+		`"~(?-i)^(?!.{254})(?:[0-9._]+)$" brotli=false`,
+	}
+	if got := servers(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("servers on 80\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// No default site: the generic server is the default one.
+	plan.UnknownHosts = nil
+	want = []string{
+		"_ " + ip + " u.test 198.51.100.7 brotli=false",
+		"d.test brotli=true",
+		`"~(?-i)^(?!.{254})(?:[0-9._]+)$" brotli=false`,
+	}
+	if got := servers(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("servers on 80\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

@@ -1173,14 +1173,13 @@ r=$(page_of x.y.gone-sfx.test /)
 conf=$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)
 grep -q 'lua_regex_cache_max_entries' <<<"$conf" || fail "nginx.conf has no regex cache for the host patterns"
 grep -qF 'server_name ~^[^.].*\.deep\.sfx\.test$;' <<<"$conf" || fail "nginx.conf has no server for the suffix"
-grep -qF 'server_name "~(?-i)^(?:api\d+\.re\.test)$";' <<<"$conf" || fail "nginx.conf has no server for the pattern"
-grep -qF 'server_name "~^.{254}";' <<<"$conf" || fail "nginx.conf has no guard for hosts longer than a DNS name"
+grep -qF 'server_name "~(?-i)^(?!.{254})(?:api\d+\.re\.test)$";' <<<"$conf" || fail "nginx.conf has no server for the pattern"
 # Unknown hosts to the default site, node IP access closed: the default
 # site's server is the default_server, yet a request without Host goes to
 # the generic server ($host "_", node IP access), not the default site.
 rev=$(curl -fsS -X POST "$HELPER/g10?unknown_host=site&ip_access=close")
 WAIT_SECS=60 wait_for "G10 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
-grep -qF 'server_name _ "";' <<<"$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)" || fail "the generic server does not take requests without Host"
+grep -qF 'server_name _ "" "~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"' <<<"$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)" || fail "the generic server does not take requests without Host and IP hosts"
 no_host=$(exec 3<>"/dev/tcp/127.0.0.1/${E2E_NODE_PORT:-28080}"; printf 'GET / HTTP/1.0\r\n\r\n' >&3; cat <&3 || true)
 [ -z "$no_host" ] || fail "a request without Host was answered although node IP access is closed: $(head -1 <<<"$no_host")"
 [ "$(g10_site nope2.g10.test)" = site-default ] || fail "the unknown host is not handed to the default site"

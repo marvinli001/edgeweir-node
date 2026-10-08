@@ -581,19 +581,22 @@ type edgeServer struct {
 // default site the names are rendered as before. With them, "*.x" becomes
 // ~^[^.]+\.x$ (one label, as edgeweir.store matches it; nginx's "*.x"
 // takes any depth, which would give hosts the store does not know
-// another site's settings), a guard server takes Hosts longer than 253
-// characters before any regex name, and after every site's server each
-// ".x" (longest first, never a Host that starts with a dot) and each
-// pattern (by order and site id, case-sensitive) gets a server of its own
-// with the settings of its site. Domains of a site not bound to the
-// listener's port go to the server its (unknown) hosts are served by: the
-// default site's when unknown hosts are handed to it, else the generic
-// one. When unknown hosts or node IP access go to the default site
-// (unknown-host-v1), its server is the listener's default_server and keeps
-// the listener's HTTP/2 on plain listeners (h2c for gRPC sites: nginx
-// takes the connection preface by the default server); the generic
-// server is named `_ ""`, so a request without a Host still goes to it
-// with $host "_" (node IP access).
+// another site's settings), and after every site's server each ".x"
+// (longest first, never a Host that starts with a dot) and each pattern
+// (by order and site id, case-sensitive, never a Host longer than 253
+// characters) gets a server of its own with the settings of its site.
+// Node IP access hosts ("_", IPv4 addresses, [IPv6]) match exact names
+// only: a regex name for them comes before any other, on the server their
+// handling is served by (the default site's settings when node IP access
+// is handed to it, else the generic server). Domains of a site not bound
+// to the listener's port go to the server its (unknown) hosts are served
+// by in the same way. When unknown hosts or node IP access go to the
+// default site (unknown-host-v1), its server is the listener's
+// default_server and keeps the listener's HTTP/2 on plain listeners (h2c
+// for gRPC sites: nginx takes the connection preface by the default
+// server); a request without a Host takes the server named "" with
+// $host "_" (node IP access), the generic one unless node IP access is
+// handed to the default site.
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
 	hasTLS := false
@@ -628,27 +631,45 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			}
 		}
 		generic := len(out)
-		if defaultSite != "" {
+		// The default site when node IP access is handed to it here.
+		var ipSite *configir.Site
+		if oneLabel && plan.UnknownHosts != nil && plan.UnknownHosts.IPAccess == configir.UnknownHostSite {
+			for i := range plan.Sites {
+				if site := &plan.Sites[i]; site.ID == defaultSite && site.TLS != nil && !(l.TLS && site.CertificateID == "") && (len(site.Ports) == 0 || slices.Contains(site.Ports, l.Port)) {
+					ipSite = site
+				}
+			}
+		}
+		switch {
+		case ipSite != nil:
+			// The server below takes "_" and "" (a name nginx must not see
+			// twice on one port).
+			s.ServerName = genericName
+		case oneLabel && defaultSite != "":
 			// Requests without a Host take the server named "" (nginx): the
 			// generic one, $host "_" (node IP access in edgeweir.router),
 			// also once the default site holds default_server.
-			s.ServerName = `_ ""`
+			s.ServerName = `_ "" ` + ipHostsName
+		case oneLabel:
+			s.ServerName = "_ " + ipHostsName
 		}
 		out = append(out, s)
-		if oneLabel {
-			// No regular expression sees a Host longer than a DNS name (253):
-			// nginx tries regex names in order, this one first.
-			guard := s
-			guard.Listen = withoutDefault(s.Listen, false)
-			guard.QUICListen = withoutDefault(s.QUICListen, true)
-			guard.ServerName = `"~^.{254}"`
-			out = append(out, guard)
+		ipIndex := generic
+		if ipSite != nil {
+			// Node IP access on the default site's settings, before any
+			// other regex name; $host "_" without a Host.
+			ip := siteServer(s, *ipSite, l, []string{"_", `""`, ipHostsName})
+			if !l.TLS {
+				ip.HTTP2 = ip.HTTP2 || s.HTTP2
+			}
+			ipIndex = len(out)
+			out = append(out, ip)
 		}
 		var matches []matchServer
 		// Names of sites not bound to this port (edge-ports-v1): their hosts
 		// are unknown here (edgeweir.router), so they belong to the server
 		// unknown hosts are served by, the default site's or the generic one.
-		var foreign []string
+		var foreign, foreignIP []string
 		var foreignMatches []matchServer
 		defaultIndex := -1
 		var defaultServed configir.Site
@@ -684,7 +705,13 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				}
 			}
 			if !bound {
-				foreign = append(foreign, names...)
+				for _, name := range names {
+					if ipHost(name) {
+						foreignIP = append(foreignIP, name)
+					} else {
+						foreign = append(foreign, name)
+					}
+				}
 				foreignMatches = append(foreignMatches, own...)
 				continue
 			}
@@ -717,6 +744,10 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				target = defaultIndex
 			}
 			out[target].ServerName += " " + strings.Join(foreign, " ")
+		}
+		// An IP address is node IP access (edgeweir.router).
+		if len(foreignIP) > 0 {
+			out[ipIndex].ServerName += " " + strings.Join(foreignIP, " ")
 		}
 		for _, m := range foreignMatches {
 			if toDefault {
@@ -760,12 +791,32 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 // patternServerName is the server_name of a pattern domain: anchored and
 // case-sensitive like the store's, Go's and the console's matching (nginx
 // compiles a regex name caseless when its source holds an uppercase
-// letter). No PCRE match limit: nginx fails the request when one is hit
-// rather than trying the next name; the console bounds the pattern's shape
-// and the guard server keeps Hosts longer than 253 characters away.
+// letter), and never for a Host longer than a DNS name (253), which the
+// three skip too. No PCRE match limit: nginx fails the request when one is
+// hit rather than trying the next name; the console bounds the pattern's
+// shape.
 func patternServerName(pattern string) string {
-	return `"~(?-i)^(?:` + pattern + `)$"`
+	return `"~(?-i)^(?!.{254})(?:` + pattern + `)$"`
 }
+
+// Names of the generic server and of node IP access hosts (oneLabel).
+const (
+	// genericName names the generic server while the default site's
+	// settings take "_" and "".
+	genericName = "generic.edgeweir.invalid"
+	// ipHostsName matches the hosts edgeweir.store looks up by exact name
+	// only: IPv4 addresses and IPv6 ones in brackets ("_" and "" are
+	// names of their own).
+	ipHostsName = `"~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"`
+)
+
+// ipHost tells whether a domain name is node IP access (an IPv4 address or
+// an IPv6 one in brackets), as ipHostsName and edgeweir.store see it.
+func ipHost(name string) bool {
+	return strings.HasPrefix(name, "[") || ipv4Name.MatchString(name)
+}
+
+var ipv4Name = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
 
 // Protocols of the origin layers towards the origins.
 const (
