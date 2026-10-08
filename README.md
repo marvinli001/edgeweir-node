@@ -11,7 +11,7 @@
 
 | 领域 | 能力 |
 | --- | --- |
-| HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、证书热轮换 |
+| HTTPS 与协议 | SNI HTTPS、HTTP/2、HTTP/3、TLS 策略、HSTS、证书热轮换；每个网站至多 4 张证书（ECDSA 与 RSA 按客户端的 ClientHello 选择）、访客客户端证书（mTLS）、TLS 会话复用（会话缓存与集群的票据密钥，按网站隔离），从不接受 early data |
 | 压缩 | gzip、Brotli、Zstandard；按 `Accept-Encoding` 的 q 值为每个响应选一种（同 q 值 zstd > br > gzip，压缩规则可限定并排序），缓存只存一份未压缩对象 |
 | 访问策略 | IP / GeoIP 名单、分阶段规则（表达式函数、动态重定向与改写、查询串编辑、批量重定向、Origin 规则与源站组、按请求覆盖站点设置、压缩规则）、WAF、限速、请求 / 响应变换，均热更新；秒级动态封禁，平台封禁可经 nftables 内核丢包 |
 | OWASP CRS | 按站点的托管规则（ModSecurity v3 + CRS 4.29.0）：仅检测 / 拦截、paranoia level、异常分数阈值、排除规则、请求体检查上限；缓存命中同样检查，未启用的站点不经过 ModSecurity |
@@ -34,7 +34,7 @@
 | OpenResty 数据面 | 路由、缓存、回源、策略执行、四层转发（stream）；经本地 unix socket 接收站点、源站、证书、规则与四层应用的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.25.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.26.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则、四层应用的端口、协议与 PROXY protocol 设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload，已有连接由旧 worker 服务到结束；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
@@ -266,7 +266,7 @@ edgeweir-node version
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`health.crt` / `health.key`（健康证书，0600）、`nginx/`（prefix 与 `nginx.conf`） |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`session-ticket-keys.json`（TLS 会话票据密钥，0600）、`health.crt` / `health.key`（健康证书，0600）、`nginx/`（prefix 与 `nginx.conf`） |
 | `/var/lib/edgeweir-probe` | 探针状态目录（0700）：`probe.key`（0600）、`probe.crt`、`ca.crt`、`probe.json` |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | 数据面控制 API（仅 unix socket） |
@@ -319,7 +319,7 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 ## 已知限制
 
 - 启用 OWASP CRS 的站点每个请求约多 0.5 ms CPU，请求体在回源前读完再检查，响应体不检查（见 ARCHITECTURE.md §3.18）。
-- 证书材料保存在 `certificates.json`（0600），主机管理员可读取。
+- 证书材料保存在 `certificates.json`（0600），主机管理员可读取；TLS 会话票据密钥保存在 `session-ticket-keys.json` 与 nginx 前缀下的 `conf/tls-tickets/`（均为 0600）。
 - 统计 RPC V2 不兼容旧版控制台，控制台与节点须同步升级。
 - 每个已发布站点占用固定 256 KiB 限速计数分区，每集群最多 512 个已发布站点。见[限速存储](docs/rate-limit-storage.md)。
 - 自升级仅覆盖 agent 与 Lua；监督进程、cosign 与 OpenResty 随系统包或镜像升级，且优先于状态卷中较旧的自升级版本。

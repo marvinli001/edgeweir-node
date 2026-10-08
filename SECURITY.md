@@ -66,7 +66,14 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - `config/`（目录 0700，`current.binpb`、`previous.binpb` 为 0600）：last-known-good 配置及其备份，不含凭据。
 - `bans.json`（0600）：控制台下发的动态封禁（被封禁的地址、范围、到期时间）和已应用的序号。文件无法读取时节点从空集合开始，等控制台重新下发。
 - `health.crt`、`health.key`（0600）：节点为探针健康端点生成的自签名证书与私钥，只用于 SNI `health.edgeweir.invalid` 与无 SNI 的 TLS 握手，与站点证书无关；这样的连接只能访问 `/.edgeweir/health`。
+- `session-ticket-keys.json`（0600）与 nginx 前缀下的 `conf/tls-tickets/<id>.key`（0600，目录 0700）：当前与前一份同集群配置引用的 TLS 会话票据密钥（每把 80 字节，集群内共用，经 mTLS 的 `GetSessionTicketKeys` 获取，不进入配置和 LKG）。能读取它们的人可以解密用这些密钥签发的会话票据、恢复别人的 TLS 会话；控制台每 12 小时轮换一次，一把密钥最长约 36 小时后不再使用。
 - `challenge-keys.json`（0600）：当前与前一份同集群配置引用的挑战凭证密钥（HMAC-SHA256，集群内共用）。密钥只经 mTLS 的 `GetChallengeKeys` 获取，不进入配置和 LKG；两份配置均不再引用时从文件中删除。能读取该文件的人可以为该集群的站点伪造通行凭证，直到控制台轮换掉这把密钥（每天一次，最长 48 小时后失效）。
+
+**访客 TLS**
+
+- 从不接受 TLS early data（0-RTT）：每个 HTTPS 与 QUIC server 显式 `ssl_early_data off`。
+- 会话按网站隔离：每次握手设置网站的会话 ID 上下文（网站、最低版本、客户端证书设置与证书的哈希），一个网站的会话不能在另一个网站的 SNI 下恢复，设置变化后旧会话失效。四层应用的 TLS 不复用会话。
+- 访客客户端证书（mTLS）：校验失败或缺失不中止握手，`required` 的网站在站点逻辑之前返回 403；访客自带的 `X-Client-Verify`、`X-Client-Cert-SHA256`、`X-Client-Cert-Subject`、`X-Client-Cert-Serial` 在所有网站上删除，只有节点按网站设置向源站发送它们。不检查客户端证书的吊销。
 
 **挑战与通行凭证**
 

@@ -11,7 +11,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 
 | Area | Capabilities |
 | --- | --- |
-| HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, hot certificate rotation |
+| HTTPS and protocols | SNI HTTPS, HTTP/2, HTTP/3, TLS policy, HSTS, hot certificate rotation; up to 4 certificates per site (ECDSA or RSA chosen by the client's ClientHello), visitor client certificates (mTLS), TLS session resumption (a session cache and the cluster's ticket keys, isolated per site), never early data |
 | Compression | gzip, Brotli, Zstandard; one coding per response by the q-values of `Accept-Encoding` (zstd > br > gzip at equal q, compression rules restrict and order the codings), one uncompressed object in the cache |
 | Access policy | IP / GeoIP lists, phased rules (expression functions, dynamic redirects and rewrites, query edits, bulk redirects, origin rules and origin groups, per-request overrides of site settings, compression rules), WAF, rate limits, request / response transforms, all hot-updated; dynamic bans within seconds, platform bans optionally dropped in the kernel with nftables |
 | OWASP CRS | Per-site managed rules (ModSecurity v3 + CRS 4.29.0): detect only / block, paranoia level, anomaly threshold, excluded rules, request body inspection limit; cache hits are inspected too, sites without CRS never pass through ModSecurity |
@@ -34,7 +34,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement, layer-4 forwarding (stream); hot updates for sites, origins, certificates, rules and layer-4 applications over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.25.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.26.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules, ports, protocols and PROXY protocol settings of layer-4 applications) re-render `nginx.conf` and reload after `openresty -t`, the old workers serving open connections until they end; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
@@ -266,7 +266,7 @@ edgeweir-node version
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `health.crt` / `health.key` (health certificate, 0600), `nginx/` (prefix, `nginx.conf`) |
+| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `session-ticket-keys.json` (TLS session ticket keys, 0600), `health.crt` / `health.key` (health certificate, 0600), `nginx/` (prefix, `nginx.conf`) |
 | `/var/lib/edgeweir-probe` | Probe state (0700): `probe.key` (0600), `probe.crt`, `ca.crt`, `probe.json` |
 | `/var/cache/edgeweir-node` | Cache zones |
 | `/run/edgeweir-node/control.sock` | Data-plane control API (unix socket only) |
@@ -319,7 +319,7 @@ gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli
 ## Known limitations
 
 - Sites with the OWASP CRS cost about 0.5 ms of CPU per request; request bodies are read in full before inspection and forwarding, response bodies are not inspected (ARCHITECTURE.md §3.18).
-- Certificate materials live in `certificates.json` (0600), readable by host administrators.
+- Certificate materials live in `certificates.json` (0600), readable by host administrators; TLS session ticket keys live in `session-ticket-keys.json` and under `conf/tls-tickets/` of the nginx prefix (both 0600).
 - The V2 statistics RPC is incompatible with older consoles; upgrade the console and nodes together.
 - Each published site reserves a fixed 256 KiB rate-limit counter partition; up to 512 published sites per cluster. See [rate-limit storage](docs/rate-limit-storage.md).
 - Self-update covers the agent and Lua only; the supervisor, cosign and OpenResty are upgraded with system packages or the image, which take precedence over an older self-updated bundle in the state volume.
