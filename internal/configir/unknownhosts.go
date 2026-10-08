@@ -176,7 +176,7 @@ func (m *HostMatcher) Match(host string) string {
 		}
 		dot += next + 1
 	}
-	// No pattern sees a host longer than a DNS name (nginx's guard server).
+	// No pattern sees a host longer than a DNS name (as nginx's pattern server names).
 	if len(host) > MaxHost {
 		return ""
 	}

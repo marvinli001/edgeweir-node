@@ -84,8 +84,8 @@ func TestRenderDomainServers(t *testing.T) {
 		}
 	}
 	want := []string{
-		"generic.edgeweir.invalid",
 		`_ "" "~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"`,
+		"generic.edgeweir.invalid",
 		`a.test ~^[^.]+\.a\.test$`,
 		"c.test",
 		// Longest first: a nested suffix always comes before the one it is under.
@@ -241,8 +241,8 @@ func TestRenderNodeIPAccess(t *testing.T) {
 	}
 	ip := `"~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"`
 	want := []string{
-		"generic.edgeweir.invalid u.test brotli=false",
 		`_ "" ` + ip + " 198.51.100.7 brotli=true",
+		"generic.edgeweir.invalid u.test brotli=false",
 		"d.test brotli=true",
 		`"~(?-i)^(?!.{254})(?:[0-9._]+)$" brotli=false`,
 	}
@@ -268,5 +268,81 @@ func TestRenderNodeIPAccess(t *testing.T) {
 	}
 	if got := servers(); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("servers on 80\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestRenderHandedServers: names of a site not bound to a TLS port without
+// a certificate (or still pending) are unknown hosts there too, not
+// skipped (another site's suffix would take them); the generic server
+// takes HTTP/2 when the default site's server, where a connection without
+// SNI negotiates it, does; an unbound site's patterns keep their place
+// among the others (order, then their own site's id).
+func TestRenderHandedServers(t *testing.T) {
+	tls := &configir.TLSOptions{MinimumVersion: "1.2", CipherProfile: "modern"}
+	plan := &configir.Plan{
+		Listeners:  []configir.Listener{{Port: 80}, {Port: 443, TLS: true}},
+		CacheZones: []configir.CacheZone{{Name: "default", MaxSizeMB: 1024, KeysZoneMB: 16, InactiveSeconds: 3600}},
+		Sites: []configir.Site{
+			{ID: "a", TLS: tls, Ports: []uint32{80}, Domains: []configir.Domain{{Name: "shop.example.test"}, {Name: "new.example.test", TLSPending: true}}},
+			{ID: "b", CertificateID: "c", TLS: tls, Domains: []configir.Domain{{Name: "example.test", Match: configir.MatchSuffix}, {Name: `[a-z]+\.p\.test`, Match: configir.MatchRegex, Order: 5}}},
+			{ID: "c", CertificateID: "c", TLS: tls, Ports: []uint32{8080}, Domains: []configir.Domain{{Name: `www\.p\.test`, Match: configir.MatchRegex, Order: 5}}},
+			{ID: "d", CertificateID: "c", GRPC: true, TLS: tls, Domains: []configir.Domain{{Name: "d.test"}}},
+		},
+		UnknownHosts: &configir.UnknownHosts{UnknownHost: "site", IPAccess: "close", DefaultSiteID: "d", DefaultCertificate: true},
+	}
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tls443 []string
+	var generic string
+	for _, block := range strings.Split(string(got), "    server {")[1:] {
+		if !strings.Contains(block, "listen 443 ") {
+			continue
+		}
+		for _, line := range strings.Split(block, "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "server_name "); ok {
+				tls443 = append(tls443, strings.TrimSuffix(v, ";"))
+				if strings.HasPrefix(v, "_ ") {
+					generic = block
+				}
+			}
+		}
+	}
+	want := []string{
+		`_ "" "~^(?:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|\[.*)$"`,
+		"d.test shop.example.test new.example.test",
+		`~^[^.].*\.example\.test$`,
+		`"~(?-i)^(?!.{254})(?:[a-z]+\.p\.test)$"`,
+		`"~(?-i)^(?!.{254})(?:www\.p\.test)$"`,
+	}
+	if strings.Join(tls443, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("443 server names\n%s\nwant\n%s", strings.Join(tls443, "\n"), strings.Join(want, "\n"))
+	}
+	if !strings.Contains(generic, "http2 on;") {
+		t.Errorf("the generic server on 443 lacks the default server's HTTP/2:\n%s", generic)
+	}
+	// A default site without a certificate takes node IP access over HTTPS
+	// (no SNI: the health certificate) on a server with its settings and the
+	// listener's HTTP/2, while the generic server stays the default one.
+	plan.Sites[3].CertificateID, plan.Sites[3].GRPC = "", false
+	plan.Sites[3].TLS = &configir.TLSOptions{MinimumVersion: "1.2", CipherProfile: "modern", Brotli: true, BrotliLevel: 4}
+	plan.Listeners[1].HTTP2 = true
+	plan.UnknownHosts = &configir.UnknownHosts{UnknownHost: "page", IPAccess: "site", DefaultSiteID: "d"}
+	got, err = Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ip string
+	for _, block := range strings.Split(string(got), "    server {")[1:] {
+		if strings.Contains(block, "listen 443 ") && strings.Contains(block, `server_name _ ""`) {
+			ip = block
+		}
+	}
+	if !strings.Contains(ip, "brotli on;") || !strings.Contains(ip, "http2 on;") || strings.Contains(ip, "default_server") {
+		t.Errorf("node IP access on 443 without the default site's settings:\n%s", ip)
+	}
+	if !strings.Contains(string(got), "listen 443 default_server ssl;") {
+		t.Errorf("the generic server lost default_server on 443")
 	}
 }

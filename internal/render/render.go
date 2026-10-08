@@ -446,7 +446,10 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 
 // matchServer is the server of a suffix or pattern domain (domains-v2).
 type matchServer struct {
-	site    configir.Site
+	site configir.Site
+	// owner is the id of the site the domain belongs to (the order among
+	// patterns; site is the default site's for an unbound site's domain).
+	owner   string
 	name    string
 	suffix  string
 	pattern bool
@@ -630,12 +633,14 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				s.QUICListen = append(s.QUICListen, fmt.Sprintf("[::]:%d quic reuseport default_server", l.Port))
 			}
 		}
-		generic := len(out)
 		// The default site when node IP access is handed to it here.
 		var ipSite *configir.Site
 		if oneLabel && plan.UnknownHosts != nil && plan.UnknownHosts.IPAccess == configir.UnknownHostSite {
 			for i := range plan.Sites {
-				if site := &plan.Sites[i]; site.ID == defaultSite && site.TLS != nil && !(l.TLS && site.CertificateID == "") && (len(site.Ports) == 0 || slices.Contains(site.Ports, l.Port)) {
+				// Without a certificate too: a connection without SNI completes
+				// with the health certificate (edgeweir.tls), and edgeweir.router
+				// hands its node IP access to the default site all the same.
+				if site := &plan.Sites[i]; site.ID == defaultSite && site.TLS != nil && (len(site.Ports) == 0 || slices.Contains(site.Ports, l.Port)) {
 					ipSite = site
 				}
 			}
@@ -653,17 +658,22 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 		case oneLabel:
 			s.ServerName = "_ " + ipHostsName
 		}
-		out = append(out, s)
-		ipIndex := generic
+		ipIndex := -1
 		if ipSite != nil {
 			// Node IP access on the default site's settings, before any
-			// other regex name; $host "_" without a Host.
+			// other regex name (the generic server's included); $host "_"
+			// without a Host.
 			ip := siteServer(s, *ipSite, l, []string{"_", `""`, ipHostsName})
-			if !l.TLS {
-				ip.HTTP2 = ip.HTTP2 || s.HTTP2
-			}
+			// HTTP/2 as the listener's default server may negotiate it (TLS
+			// without SNI, h2c): nginx answers 421 otherwise.
+			ip.HTTP2 = ip.HTTP2 || s.HTTP2
 			ipIndex = len(out)
 			out = append(out, ip)
+		}
+		generic := len(out)
+		out = append(out, s)
+		if ipIndex < 0 {
+			ipIndex = generic
 		}
 		var matches []matchServer
 		// Names of sites not bound to this port (edge-ports-v1): their hosts
@@ -674,7 +684,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 		defaultIndex := -1
 		var defaultServed configir.Site
 		for _, site := range plan.Sites {
-			if site.TLS == nil || (l.TLS && site.CertificateID == "") {
+			if site.TLS == nil {
 				continue
 			}
 			bound := len(site.Ports) == 0 || slices.Contains(site.Ports, l.Port)
@@ -682,20 +692,26 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				// As before domains-v2 and unknown-host-v1: no server here.
 				continue
 			}
+			// No HTTPS for a site without a certificate (edgeweir.tls aborts
+			// the handshake); an unbound site's names are unknown hosts here
+			// all the same.
+			if bound && l.TLS && site.CertificateID == "" {
+				continue
+			}
 			var names []string
 			var own []matchServer
 			for _, domain := range site.Domains {
 				// No HTTPS for a domain the certificate does not cover yet.
-				if l.TLS && domain.TLSPending {
+				if bound && l.TLS && domain.TLSPending {
 					continue
 				}
 				switch {
 				case domain.Match == configir.MatchSuffix:
 					// [^.] first: a Host that starts with a dot has no parent
 					// (edgeweir.store).
-					own = append(own, matchServer{site: site, name: `~^[^.].*\.` + regexp.QuoteMeta(domain.Name) + `$`, suffix: domain.Name})
+					own = append(own, matchServer{site: site, owner: site.ID, name: `~^[^.].*\.` + regexp.QuoteMeta(domain.Name) + `$`, suffix: domain.Name})
 				case domain.Match == configir.MatchRegex:
-					own = append(own, matchServer{site: site, name: patternServerName(domain.Name), pattern: true, order: domain.Order})
+					own = append(own, matchServer{site: site, owner: site.ID, name: patternServerName(domain.Name), pattern: true, order: domain.Order})
 				case domain.Wildcard && oneLabel:
 					names = append(names, `~^[^.]+\.`+regexp.QuoteMeta(domain.Name)+`$`)
 				case domain.Wildcard:
@@ -733,6 +749,11 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				}
 				out[generic].Listen = withoutDefault(s.Listen, false)
 				out[generic].QUICListen = withoutDefault(s.QUICListen, true)
+				// A connection without SNI negotiates HTTP/2 on the default
+				// server; the generic server may take its requests (node IP
+				// access, unknown hosts), and nginx answers 421 to HTTP/2
+				// requests for a server without it.
+				out[generic].HTTP2 = out[generic].HTTP2 || custom.HTTP2
 				defaultIndex, defaultServed = len(out), site
 			}
 			out = append(out, custom)
@@ -763,7 +784,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			case a.pattern != b.pattern:
 				return compareBool(a.pattern, b.pattern)
 			case a.pattern:
-				return cmp.Or(cmp.Compare(a.order, b.order), cmp.Compare(a.site.ID, b.site.ID))
+				return cmp.Or(cmp.Compare(a.order, b.order), cmp.Compare(a.owner, b.owner))
 			}
 			return cmp.Or(cmp.Compare(len(b.suffix), len(a.suffix)), cmp.Compare(a.suffix, b.suffix))
 		})
@@ -772,6 +793,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				g := s
 				g.Listen = withoutDefault(s.Listen, false)
 				g.QUICListen = withoutDefault(s.QUICListen, true)
+				g.HTTP2 = out[generic].HTTP2
 				g.ServerName = m.name
 				out = append(out, g)
 				continue
