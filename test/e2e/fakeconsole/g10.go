@@ -49,7 +49,16 @@ func g10Config(origin string) *nodev1.NodeConfig {
 func g10Handlers(mux *http.ServeMux, c *fakeconsole.Console, origin string) {
 	mux.HandleFunc("POST /g10", func(w http.ResponseWriter, r *http.Request) {
 		cfg := g10Config(origin)
-		if r.URL.Query().Get("enabled") == "false" {
+		q := r.URL.Query()
+		// unknown_host / ip_access override the handling (the default site
+		// stays the same).
+		if v := q.Get("unknown_host"); v != "" {
+			cfg.UnknownHosts.UnknownHost = v
+		}
+		if v := q.Get("ip_access"); v != "" {
+			cfg.UnknownHosts.IpAccess = v
+		}
+		if q.Get("enabled") == "false" {
 			cfg = config(baseSites(origin)...)
 		}
 		fmt.Fprint(w, c.Publish(cfg))
