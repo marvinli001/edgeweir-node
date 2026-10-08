@@ -824,7 +824,7 @@ function _M.release(list)
     if not expires then
       return nil, "#" .. i .. ": invalid expires_at", 400
     end
-    items[i] = { key = key_for(b.site_id, bytes, len), expires = expires }
+    items[i] = { key = key_for(b.site_id, bytes, len), expires = expires, scan = b.site_id == PLATFORM and ip or nil }
   end
   local dict = shdict()
   local ok, lerr, code = lock(dict)
@@ -838,6 +838,10 @@ function _M.release(list)
       dict:delete(items[i].key)
       account(dict, expires, -1)
       n = n + 1
+      if items[i].scan then
+        -- A lifted scan ban: the network is counted afresh (unknown-host-v1).
+        require("edgeweir.unknownhost").forget(items[i].scan)
+      end
     end
   end
   dict:delete("#lock")

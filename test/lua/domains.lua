@@ -195,9 +195,20 @@ test("scan protection: the request after the threshold bans at platform scope, o
     eq(unknownhost.count(cfg, "10.1.2.3"), nil, "trusted proxy")
   end
   eq(unknownhost.count({ unknown = { scan_threshold = 0 } }, "192.0.2.51"), nil, "off")
-  -- The console lifts the node's own platform ban.
+  -- The console lifts the node's own platform ban: the address is counted
+  -- afresh and banned again if it keeps scanning.
   eq(bans.release({ { site_id = "*", cidr = "192.0.2.50/32", expires_at = 1791331200 + 600 } }), 1)
   eq(banned("any-site", "192.0.2.50"), false, "lifted")
+  for i = 1, 3 do eq(unknownhost.count(cfg, "192.0.2.50"), i, "a new window") end
+  eq(banned("any-site", "192.0.2.50"), false, "not yet again")
+  eq(unknownhost.count(cfg, "192.0.2.50"), 4)
+  eq(banned("any-site", "192.0.2.50"), true, "banned again")
+  reports = bans.drain()
+  eq(#reports, 2, "the IPv6 ban and the new one")
+  eq(reports[2].ip, "192.0.2.50")
+  -- The same for an IPv6 /64.
+  eq(bans.release({ { site_id = "*", cidr = "2001:db8:1:2::/64", expires_at = 1791331200 + 600 } }), 1)
+  eq(unknownhost.count(cfg, "2001:db8:1:2::9"), 1, "the /64 counted afresh")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))
