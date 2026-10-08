@@ -29,6 +29,8 @@
 //   - inside a cache zone node_sizes by node_id, inside a site's
 //     maintenance allowed_cidrs and allowed_path_prefixes ascending without
 //     duplicates (proto v0.24.0);
+//   - session_ticket_keys by id; a site's additional_certificate_ids keep
+//     the site's order (proto v0.26.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -88,6 +90,7 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	})
 	slices.SortStableFunc(c.IpLists, func(a, b *nodev1.IpList) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	slices.SortStableFunc(c.ChallengeKeys, func(a, b *nodev1.ChallengeKeyRef) int { return cmp.Compare(a.GetId(), b.GetId()) })
+	slices.SortStableFunc(c.SessionTicketKeys, func(a, b *nodev1.SessionTicketKeyRef) int { return cmp.Compare(a.GetId(), b.GetId()) })
 	// The console sorts by `${name}\0${wildcard ? 1 : 0}\0${match}`: name
 	// first, then exact before wildcard, then the match (v0.25.0).
 	slices.SortStableFunc(c.OfflineHosts, func(a, b *nodev1.OfflineHost) int {

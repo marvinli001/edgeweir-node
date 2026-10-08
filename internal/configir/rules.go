@@ -37,7 +37,12 @@ var fieldTypes = map[string]string{"http.host": "string", "http.request.method":
 	"http.response.cache_status": "string",
 	// client-ip-v1: the TCP (QUIC: UDP) peer, whatever the client address
 	// setting makes ip.src.
-	"ip.peer": "ip"}
+	"ip.peer": "ip",
+	// client-cert-v1: the visitor's client certificate verified
+	// ($ssl_client_verify SUCCESS), the lowercase hex SHA-256 of its DER and
+	// its subject (RFC 2253); false and "" without a valid certificate or
+	// over plain HTTP.
+	"tls.client.verified": "boolean", "tls.client.cert_sha256": "string", "tls.client.subject": "string"}
 
 // namedFields are the rules-v3 fields of one request cookie
 // (http.request.cookies.<name>, an RFC 6265 token, case-sensitive) and one

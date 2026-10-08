@@ -134,6 +134,10 @@ type Plan struct {
 	// UnknownHosts is the handling of unknown hosts and node IP access (nil:
 	// the platform's page, no scan protection; feature unknown-host-v1).
 	UnknownHosts *UnknownHosts
+	// SessionTicketKeys name the cluster's TLS session ticket keys (proto
+	// v0.26.0); the secrets come from GetSessionTicketKeys. Without them the
+	// HTTPS listeners issue no tickets.
+	SessionTicketKeys []SessionTicketKeyRef
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -181,11 +185,27 @@ type Site struct {
 	OriginHTTP2 bool `json:"origin_http2,omitempty"`
 	// GRPC proxies gRPC requests over HTTP/2 end to end, unbuffered and
 	// never cached, without the CRS (requires OriginHTTP2).
-	GRPC          bool               `json:"grpc,omitempty"`
-	CertificateID string             `json:"certificate_id,omitempty"`
-	TLS           *TLSOptions        `json:"tls,omitempty"`
-	Certificate   *Certificate       `json:"certificate,omitempty"`
-	Rules         []*nodev1.EdgeRule `json:"rules,omitempty"`
+	GRPC          bool        `json:"grpc,omitempty"`
+	CertificateID string      `json:"certificate_id,omitempty"`
+	TLS           *TLSOptions `json:"tls,omitempty"`
+	// Certificate is the material of CertificateID (the agent fills it in).
+	Certificate *Certificate `json:"certificate,omitempty"`
+	// AdditionalCertificateIDs are the site's further certificates in the
+	// site's order (feature multi-certificate-v1). Certificates is the
+	// material of all of them, CertificateID first, for sites with more
+	// than one (the agent fills it in; edgeweir.tls picks one per
+	// handshake).
+	AdditionalCertificateIDs []string      `json:"additional_certificate_ids,omitempty"`
+	Certificates             []Certificate `json:"certificates,omitempty"`
+	// ClientCertificate asks visitors for certificates (nil: off; feature
+	// client-cert-v1).
+	ClientCertificate *ClientCertificate `json:"client_certificate,omitempty"`
+	// TLSSessionContext is the hex SHA-256 the handshake sets as the session
+	// id context (edgeweir.tls, SSL_set_session_id_context): sessions resume
+	// only for the same site, minimum version, client certificate setting
+	// and certificates. The agent computes it for sites with a certificate.
+	TLSSessionContext string             `json:"tls_session_context,omitempty"`
+	Rules             []*nodev1.EdgeRule `json:"rules,omitempty"`
 	// Protection holds Under Attack, challenge and CC settings.
 	Protection *Protection `json:"protection,omitempty"`
 	// WAF runs the OWASP CRS on the site's requests (nil: off).
@@ -279,9 +299,16 @@ type Certificate struct {
 	OCSP          string `json:"ocsp,omitempty"`
 	OCSPUntil     int64  `json:"ocsp_until,omitempty"`
 	// DNSNames of the leaf, lowercase, for sites with suffix or pattern
-	// domains (FeatureDomainsV2): edgeweir.tls completes a handshake for a
-	// host they match only where these names cover it.
+	// domains (FeatureDomainsV2), the default site and sites with more than
+	// one certificate: edgeweir.tls completes a handshake for a host they
+	// match only where these names cover it, and picks the certificates
+	// that name the SNI.
 	DNSNames []string `json:"dns_names,omitempty"`
+	// KeyType of the leaf ("ec" or "rsa") and, for EC keys, the curve
+	// ("P-256", "P-384", "P-521"): edgeweir.tls picks an EC certificate
+	// only for clients that can use it. Set by the agent.
+	KeyType string `json:"key_type,omitempty"`
+	Curve   string `json:"curve,omitempty"`
 }
 
 type HTTPChallenge struct {
@@ -293,7 +320,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -606,6 +633,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if p.ChallengeKeys, err = buildChallengeKeys(c.GetChallengeKeys()); err != nil {
 		return nil, err
 	}
+	if p.SessionTicketKeys, err = buildSessionTicketKeys(c.GetSessionTicketKeys()); err != nil {
+		return nil, err
+	}
 	// Every site's protection, CRS setting, error pages, active health
 	// check, session affinity and origin protocol are checked, disabled
 	// sites included: an unknown challenge type, CRS mode or error page
@@ -619,8 +649,16 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	ports := map[string][]uint32{}
 	listenerTLS := ListenerTLS(c)
 	contents := map[string]content{}
+	additional := map[string][]string{}
+	clientCerts := map[string]*ClientCertificate{}
 	for _, s := range c.GetSites() {
 		id := s.GetId()
+		if additional[id], err = buildAdditionalCertificates(s, p.Certificates); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if clientCerts[id], err = buildClientCertificate(s); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if protections[id], err = buildProtection(s.GetProtection()); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
@@ -780,6 +818,8 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		if site.CertificateID != "" && p.Certificates[site.CertificateID] == "" {
 			return nil, fmt.Errorf("%w: missing certificate reference", ErrRejected)
 		}
+		site.AdditionalCertificateIDs = additional[id]
+		site.ClientCertificate = clientCerts[id]
 		site.Ports = ports[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
