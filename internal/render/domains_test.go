@@ -49,8 +49,10 @@ func TestRenderDomainsGolden(t *testing.T) {
 
 // TestRenderDomainServers: with suffix or pattern domains, wildcards match
 // one label, suffixes and patterns get servers of their own after every
-// site's server (longest suffix first, patterns by order), and the
-// default site's server is the default_server.
+// site's server (longest suffix first, patterns by order, with match
+// limits and case-sensitive), and the default site's server is the
+// default_server, named "_" first (a request without a Host keeps $host
+// "_").
 func TestRenderDomainServers(t *testing.T) {
 	got, err := Render(params(), domainsPlan())
 	if err != nil {
@@ -81,18 +83,18 @@ func TestRenderDomainServers(t *testing.T) {
 	want := []string{
 		"_",
 		`a.test ~^[^.]+\.a\.test$`,
-		"c.test",
+		"_ c.test",
 		// Longest first: a nested suffix always comes before the one it is under.
 		`~^.+\.deep\.test$`,
 		`~^.+\.x\.a\.test$`,
 		`~^.+\.a\.test$`,
-		`"~^(?:(www|m)\.e\.test)$"`,
-		`"~^(?:api\d+\.test)$"`,
+		`"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:(www|m)\.e\.test)$"`,
+		`"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:api\d+\.test)$"`,
 	}
 	if strings.Join(names, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("443 server names\n%s\nwant\n%s", strings.Join(names, "\n"), strings.Join(want, "\n"))
 	}
-	if len(defaults) != 1 || !defaults["c.test"] {
+	if len(defaults) != 1 || !defaults["_ c.test"] {
 		t.Fatalf("default servers on 443: %v", defaults)
 	}
 	for _, want := range []string{"listen 443 quic reuseport default_server;", "lua_regex_cache_max_entries 1028;"} {
@@ -114,5 +116,40 @@ func TestRenderDomainServers(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "server_name c.test *.c.test;") || strings.Contains(string(got), "lua_regex_cache_max_entries") {
 		t.Fatal("plain wildcard or regex cache changed")
+	}
+}
+
+// TestRenderDefaultSiteServer: handing requests to a default site moves
+// default_server to its server without losing the plain listener's h2c
+// (gRPC sites) and turns "*.x" into one label even without suffix or
+// pattern domains (a deeper host is unknown to the store and goes to the
+// default site, so it must not get the wildcard site's server).
+func TestRenderDefaultSiteServer(t *testing.T) {
+	plan := domainsPlan()
+	plan.Sites = []configir.Site{
+		{ID: "g", GRPC: true, TLS: &configir.TLSOptions{MinimumVersion: "1.2", CipherProfile: "modern"}, Domains: []configir.Domain{{Name: "grpc.test"}}},
+		{ID: "w", TLS: &configir.TLSOptions{MinimumVersion: "1.2", CipherProfile: "modern"}, Domains: []configir.Domain{{Name: "w.test", Wildcard: true}}},
+		{ID: "d", TLS: &configir.TLSOptions{MinimumVersion: "1.2", CipherProfile: "modern"}, Domains: []configir.Domain{{Name: "d.test"}}},
+	}
+	plan.UnknownHosts = &configir.UnknownHosts{UnknownHost: "site", IPAccess: "close", DefaultSiteID: "d"}
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	var server string
+	for _, block := range strings.Split(conf, "    server {")[1:] {
+		if strings.Contains(block, "server_name _ d.test;") && strings.Contains(block, "listen 80 default_server") {
+			server = block
+		}
+	}
+	if server == "" {
+		t.Fatalf("no default server for d on 80:\n%s", conf)
+	}
+	if !strings.Contains(server, "http2 on;") {
+		t.Errorf("the default site's server on 80 lost h2c:\n%s", server)
+	}
+	if !strings.Contains(conf, `server_name ~^[^.]+\.w\.test$;`) || strings.Contains(conf, "*.w.test") {
+		t.Errorf("wildcard not one label with a default site")
 	}
 }

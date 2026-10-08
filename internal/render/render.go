@@ -574,13 +574,21 @@ type edgeServer struct {
 // request gets the server-level settings (HTTP/2, HTTP/3, compression,
 // ciphers) of the site that serves it. nginx tries exact names, then the
 // longest "*." wildcard (any depth), then regular expressions in the
-// order they appear. Without suffix or pattern domains the names are
-// rendered as before. With them, "*.x" becomes ~^[^.]+\.x$ (one label),
-// and after every site's server each ".x" (longest first) and each
-// pattern (by order and site id) gets a server of its own with the
-// settings of its site. When unknown hosts or node IP access go to the
-// default site (unknown-host-v1), its server is the listener's
-// default_server.
+// order they appear. Without suffix or pattern domains and without a
+// default site the names are rendered as before. With them, "*.x" becomes
+// ~^[^.]+\.x$ (one label, as edgeweir.store matches it; nginx's "*.x"
+// takes any depth, which would give hosts the store does not know
+// another site's settings), and after every site's server each ".x"
+// (longest first) and each pattern (by order and site id) gets a server
+// of its own with the settings of its site. Patterns carry the match
+// limits of edgeweir.expressions and (?-i): nginx compiles a server name
+// regex caseless when its source holds an uppercase letter, the other
+// implementations match case-sensitively. When unknown hosts or node IP
+// access go to the default site (unknown-host-v1), its server is the
+// listener's default_server, named "_" first so a request without a Host
+// keeps $host "_" (node IP access), and on plain listeners keeps the
+// listener's HTTP/2 (h2c for gRPC sites: nginx takes the connection
+// preface by the default server).
 func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	var out []edgeServer
 	hasTLS := false
@@ -590,6 +598,7 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 	if u := plan.UnknownHosts; u != nil && (u.UnknownHost == configir.UnknownHostSite || u.IPAccess == configir.UnknownHostSite) {
 		defaultSite = u.DefaultSiteID
 	}
+	oneLabel := forms || defaultSite != ""
 	for _, l := range plan.Listeners {
 		hasTLS = hasTLS || l.TLS
 		suffix := " default_server"
@@ -636,8 +645,8 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 				case domain.Match == configir.MatchSuffix:
 					matches = append(matches, matchServer{site: site, name: `~^.+\.` + regexp.QuoteMeta(domain.Name) + `$`, suffix: domain.Name})
 				case domain.Match == configir.MatchRegex:
-					matches = append(matches, matchServer{site: site, name: `"~^(?:` + domain.Name + `)$"`, pattern: true, order: domain.Order})
-				case domain.Wildcard && forms:
+					matches = append(matches, matchServer{site: site, name: patternServerName(domain.Name), pattern: true, order: domain.Order})
+				case domain.Wildcard && oneLabel:
 					names = append(names, `~^[^.]+\.`+regexp.QuoteMeta(domain.Name)+`$`)
 				case domain.Wildcard:
 					names = append(names, "*."+domain.Name)
@@ -649,14 +658,17 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 			if len(names) == 0 && !isDefault {
 				continue
 			}
-			if len(names) == 0 {
-				names = []string{"_"}
+			if isDefault {
+				names = append([]string{"_"}, names...)
 			}
 			custom := siteServer(s, site, l, names)
 			if isDefault {
 				// The default site takes the listener's default_server (and
 				// the first QUIC listen's reuseport) from the generic server.
 				custom.Listen, custom.QUICListen = s.Listen, s.QUICListen
+				if !l.TLS {
+					custom.HTTP2 = custom.HTTP2 || s.HTTP2
+				}
 				out[generic].Listen = withoutDefault(s.Listen, false)
 				out[generic].QUICListen = withoutDefault(s.QUICListen, true)
 			}
@@ -683,6 +695,15 @@ func edgeServers(p Params, plan *configir.Plan) []edgeServer {
 		out = append(out, edgeServer{Listen: []string{"unix:" + p.EdgeTLSSocket + " default_server ssl"}, Local: true, TLS: true, ServerName: "_"})
 	}
 	return out
+}
+
+// patternServerName is the server_name of a pattern domain: anchored, with
+// the PCRE match limits edgeweir.expressions puts on the same pattern in
+// Lua (the server name is tried for every Host no exact or wildcard name
+// takes) and case-sensitive like the store's, Go's and the console's
+// matching.
+func patternServerName(pattern string) string {
+	return `"~(*LIMIT_MATCH=10000)(*LIMIT_DEPTH=100)(?-i)^(?:` + pattern + `)$"`
 }
 
 // Protocols of the origin layers towards the origins.
