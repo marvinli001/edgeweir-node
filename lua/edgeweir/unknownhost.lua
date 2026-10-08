@@ -27,7 +27,7 @@ local _M = {}
 
 _M.WINDOW = 60
 -- How long "ub|<network>" holds back another ban of the same network.
-_M.BAN_GUARD = 5
+_M.BAN_GUARD = 1
 
 local find, match = string.find, string.match
 
