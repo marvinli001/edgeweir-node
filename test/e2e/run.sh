@@ -1443,6 +1443,16 @@ r=$(req ac.g13.test /api/data -H 'Origin: https://app.g13.test')
 r=$(req ac.g13.test /api/data -H 'Origin: https://evil.g13.test')
 [ "$(header_of "$r" X-Cache)" = HIT ] && [ -z "$(header_of "$r" Access-Control-Allow-Origin)" ] || fail "another origin got the cached object's CORS headers"
 pass "G13: CORS preflights answered at the edge (204 with the Origin, credentials and Vary; 403 for other origins), CORS headers on cache hits"
+r=$(req pto.g13.test /pre -X OPTIONS -H 'Origin: https://app.g13.test' -H 'Access-Control-Request-Method: PUT' \
+  -H 'Access-Control-Request-Headers: content-type')
+[ "$(status_of "$r")" = 200 ] && grep -q '^OPTIONS /pre HTTP/1.1$' <<<"$r" || fail "a preflight handed to the origin: $(status_of "$r") $r"
+for want in 'Access-Control-Allow-Origin: https://app.g13.test' 'Access-Control-Allow-Credentials: true' \
+  'Access-Control-Allow-Methods: GET, PUT' 'Access-Control-Allow-Headers: content-type' 'Access-Control-Max-Age: 300'; do
+  grep -qixF "$want" <<<"$r" || fail "a preflight the origin answered without '$want': $r"
+done
+[[ "$(header_of "$r" Vary)" == *Origin*Access-Control-Request-Method*Access-Control-Request-Headers* ]] ||
+  fail "a preflight the origin answered: Vary $(header_of "$r" Vary)"
+pass "G13: preflights the origin answers keep its status and body and get the edge's preflight headers"
 
 r=$(req ac.g13.test /img/a.png -H 'Referer: https://evil.g13.test/page')
 [ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 hotlink-denied" ] || fail "hotlink: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"

@@ -25,6 +25,9 @@ import (
 //	                hidden
 //	redir.g13.test  whoami: hotlink protection of .png answered with a 302
 //	                to /hotlink.png
+//	pto.g13.test    whoami: CORS from https://app.g13.test with
+//	                credentials, GET and PUT, content-type, max age 300,
+//	                preflights handed to the origin
 //	ws.g13.test     the WebSocket echo at console:8090 (GET /ws?host=
 //	                &origin=): upgrades only from http://ws.g13.test, idle
 //	                timeout 120 s
@@ -53,9 +56,14 @@ func g13Config(origin string) *nodev1.NodeConfig {
 	}
 	redir := site("site-g13r", "redir.g13.test", origin, 80)
 	redir.AccessControl = &nodev1.AccessControl{Hotlink: &nodev1.Hotlink{Extensions: []string{"png"}, RedirectUrl: "/hotlink.png"}}
+	pto := site("site-g13p", "pto.g13.test", origin, 80)
+	pto.AccessControl = &nodev1.AccessControl{Cors: &nodev1.Cors{
+		AllowedOrigins: []string{"https://app.g13.test"}, AllowCredentials: true, AllowedMethods: []string{"GET", "PUT"},
+		AllowedHeaders: []string{"content-type"}, MaxAgeSeconds: 300, PreflightToOrigin: true,
+	}}
 	ws := site("site-g13w", "ws.g13.test", "console", 8090)
 	ws.AccessControl = &nodev1.AccessControl{Websocket: &nodev1.WebSocketAccess{Origins: []string{"http://ws.g13.test"}, IdleTimeoutSeconds: 120}}
-	cfg := config(append(baseSites(origin), ac, redir, ws)...)
+	cfg := config(append(baseSites(origin), ac, redir, pto, ws)...)
 	cfg.IpLists = append(slices.Clone(cfg.IpLists), g13Lists...)
 	cfg.RequiredFeatures = append(cfg.RequiredFeatures, configir.FeatureAccessControl)
 	return cfg
