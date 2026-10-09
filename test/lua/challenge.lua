@@ -479,6 +479,84 @@ test("reserved prefix: worker script, 405 and 404", function()
   eq(sent.header["X-Edgeweir-Error"], "not-found")
 end)
 
+-- challenge-v2 (proto v0.29.0): the site's title and hint per language.
+test("challenge pages: the site's title and hint, escaped, per language; built-in text without them", function()
+  local site = { id = "site-a", protection = { challenge_text = { title_zh = "访问验证", hint_zh = "请稍候 <b>&</b>",
+    title_en = "Checking <you>" } } }
+  eq(select(1, challenge.custom_text(site, "zh")), "访问验证")
+  eq(select(2, challenge.custom_text(site, "en")), "", "no English hint")
+  eq(select(1, challenge.custom_text({ id = "x" }, "en")), "")
+  local page = challenge.page({ lang = "zh", kind = "js", token = "k.p.s", ret = "/", nonce = "N", title = "访问验证", hint = "请稍候 <b>&</b>" })
+  assert(page:find("<title>访问验证</title>", 1, true), "title")
+  assert(page:find("<h1>访问验证</h1>", 1, true), "heading")
+  assert(page:find('<p class="hint">请稍候 &lt;b&gt;&amp;&lt;/b&gt;</p>', 1, true), "escaped hint under the heading")
+  assert(not page:find("正在验证浏览器</h1>", 1, true), "the built-in heading is replaced")
+  page = challenge.page({ lang = "en", kind = "captcha", token = "k.p.s", ret = "/", image = "iVBORw0KGgo=", nonce = "N", title = "Checking <you>" })
+  assert(page:find("<title>Checking &lt;you&gt;</title>", 1, true) and page:find("<h1>Checking &lt;you&gt;</h1>", 1, true), "captcha title")
+  assert(not page:find('class="hint"', 1, true), "no hint")
+  page = challenge.page({ lang = "en", kind = "pow", token = "k.p.s", ret = "/", nonce = "N", difficulty = 8, title = "", hint = "" })
+  assert(page:find("<title>Security check</title>", 1, true) and page:find("<h1>Verifying your browser</h1>", 1, true), "built-in texts")
+  -- Through respond: the language of the request picks the texts.
+  install("a", { a = SECRET_A })
+  local sent = request({ var = { request_uri = "/", remote_addr = "198.51.100.7", http_user_agent = "UA", http_accept_language = "zh-CN,zh;q=0.9" } })
+  challenge.respond(site, "js", 2)
+  assert(sent.body:find("<h1>访问验证</h1>", 1, true), "Chinese title")
+  sent = request({ var = { request_uri = "/", remote_addr = "198.51.100.7", http_user_agent = "UA", http_accept_language = "en" } })
+  challenge.respond(site, "js", 2)
+  assert(sent.body:find("<h1>Checking &lt;you&gt;</h1>", 1, true), "English title")
+end)
+
+-- challenge-v2: failed answers ban the client network at the threshold.
+test("failed answers count per site and client network and ban at the threshold", function()
+  local bans = require("edgeweir.bans")
+  ngx.shared.edgeweir_bans:flush_all()
+  bans.forget()
+  install("a", { a = SECRET_A })
+  local site = { id = "site-f", protection = { pass_ttl = 900, failure_threshold = 3, failure_ban_seconds = 900 } }
+  local function token_for(addr)
+    local sent = request({ var = { request_uri = "/", remote_addr = addr, http_user_agent = "UA" } })
+    challenge.respond(site, "js", 2)
+    return sent.body:match('name="t" value="([^"]+)"')
+  end
+  local function post(addr, args, uncounted)
+    local sent = request({ method = "POST", var = { uri = "/.edgeweir/challenge/verify", remote_addr = addr, http_user_agent = "UA",
+      scheme = "http", http_host = "f.test" }, args = args })
+    challenge.reserved(site, uncounted)
+    return sent
+  end
+  local d = ngx.shared.edgeweir_challenge
+  -- A wrong answer, an invalid token and a used token each count.
+  post("198.51.100.7", { t = token_for("198.51.100.7"), a = "00", r = "/" })
+  eq(d:get("f|site-f|198.51.100.7"), 1, "wrong answer")
+  post("198.51.100.7", { t = "nonsense", a = "00", r = "/" })
+  eq(d:get("f|site-f|198.51.100.7"), 2, "invalid token")
+  eq(bans.match("site-f", "198.51.100.7"), nil, "below the threshold")
+  local token = token_for("198.51.100.7")
+  local sent = post("198.51.100.7", { t = token, a = challenge.sha256_hex(token), r = "/" })
+  eq(sent.status, 303); assert(sent.header["Set-Cookie"], "a right answer passes and does not count")
+  eq(d:get("f|site-f|198.51.100.7"), 2)
+  post("198.51.100.7", { t = token, a = challenge.sha256_hex(token), r = "/" })
+  eq(d:get("f|site-f|198.51.100.7"), nil, "the used token was the third failure: the count starts over")
+  eq(bans.match("site-f", "198.51.100.7"), "a", "banned at site scope")
+  eq(bans.match("other", "198.51.100.7"), nil)
+  local list = bans.drain()
+  eq(#list, 1)
+  eq(list[1].reason, "challenge_failures"); eq(list[1].metric, "challenge_failures"); eq(list[1].observed, 3)
+  eq(list[1].threshold, 3); eq(list[1].window_seconds, 600); eq(list[1].expires_at - list[1].created_at, 900)
+  -- IPv6 clients count by their /64.
+  post("2001:db8:1:2::1", { t = "x", r = "/" })
+  post("2001:db8:1:2::99", { t = "x", r = "/" })
+  eq(d:get("f|site-f|2001:db8:1:2::/64"), 2)
+  -- Exempt clients (platform and site allow lists, trusted proxies, the
+  -- local listeners) and sites without a threshold do not count.
+  post("198.51.100.8", { t = "x", r = "/" }, true)
+  eq(d:get("f|site-f|198.51.100.8"), nil, "uncounted")
+  site.protection.failure_threshold = 0
+  post("198.51.100.9", { t = "x", r = "/" })
+  eq(d:get("f|site-f|198.51.100.9"), nil, "off")
+  eq(d:ttl("f|site-f|2001:db8:1:2::/64") <= 600, true, "the window runs from the first failure")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

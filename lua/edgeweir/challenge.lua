@@ -22,6 +22,17 @@
 -- lua_shared_dict edgeweir_challenge until the token expires, so a token
 -- is redeemed once.
 --
+-- Since proto v0.29.0 (feature challenge-v2, ADR-0040): a site's own title
+-- and hint per language (site.protection.challenge_text, HTML-escaped; an
+-- empty one keeps the built-in text): the title in <title> and the page
+-- heading, the hint a paragraph under it. Failed answers at the verify
+-- endpoint (a wrong answer, a token that is invalid, expired or used) count
+-- per site and client network (IPv4 address, IPv6 /64) in
+-- edgeweir_challenge for 600 seconds from the first; at the site's
+-- failure_threshold the network is banned at site scope for
+-- failure_ban_seconds (edgeweir.bans, reason challenge_failures) and the
+-- count starts over.
+--
 -- Reserved prefix /.edgeweir/ (never proxied):
 --   POST /.edgeweir/challenge/verify     t (token), a (answer), r (return
 --        path), alt=pow (captcha token: switch to the proof of work)
@@ -622,14 +633,28 @@ local function hidden(name, value)
   return '<input type="hidden" name="' .. name .. '" value="' .. esc(value) .. '">'
 end
 
+-- custom_text returns the site's title and hint of lang ("zh", "en"):
+-- strings, "" when the site has none.
+function _M.custom_text(site, lang)
+  local p = site and site.protection
+  local t = p and type(p.challenge_text) == "table" and p.challenge_text or nil
+  if not t then return "", "" end
+  local suffix = lang == "zh" and "_zh" or "_en"
+  local title, hint = t["title" .. suffix], t["hint" .. suffix]
+  return type(title) == "string" and title or "", type(hint) == "string" and hint or ""
+end
+
 -- page renders a challenge page. o = {lang, kind (js, pow, captcha),
--- token, ret, difficulty, image (base64 PNG), nonce, error, id}.
+-- token, ret, difficulty, image (base64 PNG), nonce, error, id, title and
+-- hint (the site's texts, "" or nil for the built-in ones)}.
 function _M.page(o)
   local t = TEXT[o.lang] or TEXT.en
+  local custom = type(o.title) == "string" and o.title ~= "" and esc(o.title) or nil
+  local hint = type(o.hint) == "string" and o.hint ~= "" and ('<p class="hint">' .. esc(o.hint) .. "</p>") or ""
   local out = {
     '<!doctype html><html lang="', t.lang, '"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">',
-    "<title>", t.title, '</title><style nonce="', o.nonce, '">', STYLE, '</style></head><body><main><div class="f">',
+    "<title>", custom or t.title, '</title><style nonce="', o.nonce, '">', STYLE, '</style></head><body><main><div class="f">',
     '<i class="d d1"></i><i class="d d2"></i><i class="d d3"></i><i class="d d4"></i><div class="top"><i class="d d5"></i><i class="d d6"></i>',
     '<div class="tr" aria-hidden="true"><svg class="df"><path id="w" d="', WAVE, '"/></svg>',
     '<span class="s sa"><svg><use href="#w" class="ln"/></svg></span>',
@@ -646,7 +671,7 @@ function _M.page(o)
   end
   local script
   if o.kind == "captcha" then
-    add("<h1>", t.captcha, "</h1>")
+    add("<h1>", custom or t.captcha, "</h1>", hint)
     if o.error then add('<p class="err" role="alert">', t.wrong, "</p>") end
     add('<form method="post" action="', _M.VERIFY, '">',
       '<img src="data:image/png;base64,', o.image, '" alt="', esc(t.image), '" width="160" height="60">',
@@ -657,7 +682,7 @@ function _M.page(o)
       '<form method="post" action="', _M.VERIFY, '">', hidden("t", o.token), hidden("r", o.ret), hidden("alt", "pow"),
       '<button class="alt" type="submit">', t.alt, "</button></form>")
   else
-    add("<h1>", t.verify, "</h1>")
+    add("<h1>", custom or t.verify, "</h1>", hint)
     if o.error then add('<p class="err" role="alert">', t.failed, "</p>") end
     add('<div class="bar" role="progressbar" aria-label="', t.verify, '"><i></i></div>',
       '<form id="f" method="post" action="', _M.VERIFY, '"')
@@ -748,10 +773,12 @@ local function render(site, keys, kind, level, ret, failed)
   h["Referrer-Policy"] = "same-origin"
   h["X-Edgeweir-Challenge"] = f.type
   if ngx.req.get_method() ~= "HEAD" then
+    local lang = _M.language(var.http_accept_language)
+    local title, hint = _M.custom_text(site, lang)
     ngx.print(_M.page({
-      lang = _M.language(var.http_accept_language), kind = f.type, token = _M.sign_token(keys.current, f),
+      lang = lang, kind = f.type, token = _M.sign_token(keys.current, f),
       ret = ret, difficulty = f.difficulty, image = image, nonce = nonce, error = failed,
-      id = var.edgeweir_request_id or var.request_id,
+      id = var.edgeweir_request_id or var.request_id, title = title, hint = hint,
     }))
   end
   return ngx.exit(ngx.HTTP_OK)
@@ -795,8 +822,41 @@ local function field(args, name)
   return v
 end
 
--- verify redeems a challenge token (POST /.edgeweir/challenge/verify).
-local function verify(site)
+_M.FAILURE_WINDOW = 600
+
+-- failed counts a failed answer of the client addr on site (challenge-v2):
+-- at the site's failure_threshold within FAILURE_WINDOW seconds of the
+-- first failure, the client network is banned at site scope and the count
+-- starts over. Returns the count (nil when the site does not count).
+function _M.failed(site, addr)
+  local p = site.protection
+  local threshold = p and tonumber(p.failure_threshold) or 0
+  local seconds = p and tonumber(p.failure_ban_seconds) or 0
+  if threshold <= 0 or seconds <= 0 then return nil end
+  local network = ipaddr.client_network(addr)
+  if not network then return nil end
+  local d = dict()
+  local key = "f|" .. site.id .. "|" .. network
+  local n = d:incr(key, 1, 0, _M.FAILURE_WINDOW)
+  if n and n >= threshold then
+    d:delete(key)
+    local ok, err = require("edgeweir.bans").add_auto(site.id, addr, seconds, {
+      reason = "challenge_failures", metric = "challenge_failures", observed = n, threshold = threshold,
+      window_seconds = _M.FAILURE_WINDOW,
+    })
+    if not ok and d:safe_add("#fail_log|" .. site.id, true, 60) then
+      ngx.log(ngx.NOTICE, "edgeweir: challenge failure ban not written site=", site.id, ": ", tostring(err))
+    end
+  end
+  return n
+end
+
+-- verify redeems a challenge token (POST /.edgeweir/challenge/verify);
+-- uncounted: failures do not count towards the failure ban.
+local function verify(site, uncounted)
+  local function failure()
+    if not uncounted then _M.failed(site, ngx.var.remote_addr) end
+  end
   local var = ngx.var
   if ngx.req.get_method() ~= "POST" then
     return text(405, { Allow = "POST", ["X-Edgeweir-Error"] = "method-not-allowed" }, "method not allowed")
@@ -815,6 +875,7 @@ local function verify(site)
   local prefix, uah = prefix_of(var.remote_addr), ua_of(var.http_user_agent)
   local f = _M.parse_token(keys, token)
   if not f or not _M.check_token(f, site.id, prefix, uah, now) then
+    failure()
     return redirect(303, ret) -- a new challenge on the page itself
   end
   local kind = (f.type == "pow" and f.level >= 4) and "pow_high" or f.type
@@ -822,6 +883,7 @@ local function verify(site)
     return render(site, keys, "pow_high", f.level, ret, false)
   end
   if not _M.consume(f.nonce, f.exp, now) then
+    failure()
     return redirect(303, ret)
   end
   local ok
@@ -833,6 +895,7 @@ local function verify(site)
     ok = _M.captcha_ok(keys.by_id[f.kid], f, answer)
   end
   if not ok then
+    failure()
     return render(site, keys, kind, f.level, ret, true)
   end
   local level = max(f.level, _M.pass_level(site))
@@ -841,11 +904,12 @@ local function verify(site)
   return redirect(303, ret, _M.pass_cookie(value, ttl, var.scheme == "https"))
 end
 
--- reserved handles a request under /.edgeweir/ (never proxied).
-function _M.reserved(site)
+-- reserved handles a request under /.edgeweir/ (never proxied); uncounted:
+-- the client's failed answers do not count towards the failure ban.
+function _M.reserved(site, uncounted)
   local uri = ngx.var.uri
   if uri == _M.VERIFY then
-    return verify(site)
+    return verify(site, uncounted)
   end
   if uri == _M.WORKER then
     local method = ngx.req.get_method()
