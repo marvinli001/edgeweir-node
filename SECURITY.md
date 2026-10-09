@@ -81,6 +81,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 挑战参数与通行凭证无状态、HMAC-SHA256 签名，绑定站点、客户端网段（IPv4 /24、IPv6 /64）与 User-Agent 哈希；挑战参数 5 分钟内有效且只能兑换一次（节点记录已用 nonce）。验证后只跳转到本站以单个 `/` 开头的路径，不存在开放重定向。
 - 挑战页自包含，不引用外部 URL，CSP 使用每个响应独立的 nonce；验证码图片由节点本地生成，答案不离开节点。
 - 保留前缀 `/.edgeweir/` 由边缘层直接处理，永不转发源站。
+- 访问控制（`access-control-v1`）在边缘层、缓存查找之前判定，缓存命中同样生效；防盗链与 UA 名单只看访客可以伪造的请求头，不能代替访问鉴权；WebSocket 来源名单拒绝没有 `Origin` 的升级请求。
 
 **源站与回源**
 

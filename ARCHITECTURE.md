@@ -202,6 +202,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `Site.additional_certificate_ids`（任一站点，含停用站点，§3.27）：多于 3 个、重复、包含 `certificate_id`、不在 `certificates` 里，或站点没有 `certificate_id` | 整个配置拒绝 |
 | `Site.client_certificate`（任一站点，含停用站点）：模式不是 `OPTIONAL` / `REQUIRED`（`UNSPECIFIED` 即关闭，其余字段忽略）、站点没有 `certificate_id`、站点开启 HTTP/3、深度不在 1–5、`ca_pem` 超过 65536 字节、不是 1–10 张 PEM 证书（只接受不带头部的 `CERTIFICATE` 块，之外只允许空白）或其中有一张不是 CA（basicConstraints CA:TRUE） | 整个配置拒绝（不检查有效期：节点上随时间变化的拒绝不合适，控制台保存时检查） |
 | `session_ticket_keys`：id 非法或重复、角色不是 `next` / `current` / `previous`、同一角色多把 | 整个配置拒绝 |
+| `Site.access_control`（任一站点，含停用站点，§3.29）：本站名单引用不存在的 `ip_lists`、多于 16 个或同一名单两边都有；主机写法、来源写法、路径前缀、扩展名、UA 模式、CORS 方法与头名、国家、行政区、ASN 不是控制台规范化后的形式或数量越界；没有 UA 条目、CORS 没有来源或方法、CORS 的 `*` 与凭据同时出现；Max-Age、WebSocket 空闲超时（0 或 60–86400）、`X-Frame-Options`、`Referrer-Policy`、`Permissions-Policy`、防盗链跳转目标越界或非法；地区名单用到本机没有的 GeoIP 数据库 | 整个配置拒绝 |
 | 名为 `edgeweir_tls` 的 cache zone（会话缓存的共享内存名） | 跳过并告警（同内部 shared dict 重名） |
 
 跳过项作为告警写入 `ReportStatus.message`（`applied with N warning(s): ...`），状态仍为 `APPLIED`，这样单个坏站点不会拖垮整个集群。整个配置被拒绝时状态为 `APPLY_STATE_FAILED`，`applied_revision` 保持为仍在服务的 LKG revision，message 给出原因（包括 `nginx -t` 的原始输出）。确定性失败（哈希、校验、`nginx -t`、reload 未生效、数据面放不下的站点表或四层应用表（507，提示调大 `--sites-dict-mb` / `--l4-dict-mb`））的同一 revision 在 5 分钟内不重复尝试。被截止时间或取消打断的步骤（应用自己的预算、`nginx -t` 的超时、关停）不算确定性失败，下一次同步就重试。获取配置有自己的超时；应用另有预算（凭据、挑战密钥、会话票据密钥、证书四次 RPC、`nginx -t`（`TestTimeout`，默认 60 秒）、reload 等待与推送各自的超时之和），慢的获取不会挤占它。
@@ -338,16 +339,21 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
                 §3.19）、444 关闭连接或交给默认网站，并计入扫描防护
               · 要求客户端证书的站点：没有通过校验的证书 → 403 client-cert-required（明文 HTTP 先按网站自己的
                 强制 HTTPS 跳转，§3.27）
-              · 动态封禁：先平台范围、后站点范围；命中且不在平台 allow 名单 → 403 ip-banned
+              · 本站放行（§3.29）：ip.src 命中网站的任一本站放行名单
+              · 动态封禁：先平台范围、后站点范围（本站放行的地址不查站点范围）；命中且不在平台 allow 名单 → 403 ip-banned
               · 开启 CC 的站点计数（§3.15，IPv4 按地址、IPv6 按 /64）；保留前缀 /.edgeweir/ 在这里应答，永不回源（§3.14）
               · 本地监听（$edgeweir_local，agent 的预热，§2.6）：不查封禁、不计 CC、不挑战，拒绝类规则与 CRS
                 不生效（重定向照常），边缘自己生成的响应带 X-Edgeweir-Edge-Response，统计不计入
+              · 平台放行与拦截名单（403 policy-denied）→ 访问控制（§3.29，本地监听与源站自己的 HTTP-01 请求除外）：
+                本站拦截名单 403 ip-blocked → 地区 403 geo-denied → CORS 预检在这里应答（204 或 403 cors-origin-denied）
+                → 防盗链 403 hotlink-denied 或 302 → UA 403 ua-denied → 访问鉴权（§3.28）
               · 规则阶段（`challenge` 动作在 waf-custom 中挑战；重定向阶段的规则之后查批量重定向表，§3.21）；
-                CC 单 IP（IPv6 为 /64）超限 → 自动封禁并 403 ip-banned（config 规则可为本请求关闭 CC）
-              · Under Attack 与 CC 级别：没有足够级别凭证的请求被挑战；allow 规则或平台 allow 名单命中的请求例外
+                CC 单 IP（IPv6 为 /64）超限 → 自动封禁并 403 ip-banned（config 规则可为本请求关闭 CC；本站放行的地址不封禁）
+              · Under Attack 与 CC 级别：没有足够级别凭证的请求被挑战；allow 规则、平台 allow 名单或本站放行名单命中的请求例外
                 （config 规则可为本请求开关站点 Under Attack、限制 CC 最高级别）
               · Origin 规则与 config 规则的回源超时写入 $edgeweir_origin_override（X-Edgeweir-Origin）
-              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403（config 规则可覆盖）；
+              · WebSocket（Upgrade: websocket）：原样透传、不缓存；站点关闭时 403（config 规则可覆盖）；来源不在网站的
+                WebSocket 来源列表时 403 websocket-origin-denied（§3.29）；
                 回源 HTTP/2 的站点也走 HTTP/1.1 回源层
               · 开启 gRPC 的站点的 gRPC 请求（§3.24）：访问阶段末尾转入 @edgeweir_grpc，不缓存、不经 CRS，
                 以 grpc_pass 经 HTTP/2 送到 _grpc 回源层；其他请求按站点的回源 HTTP 版本选回源层
@@ -363,12 +369,12 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
             proxy_cache_lock / background_update / revalidate；stale 由源站层设置的 Cache-Control 扩展决定
             add_header X-Cache $upstream_cache_status always；add_header X-Request-Id（§3.19）
             error_page：nginx 自己的错误（400 / 413 / 414 / 494 / 497 / 500 / 502 / 504）交给 @edgeweir_error，
-              换成错误页（§3.19）
+              换成错误页（§3.19），同样加访问控制的 CORS 与安全响应头（§3.29）
             proxy_hide_header X-Request-Id / Cache-Tag / X-Edgeweir-Affinity（缓存命中同样隐藏）
             header_filter_by_lua  edgeweir.router：还原 Cache-Control，记录 Cache-Tag 索引（含 slice
               与后台更新子请求），保留 Cache-Tag 的站点转发它，会话保持的 Set-Cookie（§3.20），
               CRS 拦截换成错误页（只在 CRS 位置有 body filter），缓存规则的浏览器 TTL（§3.3），
-              response-transform 与 compression 阶段，选定压缩编码（§3.17）
+              访问控制的 CORS 与安全响应头（§3.29），response-transform 与 compression 阶段，选定压缩编码（§3.17）
             内部请求头 X-Edgeweir-Site / -Rules / -Cache-Status / -Origin（proxy_set_header 设置，覆盖客户端同名头）
                 │ unix socket，不保持连接（关闭证书校验的站点走 origin-noverify*.sock；回源 HTTP/2 走 *-h2.sock，
                 │ gRPC 经 HTTP/2 走 *-grpc.sock，§3.24）
@@ -381,7 +387,8 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
               · 发往源站前清除内部头；忽略源站的 X-Accel-*（防止源站操纵缓存或内部跳转）
             balancer_by_lua（每次尝试一次）
               · set_current_peer(ip, port, sni)，$edgeweir_ssl_name = sni（证书名校验，§3.6）
-              · 重试次数、超时（config 规则可覆盖；WebSocket 等升级连接的读写超时即空闲超时，为 1 小时）、
+              · 重试次数、超时（config 规则可覆盖；WebSocket 等升级连接的读写超时即空闲超时，默认 1 小时，
+                网站的访问控制可设 60–86400 秒，§3.29）、
                 按地址+端口+SNI 的连接池（每种回源协议一个 balancer upstream，连接池互不混用，§3.24）；
                 换到 Host/签名不同的源站时重建请求
             header_filter_by_lua
@@ -404,7 +411,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 边缘层的 proxy_cache 优先采用 `X-Accel-Expires`，nginx 不会把 `X-Accel-*` 转发给客户端。因此规则 TTL 以请求头的形式传到回源层、再以响应头的形式回到边缘层的缓存，全程不需要 reload。首次请求 `X-Cache: MISS`，第二次 `HIT`；不缓存的请求为 `BYPASS`。按 nginx 默认行为，带 `Set-Cookie` 的响应不缓存。
 
-内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error）、`X-Edgeweir-Origin`（Origin 规则的源站组、Host、SNI、端口与 config 规则的回源超时，§3.21），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`、`client-cert-required`（§3.27），nginx 自己的错误的 `bad-request`、`header-too-large`、`uri-too-long`、`body-too-large`、`https-required`、`internal-error`（§3.19），以及 CRS 拦截的 `waf-blocked`）。
+内部头一览：请求方向 `X-Edgeweir-Site`（站点 id）、`X-Edgeweir-Rules`（边缘选中的规则 id，逗号分隔）、`X-Edgeweir-Cache-Status`（边缘缓存状态，用于 stale-if-error）、`X-Edgeweir-Origin`（Origin 规则的源站组、Host、SNI、端口与 config 规则的回源超时，§3.21），在回源层清空后才发往源站；`X-Edgeweir-Waf`（CRS 站点的设置，§3.18）只给 ModSecurity 看，发往回源层之前删除，回源层也清空它；`X-Request-Id`（§3.19）由边缘层设置，回源层与源站看到同一个值；响应方向 `X-Edgeweir-CC`（源站层暂存的原 Cache-Control，边缘层还原并删除）、`X-Edgeweir-Affinity`（回源层要求签发的会话保持 cookie，边缘层隐藏）；对客户端只有 `X-Cache`、`X-Request-Id`、挑战响应的 `X-Edgeweir-Challenge`（§3.14）和错误时的 `X-Edgeweir-Error`（`unknown-host`、`site-disabled`、`loop-detected`、`ip-banned`、`policy-denied`、`policy-unavailable`、`websocket-disabled`、`no-origin`、`origin-unreachable`、`origin-timeout`、`origin-error`、`method-not-allowed`、`origin-signing`、`missing-site`、`unknown-site`、`challenge-unavailable`、`not-found`、`too-large`、`client-cert-required`（§3.27），`ip-blocked`、`geo-denied`、`cors-origin-denied`、`hotlink-denied`、`ua-denied`、`websocket-origin-denied`（§3.29），nginx 自己的错误的 `bad-request`、`header-too-large`、`uri-too-long`、`body-too-large`、`https-required`、`internal-error`（§3.19），以及 CRS 拦截的 `waf-blocked`）。
 
 ### 3.2 选源（`edgeweir.lb`）
 
@@ -570,6 +577,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | 站点表里的其他内容：源站与源站池设置、缓存规则与 TTL、缓存键、缓存代际号、所用 cache zone、Range 分片与 WebSocket 开关、边缘规则、日志采样率、证书与私钥（同一站点换证书）、OCSP stapling 开关与 OCSP 响应、强制 HTTPS、HSTS、最低 TLS 版本；表级的源站允许清单、cdn-id、HTTP-01 应答、IP 名单、平台规则 | 热更新：`PUT /v1/sites`，不 reload |
 | 清缓存（含标签标记） | 热更新：`POST` / `PUT /v1/purge` |
 | Cache-Tag 保留、站点与平台错误页、离线 Host、会话保持、主动健康检查的开关 | 热更新：站点表（`keep_cache_tag`、`error_pages`、`platform_error_pages`、`offline_hosts`、`affinity`、`active_health`） |
+| 网站的访问控制：本站名单、地区、CORS、防盗链、UA、WebSocket 来源与空闲超时、安全响应头（§3.29） | 热更新：站点表（`access_control`） |
 | 回源 HTTP 版本 | 热更新：站点表（`origin_http2`）；各协议的回源层总是存在 |
 | 主动健康检查结果 | 热更新：`PUT /v1/origins/active` |
 | 动态封禁 | 热更新：`POST` / `PUT /v1/bans`，平台范围另写 nftables；`--ban-dict-mb` 与 `--ban-capacity` 属于 agent 启动参数 |
@@ -610,7 +618,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | `#unapplied`、`#unapplied_more` | 写不下的手动封禁（最多 1000 个 id，其余只计数） |
 | `#evicted` | 为腾出空间淘汰或丢弃的自动封禁数 |
 
-- **查找**：边缘层解析站点之后、规则之前。每个请求读一次 `#ver`；平台与站点范围都没有长度时到此为止。否则按各长度掩码客户端地址逐个查找（IPv4 映射的 IPv6 地址也按 IPv4 查），先平台后站点。平台 `allow` 名单命中的地址不受封禁，其余返回 `403`、`X-Edgeweir-Error: ip-banned`。
+- **查找**：边缘层解析站点之后、规则之前。每个请求读一次 `#ver`；平台与站点范围都没有长度时到此为止。否则按各长度掩码客户端地址逐个查找（IPv4 映射的 IPv6 地址也按 IPv4 查），先平台后站点。平台 `allow` 名单命中的地址不受封禁，网站的本站放行名单命中的地址不受该网站范围的封禁（§3.29），其余返回 `403`、`X-Edgeweir-Error: ip-banned`。
 - **容量与内存**：所有写入用 `safe_set` / `safe_add`，共享内存不会自行淘汰封禁。新条目超出容量或内存不足时，先按写入顺序淘汰最早的本机自动封禁；控制台条目从不在数据面被淘汰。仍然写不下时，手动封禁记为未生效并上报，控制台自动封禁丢弃并计数。
 - **本机自动封禁**：`bans.add_auto(site_id, client, ttl_seconds, trigger)` 写入站点范围的封禁：IPv4 地址（/32）或 IPv6 /64（`ipaddr.client_network`；给出 IPv6 地址时取它的 /64），已有控制台条目时只上报；回环与未指定网络（`127.0.0.0/8`、`0.0.0.0`、`::/64`，即节点自己的流量）一律拒绝。排入上报队列（最多 10000 条，满了丢弃最旧的），上报的 `AutoBan.cidr` 即该网络。
 - **解封后重新计数**：控制台解封站点范围的自动封禁时，未共享的本机条目经 `bans.release`（`POST /v1/bans/release`）删除，共享的控制台自动条目（`c`）随增量或全量更新删除；两种删除都调用 `cc.lifted`，该地址由 CC 重新计数（§3.15），继续超限会再次封禁。手动封禁的删除不影响 CC。
@@ -675,7 +683,7 @@ table inet edgeweir {
 
 - **计数**（`lua_shared_dict edgeweir_cc`，`--cc-dict-mb`，默认 32 MiB）：两个相邻窗口加权的滑动窗口，`上一窗口 × (1 − 已过比例) + 当前窗口`。每个请求对站点一次 `incr`（站点 QPS 开启时），对客户端一次 `incr`（单 IP QPS 开启时；当前窗口计数超过限额一半时才读上一窗口）。客户端按 IPv4 地址或 IPv6 /64 计（`ipaddr.client_network`，如 `2001:db8:1:2::/64`）：持有 /64 的客户端每个请求换一个地址也仍是同一个客户端，也无法用地址填满 CC 存储（挑战凭证同样按 /64 绑定），再读一次站点级别；源站请求与错误（5xx，含全部尝试失败）在 log 阶段计数，缓存命中不计。路径与地址在每个 worker 的有界 Space-Saving（每站点 64 个候选）里计数，每秒把路径计数加到共享字典、提交候选路径和最重的 10 个地址。没有 CC 的站点不做任何额外工作。
 - **求值**：每秒由第一个拿到 `#eval|<秒>` 的 worker（不含正在退出的）对每个开启 CC 的站点求值。站点级取站点 QPS 与源站错误率（达到最小请求数才计算）中超出比例最大的条件；条件持续 N 秒升一级（不超过最高级别），全部低于阈值 80% 持续 M 秒降一级，80%–100% 之间两个计时都重置。路径级按单 URL QPS 同样计算，只跟踪 64 条路径（已升级的优先，其次速率最高的），按精确路径（nginx 规范化后的 `$uri`，不含查询串）匹配。请求需要的 CC 级别是站点级与该路径级的较大者。
-- **单 IP**：客户端（IPv4 地址或 IPv6 /64）的滑动窗口计数超过 `ip_qps × W` 时，经 `bans.add_auto` 写入站点范围的本机自动封禁（原因 `cc_ip_rate`，指标 `ip_qps`），同一地址在封禁期内只封一次（`b|<站点>|<地址>`，TTL 为封禁时长），本次请求返回 403 `ip-banned`。allow 规则或平台 allow 名单命中的请求不触发。控制台解封该封禁后（§3.12），`cc.lifted` 删除这个标记以及该地址当前与上一窗口的计数：地址重新计数，再次超过限额时再次封禁并上报；不保留封禁前的计数，否则在窗口内解封时解封后的第一个请求就会再次封禁。
+- **单 IP**：客户端（IPv4 地址或 IPv6 /64）的滑动窗口计数超过 `ip_qps × W` 时，经 `bans.add_auto` 写入站点范围的本机自动封禁（原因 `cc_ip_rate`，指标 `ip_qps`），同一地址在封禁期内只封一次（`b|<站点>|<地址>`，TTL 为封禁时长），本次请求返回 403 `ip-banned`。allow 规则、平台 allow 名单或网站的本站放行名单（§3.29）命中的请求不触发。控制台解封该封禁后（§3.12），`cc.lifted` 删除这个标记以及该地址当前与上一窗口的计数：地址重新计数，再次超过限额时再次封禁并上报；不保留封禁前的计数，否则在窗口内解封时解封后的第一个请求就会再次封禁。
 - **事件**：站点级变化（`site_level`，升级时指标为触发条件，降级为 `cooldown`）、路径级变化（`path_level`）、自动封禁（`ip_banned`）排入队列（最多 10000 条，满了丢弃最旧的并计数），带当时的 Top IP 与 Top 路径（各 ≤ 10，近似值），agent 上报（§2.9）。
 - **状态**：级别、跟踪与升级路径、Top 地址在 reload 和阈值变更后保留；nginx 重启后计数、级别与未上报事件丢失。站点关闭 CC（或被删除）后，下一次求值（1 秒内）清除它的级别、跟踪与升级路径和 Top 地址，重新开启时从 `normal` 开始；窗口计数在 2W + 2 秒后自行过期，已写入的自动封禁按各自时长到期。
 
@@ -867,6 +875,17 @@ proto v0.27.0，设计见控制台仓库的 ADR-0038。`Site.auth_rules` 是网�
 - **失败**：Basic 401 用 `errorpages.respond_auth`（401 页面或「其他 4xx」模板，跳转与改写状态码不生效，带 `WWW-Authenticate`）；内置 401 页面标出访客。每次拒绝 `stats.auth_failed` 计入分钟统计的 `a`，上报为 `MinuteStats.auth_failures`。
 - **渲染**：`nginx.conf` 总有共享字典 `edgeweir_auth`（8 MiB）、`location = /./edgeweir-auth` 与 `location /` 中的五个 `$edgeweir_auth_*` 变量；回源层清空 `X-Edgeweir-Auth`。规则、用户与密钥随站点表热更新。
 
+### 3.29 访问控制（`access-control-v1`）
+
+proto v0.28.0，设计见控制台仓库的 ADR-0039。`Site.access_control` 是网站的访问控制，只有用到的部分出现：本站拦截 / 放行名单（`NodeConfig.ip_lists` 的 id，各至多 16 个、互不相交，任何名单都可以选）、防盗链、UA 名单、CORS、地区访问控制、WebSocket 来源与空闲超时、安全响应头。
+
+- **校验**（`configir.buildAccessControl`）：名单不存在、多于 16 个或同时出现在两边；主机写法（`a.com`、`*.a.com` 下一级、`.a.com` 任意层级、`*`）与来源写法（`scheme://host[:port]`，http / https、小写、去掉默认端口、主机可以 `*.` 开头；CORS 另可单独 `*`，但不能与凭据同时）不是控制台规范化后的形式；路径前缀、扩展名、UA 模式（规则 `wildcard` 的写法，1–512 字节可打印 ASCII，或空串）、方法与头名、Max-Age、国家（两位大写）、行政区（`CC-名称`）、ASN、WebSocket 空闲超时（0 或 60–86400）、`X-Frame-Options`、`Referrer-Policy`、`Permissions-Policy` 越界或非法；防盗链的跳转目标不是本站路径（`/` 开头、不以 `//` 开头）或不含账号与空白的 http(s) URL：都拒绝整份配置（停用的网站同样检查）。与访问鉴权的处理相同：两者都决定谁能到达网站，静默丢弃某一部分会让网站失去保护。地区名单有国家、行政区、ASN 时分别需要本机的 `geoip-country-v1`、`geoip-subdivision-v1`、`geoip-asn-v1`（与读取同样字段的规则相同）。规范形式：UA 条目与 CORS 方法保持顺序，其余列表按字节序排序去重，ASN 按数值。没有访问控制的网站，站点表 JSON 与之前相同（没有 `access_control`）。
+- **站点表**：`access_control`（snake_case，未用的部分省略；WebSocket 空闲超时的 0 换成 3600）。`edgeweir.access.prepare` 把它编译成 `site._access`（名单用站点表的 IP 名单匹配函数，主机与来源写法拆成精确集合与通配列表，UA 模式用 `edgeweir.expressions` 的 wildcard）与回源层读取的 `site._ws_idle_ms`；`PUT /v1/sites` 时检查名单 id 存在。全部设置随站点表热更新。
+- **执行顺序**（边缘层，ADR-0039 第 1 节）：客户端证书检查之后算出「本站放行」（`ip.src` 命中任一本站放行名单）；站点范围的动态封禁、CC 单 IP 封禁（含保留前缀）、Under Attack 与 CC 挑战对本站放行的地址不生效，平台封禁照常。`policy.access` 在平台放行 / 拦截名单之后、访问鉴权之前依次执行：本站拦截名单（平台放行或本站放行的地址跳过）403 `ip-blocked`；地区（生效范围内、不在例外前缀下才查询 GeoIP，名单为空时不查询）403 `geo-denied`，GeoIP 不可用时抛错，路由返回 503 `policy-unavailable`；CORS 预检（`OPTIONS` 带 `Origin` 与 `Access-Control-Request-Method`，在生效范围内且没有交给源站）在这里应答：来源允许时 `ngx.exit(204)`，带 `Access-Control-Allow-Origin`（及凭据头）、方法列表、请求头列表（或回显 `Access-Control-Request-Headers`，都没有时不加）、`Access-Control-Max-Age`、`Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers` 与 `Cache-Control: no-store`，否则 403 `cors-origin-denied`；防盗链 403 `hotlink-denied`（错误页）或 302 到网站的目标（`Cache-Control: no-store`，同样带 `X-Edgeweir-Error: hotlink-denied`）；UA 403 `ua-denied`。本站放行的地址跳过本站拦截名单、地区、防盗链与 UA，不跳过 CORS；平台放行只跳过本站拦截名单。本地监听与源站自己证书的 HTTP-01 请求不执行这几步。WebSocket 升级在网站或规则允许 WebSocket 之后检查来源（本地监听除外，本站放行不豁免）：没有 `Origin`、不能规范化或不在列表中 → 403 `websocket-origin-denied`。这些判定都在缓存查找之前，缓存命中同样生效。
+- **判定**：移植自控制台 `packages/rule-engine` 的 `access-control.ts`，共享向量 `test/lua/access_vectors.json`（`test/lua/access.lua` 全部执行，configir 的写法检查也读它）。`Referer`（开启时还有 `Origin`）取 http(s) URL 的主机（去掉账号、端口与末尾的点，IPv6 去掉方括号），无法解析即不允许；禁止的来源优先，其次允许的来源与本站域名（`store.lookup_host` 找到的就是本网站：精确、泛域名、后缀与正则域名都算）。防盗链的生效范围：扩展名与路径前缀都为空时为全部请求，否则扩展名或路径前缀命中，再去掉排除前缀；302 的目标是本站路径时，请求它本身不检查。UA：多个头以 `, ` 连接，命中允许条目即通过，否则命中拒绝条目即拒绝；空模式只匹配空或缺失的 UA。地区：国家、`国家-行政区`（ASCII 不区分大小写）或 ASN 命中；没有 GeoIP 记录（国家为空）时不命中。路径都是规范化后的 `$uri`（签名 URL 去签名之后）。
+- **响应头**（`router.header_filter` 现有步骤之后、响应阶段规则之前；没有 header filter 的 `@edgeweir_error` 由 `router.error_page` 添加；子请求不处理）：CORS 生效范围内，没有「保留源站的 CORS 头」或响应没有 `Access-Control-Allow-Origin` 时删除全部 `Access-Control-*`，请求的 `Origin` 允许时加 `Access-Control-Allow-Origin`（有凭据时回显 `Origin` 并加 `Access-Control-Allow-Credentials: true`，否则 `*` 或回显）与 `Access-Control-Expose-Headers`；`Vary` 总加入 `Origin`（已有 `Origin` 或 `*` 时不加），缓存中的对象不按来源区分。边缘应答的预检保留自己的头。然后是安全响应头：替换同名的头，`ngx.header["Server"] = nil` 去掉 nginx 自己的 `Server`（OpenResty 1.31.1.1 上 HTTP/1.1 与 HTTP/2 实测），删除 `X-Powered-By`。响应变换规则在其后运行，可以修改或删除它们。缓存命中、回源响应与节点生成的响应（错误页、跳转、预检 204）都经过这一步。
+- **WebSocket 空闲超时**：回源层（`origin.timeouts`）对升级连接的发送与读取超时用网站的设置（默认 3600 秒），config 规则的回源发送 / 读取超时仍然优先。边缘层到回源层的本地一跳 `proxy_send_timeout` / `proxy_read_timeout` 为 86400 秒（回源层总在自己的超时内应答，普通请求不受影响）；升级到这个版本时 `nginx.conf` 随之变化，reload 一次（已有连接由旧 worker 服务到结束）。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -975,6 +994,7 @@ proto v0.27.0，设计见控制台仓库的 ADR-0038。`Site.auth_rules` 是网�
 - 四层应用向源站发送的 PROXY protocol 版本在节点上是结构性设置（reload，nginx 按 `server` 决定）；UDP 会话不跨 reload；PROXY protocol 中继吞吐低于 nginx 自己转发、不支持半关闭；`--stream-shutdown-timeout` 作用于旧 worker 的全部连接（§3.23）。
 - 访客客户端证书不能与 HTTP/3 同时开启（nginx 的 QUIC 实现下 `verify_client` 与恢复会话的行为未经验证），不做 CRL / OCSP 吊销检查；四层应用的 TLS 不复用会话；会话票据密钥每次轮换都 reload；一个网站同时有 ECDSA 与 RSA 证书时，节点按 ClientHello 判断客户端能否使用 ECDSA，少见的客户端（例如只在 `supported_groups` 中省略该曲线）可能与 OpenSSL 的判断不同而握手失败；TLS 1.2 会话以同一网站的另一个域名恢复时，`$ssl_server_name` 仍是建立会话时的名称（OpenSSL 的行为），Host 不同的请求得到 421（浏览器按主机名保存会话，不会这样恢复）（§3.27）。
 - 访问鉴权（§3.28）：转发鉴权每个未缓存的请求多一次子请求；结果缓存不区分路径与访客地址；Basic 首次校验每个 worker 约 1 ms CPU，失败限速按客户端网络，同一出口后的访客共享。
+- 访问控制（§3.29）：防盗链的「本站域名」对不在允许来源中的 `Referer` 主机查一次站点表（查不到的主机进入未知域名的小缓存）；地区访问控制在生效范围内的每个请求都查 GeoIP（worker 内缓存 5 分钟）；`Vary: Origin` 让下游缓存按来源分开存储；防盗链与 UA 名单依赖访客可以去掉或伪造的请求头。
 - 动态封禁只在边缘层（HTTP）执行；四层应用只受 nftables 内核封禁（`kernel-ban-v1`）与它们自己的名单约束。
 - 内核按 TCP 连接的源地址丢包。节点在要求 PROXY protocol 的负载均衡器之后时，内核只看到负载均衡器的地址：平台封禁对客户端只在边缘层生效，负载均衡器的地址需要放进平台 `allow` 名单，否则封禁它会丢弃经它转发的全部流量。
 
