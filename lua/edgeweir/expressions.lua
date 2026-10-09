@@ -10,7 +10,11 @@
 -- media_type, full_uri, and with rules-v3 cookies, args, base64_decode,
 -- substring, to_string) are shared with the request and response fields.
 -- rules-v3 also adds the wildcard and strict_wildcard comparisons and
--- header_value, the check of a computed header value.
+-- header_value, the check of a computed header value. rules-body-v1 (proto
+-- v0.29.0) adds form_value and json_value and derives
+-- http.request.body.filenames from http.request.body.raw and the
+-- Content-Type header when the request values do not hold it, as the
+-- console's evaluator does (edgeweir.body).
 local ip = require("edgeweir.ipaddr")
 local bit = require("bit")
 local _M = {}
@@ -327,19 +331,34 @@ local function value_type(e)
   return e.value_type or e.valueType
 end
 
+local FILENAMES = "http.request.body.filenames"
+
+-- field_getter returns a function of the request values reading field
+-- (default when absent; http.request.body.filenames derived from the body).
+local function field_getter(field, typ)
+  local default = ""
+  if typ == "number" then default = 0 elseif typ == "boolean" then default = false end
+  if field == FILENAMES then
+    local body = require("edgeweir.body")
+    return function(req)
+      local v = req[field]
+      if v == nil then return body.filenames_of(req) end
+      return v
+    end
+  end
+  return function(req)
+    local v = req[field]
+    if v == nil then return default end
+    return v
+  end
+end
+
 -- value compiles a value node (field, const or call) into a function of
 -- the request values.
 local function value(e)
   local op, typ = e.op, value_type(e)
   if op == "field" then
-    local field = e.field
-    local default = ""
-    if typ == "number" then default = 0 elseif typ == "boolean" then default = false end
-    return function(req)
-      local v = req[field]
-      if v == nil then return default end
-      return v
-    end
+    return field_getter(e.field, typ)
   end
   if op == "const" then
     local v = e.value or ""
@@ -415,6 +434,14 @@ local function value(e)
     return function(req) return _M.substring(a(req), start, length) end
   end
   if name == "to_string" then return function(req) return _M.to_string(a(req)) end end
+  -- rules-body-v1: like reading a field, not bounded by MAX_VALUE.
+  if name == "form_value" or name == "json_value" then
+    local body = require("edgeweir.body")
+    local arg = children[1] and children[1].value
+    assert(type(arg) == "string", "invalid " .. name .. " argument")
+    local fn = name == "form_value" and body.form_value_of or body.json_value_of
+    return function(req) return fn(req, arg) end
+  end
   error("unknown function")
 end
 
@@ -446,14 +473,7 @@ function _M.compile(e, lists)
   if (e.field or "") == "" and e.children and e.children[1] then
     get = value(e.children[1]) -- computed left side
   else
-    local field = e.field
-    get = function(req)
-      local actual = req[field]
-      if actual ~= nil then return actual end
-      if typ == "number" then return 0 end
-      if typ == "boolean" then return false end
-      return ""
-    end
+    get = field_getter(e.field, typ)
   end
   if op == "in_list" then
     local matches = assert(lists[e.value], "missing IP list")
@@ -508,6 +528,16 @@ function _M.names(e, prefix, out)
   end
   for _, c in ipairs(e.children or {}) do _M.names(c, prefix, out) end
   return out
+end
+
+-- calls reports whether expression e calls a function of the set names.
+function _M.calls(e, names)
+  if type(e) ~= "table" then return false end
+  if e.op == "call" and names[e.field] then return true end
+  for _, c in ipairs(e.children or {}) do
+    if _M.calls(c, names) then return true end
+  end
+  return false
 end
 
 -- reads reports whether expression e reads a field for which test(field)
