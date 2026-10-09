@@ -72,7 +72,8 @@
 # (After 17: G10 suffix and pattern domains, unknown host handling and scan
 # protection; G11 several certificates per site chosen by the ClientHello,
 # client certificates, TLS session resumption, ticket key rotation and no
-# early data; then the base configuration again.)
+# early data; G12 Basic, signed URLs A-D and forward authentication; then
+# the base configuration again.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1319,6 +1320,88 @@ rev=$(curl -fsS -X POST "$HELPER/g11?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 [ -z "$(compose exec -T node sh -c 'ls /var/lib/edgeweir-node/nginx/conf/tls-tickets 2>/dev/null' | tr -d '\r')" ] || fail "ticket key files left without keys"
 grep -qF 'ssl_session_tickets off;' <<<"$(compose exec -T node cat /var/lib/edgeweir-node/nginx/conf/nginx.conf)" || fail "tickets not off without keys"
+
+# G12 (access-auth-v1, ADR-0038): Basic, signed URLs A-D and forward
+# authentication through the origin layer, before the rules and the cache
+# (g12.go). whoami echoes the request line and headers it receives.
+rev=$(curl -fsS -X POST "$HELPER/g12")
+WAIT_SECS=60 wait_for "G12 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+req() { # host path [curl arguments...] -> response headers and body
+  local host=$1 path=$2; shift 2
+  curl -s -D - -H "Host: $host" "$@" "$NODE$path" | tr -d '\r'
+}
+status_of() { head -1 <<<"$1" | awk '{print $2}'; }
+header_of() { awk -F': ' -v n="$(tr 'A-Z' 'a-z' <<<"$2")" 'tolower($1)==n {print $2; exit}' <<<"$1"; }
+md5hex() { printf %s "$1" | openssl md5 | awk '{print $NF}'; }
+
+r=$(req basic.g12.test /g12-basic)
+[ "$(status_of "$r")" = 401 ] || fail "Basic without credentials: $(status_of "$r")"
+[ "$(header_of "$r" WWW-Authenticate)" = 'Basic realm="G12", charset="UTF-8"' ] || fail "Basic challenge: $(header_of "$r" WWW-Authenticate)"
+[ "$(header_of "$r" X-Edgeweir-Error)" = auth-required ] || fail "Basic error code: $(header_of "$r" X-Edgeweir-Error)"
+r=$(req basic.g12.test /g12-basic -u alice:g12-password -H 'X-Auth-User: mallory')
+[ "$(status_of "$r")" = 200 ] || fail "Basic with credentials: $(status_of "$r")"
+grep -q '^X-Auth-User: alice$' <<<"$r" || fail "the origin did not get X-Auth-User"
+grep -q 'mallory' <<<"$r" && fail "the visitor's X-Auth-User reached the origin"
+grep -qi '^Authorization:' <<<"$r" && fail "Authorization reached the origin"
+[ "$(header_of "$(req basic.g12.test /g12-basic -u alice:g12-password)" X-Cache)" = HIT ] || fail "Basic: the second request is not a cache hit"
+[ "$(status_of "$(req basic.g12.test /g12-basic)")" = 401 ] || fail "a cached object without credentials"
+[ "$(status_of "$(req basic.g12.test /g12-basic -u alice:wrong-password)")" = 401 ] || fail "a wrong password"
+pass "G12: Basic 401 with the challenge, 200 with credentials (removed, X-Auth-User added), cache hits still checked"
+
+now=$(date +%s)
+key=g12-url-key-0123456789
+sa=$(md5hex "/v/a.mp4@$now@r1@$key")
+r=$(req url.g12.test "/v/a.mp4?sign=$now-r1-$sa&x=1")
+[ "$(status_of "$r")" = 200 ] || fail "A: a valid signature: $(status_of "$r")"
+grep -q '^GET /v/a.mp4?x=1 HTTP/1.1$' <<<"$r" || fail "A: the origin did not get the URI without the signature: $(grep '^GET' <<<"$r")"
+sa2=$(md5hex "/v/a.mp4@$now@r2@$key")
+[ "$(header_of "$(req url.g12.test "/v/a.mp4?x=1&sign=$now-r2-$sa2")" X-Cache)" = HIT ] || fail "A: another valid signature of the URL is not a cache hit"
+old=$((now - 2200))
+r=$(req url.g12.test "/v/a.mp4?sign=$old-r1-$(md5hex "/v/a.mp4@$old@r1@$key")")
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 auth-expired" ] || fail "A: an expired signature: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+r=$(req url.g12.test "/v/a.mp4?sign=$now-r1-$(md5hex "/v/a.mp4@$now@r1@another-key-000000")")
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 auth-denied" ] || fail "A: a wrong signature: $(status_of "$r")"
+[ "$(status_of "$(req url.g12.test /v/a.mp4)")" = 403 ] || fail "A: no signature"
+r=$(req url.g12.test "/$now/$(md5hex "/b/x.txt@$now@$key")/b/x.txt")
+[ "$(status_of "$r")" = 200 ] && grep -q '^GET /b/x.txt HTTP/1.1$' <<<"$r" || fail "B: $(status_of "$r") $(grep '^GET' <<<"$r")"
+r=$(req url.g12.test "/$(md5hex "/c/x.txt@$now@g12-backup-key-abcdefghij")/$now/c/x.txt")
+[ "$(status_of "$r")" = 200 ] && grep -q '^GET /c/x.txt HTTP/1.1$' <<<"$r" || fail "C with the backup key: $(status_of "$r")"
+r=$(req url.g12.test "/d.txt?t=$now&sign=$(md5hex "/d.txt@$now@$key")")
+[ "$(status_of "$r")" = 200 ] && grep -q '^GET /d.txt HTTP/1.1$' <<<"$r" || fail "D: $(status_of "$r") $(grep '^GET' <<<"$r")"
+[ "$(status_of "$(req url.g12.test "/$old/$(md5hex "/b/x.txt@$old@$key")/b/x.txt")")" = 403 ] || fail "B: an expired signature"
+pass "G12: signed URLs A-D valid, expired and wrong; the signature removed before the cache and the origin"
+
+auth_calls() { curl -fsS "$HELPER/g12/auth" | head -1; }
+r=$(req fwd.g12.test /app/x -H 'Cookie: sid=bad')
+[ "$(status_of "$r")" = 401 ] || fail "forward: a refused request: $(status_of "$r")"
+[ "$(header_of "$r" WWW-Authenticate)" = 'Bearer realm="g12"' ] || fail "forward: the service's challenge"
+[ "$(header_of "$r" X-Edgeweir-Error)" = auth-denied ] || fail "forward: error code"
+grep -q '^{"error":"login required"}$' <<<"$r" || fail "forward: the service's body"
+r=$(req fwd.g12.test '/app/x?q=1' -H 'Cookie: sid=good' -H 'X-Auth-User: mallory' -H 'X-Secret: no')
+[ "$(status_of "$r")" = 200 ] || fail "forward: an allowed request: $(status_of "$r")"
+grep -q '^X-Auth-User: alice$' <<<"$r" || fail "forward: X-Auth-User not copied to the origin"
+grep -q 'mallory\|X-Auth-Other' <<<"$r" && fail "forward: headers the service did not name reached the origin"
+seen=$(curl -fsS "$HELPER/g12/auth")
+for want in 'X-Original-Uri: /app/x?q=1' 'X-Original-Method: GET' 'X-Original-Host: fwd.g12.test' 'Cookie: sid=good' 'X-Seen-Uri: /check' 'X-Seen-Host: console:8086' 'X-Seen-Method: GET'; do
+  grep -qF "$want" <<<"$seen" || fail "forward: the service did not get '$want': $seen"
+done
+grep -q '^X-Real-Ip: ' <<<"$seen" && grep -q '^X-Forwarded-For: ' <<<"$seen" || fail "forward: client address headers: $seen"
+grep -qi '^X-Secret\|^User-Agent\|^Accept:' <<<"$seen" && fail "forward: headers outside the list reached the service: $seen"
+before=$(auth_calls)
+[ "$(status_of "$(req fwd.g12.test /app/y -H 'Cookie: sid=good')")" = 200 ] || fail "forward: cached answer"
+[ "$(auth_calls)" = "$before" ] || fail "forward: the answer was not cached ($before -> $(auth_calls))"
+r=$(req fwd.g12.test /login/page)
+[ "$(status_of "$r")" = 302 ] && [ "$(header_of "$r" Location)" = 'https://login.g12.test/?rd=/login/page' ] || fail "forward: login redirect: $(status_of "$r") $(header_of "$r" Location)"
+r=$(req fwd.g12.test /down/x)
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "503 auth-unavailable" ] || fail "forward: a failing service: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ "$(status_of "$(req fwd.g12.test /open/x)")" = 200 ] || fail "forward: a failing service that lets requests through"
+pass "G12: forward authentication allows, refuses (401 passed on), redirects, copies headers, caches answers, 503 when unavailable"
+
+leaks=$(compose logs node 2>&1 | grep -c 'g12-password\|g12-url-key\|g12-backup-key\|pbkdf2-sha256' || true)
+[ "$leaks" = 0 ] || fail "the node's logs carry a G12 secret ($leaks lines)"
+pass "G12: no password, hash or key in the node's logs"
+rev=$(curl -fsS -X POST "$HELPER/g12?enabled=false")
+WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")

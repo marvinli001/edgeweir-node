@@ -788,6 +788,7 @@ func main() {
 	serveH2Origins(ca)
 	go serveTestOrigin(":8082")
 	go serveTestOrigin(":8083")
+	go serveAuthService(":8086")
 	serveL4Origins()
 	if *allowed != "" {
 		allowList = strings.Split(*allowed, ",")
@@ -806,6 +807,7 @@ func main() {
 	}
 	c.SetCredential(&nodev1.OriginCredential{Id: purgeKeyID, Version: 1, SecretAccessKey: purgeKey})
 	clientCA := g11Setup(c, filepath.Dir(*caOut))
+	g12Setup(c)
 	c.Publish(config(baseSites(*origin)...))
 
 	tlsCfg, err := c.TLSConfig(strings.Split(*names, ","), []net.IP{net.IPv4(127, 0, 0, 1)})
@@ -819,6 +821,7 @@ func main() {
 	contentHelpers(mux, c, c.Publish, func() *nodev1.NodeConfig { return config(baseSites(*origin)...) })
 	g10Handlers(mux, c, *origin)
 	g11Handlers(mux, c, *origin, clientCA)
+	g12Handlers(mux, c, *origin)
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
 	mux.HandleFunc("GET /grpc", grpcCheck)
 	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)
