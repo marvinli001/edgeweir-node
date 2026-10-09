@@ -62,6 +62,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 
 - `node.key`（0600）：节点私钥。
 - `credentials.json`（0600）：当前与前一份同集群 LKG 配置引用的 S3 源站凭据，access key 和 secret key 是**明文**。它让节点在控制面不可达时重启后仍能为 S3 源站签名；凭据只经 mTLS 的 `GetOriginCredentials` 获取，不进入配置和 LKG，两份配置均不再引用时从文件中删除。能读取该文件的人可以访问对应的存储桶，请只授予只读的最小权限。
+- 访问鉴权（`access-auth-v1`）的密钥同样存在 `credentials.json`：Basic 用户的 PBKDF2-HMAC-SHA256 加盐哈希与 URL 鉴权的主备密钥，经 `GetOriginCredentials` 获取，不进入配置、LKG 与日志（警告只含网站与规则 ID）；它们随站点表进入数据面共享内存，拿到节点 root 权限者可以读取，能据此签发有效的签名 URL 或离线猜测 Basic 密码。
 - `purge.json`（0600）：清缓存标记和任务时间，不含敏感数据。文件存在但无法读取或解析时，节点在下一次应用配置时给每个站点加一个全站标记（宁可多刷）；文件缺失则视为没有标记，已清除的内容会重新可见，所以不要删除它。
 - `config/`（目录 0700，`current.binpb`、`previous.binpb` 为 0600）：last-known-good 配置及其备份，不含凭据。
 - `bans.json`（0600）：控制台下发的动态封禁（被封禁的地址、范围、到期时间）和已应用的序号。文件无法读取时节点从空集合开始，等控制台重新下发。

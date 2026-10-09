@@ -266,7 +266,7 @@ edgeweir-node version
 
 | Path / port | Purpose |
 | --- | --- |
-| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `session-ticket-keys.json` (TLS session ticket keys, 0600), `health.crt` / `health.key` (health certificate, 0600), `nginx/` (prefix, `nginx.conf`) |
+| `/var/lib/edgeweir-node` | State (0700): `node.key` (0600), `node.crt`, `ca.crt`, `identity.json`, `config/` (LKG, 0700, files 0600), `credentials.json` (S3 origin keys, PURGE keys and the Basic user hashes and signing keys of access authentication in plain text, 0600), `purge.json` (purge markers, 0600), `bans.json` (dynamic bans and sequence, 0600), `challenge-keys.json` (challenge pass keys, 0600), `session-ticket-keys.json` (TLS session ticket keys, 0600), `health.crt` / `health.key` (health certificate, 0600), `nginx/` (prefix, `nginx.conf`) |
 | `/var/lib/edgeweir-probe` | Probe state (0700): `probe.key` (0600), `probe.crt`, `ca.crt`, `probe.json` |
 | `/var/cache/edgeweir-node` | Cache zones |
 | `/run/edgeweir-node/control.sock` | Data-plane control API (unix socket only) |

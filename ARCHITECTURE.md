@@ -855,6 +855,18 @@ proto v0.26.0，设计见控制台仓库的 ADR-0037（第 1、3、4、6 节）�
 - **表达式字段**：`tls.client.verified`（布尔）、`tls.client.cert_sha256`、`tls.client.subject`（字符串），只为规则读取它们的网站计算（`store.prepare` 的 `_client_fields`）；没有通过校验的证书或明文 HTTP 时为 `false` 与空串。共享向量 `test/lua/expression-vectors.json` 覆盖它们。
 - **限制**：客户端证书与 HTTP/3 不能同时开启（配置被拒绝）；不检查客户端证书的吊销；节点的能力判断可能与 OpenSSL 在少见客户端上的选择不同（ADR-0037 后果）。
 
+### 3.28 访问鉴权（`access-auth-v1`）
+
+proto v0.27.0，设计见控制台仓库的 ADR-0038。`Site.auth_rules` 是网站启用的鉴权规则（按顺序，至多 16 条）：类型（Basic、转发鉴权、URL 鉴权 A–D）、范围（域名、路径前缀、扩展名、排除路径前缀）与该类型的设置；密钥只有引用（`credential_id`、`credential_version`）。
+
+- **校验**（`configir.buildAuthRules`）：未知类型、缺少或多出的设置部分、Basic 与 URL 鉴权没有密钥引用、转发鉴权带了密钥、范围或参数越界、域名不是网站域名的写法都拒绝整份配置（停用的网站同样检查）。转发鉴权的 URL 拆成地址、端口、`Host`、请求 URI 与 SNI；IP 字面量不在源站允许清单时标为 `forbidden`。
+- **密钥**：`CredentialRefs` 包含规则的引用，agent 与 S3、PURGE 密钥一起经 `GetOriginCredentials` 获取并写进 `credentials.json`（0600）。密钥是 JSON：Basic `{"users":[{"name","hash"}]}`（`pbkdf2-sha256$<迭代>$<盐>$<哈希>`，节点接受 1000–200000 次迭代），URL 鉴权 `{"keys":[主, 备]}`。`AttachCredentials` 把解析后的用户（迭代、盐、哈希）或密钥与 `secret_version` 附到站点表；缺失、过旧或无法解析时规则保留但没有用户或密钥（范围内的请求全部拒绝），警告只含网站与规则 ID。
+- **选择与去签名**（`edgeweir.auth.select`，`router.access` 在 PURGE 之后、维护模式之前）：第一条范围命中的规则；URL 鉴权 A、D 用 `ngx.req.set_uri_args` 删除签名参数，B、C 只在规范化后的 `$uri` 以同样两段开头时用 `ngx.req.set_uri` 去掉它们；规则的 `http.request.uri` 读去签名后的 URI（`auth.request_uri`）。
+- **判定**（`edgeweir.auth.check`，`policy.access` 在平台名单之后、规则阶段之前）：本地监听不检查；明文 HTTP 且网站的强制 HTTPS 会跳转时先跳转。Basic 用 lua-resty-openssl 的 `kdf.derive`（PBKDF2-HMAC-SHA256）计算并常数时间比较，未知用户计算假哈希；worker 内 `resty.lrucache`（2048 条）缓存结果（成功 60 秒、失败 10 秒，键为规则、密钥版本与 `Authorization` 的 SHA-256）；共享字典 `edgeweir_auth` 按网站、客户端网络与 10 秒窗口计数失败，超过 10 次返回 429。URL 鉴权对主、备密钥都计算 `ngx.md5` 并常数时间比较，再检查时间窗。
+- **转发鉴权**：`ngx.location.capture("/./edgeweir-auth")`（每个边缘 server 的内部 location，变量由 `vars` 传入）→ `edgeweir_origin_verify` 回源层；`origin.access` 见到 `X-Edgeweir-Auth` 时走 `auth_access`：`dns.resolve`（源站地址策略）、删除转发列表与节点五个头以外的请求头、只试一次、规则的超时，回源层的缓存决定、错误页替换、过期内容与健康统计都不作用；正文超过 65537 字节的部分在 body filter 丢弃。2xx 与 401 / 403 的应答可缓存在 `edgeweir_auth`（键为规则、URL 与转发请求头的 SHA-256）。
+- **失败**：Basic 401 用 `errorpages.respond_auth`（401 页面或「其他 4xx」模板，跳转与改写状态码不生效，带 `WWW-Authenticate`）；内置 401 页面标出访客。每次拒绝 `stats.auth_failed` 计入分钟统计的 `a`，上报为 `MinuteStats.auth_failures`。
+- **渲染**：`nginx.conf` 总有共享字典 `edgeweir_auth`（8 MiB）、`location = /./edgeweir-auth` 与 `location /` 中的五个 `$edgeweir_auth_*` 变量；回源层清空 `X-Edgeweir-Auth`。规则、用户与密钥随站点表热更新。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -863,7 +875,7 @@ proto v0.26.0，设计见控制台仓库的 ADR-0037（第 1、3、4、6 节）�
 | `/var/lib/edgeweir-node/node.crt`、`ca.crt` | 节点证书、内部 CA 证书 |
 | `/var/lib/edgeweir-node/identity.json` | node_id、cluster_id、node_name、server_url、server_name、ca_sha256、enrolled_at |
 | `/var/lib/edgeweir-node/config/current.binpb`、`previous.binpb` | LKG 配置及其备份（二进制 protobuf，0600） |
-| `/var/lib/edgeweir-node/credentials.json` | 当前配置引用的 S3 源站凭据（access key 与 secret key 明文，0600），控制台不可达时重启仍能服务 S3 源站 |
+| `/var/lib/edgeweir-node/credentials.json` | 当前配置引用的 S3 源站凭据（access key 与 secret key 明文）、PURGE 密钥与访问鉴权规则的密钥（Basic 用户哈希、URL 鉴权密钥），0600；控制台不可达时重启仍能服务 |
 | `/var/lib/edgeweir-node/purge.json` | 清缓存标记与任务时间（0600） |
 | `/var/lib/edgeweir-node/certificates.json` | 当前与上一份 LKG 引用的网站证书链、私钥与 OCSP 响应（0600） |
 | `/var/lib/edgeweir-node/bans.json` | 已应用的控制台动态封禁、序号与集群 id（0600） |
@@ -962,6 +974,7 @@ proto v0.26.0，设计见控制台仓库的 ADR-0037（第 1、3、4、6 节）�
 - 没有 SNI 的 TLS 握手会得到自签名的健康证书（`CN=health.edgeweir.invalid`），随后只能访问健康端点（§3.22）。
 - 四层应用向源站发送的 PROXY protocol 版本在节点上是结构性设置（reload，nginx 按 `server` 决定）；UDP 会话不跨 reload；PROXY protocol 中继吞吐低于 nginx 自己转发、不支持半关闭；`--stream-shutdown-timeout` 作用于旧 worker 的全部连接（§3.23）。
 - 访客客户端证书不能与 HTTP/3 同时开启（nginx 的 QUIC 实现下 `verify_client` 与恢复会话的行为未经验证），不做 CRL / OCSP 吊销检查；四层应用的 TLS 不复用会话；会话票据密钥每次轮换都 reload；一个网站同时有 ECDSA 与 RSA 证书时，节点按 ClientHello 判断客户端能否使用 ECDSA，少见的客户端（例如只在 `supported_groups` 中省略该曲线）可能与 OpenSSL 的判断不同而握手失败；TLS 1.2 会话以同一网站的另一个域名恢复时，`$ssl_server_name` 仍是建立会话时的名称（OpenSSL 的行为），Host 不同的请求得到 421（浏览器按主机名保存会话，不会这样恢复）（§3.27）。
+- 访问鉴权（§3.28）：转发鉴权每个未缓存的请求多一次子请求；结果缓存不区分路径与访客地址；Basic 首次校验每个 worker 约 1 ms CPU，失败限速按客户端网络，同一出口后的访客共享。
 - 动态封禁只在边缘层（HTTP）执行；四层应用只受 nftables 内核封禁（`kernel-ban-v1`）与它们自己的名单约束。
 - 内核按 TCP 连接的源地址丢包。节点在要求 PROXY protocol 的负载均衡器之后时，内核只看到负载均衡器的地址：平台封禁对客户端只在边缘层生效，负载均衡器的地址需要放进平台 `allow` 名单，否则封禁它会丢弃经它转发的全部流量。
 

@@ -266,7 +266,7 @@ edgeweir-node version
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
-| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`session-ticket-keys.json`（TLS 会话票据密钥，0600）、`health.crt` / `health.key`（健康证书，0600）、`nginx/`（prefix 与 `nginx.conf`） |
+| `/var/lib/edgeweir-node` | 状态目录（0700）：`node.key`（0600）、`node.crt`、`ca.crt`、`identity.json`、`config/`（LKG，目录 0700，文件 0600）、`credentials.json`（S3 源站密钥、PURGE 密钥与访问鉴权的 Basic 用户哈希和签名密钥，明文，0600）、`purge.json`（清缓存标记，0600）、`bans.json`（动态封禁与序号，0600）、`challenge-keys.json`（挑战凭证密钥，0600）、`session-ticket-keys.json`（TLS 会话票据密钥，0600）、`health.crt` / `health.key`（健康证书，0600）、`nginx/`（prefix 与 `nginx.conf`） |
 | `/var/lib/edgeweir-probe` | 探针状态目录（0700）：`probe.key`（0600）、`probe.crt`、`ca.crt`、`probe.json` |
 | `/var/cache/edgeweir-node` | 缓存 zone |
 | `/run/edgeweir-node/control.sock` | 数据面控制 API（仅 unix socket） |
