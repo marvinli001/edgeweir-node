@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -28,6 +29,10 @@ const (
 	ruleIDSettings   = 10000
 	ruleIDMode       = 10001
 	ruleIDExclusions = 10100
+	// ruleIDEntries numbers the exclusion entries (SiteWaf.exclusions): at
+	// most 100 per site for 512 sites, up to 71199, after the site
+	// exclusions (10100-10611) and before the CRS (900000).
+	ruleIDEntries = 20000
 )
 
 // WAFHeader is the internal request header in which the edge layer hands
@@ -36,21 +41,67 @@ const (
 // X-Edgeweir-* headers: the edge layer removes them first.
 const WAFHeader = "X-Edgeweir-Waf"
 
+// WAFExclusionHeader is the internal request header in which the edge
+// layer names the exclusion entries (SiteWaf.exclusions) that apply to a
+// request's normalized path: their tokens between commas (",<token>,").
+const WAFExclusionHeader = "X-Edgeweir-Waf-Ex"
+
 type modsecExclusion struct {
 	RuleID  int
 	SiteID  string
 	RuleIDs []string
 }
 
+// modsecEntry is the rule of an exclusion entry: its ctl actions run when
+// the edge layer names its token.
+type modsecEntry struct {
+	RuleID  int
+	Token   string
+	Actions []string
+}
+
 type modsecData struct {
 	CRSDir      string
 	UnicodeMap  string
 	Header      string
+	ExHeader    string
 	SettingsID  int
 	ModeID      int
 	Exclusions  []modsecExclusion
+	Entries     []modsecEntry
 	ModeDetect  string
 	HeaderRegex string
+}
+
+var tokenHexRE = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// entryRule renders exclusion entry e of a site: ctl:ruleRemoveById for
+// every rule without targets, else ctl:ruleRemoveTargetById for every rule
+// and target.
+func entryRule(id int, e configir.WAFExclusion) (modsecEntry, error) {
+	if !tokenHexRE.MatchString(e.Token) || len(e.RuleIDs) == 0 {
+		return modsecEntry{}, fmt.Errorf("invalid CRS exclusion entry %q", e.Token)
+	}
+	out := modsecEntry{RuleID: id, Token: e.Token}
+	for _, t := range e.Targets {
+		if !configir.ValidWAFTarget(t) {
+			return modsecEntry{}, fmt.Errorf("invalid CRS exclusion target %q", t)
+		}
+	}
+	for _, rule := range e.RuleIDs {
+		if rule < configir.MinWAFRuleID || rule > configir.MaxWAFRuleID {
+			return modsecEntry{}, fmt.Errorf("invalid CRS exclusion rule id %d", rule)
+		}
+		r := strconv.FormatUint(uint64(rule), 10)
+		if len(e.Targets) == 0 {
+			out.Actions = append(out.Actions, "ctl:ruleRemoveById="+r)
+			continue
+		}
+		for _, t := range e.Targets {
+			out.Actions = append(out.Actions, "ctl:ruleRemoveTargetById="+r+";"+t)
+		}
+	}
+	return out, nil
 }
 
 // ModSecurityConf returns the path (in the nginx prefix's conf directory,
@@ -79,6 +130,7 @@ func ModSecurityConf(p Params, plan *configir.Plan) (string, []byte, error) {
 		CRSDir:     p.CRSDir,
 		UnicodeMap: p.ModSecurityUnicodeMap,
 		Header:     WAFHeader,
+		ExHeader:   WAFExclusionHeader,
 		SettingsID: ruleIDSettings,
 		ModeID:     ruleIDMode,
 		ModeDetect: configir.WAFModeDetect,
@@ -88,7 +140,17 @@ func ModSecurityConf(p Params, plan *configir.Plan) (string, []byte, error) {
 			configir.WAFModeDetect, configir.WAFModeBlock, configir.MinParanoiaLevel, configir.MaxParanoiaLevel),
 	}
 	for _, s := range plan.Sites {
-		if s.WAF == nil || len(s.WAF.ExcludedRuleIDs) == 0 {
+		if s.WAF == nil {
+			continue
+		}
+		for _, e := range s.WAF.Exclusions {
+			entry, err := entryRule(ruleIDEntries+len(d.Entries), e)
+			if err != nil {
+				return "", nil, fmt.Errorf("site %s: %w", s.ID, err)
+			}
+			d.Entries = append(d.Entries, entry)
+		}
+		if len(s.WAF.ExcludedRuleIDs) == 0 {
 			continue
 		}
 		if !configir.ValidID(s.ID) {

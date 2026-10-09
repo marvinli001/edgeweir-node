@@ -697,6 +697,7 @@ stream {
             {{ .P }}_set_header X-Edgeweir-Auth "";
 {{- if .Root.ModSecurityConf }}
             {{ .P }}_set_header {{ .Root.WAFHeader }} "";
+            {{ .P }}_set_header {{ .Root.WAFExclusionHeader }} "";
 {{- end }}
             {{ .P }}_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt

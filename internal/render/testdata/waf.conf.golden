@@ -50,6 +50,7 @@ http {
     lua_shared_dict edgeweir_tags 64m;
     lua_shared_dict edgeweir_purge_rate 1m;
     lua_shared_dict edgeweir_auth 8m;
+    lua_shared_dict edgeweir_bots 4m;
     lua_shared_dict edgeweir_rate_6372732d626c6f636b 256k;
     lua_shared_dict edgeweir_rate_6372732d646574656374 256k;
     lua_shared_dict edgeweir_rate_6372732d73616d652d6c696d6974 256k;
@@ -63,7 +64,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "eb89879a2381bd30",
+            conf_id = "6859f15e90858114",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -78,7 +79,7 @@ http {
 
     # OWASP CRS, parsed once and shared by the CRS locations; ModSecurity
     # stays off everywhere else.
-    modsecurity_rules_file /var/lib/edgeweir-node/nginx/conf/modsecurity-d89bca8cd67f1024.conf;
+    modsecurity_rules_file /var/lib/edgeweir-node/nginx/conf/modsecurity-ad2d66655d6120f2.conf;
 
     # Nameservers from /etc/resolv.conf (origins are resolved in Lua).
     resolver 127.0.0.11 valid=30s ipv6=off;
@@ -257,6 +258,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -308,6 +310,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -375,6 +378,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -427,6 +431,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -497,6 +502,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -549,6 +555,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -618,6 +625,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -671,6 +679,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Waf "";
+            proxy_set_header X-Edgeweir-Waf-Ex "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -744,6 +753,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Waf "";
+            grpc_set_header X-Edgeweir-Waf-Ex "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -794,6 +804,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Waf "";
+            grpc_set_header X-Edgeweir-Waf-Ex "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -866,6 +877,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Waf "";
+            grpc_set_header X-Edgeweir-Waf-Ex "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -917,6 +929,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Waf "";
+            grpc_set_header X-Edgeweir-Waf-Ex "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would

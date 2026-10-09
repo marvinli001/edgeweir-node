@@ -342,6 +342,8 @@ type data struct {
 	ModSecurityConf string
 	WAFBodyLimits   []uint32
 	WAFHeader       string
+	// WAFExclusionHeader names the CRS exclusion entries of a request.
+	WAFExclusionHeader string
 	// L4Servers are the stream servers of the layer-4 applications (none:
 	// no stream block); ShutdownTimeoutMS is worker_shutdown_timeout (0:
 	// unset).
@@ -421,6 +423,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictTags:       p.TagDictMB,
 		configir.DictPurgeRate:  1,
 		configir.DictAuth:       8,
+		configir.DictBots:       4,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {
@@ -947,19 +950,20 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		Params:    p,
 		L4Servers: l4,
 		// Whole milliseconds, at least one (nginx's time syntax).
-		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
-		SharedDicts:       dicts,
-		RegexCacheEntries: regexCacheEntries(plan),
-		EdgeServers:       edge,
-		ForwardedFor:      forwardedFor,
-		ForwardedMap:      forwardedFor == forwardedForChain,
-		CacheZones:        plan.CacheZones,
-		DefaultZone:       plan.CacheZones[0].Name,
-		OriginLayers:      originLayers(p),
-		Balancers:         balancers,
-		ModSecurityConf:   modsecConf,
-		WAFHeader:         WAFHeader,
-		ClientMaxBodySize: clientMaxBodySize(plan.MaxRequestBody()),
+		ShutdownTimeoutMS:  (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
+		SharedDicts:        dicts,
+		RegexCacheEntries:  regexCacheEntries(plan),
+		EdgeServers:        edge,
+		ForwardedFor:       forwardedFor,
+		ForwardedMap:       forwardedFor == forwardedForChain,
+		CacheZones:         plan.CacheZones,
+		DefaultZone:        plan.CacheZones[0].Name,
+		OriginLayers:       originLayers(p),
+		Balancers:          balancers,
+		ModSecurityConf:    modsecConf,
+		WAFHeader:          WAFHeader,
+		WAFExclusionHeader: WAFExclusionHeader,
+		ClientMaxBodySize:  clientMaxBodySize(plan.MaxRequestBody()),
 	}
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()

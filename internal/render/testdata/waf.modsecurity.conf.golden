@@ -54,4 +54,16 @@ SecRule REQUEST_HEADERS:X-Edgeweir-Waf "@beginsWith crs-block;" \
 SecRule REQUEST_HEADERS:X-Edgeweir-Waf "@beginsWith crs-same-limit;" \
     "id:10101,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=941100"
 
+# Exclusions by path or target. The edge layer matches each entry's path
+# against the request's normalized path and names the entries that apply in
+# X-Edgeweir-Waf-Ex (",<token>,<token>,"); a token is the hash of its entry's
+# content, so an entry the site table changed before this file applies to
+# nothing until the reload.
+SecRule REQUEST_HEADERS:X-Edgeweir-Waf-Ex "@contains ,3ff3b3ee3381cc70," \
+    "id:20000,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=941100,ctl:ruleRemoveById=942100"
+SecRule REQUEST_HEADERS:X-Edgeweir-Waf-Ex "@contains ,c0dcf7d3f3f4fcc7," \
+    "id:20001,phase:1,pass,nolog,t:none,ctl:ruleRemoveTargetById=942100;ARGS:next,ctl:ruleRemoveTargetById=942100;ARGS:password"
+SecRule REQUEST_HEADERS:X-Edgeweir-Waf-Ex "@contains ,f13d03138797eb63," \
+    "id:20002,phase:1,pass,nolog,t:none,ctl:ruleRemoveTargetById=932100;REQUEST_COOKIES:session"
+
 Include /usr/share/edgeweir-openresty/crs/rules/*.conf

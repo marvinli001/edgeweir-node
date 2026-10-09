@@ -102,6 +102,9 @@ func WAFExclusionToken(siteID, path string, exact bool, ruleIDs []uint32, target
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// ValidWAFTarget reports whether t is a target of an exclusion entry.
+func ValidWAFTarget(t string) bool { return wafTargetRE.MatchString(t) }
+
 // buildWAFExclusions validates the exclusion entries of a site's CRS
 // setting (proto v0.29.0, feature waf-v2): at most 100; paths as
 // ValidWAFExclusionPath; 1-200 rule ids, sorted and unique, of the CRS
@@ -131,7 +134,7 @@ func buildWAFExclusions(siteID string, list []*nodev1.WafExclusion) ([]WAFExclus
 			}
 		}
 		for j, t := range targets {
-			if !wafTargetRE.MatchString(t) {
+			if !ValidWAFTarget(t) {
 				return nil, fmt.Errorf("%w: CRS exclusion %d: invalid target %q", ErrRejected, i+1, t)
 			}
 			if j > 0 && t <= targets[j-1] {

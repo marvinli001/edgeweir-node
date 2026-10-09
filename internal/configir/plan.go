@@ -52,6 +52,9 @@ const (
 	// (lua/edgeweir/auth.lua): failed Basic verifications per site and
 	// client network, and cached forward authentication answers.
 	DictAuth = "edgeweir_auth"
+	// DictBots caches crawler verifications (lua/edgeweir/bots.lua) per
+	// client address and crawler, and marks the lookups in flight.
+	DictBots = "edgeweir_bots"
 	// ZoneTLSSessions is the TLS session cache of the HTTPS listeners
 	// (ssl_session_cache shared:edgeweir_tls), not a lua_shared_dict.
 	ZoneTLSSessions = "edgeweir_tls"
@@ -61,7 +64,7 @@ const (
 // nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC, DictTags, DictPurgeRate, DictAuth}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC, DictTags, DictPurgeRate, DictAuth, DictBots}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.

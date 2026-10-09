@@ -57,5 +57,17 @@ SecRule REQUEST_HEADERS:{{ $.Header }} "@beginsWith {{ .SiteID }};" \
     "id:{{ .RuleID }},phase:1,pass,nolog,t:none{{ range .RuleIDs }},ctl:ruleRemoveById={{ . }}{{ end }}"
 {{- end }}
 {{- end }}
+{{- if .Entries }}
+
+# Exclusions by path or target. The edge layer matches each entry's path
+# against the request's normalized path and names the entries that apply in
+# {{ .ExHeader }} (",<token>,<token>,"); a token is the hash of its entry's
+# content, so an entry the site table changed before this file applies to
+# nothing until the reload.
+{{- range .Entries }}
+SecRule REQUEST_HEADERS:{{ $.ExHeader }} "@contains ,{{ .Token }}," \
+    "id:{{ .RuleID }},phase:1,pass,nolog,t:none{{ range .Actions }},{{ . }}{{ end }}"
+{{- end }}
+{{- end }}
 
 Include {{ .CRSDir }}/rules/*.conf

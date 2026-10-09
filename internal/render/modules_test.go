@@ -90,16 +90,27 @@ func wafParams() Params {
 	return p
 }
 
+// wafEntry is a CRS exclusion entry with its token.
+func wafEntry(site, path string, exact bool, ids []uint32, targets []string) configir.WAFExclusion {
+	return configir.WAFExclusion{Path: path, Exact: exact, RuleIDs: ids, Targets: targets,
+		Token: configir.WAFExclusionToken(site, path, exact, ids, targets)}
+}
+
 func wafPlan() *configir.Plan {
 	return &configir.Plan{
 		Listeners:  []configir.Listener{{Port: 80}},
 		CacheZones: []configir.CacheZone{{Name: "default", MaxSizeMB: 1024, KeysZoneMB: 16, InactiveSeconds: 3600}},
 		Sites: []configir.Site{
 			{ID: "crs-block", WAF: &configir.WAF{Mode: configir.WAFModeBlock, ParanoiaLevel: 2, AnomalyThreshold: 10,
-				RequestBodyLimit: 131072, ExcludedRuleIDs: []uint32{920350, 942100}}},
+				RequestBodyLimit: 131072, ExcludedRuleIDs: []uint32{920350, 942100}, Exclusions: []configir.WAFExclusion{
+					wafEntry("crs-block", "/api/", false, []uint32{941100, 942100}, nil),
+					wafEntry("crs-block", "/login", true, []uint32{942100}, []string{"ARGS:next", "ARGS:password"}),
+				}}},
 			{ID: "crs-detect", WAF: &configir.WAF{Mode: configir.WAFModeDetect, ParanoiaLevel: 1, AnomalyThreshold: 5}},
 			{ID: "crs-same-limit", WAF: &configir.WAF{Mode: configir.WAFModeBlock, ParanoiaLevel: 4, AnomalyThreshold: 5,
-				RequestBodyLimit: 131072, ExcludedRuleIDs: []uint32{941100}}},
+				RequestBodyLimit: 131072, ExcludedRuleIDs: []uint32{941100}, Exclusions: []configir.WAFExclusion{
+					wafEntry("crs-same-limit", "", false, []uint32{932100}, []string{"REQUEST_COOKIES:session"}),
+				}}},
 			{ID: "site-without-crs"},
 		},
 	}
@@ -131,6 +142,7 @@ func TestRenderWAFGolden(t *testing.T) {
 		"modsecurity_rules 'SecRequestBodyLimit 131072';",
 		`set $edgeweir_ctx_ref "";`,
 		`proxy_set_header X-Edgeweir-Waf "";`,
+		`proxy_set_header X-Edgeweir-Waf-Ex "";`,
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("nginx.conf lacks %q", want)
@@ -151,6 +163,12 @@ func TestRenderWAFGolden(t *testing.T) {
 		`SecRule REQUEST_HEADERS:X-Edgeweir-Waf "@beginsWith crs-block;" \` + "\n" +
 			`    "id:10100,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=920350,ctl:ruleRemoveById=942100"`,
 		`"@beginsWith crs-same-limit;"`,
+		`SecRule REQUEST_HEADERS:X-Edgeweir-Waf-Ex "@contains ,` + plan.Sites[0].WAF.Exclusions[0].Token + `," \` + "\n" +
+			`    "id:20000,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=941100,ctl:ruleRemoveById=942100"`,
+		`"@contains ,` + plan.Sites[0].WAF.Exclusions[1].Token + `," \` + "\n" +
+			`    "id:20001,phase:1,pass,nolog,t:none,ctl:ruleRemoveTargetById=942100;ARGS:next,ctl:ruleRemoveTargetById=942100;ARGS:password"`,
+		`"@contains ,` + plan.Sites[2].WAF.Exclusions[0].Token + `," \` + "\n" +
+			`    "id:20002,phase:1,pass,nolog,t:none,ctl:ruleRemoveTargetById=932100;REQUEST_COOKIES:session"`,
 		"Include /usr/share/edgeweir-openresty/crs/crs-setup.conf",
 		"Include /usr/share/edgeweir-openresty/crs/rules/*.conf",
 		"SecUnicodeMapFile /usr/share/edgeweir-openresty/modsecurity/unicode.mapping 20127",
@@ -169,6 +187,10 @@ func TestRenderWAFGolden(t *testing.T) {
 	if i, j := strings.Index(rules, "id:10000,"), strings.Index(rules, "rules/*.conf"); i < 0 || i > j {
 		t.Error("per-request settings must precede the CRS rules")
 	}
+	// The entries come after the site exclusions and before the CRS.
+	if i, j, k := strings.Index(rules, "id:10101,"), strings.Index(rules, "id:20000,"), strings.Index(rules, "rules/*.conf"); i > j || j > k {
+		t.Error("exclusion entries must follow the site exclusions and precede the CRS rules")
+	}
 	// A changed exclusion changes the file name and so nginx.conf.
 	plan.Sites[0].WAF.ExcludedRuleIDs = []uint32{920350}
 	other, err := Render(p, plan)
@@ -177,6 +199,31 @@ func TestRenderWAFGolden(t *testing.T) {
 	}
 	if bytes.Equal(got, other) {
 		t.Fatal("changing an exclusion did not change nginx.conf")
+	}
+	plan = wafPlan()
+	e := &plan.Sites[0].WAF.Exclusions[1]
+	e.Targets = e.Targets[:1]
+	e.Token = configir.WAFExclusionToken("crs-block", e.Path, e.Exact, e.RuleIDs, e.Targets)
+	if other, err = Render(p, plan); err != nil || bytes.Equal(got, other) {
+		t.Fatalf("changing an exclusion entry did not change nginx.conf: %v", err)
+	}
+}
+
+// TestModSecurityRefusesBadEntries: tokens and targets go into the rules
+// file only as configir makes them.
+func TestModSecurityRefusesBadEntries(t *testing.T) {
+	for name, change := range map[string]func(*configir.WAFExclusion){
+		"token":     func(e *configir.WAFExclusion) { e.Token = "0123456789abcde," },
+		"target":    func(e *configir.WAFExclusion) { e.Targets = []string{`ARGS:a" "id:1`} },
+		"rule id":   func(e *configir.WAFExclusion) { e.RuleIDs = []uint32{1} },
+		"no rule":   func(e *configir.WAFExclusion) { e.RuleIDs = nil },
+		"upper hex": func(e *configir.WAFExclusion) { e.Token = strings.ToUpper(e.Token) },
+	} {
+		plan := wafPlan()
+		change(&plan.Sites[0].WAF.Exclusions[0])
+		if _, _, err := ModSecurityConf(wafParams(), plan); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
 
