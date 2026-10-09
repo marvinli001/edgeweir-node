@@ -145,4 +145,112 @@ test("sampled access logs carry the matched rules and the block", function()
   eq(entries[2].waf_blocked, nil)
 end)
 
+-- waf-v2 (proto v0.29.0): exclusion entries by path, the config rules'
+-- CRS mode and skip actions.
+test("exclusion entries match the normalized path exactly, as a byte prefix or always", function()
+  local w = { mode = "block", exclusions = {
+    { path = "/api/", token = "aaaaaaaaaaaaaaaa" },
+    { path = "/login", exact = true, token = "bbbbbbbbbbbbbbbb" },
+    { path = "", token = "cccccccccccccccc" },
+    { path = "/bad", token = "not hex," },
+  } }
+  eq(waf.exclusion_value(w, "/api/x"), ",aaaaaaaaaaaaaaaa,cccccccccccccccc,")
+  eq(waf.exclusion_value(w, "/api"), ",cccccccccccccccc,", "a prefix of the path, not of the entry")
+  eq(waf.exclusion_value(w, "/login"), ",bbbbbbbbbbbbbbbb,cccccccccccccccc,")
+  eq(waf.exclusion_value(w, "/login/x"), ",cccccccccccccccc,", "exact")
+  eq(waf.exclusion_value(w, "/bad"), ",cccccccccccccccc,", "an invalid token is left out")
+  eq(waf.exclusion_value({ exclusions = { { path = "/a", token = "dddddddddddddddd" } } }, "/b"), nil)
+  eq(waf.exclusion_value({ mode = "block" }, "/a"), nil, "no entries")
+  eq(waf.exclusion_value(w, nil), nil)
+end)
+
+test("a config rule's CRS mode replaces the site's; off and skip actions keep the request out", function()
+  local site = { id = "s", waf = { mode = "block", paranoia_level = 1, anomaly_threshold = 5 } }
+  eq(waf.mode(site, nil), "block")
+  eq(waf.mode(site, { crs = "detect" }), "detect")
+  eq(waf.mode(site, { crs = "off" }), nil)
+  eq(waf.mode(site, { skip_crs = true, crs = "block" }), nil)
+  eq(waf.header_value("s", site.waf, "detect"), "s;detect;1;5")
+end)
+
+test("enter: the settings and exclusion headers, or no CRS location at all", function()
+  waf.init({ 0 })
+  local runtime = ngx
+  local function enter(site, pctx, path)
+    local headers, exec = {}, nil
+    local fake = setmetatable({
+      ctx = { edgeweir_policy = pctx, edgeweir_original_path = path },
+      var = { uri = "/rewritten", edgeweir_ctx_ref = "" },
+      req = { set_header = function(k, v) headers[k] = v end },
+      exec = function(name) exec = name end,
+    }, { __index = runtime })
+    _G.ngx = fake
+    local ok, err = pcall(waf.enter, site)
+    _G.ngx = runtime
+    assert(ok, err)
+    if fake.var.edgeweir_ctx_ref ~= "" then waf.take_ctx(fake.var.edgeweir_ctx_ref) end
+    return exec, headers
+  end
+  local site = { id = "s", waf = { mode = "block", paranoia_level = 2, anomaly_threshold = 7, request_body_limit = 0,
+    exclusions = { { path = "/up", token = "0123456789abcdef" } } } }
+  local exec, h = enter(site, nil, "/up/load")
+  eq(exec, "@edgeweir_waf_0")
+  eq(h["X-Edgeweir-Waf"], "s;block;2;7")
+  eq(h["X-Edgeweir-Waf-Ex"], ",0123456789abcdef,", "the client's normalized path, not the rewritten one")
+  exec, h = enter(site, { crs = "detect" }, "/other")
+  eq(h["X-Edgeweir-Waf"], "s;detect;2;7")
+  eq(h["X-Edgeweir-Waf-Ex"], nil)
+  exec, h = enter(site, { crs = "off" }, "/up")
+  eq(exec, nil); eq(h["X-Edgeweir-Waf"], nil)
+  exec = enter(site, { skip_crs = true }, "/up")
+  eq(exec, nil, "skip crs")
+  waf.init({})
+end)
+
+-- log a request of site "rules" with the log rules of its policy context.
+local function log_forced(rules, sample, id)
+  local runtime = ngx
+  local fake = setmetatable({
+    var = { edgeweir_site = "rules", edgeweir_ctx_ref = "", uri = "/", remote_addr = "192.0.2.10", bytes_sent = "1",
+      request_length = "1", request_id = id or "0123456789abcdef", request_method = "POST", host = "r.test", request_time = "0" },
+    ctx = { edgeweir_site = { id = "rules", log_sample_rate = sample or 0 }, edgeweir_policy = { log_rules = rules } },
+    status = 200, is_subrequest = false,
+  }, { __index = runtime })
+  _G.ngx = fake
+  local ok, err = pcall(stats.log)
+  _G.ngx = runtime
+  assert(ok, err)
+end
+
+test("log rules with access_log write lines whatever the rate, at most 100 per site and second", function()
+  local logs = ngx.shared.edgeweir_logs
+  logs:flush_all()
+  local accesslogs = require("edgeweir.accesslogs")
+  log_forced({ "r1", "r2" }, 0)
+  log_forced(nil, 0)
+  log_forced({ "r1" }, 10000)
+  local entries = accesslogs.drain()
+  eq(#entries, 2, "no line for a request without the rules at rate 0")
+  eq(entries[1].sample_rate, 10000, "written only for the rules")
+  eq(cjson.encode(entries[1].rule_ids), '["r1","r2"]')
+  eq(entries[2].sample_rate, 10000, "sampled anyway")
+  eq(entries[2].rule_ids[1], "r1")
+  -- The cap: lines written only for the rules, per site and second.
+  logs:flush_all()
+  ngx.update_time()
+  local second = math.floor(ngx.now())
+  for _ = 1, 105 do log_forced({ "r1" }, 0) end
+  local n = #accesslogs.drain()
+  ngx.update_time()
+  if math.floor(ngx.now()) == second then
+    eq(n, accesslogs.MAX_FORCED, "capped within one second")
+  else
+    assert(n >= accesslogs.MAX_FORCED and n <= 105, "capped per second: " .. n)
+  end
+  -- A sampled line does not count against the cap.
+  logs:set("forced|rules|" .. math.floor(ngx.now()), 1000, 2)
+  log_forced({ "r9" }, 10000)
+  eq(#accesslogs.drain(), 1)
+end)
+
 print(("OWASP CRS: %d tests passed"):format(passed))

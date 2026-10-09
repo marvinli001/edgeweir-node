@@ -26,12 +26,27 @@
 -- the sampled log rate, and the origin override (origin rules' group, Host,
 -- SNI and port, config rules' timeouts) that the router sends to the
 -- origin layer (origin_header / parse_origin_header).
+--
+-- Proto v0.29.0 (ADR-0040). waf-v2: ban (the client's network, banned at
+-- the site's or the platform's scope through edgeweir.bans, once; the
+-- request gets 403 ip-banned), respond (a static body or the site's error
+-- page), close (444), skip (the scope's remaining waf-custom rules, rate
+-- limits, the CRS, challenges), log rules asking for an access log line
+-- (ctx.log_rules, edgeweir.accesslogs), rate limits banning the address
+-- over the limit, and the config rules' CRS mode (ctx.crs, edgeweir.waf).
+-- Bans are never written on the local listeners, for addresses on a
+-- platform allow list or trusted proxies, nor at site scope for clients on
+-- the site's allow lists. rules-body-v1 and challenge-v2: the request body
+-- and crawler fields are lazy (lazy_values): read only when an expression
+-- evaluates them, for sites whose rules read them.
 local expressions = require("edgeweir.expressions")
 local ratelimit = require("edgeweir.ratelimit")
 local compress = require("edgeweir.compress")
 local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
 local access = require("edgeweir.access")
+local body = require("edgeweir.body")
+local bans = require("edgeweir.bans")
 local _M = {}
 _M.phases = { "request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin" }
 
@@ -368,17 +383,48 @@ function _M.request(site, headers)
     values["ip.geoip.country"], values["ip.geoip.subdivision"], values["ip.geoip.asnum"] = geo.country or "", geo.subdivision or "", geo.asnum or 0
     values["ip.geoip.as_name"] = geo.as_name or ""
   end
+  if site._body or site._bots then _M.lazy_values(values, site) end
   return values
 end
 
+local BOT_VERIFIED, BOT_NAME = "http.request.bot.verified", "http.request.bot.name"
+
+-- lazy_values makes the request body fields (sites whose rules read the
+-- body, site._body) and the crawler fields (site._bots) of values lazy:
+-- computed when an expression reads them, from state shared by the copies
+-- writable makes (the body is read once, each parse is cached). Returns
+-- values and the state ({site, raw, truncated} once read).
+function _M.lazy_values(values, site)
+  local state = { site = site }
+  local mt = { edgeweir_body_cache = {}, edgeweir_state = state }
+  mt.__index = function(_, k)
+    if site._body then
+      if k == body.SIZE then return body.size() end
+      if k == body.RAW or k == body.TRUNCATED then
+        local raw, truncated = body.load(state)
+        if k == body.RAW then return raw end
+        return truncated
+      end
+    end
+    if site._bots and (k == BOT_VERIFIED or k == BOT_NAME) then
+      local verified, name = require("edgeweir.bots").request()
+      if k == BOT_VERIFIED then return verified end
+      return name
+    end
+    return nil
+  end
+  return setmetatable(values, mt), state
+end
+
 -- writable returns the request values rules may change: a copy, the first
--- time, so that ctx.original stays the client's request.
+-- time, so that ctx.original stays the client's request. The copy keeps the
+-- lazy fields (lazy_values).
 local function writable(ctx)
   local values = ctx.values
   if values == ctx.original then
     local copy = {}
     for k, v in pairs(values) do copy[k] = v end
-    ctx.values = copy
+    ctx.values = setmetatable(copy, getmetatable(values))
     return copy
   end
   return values
@@ -473,6 +519,8 @@ local function config(a, ctx)
   if tonumber(a.log_sample_rate) then ctx.log_sample_rate = tonumber(a.log_sample_rate) end
   -- The request's body limit in bytes (0: none), feature site-content-v1.
   if tonumber(a.request_body_limit) then ctx.body_limit = tonumber(a.request_body_limit) end
+  -- The request's CRS mode (waf-v2): off, detect or block (edgeweir.waf).
+  if a.crs == "off" or a.crs == "detect" or a.crs == "block" then ctx.crs = a.crs end
   for field, key in pairs(TIMEOUTS) do
     local ms = tonumber(a[field])
     if ms and ms > 0 then
@@ -492,6 +540,84 @@ local function origin(a, ctx)
   if port and port > 0 then o.p = port end
 end
 
+-- MAX_LOG_RULES bounds the log rules an access log line names.
+_M.MAX_LOG_RULES = 8
+
+-- may_ban reports whether a rule may ban the client at scope: not on the
+-- local listeners, never addresses on a platform allow list or trusted
+-- proxies, at site scope not clients on the site's allow lists.
+local function may_ban(site, ctx, addr, scope)
+  if ngx.var.edgeweir_local == "1" or ctx.platform_allowed or addr == nil then return false end
+  local trusted = site._config and site._config.trusted
+  if trusted and trusted(addr) == true then return false end
+  return scope == "*" or not ctx.site_allowed
+end
+
+-- rule_ban bans the client's network for rule (edgeweir.bans.add_rule); a
+-- failed write (dictionary full) is logged once per rule and node every 60
+-- seconds and changes nothing for the request.
+local function rule_ban(site, ctx, rule, scope, prefix4, prefix6, seconds, trigger)
+  local addr = ctx.values["ip.src"]
+  if not may_ban(site, ctx, addr, scope) then return end
+  trigger.rule_id = rule.id
+  local ok, err = bans.add_rule(scope, addr, prefix4, prefix6, seconds, trigger)
+  if not ok and err ~= "held" and ngx.shared.edgeweir_policy_logs:safe_add("ban:" .. rule.id, true, 60) then
+    ngx.log(ngx.NOTICE, "edgeweir: rule ban not written site=", site.id, " rule=", rule.id, ": ", tostring(err))
+  end
+end
+
+local TEXT_TYPES = { ["text/plain"] = true, ["text/html"] = true }
+
+-- respond is the custom response of a respond action (waf-v2): the site's
+-- error page of the status (X-Edgeweir-Error: rule-response), or the
+-- static body with its type (text types in UTF-8) and Cache-Control:
+-- no-store; none for 204 and HEAD.
+function _M.respond(a, site)
+  local status = tonumber(a.status_code) or 403
+  if a.error_page then
+    return require("edgeweir.errorpages").respond(status, "rule-response", site)
+  end
+  ngx.status = status
+  local h = ngx.header
+  h["Cache-Control"] = "no-store"
+  if status ~= 204 then
+    local content_type = a.content_type or "text/plain"
+    h["Content-Type"] = TEXT_TYPES[content_type] and (content_type .. "; charset=utf-8") or content_type
+    local text = a.body or ""
+    h["Content-Length"] = #text
+    if text ~= "" and ngx.req.get_method() ~= "HEAD" then ngx.print(text) end
+  end
+  return ngx.exit(ngx.HTTP_OK)
+end
+
+-- skip applies a skip action (waf-v2) and reports whether it skips the
+-- scope's remaining waf-custom rules. A platform rule's rate_limits skips
+-- the platform's and the site's rate limits, a site rule's the site's.
+local function skip(a, ctx, namespace)
+  local rules = false
+  for _, target in ipairs(type(a.skip) == "table" and a.skip or {}) do
+    if target == "rules" then rules = true
+    elseif target == "crs" then ctx.skip_crs = true
+    elseif target == "challenges" then ctx.skip_challenges = true
+    elseif target == "rate_limits" then
+      ctx.skip_rate_limits_site = true
+      if namespace == "platform" then ctx.skip_rate_limits_platform = true end
+    end
+  end
+  return rules
+end
+
+-- log_rule records a log rule that asks for an access log line.
+local function log_rule(ctx, id)
+  local list = ctx.log_rules or {}
+  ctx.log_rules = list
+  if #list >= _M.MAX_LOG_RULES then return end
+  for i = 1, #list do
+    if list[i] == id then return end
+  end
+  list[#list + 1] = id
+end
+
 local function run_group(group, site, ctx, phase, namespace)
   if not group then return end
   for _, rule in ipairs(group) do
@@ -502,6 +628,18 @@ local function run_group(group, site, ctx, phase, namespace)
         ctx.allowed = true -- but exempts the request from Under Attack and CC challenges
         break
       end
+      -- waf-v2
+      if a.kind == "ban" then
+        local scope = a.ban_scope == "platform" and "*" or site.id
+        rule_ban(site, ctx, rule, scope, a.ban_prefix_v4, a.ban_prefix_v6, a.ban_seconds,
+          { reason = "waf_rule", metric = "waf_rule" })
+        return { status = 403, code = "ip-banned", message = "banned" }
+      end
+      if a.kind == "respond" then
+        return { respond = function() return _M.respond(a, site) end }
+      end
+      if a.kind == "close" then return { close = true } end
+      if a.kind == "skip" and skip(a, ctx, namespace) then break end
       if a.kind == "challenge" then
         -- A sufficient pass continues with the next rules; otherwise the
         -- request is challenged here.
@@ -513,6 +651,7 @@ local function run_group(group, site, ctx, phase, namespace)
       if a.kind == "log" then
         -- Counted per rule and minute for the console (feature rule-log-v1).
         require("edgeweir.stats").logged(site.id, rule.id)
+        if a.access_log then log_rule(ctx, rule.id) end
         -- IDs only: expressions, URL, headers and client addresses are never logged.
         local key = "log:" .. site.id .. ":" .. rule.id
         if ngx.shared.edgeweir_policy_logs:safe_add(key, true, 60) then
@@ -547,9 +686,18 @@ local function run_group(group, site, ctx, phase, namespace)
         local list = {}
         for i, coding in ipairs(type(a.compression) == "table" and a.compression or {}) do list[i] = coding end
         ctx.compression = list
-      elseif a.kind == "rate_limit" then
+      elseif a.kind == "rate_limit" and not (namespace == "platform" and ctx.skip_rate_limits_platform)
+        and not (namespace == "site" and ctx.skip_rate_limits_site) then
         local result = ratelimit.check(site._rate_limit_dict, site.id, namespace, rule.id, a, ctx.values[a.key])
-        if result then return result end
+        if result then
+          -- waf-v2: the address over the limit is banned at site scope.
+          local seconds = tonumber(a.ban_seconds) or 0
+          if seconds > 0 and result.count then
+            rule_ban(site, ctx, rule, site.id, 0, 0, seconds, { reason = "rate_limit", metric = "rate_limit",
+              observed = result.count, threshold = a.limit, window_seconds = a.window_seconds })
+          end
+          return result
+        end
       end
     end
   end

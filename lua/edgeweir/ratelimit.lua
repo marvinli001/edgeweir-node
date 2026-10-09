@@ -35,7 +35,7 @@ function M.check(dict, site_id, namespace, rule_id, action, value)
   if not ok and err ~= "exists" then return passed(site_id) end
   local count = dict:incr(key, 1)
   if not count then return passed(site_id) end
-  if count > action.limit then return { status = action.status_code or 429, retry_after = window } end
+  if count > action.limit then return { status = action.status_code or 429, retry_after = window, count = count } end
 end
 
 return M

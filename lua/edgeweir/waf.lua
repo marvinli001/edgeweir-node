@@ -19,12 +19,21 @@
 --
 -- The site's settings travel to ModSecurity in X-Edgeweir-Waf
 -- ("<site>;<mode>;<paranoia>;<threshold>", read by the generated rules;
--- clients cannot send X-Edgeweir-* headers). The header is removed before
--- the request goes to the origin layer.
+-- clients cannot send X-Edgeweir-* headers). Since proto v0.29.0 (feature
+-- waf-v2, ADR-0040): a config rule's CRS mode replaces the site's for the
+-- request (off: the request does not enter the CRS location, nor does one
+-- a skip action exempts from the CRS), and the site's exclusion entries
+-- whose path matches the client's normalized path (the original $uri, a
+-- signed URL's signature removed; exact, or as a byte prefix; empty: every
+-- path) are named by their tokens in X-Edgeweir-Waf-Ex (",<token>,...,"):
+-- the generated rules remove their CRS rules or targets. Both headers are
+-- removed before the request goes to the origin layer.
 local _M = {}
 
 local HEADER = "X-Edgeweir-Waf"
 _M.HEADER = HEADER
+local EX_HEADER = "X-Edgeweir-Waf-Ex"
+_M.EX_HEADER = EX_HEADER
 
 -- limits[<request body limit>] = true for the locations nginx.conf has.
 local limits = {}
@@ -63,10 +72,45 @@ function _M.location(waf)
   return nil
 end
 
--- header_value is the X-Edgeweir-Waf value of a site.
-function _M.header_value(site_id, waf)
-  return string.format("%s;%s;%d;%d", site_id, waf.mode, tonumber(waf.paranoia_level) or 1,
+-- header_value is the X-Edgeweir-Waf value of a site; mode, when given,
+-- replaces the site's (a config rule's CRS mode).
+function _M.header_value(site_id, waf, mode)
+  return string.format("%s;%s;%d;%d", site_id, mode or waf.mode, tonumber(waf.paranoia_level) or 1,
     tonumber(waf.anomaly_threshold) or 5)
+end
+
+-- exclusion_value is the X-Edgeweir-Waf-Ex value of a request with the
+-- normalized path: the tokens of the site's exclusion entries whose path
+-- matches, ",<token>,<token>,"; nil when none does.
+function _M.exclusion_value(waf, path)
+  local list = waf and waf.exclusions
+  if type(list) ~= "table" or #list == 0 or type(path) ~= "string" then return nil end
+  local tokens = {}
+  for i = 1, #list do
+    local e = list[i]
+    local p = type(e) == "table" and e.path or nil
+    if type(p) == "string" and type(e.token) == "string" and e.token:match("^%x+$") then
+      local hit
+      if p == "" then
+        hit = true
+      elseif e.exact then
+        hit = path == p
+      else
+        hit = string.sub(path, 1, #p) == p
+      end
+      if hit then tokens[#tokens + 1] = e.token end
+    end
+  end
+  if #tokens == 0 then return nil end
+  return "," .. table.concat(tokens, ",") .. ","
+end
+
+-- mode returns the CRS mode of a request of the site: the site's, a config
+-- rule's (detect, block), or nil when the request skips the CRS (a config
+-- rule's off, a skip action's crs).
+function _M.mode(site, pctx)
+  if pctx and (pctx.skip_crs or pctx.crs == "off") then return nil end
+  return pctx and pctx.crs or site.waf.mode
 end
 
 -- Per-worker stash of request contexts across ngx.exec; entries live for
@@ -111,12 +155,16 @@ function _M.stashed_count()
 end
 
 -- enter hands the request to the site's CRS location, or returns without
--- doing anything when there is none.
+-- doing anything when there is none or the request skips the CRS.
 function _M.enter(site)
   local name = _M.location(site.waf)
   if not name then return end
-  ngx.req.set_header(HEADER, _M.header_value(site.id, site.waf))
   local ctx = ngx.ctx
+  local mode = _M.mode(site, ctx.edgeweir_policy)
+  if not mode then return end
+  ngx.req.set_header(HEADER, _M.header_value(site.id, site.waf, mode))
+  local ex = _M.exclusion_value(site.waf, ctx.edgeweir_original_path or ngx.var.uri)
+  if ex then ngx.req.set_header(EX_HEADER, ex) end
   ctx.edgeweir_waf = true
   ngx.var.edgeweir_ctx_ref = _M.stash_ctx(ctx)
   return ngx.exec(name)
@@ -133,10 +181,11 @@ function _M.restore()
 end
 
 -- access runs in the CRS location's access phase: ModSecurity has seen the
--- request; the header must not reach the origin.
+-- request; the headers must not reach the origin.
 function _M.access()
   _M.restore()
   ngx.req.clear_header(HEADER)
+  ngx.req.clear_header(EX_HEADER)
 end
 
 -- rule_ids parses $modsecurity_triggered_rules ("id,id,..." in match

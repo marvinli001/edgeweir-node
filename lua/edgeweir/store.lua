@@ -254,6 +254,13 @@ local REQUEST_V3 = { ["http.referer"] = true, ["http.user_agent"] = true, ["http
 local function is_request_v3(field) return REQUEST_V3[field] == true end
 local is_peer = is_field("ip.peer")
 local function is_client(field) return field:sub(1, 11) == "tls.client." end
+-- rules-body-v1 and challenge-v2 (proto v0.29.0): the body fields (and
+-- form_value, json_value) and the crawler fields.
+local BODY_FIELDS = { ["http.request.body.size"] = true, ["http.request.body.raw"] = true,
+  ["http.request.body.truncated"] = true, ["http.request.body.filenames"] = true }
+local BODY_FUNCTIONS = { form_value = true, json_value = true }
+local function is_body(field) return BODY_FIELDS[field] == true end
+local function is_bot(field) return field == "http.request.bot.verified" or field == "http.request.bot.name" end
 
 -- unhex decodes a hex string of n bytes (nil when it is not one).
 local function unhex(s, n)
@@ -342,6 +349,12 @@ function _M.prepare(s, cfg)
   -- tls.client.* (client-cert-v1) come from the connection's client
   -- certificate (edgeweir.clientcert).
   s._client_fields = reads_field(rule_lists, s.cache_rules, is_client) or nil
+  -- The request body is read only for sites whose rules read it (and only
+  -- when evaluated, edgeweir.policy.lazy_values); crawlers are verified
+  -- only for sites whose rules ask, or that let them skip challenges.
+  s._body = (reads_field(rule_lists, s.cache_rules, is_body)
+    or rule_expressions(rule_lists, s.cache_rules, function(e) return expressions.calls(e, BODY_FUNCTIONS) end)) or nil
+  s._bots = reads_field(rule_lists, s.cache_rules, is_bot) or nil
   prepare_tls(s)
   s._cookies = field_names(rule_lists, s.cache_rules, "http.request.cookies.")
   s._args = field_names(rule_lists, s.cache_rules, "http.request.uri.args.")

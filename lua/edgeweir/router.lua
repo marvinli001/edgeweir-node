@@ -29,6 +29,14 @@
 -- websocket-origin-denied). header_filter() and error_page() add its CORS
 -- and security headers to every response of the site.
 --
+-- Proto v0.29.0 (ADR-0040): rules may ban (403 ip-banned), answer
+-- themselves, close the connection (444) or skip challenges and the CRS
+-- (edgeweir.policy); sites that let verified search engine crawlers skip
+-- Under Attack and CC challenges verify a crawler only when it would be
+-- challenged (edgeweir.bots); failed challenge answers count towards the
+-- site's failure ban (edgeweir.challenge), never for addresses on a
+-- platform allow list, the site's allow lists or trusted proxies.
+--
 -- Sites that run the OWASP CRS continue in the edge layer's CRS location
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
 -- origin for uncompressed responses (edgeweir.compress). The origin layer
@@ -84,6 +92,7 @@ local purgemethod = require("edgeweir.purgemethod")
 local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
 local accesscontrol = require("edgeweir.access")
+local bots = require("edgeweir.bots")
 
 local _M = {}
 
@@ -168,6 +177,16 @@ function _M.platform_allowed(site, addr)
     end
   end
   return false
+end
+
+-- verified_crawler reports whether the request comes from a verified
+-- search engine crawler on a site that lets them skip Under Attack and CC
+-- challenges (challenge-v2).
+function _M.verified_crawler(site)
+  local p = site.protection
+  if not (p and p.allow_verified_bots) then return false end
+  local ok, verified = pcall(bots.request)
+  return ok and verified == true
 end
 
 -- run_challenge answers with a challenge; failures fail closed (503).
@@ -365,7 +384,10 @@ local function access()
     if cc_n and not site_allowed and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
     end
-    local rok, err = pcall(challenge.reserved, site)
+    -- Failed answers count towards the site's failure ban, but not for
+    -- these clients (nor on the local listeners).
+    local uncounted = is_local or site_allowed or _M.platform_allowed(site, var.remote_addr) or store.trusted_proxy(site, var.remote_addr)
+    local rok, err = pcall(challenge.reserved, site, uncounted)
     if not rok then
       ngx.log(ngx.ERR, "edgeweir: challenge endpoint failed site=", site.id, ": ", err)
       return deny(503, "challenge-unavailable", "challenge unavailable")
@@ -377,10 +399,11 @@ local function access()
     ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)
     return deny(503, "policy-unavailable", "policy unavailable")
   end
-  -- allow rules, platform allow lists and the site's allow lists exempt
-  -- from CC bans and from Under Attack and CC challenges.
+  -- allow rules, skip actions with challenges, platform allow lists and
+  -- the site's allow lists exempt from CC bans and from Under Attack and CC
+  -- challenges.
   local pctx = ngx.ctx.edgeweir_policy
-  local exempt = site_allowed or (pctx and (pctx.allowed or pctx.platform_allowed))
+  local exempt = site_allowed or (pctx and (pctx.allowed or pctx.platform_allowed or pctx.skip_challenges))
   -- Config rules may turn CC off for the request (it is still counted).
   local cc_on = not (pctx and pctx.cc_enabled == false)
   if cc_n and cc_on and not exempt and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
@@ -388,6 +411,9 @@ local function access()
   end
   if result and not (is_local and not result.location) then
     if result.respond then return result.respond() end
+    -- A close action: no response, the connection (HTTP/2 and HTTP/3: the
+    -- stream) is closed.
+    if result.close then return ngx.exit(444) end
     if result.challenge then return run_challenge(site, result.challenge, result.level) end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
@@ -397,7 +423,7 @@ local function access()
   if (site._guard or under_attack == true) and not exempt and not is_local and not acme then
     local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
     local level, kind = challenge.required(site, cc_level, under_attack)
-    if level > 0 and challenge.pass_level(site) < level then
+    if level > 0 and challenge.pass_level(site) < level and not _M.verified_crawler(site) then
       return run_challenge(site, kind, level)
     end
   end
