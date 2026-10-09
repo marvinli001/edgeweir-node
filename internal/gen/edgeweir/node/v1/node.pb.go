@@ -2150,7 +2150,10 @@ type MinuteStats struct {
 	// Rules with the log action that matched (platform and site rules), value
 	// = rule id (EdgeRule.id), with the number of requests (bounded, heaviest
 	// first). Added in v0.18.0 (feature rule-log-v1).
-	LoggedRules   []*TopCounter `protobuf:"bytes,12,rep,name=logged_rules,json=loggedRules,proto3" json:"logged_rules,omitempty"`
+	LoggedRules []*TopCounter `protobuf:"bytes,12,rep,name=logged_rules,json=loggedRules,proto3" json:"logged_rules,omitempty"`
+	// Requests access authentication refused (401, 403, 429, 503). Added in
+	// v0.27.0 (feature access-auth-v1).
+	AuthFailures  uint64 `protobuf:"varint,13,opt,name=auth_failures,json=authFailures,proto3" json:"auth_failures,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2267,6 +2270,13 @@ func (x *MinuteStats) GetLoggedRules() []*TopCounter {
 		return x.LoggedRules
 	}
 	return nil
+}
+
+func (x *MinuteStats) GetAuthFailures() uint64 {
+	if x != nil {
+		return x.AuthFailures
+	}
+	return 0
 }
 
 // TopCounter is a bounded, approximate heavy-hitter counter (no query strings).
@@ -2707,7 +2717,9 @@ func (x *GetOriginCredentialsRequest) GetIds() []string {
 
 // OriginCredential is an access key pair for an S3-compatible origin, or
 // (since v0.24.0) the key of a site's PURGE method: access_key_id empty,
-// secret_access_key the key.
+// secret_access_key the key, or (since v0.27.0) the secret of an access
+// authentication rule (id = AuthRule.credential_id): access_key_id empty,
+// secret_access_key its JSON document.
 type OriginCredential struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -5026,7 +5038,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x11renew_certificate\x18\x02 \x01(\bR\x10renewCertificate\x126\n" +
 	"\x17report_interval_seconds\x18\x03 \x01(\rR\x15reportIntervalSeconds\x12#\n" +
 	"\rtasks_pending\x18\x04 \x01(\bR\ftasksPending\x12\x14\n" +
-	"\x05probe\x18\x05 \x01(\bR\x05probe\"\xfd\x04\n" +
+	"\x05probe\x18\x05 \x01(\bR\x05probe\"\xa2\x05\n" +
 	"\vMinuteStats\x122\n" +
 	"\x06minute\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x06minute\x12\x17\n" +
 	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x1a\n" +
@@ -5042,7 +5054,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\atop_ips\x18\n" +
 	" \x03(\v2\x1c.edgeweir.node.v1.TopCounterR\x06topIps\x129\n" +
 	"\twaf_rules\x18\v \x03(\v2\x1c.edgeweir.node.v1.TopCounterR\bwafRules\x12?\n" +
-	"\flogged_rules\x18\f \x03(\v2\x1c.edgeweir.node.v1.TopCounterR\vloggedRules\x1a>\n" +
+	"\flogged_rules\x18\f \x03(\v2\x1c.edgeweir.node.v1.TopCounterR\vloggedRules\x12#\n" +
+	"\rauth_failures\x18\r \x01(\x04R\fauthFailures\x1a>\n" +
 	"\x10StatusCodesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"8\n" +
