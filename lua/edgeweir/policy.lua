@@ -3,6 +3,9 @@
 -- access() runs the request phases (platform rules, then the site's, in
 -- each phase), response() the response phases in the header filter:
 -- response-transform, then compression (proto v0.13.0, feature rules-v2).
+-- Before the request phases come the platform allow and block lists, the
+-- site's access control (edgeweir.access) and access authentication
+-- (edgeweir.auth).
 --
 -- The request values (field name -> value) are built once per request.
 -- Rewrites and request header changes write to a copy: ctx.original keeps
@@ -28,6 +31,7 @@ local ratelimit = require("edgeweir.ratelimit")
 local compress = require("edgeweir.compress")
 local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
+local access = require("edgeweir.access")
 local _M = {}
 _M.phases = { "request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin" }
 
@@ -551,7 +555,10 @@ local function run_group(group, site, ctx, phase, namespace)
   end
 end
 
-function _M.access(site, headers)
+-- access runs the request phases. acme: an HTTP-01 request for the
+-- origin; site_allowed: ip.src is on one of the site's allow lists
+-- (edgeweir.access.site_allowed).
+function _M.access(site, headers, acme, site_allowed)
   local values = _M.request(site, headers)
   local cfg = site._config
   local ctx = { values = values, original = values, force_https = site.tls and site.tls.force_https }
@@ -559,8 +566,17 @@ function _M.access(site, headers)
   local allowed = false
   for _, m in ipairs(cfg.allows or {}) do if m(values["ip.src"]) then allowed = true; break end end
   ctx.platform_allowed = allowed
+  ctx.site_allowed = site_allowed == true
   if not allowed then
     for _, m in ipairs(cfg.blocks or {}) do if m(values["ip.src"]) then return { status = 403 } end end
+  end
+  -- Access control (edgeweir.access): the site's block lists, geo, CORS
+  -- preflights, hotlink and user agents, after the platform lists and
+  -- before access authentication; not for the local listeners (the
+  -- operator's own requests) and HTTP-01 requests for the origin.
+  if site._access and not acme and ngx.var.edgeweir_local ~= "1" then
+    local result = access.check(site, values, allowed, ctx.site_allowed)
+    if result then return result end
   end
   -- Access authentication: after the lists, before the rule phases and the
   -- cache (edgeweir.auth).

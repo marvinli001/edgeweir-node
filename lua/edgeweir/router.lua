@@ -22,6 +22,13 @@
 -- X-Edgeweir-Rules, which decides the TTL once the response status and
 -- size are known; origin rules' overrides travel in X-Edgeweir-Origin.
 --
+-- A site's access control (edgeweir.access, ADR-0039): clients on its
+-- allow lists skip its bans, CC bans and challenges (and, in
+-- edgeweir.policy, its block lists, geo, hotlink and user agent checks);
+-- WebSocket upgrades must come from its origins (403
+-- websocket-origin-denied). header_filter() and error_page() add its CORS
+-- and security headers to every response of the site.
+--
 -- Sites that run the OWASP CRS continue in the edge layer's CRS location
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
 -- origin for uncompressed responses (edgeweir.compress). The origin layer
@@ -76,6 +83,7 @@ local charset = require("edgeweir.charset")
 local purgemethod = require("edgeweir.purgemethod")
 local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
+local accesscontrol = require("edgeweir.access")
 
 local _M = {}
 
@@ -315,10 +323,14 @@ local function access()
     end
     return deny(ngx.HTTP_FORBIDDEN, "client-cert-required", "client certificate required")
   end
-  -- Dynamic bans: platform scope, then the site's; addresses on a
-  -- platform allow list and trusted proxies of the client address
-  -- setting are never banned.
-  if not is_local and bans.match(site.id, remote_addr) and not _M.platform_allowed(site, var.remote_addr) and not store.trusted_proxy(site, var.remote_addr) then
+  -- The site's allow lists (edgeweir.access): such clients skip the site's
+  -- bans and CC bans, its block lists, geo, hotlink and user agent checks
+  -- and Under Attack and CC challenges.
+  local site_allowed = not is_local and site._access ~= nil and accesscontrol.site_allowed(site, var.remote_addr)
+  -- Dynamic bans: platform scope, then the site's (not for clients on the
+  -- site's allow lists); addresses on a platform allow list and trusted
+  -- proxies of the client address setting are never banned.
+  if not is_local and bans.match(not site_allowed and site.id or nil, remote_addr) and not _M.platform_allowed(site, var.remote_addr) and not store.trusted_proxy(site, var.remote_addr) then
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   -- The PURGE method of sites that turned it on, before maintenance and
@@ -350,7 +362,7 @@ local function access()
   end
   -- The reserved prefix is answered here and never reaches the origin.
   if sub(original_path, 1, 11) == "/.edgeweir/" then
-    if cc_n and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
+    if cc_n and not site_allowed and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
     end
     local rok, err = pcall(challenge.reserved, site)
@@ -360,15 +372,15 @@ local function access()
     end
     return
   end
-  local ok, result = pcall(policy.access, site, headers)
+  local ok, result = pcall(policy.access, site, headers, acme, site_allowed)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)
     return deny(503, "policy-unavailable", "policy unavailable")
   end
-  -- allow rules and platform allow lists exempt from CC bans and from
-  -- Under Attack and CC challenges.
+  -- allow rules, platform allow lists and the site's allow lists exempt
+  -- from CC bans and from Under Attack and CC challenges.
   local pctx = ngx.ctx.edgeweir_policy
-  local exempt = pctx and (pctx.allowed or pctx.platform_allowed)
+  local exempt = site_allowed or (pctx and (pctx.allowed or pctx.platform_allowed))
   -- Config rules may turn CC off for the request (it is still counted).
   local cc_on = not (pctx and pctx.cc_enabled == false)
   if cc_n and cc_on and not exempt and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
@@ -416,6 +428,11 @@ local function access()
     end
     if not websocket then
       return deny(ngx.HTTP_FORBIDDEN, "websocket-disabled", "websocket disabled")
+    end
+    -- The site's WebSocket origins (edgeweir.access); clients on its allow
+    -- lists are checked too, the local listeners are not.
+    if not is_local and not accesscontrol.websocket_allowed(site, var.http_origin) then
+      return deny(ngx.HTTP_FORBIDDEN, "websocket-origin-denied", "websocket origin denied")
     end
     -- Proxied as is, never cached.
     var.edgeweir_origin_layer = _M.origin_layer(site, "websocket")
@@ -734,6 +751,11 @@ function _M.header_filter(waf_location)
     if site.charset and proxied and not h["X-Edgeweir-Error"] then
       charset.apply(h, site.charset)
     end
+    -- Access control's CORS and security headers (edgeweir.access) on
+    -- every response of the site, before the response phases: rules win.
+    if site._access and not ngx.is_subrequest then
+      accesscontrol.response_headers(site, h, ngx.ctx.edgeweir_original_path or var.uri)
+    end
     if site._response_rules then
       local ok = pcall(policy.response, site)
       if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
@@ -777,6 +799,11 @@ function _M.error_page()
   end
   if var.edgeweir_local == "1" and (var.upstream_cache_status or "") == "" then
     ngx.header["X-Edgeweir-Edge-Response"] = "1"
+  end
+  -- This location has no header filter: access control's CORS and security
+  -- headers here (edgeweir.access).
+  if site and site._access then
+    accesscontrol.response_headers(site, ngx.header, var.uri)
   end
   return errorpages.nginx_page(status, site, ctx.edgeweir_waf == true and var.modsecurity_intervention == "1", false)
 end

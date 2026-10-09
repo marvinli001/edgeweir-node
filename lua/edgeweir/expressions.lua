@@ -297,6 +297,14 @@ local function fold_segments(pattern, case_sensitive)
   return segments
 end
 
+-- wildcard_matcher returns a function telling whether a value fully matches
+-- a wildcard pattern, ASCII case-insensitively unless strict, as the
+-- wildcard comparisons do (edgeweir.access: user agent rules).
+function _M.wildcard_matcher(pattern, strict)
+  local segments = fold_segments(pattern, strict)
+  return function(source) return wildcard_match(source, segments, strict) ~= nil end
+end
+
 -- wildcard_replace(source, pattern, replacement[, flag]): the replacement
 -- with the captures of a full wildcard match, source unchanged without one.
 function _M.wildcard_replace(source, pattern, replacement, flag)

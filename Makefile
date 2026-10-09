@@ -83,6 +83,10 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_health 1m" \
 			--shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_stats 1m" --shdict "edgeweir_topstats 1m" \
 			--shdict "edgeweir_auth 1m" /t/auth.lua && \
+		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_health 1m" \
+			--shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_stats 1m" --shdict "edgeweir_topstats 1m" \
+			--shdict "edgeweir_bans 1m" --shdict "edgeweir_cc 1m" --shdict "edgeweir_challenge 1m" \
+			--shdict "edgeweir_purge 1m" --shdict "edgeweir_tags 1m" /t/access.lua && \
 		resty -I /lua --shdict "edgeweir_sites 4m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_cc 1m" --shdict "edgeweir_bans 1m" /t/domains.lua && \
 		resty -I /lua /t/sigv4.lua && resty -I /lua /t/expressions.lua && resty -I /lua /t/http3.lua && resty -I /lua /t/ja4.lua && \
 		resty -I /lua /t/compress.lua && \

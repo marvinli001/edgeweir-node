@@ -409,7 +409,7 @@ function _M.balance()
     ngx_balancer.set_more_tries(#ctx.cands - 1)
   end
   local conn = ctx.site.conn
-  ngx_balancer.set_timeouts(_M.timeouts(conn, ctx.override or NO_OVERRIDE, ctx.upgrade))
+  ngx_balancer.set_timeouts(_M.timeouts(conn, ctx.override or NO_OVERRIDE, ctx.upgrade and (ctx.site._ws_idle_ms or true)))
   -- Unverified TLS connections are never pooled: a site that verifies must
   -- not reuse a connection another site opened without verification.
   if conn.keepalive and not ctx.upgrade and (o.scheme ~= "https" or ctx.site.tls_verify) then
@@ -471,19 +471,22 @@ local function stale_capable(chain, authorized)
 end
 
 -- WEBSOCKET_IDLE_MS is how long an upgraded connection (WebSocket) may be
--- idle: its read and send timeouts are its idle timeouts, and the site's
--- (for responses, 60 s by default) would close quiet ones. The edge's local
--- hop allows as long (proxy_read_timeout 3600s).
+-- idle by default: its read and send timeouts are its idle timeouts, and
+-- the site's (for responses, 60 s by default) would close quiet ones. A
+-- site's access control sets its own (WebSocketAccess.idle_timeout_seconds,
+-- 60 s to 86400 s, edgeweir.access: site._ws_idle_ms); the edge's local hop
+-- allows the longest (proxy_read_timeout 86400s).
 _M.WEBSOCKET_IDLE_MS = 3600000
 
 -- timeouts returns the connect, send and read timeouts in seconds of an
 -- attempt: the site's connection settings, config rules' overrides (ov)
--- first; upgraded connections idle up to WEBSOCKET_IDLE_MS unless a rule
--- sets the timeout.
+-- first; upgraded connections idle up to upgrade milliseconds (true:
+-- WEBSOCKET_IDLE_MS) unless a rule sets the timeout.
 function _M.timeouts(conn, ov, upgrade)
   local send, read = conn.send_timeout_ms, conn.read_timeout_ms
   if upgrade then
-    send, read = _M.WEBSOCKET_IDLE_MS, _M.WEBSOCKET_IDLE_MS
+    local idle = type(upgrade) == "number" and upgrade or _M.WEBSOCKET_IDLE_MS
+    send, read = idle, idle
   end
   return (ov.connect or conn.connect_timeout_ms) / 1000, (ov.send or send) / 1000, (ov.read or read) / 1000
 end

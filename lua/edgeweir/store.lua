@@ -39,6 +39,7 @@ local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local ipaddr = require("edgeweir.ipaddr")
 local auth = require("edgeweir.auth")
+local access = require("edgeweir.access")
 local policy = require("edgeweir.policy")
 local ratelimit = require("edgeweir.ratelimit")
 local cc = require("edgeweir.cc")
@@ -307,6 +308,9 @@ function _M.prepare(s, cfg)
   s._tls_pending = policy.prepare_tls_pending(s.domains)
   -- Access authentication (access-auth-v1): rules, users and keys.
   auth.prepare(s)
+  -- Access control (access-control-v1): lists, hotlink, user agents, CORS,
+  -- geo, WebSocket origins and idle timeout, security headers.
+  access.prepare(s)
   -- The listener ports the site is served on (edge-ports-v1); nil: every
   -- listener. The HTTPS redirect's excluded domains, by name.
   if type(s.ports) == "table" and #s.ports > 0 then
@@ -430,11 +434,14 @@ function _M.prepare(s, cfg)
 end
 
 -- check_site compiles what prepare compiles from a pushed site (rules,
--- cache rule conditions, the redirect table) and raises an error when
--- something does not compile.
+-- cache rule conditions, the redirect table, access control with its IP
+-- lists) and raises an error when something does not compile.
 local function check_site(site, lists)
   policy.prepare_rules(site.rules, lists)
   policy.prepare_bulk(site.bulk_redirects)
+  if type(site.access_control) == "table" then
+    access.compile(site.access_control, lists)
+  end
   for _, r in ipairs(type(site.cache_rules) == "table" and site.cache_rules or {}) do
     if type(r) == "table" and type(r.condition) == "table" then
       expressions.compile(r.condition, lists)
