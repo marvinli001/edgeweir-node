@@ -85,6 +85,9 @@ func TestSharedExpressionVectors(t *testing.T) {
 		Action   json.RawMessage `json:"action"`
 		// ActionRejected: nodes refuse the action in this phase.
 		ActionRejected bool `json:"actionRejected"`
+		// Platform: the action is valid only in a platform rule (waf-v2:
+		// bans at platform scope).
+		Platform bool `json:"platform"`
 		// IRRejected: the IR itself is refused (Value: as a value
 		// expression); otherwise a rejected vector's IR holds a pattern
 		// outside the subset.
@@ -160,7 +163,10 @@ func TestSharedExpressionVectors(t *testing.T) {
 				t.Fatalf("vector %d action: %v", i, err)
 			}
 			rule := &nodev1.EdgeRule{Id: "vector", Phase: v.Phase, Expression: e, Action: a}
-			err := validateRuleSet([]*nodev1.EdgeRule{rule}, lists, features, 64)
+			err := validateRuleSet([]*nodev1.EdgeRule{rule}, lists, features, 64, v.Platform)
+			if v.Platform && validateRuleSet([]*nodev1.EdgeRule{rule}, lists, features, 64, false) == nil {
+				t.Errorf("vector %d: platform action %s accepted in a site rule", i, v.Action)
+			}
 			if v.ActionRejected && err == nil {
 				t.Errorf("vector %d accepted action %s in %s (%s)", i, v.Action, v.Phase, v.Reason)
 			}

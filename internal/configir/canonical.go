@@ -43,6 +43,10 @@
 //     ascending without duplicates, geo asns ascending as numbers without
 //     duplicates; user agent rules and CORS allowed_methods keep their
 //     order (proto v0.28.0);
+//   - inside the action of every platform and site rule skip ascending
+//     without duplicates, inside a site's waf every exclusion's rule_ids
+//     and targets ascending without duplicates; the exclusions keep the
+//     site's order (proto v0.29.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -151,6 +155,12 @@ func CanonicalizeSite(s *nodev1.Site) {
 	if s.Waf != nil {
 		slices.Sort(s.Waf.ExcludedRuleIds)
 		s.Waf.ExcludedRuleIds = slices.Compact(s.Waf.ExcludedRuleIds)
+		// Exclusions keep the site's order; their lists are sets.
+		for _, e := range s.Waf.Exclusions {
+			slices.Sort(e.RuleIds)
+			e.RuleIds = slices.Compact(e.RuleIds)
+			e.Targets = sortedSet(e.Targets)
+		}
 	}
 	if s.ErrorPages != nil {
 		slices.SortStableFunc(s.ErrorPages.Pages, func(a, b *nodev1.ErrorPage) int {
@@ -236,8 +246,9 @@ func canonicalizeAccessControl(a *nodev1.AccessControl) {
 	}
 }
 
-// canonicalizeRules sorts the query edits of the rules' actions. The rules
-// themselves keep their order (execution order inside a phase).
+// canonicalizeRules sorts the query edits and skip targets of the rules'
+// actions. The rules themselves keep their order (execution order inside a
+// phase).
 func canonicalizeRules(rules []*nodev1.EdgeRule) {
 	for _, r := range rules {
 		if a := r.GetAction(); a != nil {
@@ -245,6 +256,7 @@ func canonicalizeRules(rules []*nodev1.EdgeRule) {
 				return cmp.Compare(x.GetName(), y.GetName())
 			})
 			slices.Sort(a.RemoveQuery)
+			a.Skip = sortedSet(a.Skip)
 		}
 	}
 }

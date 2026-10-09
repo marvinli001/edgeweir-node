@@ -58,10 +58,13 @@ type WAF struct {
 	// ExcludedRuleIDs never run for the site (rendered into the
 	// ModSecurity configuration, not the site table).
 	ExcludedRuleIDs []uint32 `json:"-"`
+	// Exclusions by path or target in the site's order (proto v0.29.0,
+	// feature waf-v2).
+	Exclusions []WAFExclusion `json:"exclusions,omitempty"`
 }
 
 // buildWAF validates a site's SiteWaf; nil means CRS off.
-func buildWAF(w *nodev1.SiteWaf) (*WAF, error) {
+func buildWAF(siteID string, w *nodev1.SiteWaf) (*WAF, error) {
 	if w == nil {
 		return nil, nil
 	}
@@ -91,6 +94,10 @@ func buildWAF(w *nodev1.SiteWaf) (*WAF, error) {
 		if i > 0 && id <= out.ExcludedRuleIDs[i-1] {
 			return nil, fmt.Errorf("%w: excluded CRS rule ids must be sorted and unique", ErrRejected)
 		}
+	}
+	var err error
+	if out.Exclusions, err = buildWAFExclusions(siteID, w.GetExclusions()); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

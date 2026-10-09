@@ -291,7 +291,7 @@ func TestRuleActionsV2(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			rule := &nodev1.EdgeRule{Id: "r", Phase: test.phase, Expression: &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"}, Action: test.a}
-			err := validateRuleSet([]*nodev1.EdgeRule{rule}, nil, nil, 64)
+			err := validateRuleSet([]*nodev1.EdgeRule{rule}, nil, nil, 64, false)
 			if test.ok && err != nil {
 				t.Fatalf("refused: %v", err)
 			}
@@ -305,11 +305,11 @@ func TestRuleActionsV2(t *testing.T) {
 		{Id: "a", Phase: "compression", Expression: &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"}, Action: &nodev1.RuleAction{Kind: "compression"}},
 		{Id: "b", Phase: "response-transform", Expression: &nodev1.RuleExpression{Op: "literal", ValueType: "boolean", Value: "true"}, Action: &nodev1.RuleAction{Kind: "response_header", Header: "x-a"}},
 	}
-	if err := validateRuleSet(order, nil, nil, 64); err == nil {
+	if err := validateRuleSet(order, nil, nil, 64, false); err == nil {
 		t.Fatal("compression before response-transform accepted")
 	}
 	slices.Reverse(order)
-	if err := validateRuleSet(order, nil, nil, 64); err != nil {
+	if err := validateRuleSet(order, nil, nil, 64, false); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -23,6 +23,24 @@ var rulePhases = []string{"request-transform", "redirect", "config", "waf-custom
 // responsePhases may read http.response.* fields.
 var responsePhases = []string{"response-transform", "compression"}
 
+// requestPhases may read the request body and crawler fields and call
+// form_value and json_value (proto v0.29.0, features rules-body-v1 and
+// challenge-v2): not cache (cache rules judge the client's original
+// request) nor the response phases (the node cannot wait for the body or
+// DNS there).
+var requestPhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "origin"}
+
+// requestOnlyFields are the fields only requestPhases may read: the request
+// body (rules-body-v1) and the verified crawler (challenge-v2).
+var requestOnlyFields = map[string]bool{
+	"http.request.body.size": true, "http.request.body.raw": true, "http.request.body.truncated": true,
+	"http.request.body.filenames": true, "http.request.bot.verified": true, "http.request.bot.name": true,
+}
+
+// bodyFunctions read the request body (rules-body-v1); only requestPhases
+// may call them.
+var bodyFunctions = map[string]bool{"form_value": true, "json_value": true}
+
 var fieldTypes = map[string]string{"http.host": "string", "http.request.method": "string", "http.request.uri.path": "string", "http.request.uri.query": "string", "http.request.uri": "string", "http.response.code": "number", "ip.src": "ip", "ssl": "boolean", "ip.geoip.country": "string", "ip.geoip.subdivision": "string", "ip.geoip.asnum": "number", "tls.ja4": "string",
 	// rules-v2: scheme://host followed by the request URI as received; the
 	// lowercase extension of the last path segment; the lowercase media type
@@ -42,7 +60,15 @@ var fieldTypes = map[string]string{"http.host": "string", "http.request.method":
 	// ($ssl_client_verify SUCCESS), the lowercase hex SHA-256 of its DER and
 	// its subject (RFC 2253); false and "" without a valid certificate or
 	// over plain HTTP.
-	"tls.client.verified": "boolean", "tls.client.cert_sha256": "string", "tls.client.subject": "string"}
+	"tls.client.verified": "boolean", "tls.client.cert_sha256": "string", "tls.client.subject": "string",
+	// rules-body-v1: Content-Length (-1 without), the body read (requests up
+	// to the site's rules_body_limit), whether it was not read, and the
+	// non-empty file names of a multipart body joined by "\n".
+	"http.request.body.size": "number", "http.request.body.raw": "string", "http.request.body.truncated": "boolean",
+	"http.request.body.filenames": "string",
+	// challenge-v2: a search engine crawler the node verified by reverse and
+	// forward DNS, and its name.
+	"http.request.bot.verified": "boolean", "http.request.bot.name": "string"}
 
 // namedFields are the rules-v3 fields of one request cookie
 // (http.request.cookies.<name>, an RFC 6265 token, case-sensitive) and one
@@ -121,6 +147,36 @@ var ruleFunctions = map[string]ruleFunction{
 	"sha256":        {"string", 1, 1, false, stringArgs},
 	"substring":     {"string", 2, 3, false, []string{"string", "start", "length"}},
 	"to_string":     {"string", 1, 1, false, []string{"any"}},
+	// rules-body-v1 (requestPhases only): the first value of a form field,
+	// the value at a JSON path; their argument is a string constant.
+	"form_value": {"string", 1, 1, false, []string{"formname"}},
+	"json_value": {"string", 1, 1, false, []string{"jsonpath"}},
+}
+
+// Bounds of form_value's name and json_value's path (bytes, segments).
+const (
+	maxFormNameBytes      = 256
+	maxJSONPathBytes      = 256
+	maxJSONPathSegments   = 32
+	minRulesBodyLimit     = 1024
+	maxRulesBodyLimit     = 1 << 20
+	DefaultRulesBodyLimit = 65536
+)
+
+// validFormName reports whether name is a form_value argument: 1-256 bytes
+// without control characters.
+func validFormName(name string) bool {
+	return len(name) >= 1 && len(name) <= maxFormNameBytes && !hasControl(name)
+}
+
+// validJSONPath reports whether path is a json_value argument: 1-256 bytes
+// without control characters, 1-32 non-empty segments separated by ".".
+func validJSONPath(path string) bool {
+	if len(path) < 1 || len(path) > maxJSONPathBytes || hasControl(path) {
+		return false
+	}
+	segments := strings.Split(path, ".")
+	return len(segments) <= maxJSONPathSegments && !slices.Contains(segments, "")
 }
 
 // substringBounds are the bounds of substring's integer arguments: the
@@ -191,6 +247,9 @@ func (c *exprCheck) fieldType(field string) string {
 		}
 	}
 	if strings.HasPrefix(field, "http.response.") && !slices.Contains(responsePhases, c.phase) {
+		return ""
+	}
+	if requestOnlyFields[field] && !slices.Contains(requestPhases, c.phase) {
 		return ""
 	}
 	return typ
@@ -337,6 +396,9 @@ func (c *exprCheck) call(e *nodev1.RuleExpression, depth int) (string, error) {
 	if !ok || depth > maxCallDepth || e.ValueType != f.result || e.Value != "" || len(e.Values) > 0 || len(e.Children) < f.min || len(e.Children) > f.max {
 		return "", bad
 	}
+	if bodyFunctions[e.Field] && !slices.Contains(requestPhases, c.phase) {
+		return "", bad
+	}
 	if f.valueOnly {
 		if !c.value || c.used[e.Field] {
 			return "", bad
@@ -347,6 +409,16 @@ func (c *exprCheck) call(e *nodev1.RuleExpression, depth int) (string, error) {
 		kind := f.args[min(i, len(f.args)-1)]
 		if kind == "start" || kind == "length" {
 			if !c.integerArg(arg, substringBounds[kind]) {
+				return "", bad
+			}
+			continue
+		}
+		if kind == "formname" || kind == "jsonpath" {
+			// A string constant: the field name or the JSON path.
+			if typ, err := c.valueNode(arg, depth); err != nil || typ != "string" || arg.Op != "const" {
+				return "", bad
+			}
+			if (kind == "formname" && !validFormName(arg.Value)) || (kind == "jsonpath" && !validJSONPath(arg.Value)) {
 				return "", bad
 			}
 			continue
@@ -654,20 +726,101 @@ func validPattern(p string) bool {
 // actionFields are the RuleAction fields each kind may carry besides kind;
 // every other field must stay empty (unset, "", 0, false or no items).
 var actionFields = map[string][]protoreflect.Name{
-	"block":           {"status_code"},
-	"log":             {},
-	"allow":           {},
-	"challenge":       {"challenge"},
+	"block":     {"status_code"},
+	"log":       {"access_log"},
+	"allow":     {},
+	"challenge": {"challenge"},
+	// waf-v2 (proto v0.29.0)
+	"ban":             {"ban_seconds", "ban_scope", "ban_prefix_v4", "ban_prefix_v6"},
+	"respond":         {"status_code", "content_type", "body", "error_page"},
+	"close":           {},
+	"skip":            {"skip"},
 	"redirect":        {"value", "status_code", "target", "preserve_query", "set_query", "remove_query"},
 	"rewrite":         {"value", "target", "preserve_query", "set_query", "remove_query"},
 	"request_header":  {"header", "value", "remove", "target"},
 	"response_header": {"header", "value", "remove", "target", "append"},
 	"config": {"cache_bypass", "force_https", "gzip", "brotli", "zstd", "websocket", "under_attack", "cc_enabled",
 		"cc_max_level", "origin_connect_timeout_ms", "origin_send_timeout_ms", "origin_read_timeout_ms", "log_sample_rate",
-		"request_body_limit"},
-	"rate_limit":  {"status_code", "limit", "window_seconds", "key"},
+		"request_body_limit", "crs"},
+	"rate_limit":  {"status_code", "limit", "window_seconds", "key", "ban_seconds"},
 	"origin":      {"origin_group", "host_header", "sni", "port"},
 	"compression": {"compression"},
+}
+
+// The waf-v2 actions (proto v0.29.0): what a skip action may skip, in
+// canonical order; the content types of a custom response; the CRS modes a
+// config rule may set; the bounds of the ban action and of a rate limit's
+// ban.
+var (
+	skipTargets         = []string{"challenges", "crs", "rate_limits", "rules"}
+	respondContentTypes = []string{"text/plain", "text/html", "application/json"}
+	crsOverrides        = []string{"off", "detect", "block"}
+)
+
+const (
+	minRuleBanSeconds      = 60
+	maxRuleBanSeconds      = 604_800
+	maxRateLimitBanSeconds = 86_400
+	minRuleBanPrefixV4     = 16
+	maxRuleBanPrefixV4     = 32
+	minRuleBanPrefixV6     = 48
+	maxRuleBanPrefixV6     = 64
+	maxRespondBody         = 8192
+	// BanScopePlatform is the ban action's scope of every site (platform
+	// rules only); empty is the request's site.
+	BanScopePlatform = "platform"
+)
+
+// validBanAction checks a ban action: 60-604800 seconds, prefixes 0 (the
+// address: /32, /64) or 16-32 and 48-64, the site's scope or (platform
+// rules) the platform's.
+func validBanAction(a *nodev1.RuleAction, platform bool) bool {
+	return a.BanSeconds >= minRuleBanSeconds && a.BanSeconds <= maxRuleBanSeconds &&
+		(a.BanScope == "" || (a.BanScope == BanScopePlatform && platform)) &&
+		(a.BanPrefixV4 == 0 || (a.BanPrefixV4 >= minRuleBanPrefixV4 && a.BanPrefixV4 <= maxRuleBanPrefixV4)) &&
+		(a.BanPrefixV6 == 0 || (a.BanPrefixV6 >= minRuleBanPrefixV6 && a.BanPrefixV6 <= maxRuleBanPrefixV6))
+}
+
+// validRespondBody reports whether body is a custom response's static
+// body: at most 8192 bytes, no control characters but tab and line breaks.
+func validRespondBody(body string) bool {
+	if len(body) > maxRespondBody {
+		return false
+	}
+	for i := 0; i < len(body); i++ {
+		if b := body[i]; (b < 32 && b != '\t' && b != '\n' && b != '\r') || b == 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// validRespondAction checks a respond action: status 200, 204, 4xx or 5xx,
+// and either the site's error page (4xx, 5xx) or a content type with a
+// static body (none for 204).
+func validRespondAction(a *nodev1.RuleAction) bool {
+	status := a.StatusCode
+	if status != 200 && status != 204 && (status < 400 || status > 599) {
+		return false
+	}
+	if a.ErrorPage {
+		return status >= 400 && a.ContentType == "" && a.Body == ""
+	}
+	return slices.Contains(respondContentTypes, a.ContentType) && validRespondBody(a.Body) && (status != 204 || a.Body == "")
+}
+
+// validSkipAction checks a skip action: at least one target, sorted and
+// unique.
+func validSkipAction(a *nodev1.RuleAction) bool {
+	if len(a.Skip) == 0 {
+		return false
+	}
+	for i, item := range a.Skip {
+		if !slices.Contains(skipTargets, item) || (i > 0 && a.Skip[i-1] >= item) {
+			return false
+		}
+	}
+	return true
 }
 
 // Codings of compression rules (RuleAction.compression).
@@ -792,13 +945,15 @@ func validOriginTimeout(ms, max uint32) bool {
 	return ms == 0 || (ms >= minOriginTimeoutMS && ms <= max)
 }
 
-// validConfigAction checks a config action. The rules-v2 fields are only
-// valid in phase config; at least one field is set.
+// validConfigAction checks a config action. The rules-v2 fields and the
+// CRS override (waf-v2) are only valid in phase config; at least one field
+// is set.
 func validConfigAction(a *nodev1.RuleAction, phase string) bool {
 	v2 := a.Brotli != nil || a.Zstd != nil || a.Websocket != nil || a.UnderAttack != nil || a.CcEnabled != nil ||
 		a.CcMaxLevel != "" || a.OriginConnectTimeoutMs != 0 || a.OriginSendTimeoutMs != 0 || a.OriginReadTimeoutMs != 0 ||
-		a.LogSampleRate != nil || a.RequestBodyLimit != nil
+		a.LogSampleRate != nil || a.RequestBodyLimit != nil || a.Crs != ""
 	return (phase == "config" || (phase == "cache" && !v2)) &&
+		(a.Crs == "" || slices.Contains(crsOverrides, a.Crs)) &&
 		(a.RequestBodyLimit == nil || *a.RequestBodyLimit <= MaxRequestBodyLimit) &&
 		(a.CcMaxLevel == "" || slices.Contains(ChallengeTypes, a.CcMaxLevel)) &&
 		validOriginTimeout(a.OriginConnectTimeoutMs, maxConnectTimeoutMS) &&
@@ -827,16 +982,23 @@ func validCompressionAction(a *nodev1.RuleAction) bool {
 	return true
 }
 
-// validAction checks the action of a rule of phase.
-func validAction(a *nodev1.RuleAction, phase string, features []string) bool {
+// validAction checks the action of a rule of phase; platform for platform
+// rules (only they may ban at platform scope).
+func validAction(a *nodev1.RuleAction, phase string, features []string, platform bool) bool {
 	if a == nil || !ruleText(a.Value) || !onlyFields(a) {
 		return false
 	}
 	switch a.Kind {
 	case "block":
 		return phase == "waf-custom" && (a.StatusCode == 403 || a.StatusCode == 451)
-	case "log", "allow":
+	case "log", "allow", "close":
 		return phase == "waf-custom"
+	case "ban":
+		return phase == "waf-custom" && validBanAction(a, platform)
+	case "respond":
+		return phase == "waf-custom" && validRespondAction(a)
+	case "skip":
+		return phase == "waf-custom" && validSkipAction(a)
 	case "challenge":
 		return phase == "waf-custom" && slices.Contains(ChallengeTypes, a.Challenge)
 	case "redirect":
@@ -851,7 +1013,8 @@ func validAction(a *nodev1.RuleAction, phase string, features []string) bool {
 	case "config":
 		return validConfigAction(a, phase)
 	case "rate_limit":
-		return (a.StatusCode == 403 || a.StatusCode == 429) && phase == "ratelimit" && a.Limit >= 1 && a.Limit <= 100000 && a.WindowSeconds >= 1 && a.WindowSeconds <= 3600 && (a.Key == "ip.src" || a.Key == "http.host" || a.Key == "tls.ja4" || (strings.HasPrefix(a.Key, "http.request.headers.") && tokenRE.MatchString(strings.TrimPrefix(a.Key, "http.request.headers."))))
+		return (a.StatusCode == 403 || a.StatusCode == 429) && phase == "ratelimit" && a.Limit >= 1 && a.Limit <= 100000 && a.WindowSeconds >= 1 && a.WindowSeconds <= 3600 && (a.Key == "ip.src" || a.Key == "http.host" || a.Key == "tls.ja4" || (strings.HasPrefix(a.Key, "http.request.headers.") && tokenRE.MatchString(strings.TrimPrefix(a.Key, "http.request.headers.")))) &&
+			(a.BanSeconds == 0 || (a.BanSeconds >= minRuleBanSeconds && a.BanSeconds <= maxRateLimitBanSeconds))
 	case "origin":
 		return phase == "origin" && validOriginAction(a)
 	case "compression":
@@ -860,7 +1023,8 @@ func validAction(a *nodev1.RuleAction, phase string, features []string) bool {
 	return false
 }
 
-func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features []string, maxRules int) error {
+// validateRuleSet checks the platform rules (platform) or a site's rules.
+func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features []string, maxRules int, platform bool) error {
 	if len(rules) > maxRules {
 		return fmt.Errorf("%w: too many rules", ErrRejected)
 	}
@@ -876,7 +1040,7 @@ func validateRuleSet(rules []*nodev1.EdgeRule, lists map[string]bool, features [
 		if err := validateCondition(r.Expression, r.Phase, lists, features); err != nil {
 			return err
 		}
-		if !validAction(r.Action, r.Phase, features) {
+		if !validAction(r.Action, r.Phase, features, platform) {
 			return fmt.Errorf("%w: unsupported rule action %q in phase %q", ErrRejected, r.GetAction().GetKind(), r.Phase)
 		}
 	}
@@ -901,11 +1065,11 @@ func validateRules(c *nodev1.NodeConfig, features []string) error {
 			}
 		}
 	}
-	if err := validateRuleSet(c.PlatformRules, platform, features, 32); err != nil {
+	if err := validateRuleSet(c.PlatformRules, platform, features, 32, true); err != nil {
 		return err
 	}
 	for _, site := range c.Sites {
-		if err := validateRuleSet(site.GetRules(), lists, features, 64); err != nil {
+		if err := validateRuleSet(site.GetRules(), lists, features, 64, false); err != nil {
 			return err
 		}
 		if err := validateCacheRuleConditions(site, lists, features); err != nil {

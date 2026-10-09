@@ -109,7 +109,7 @@ func TestRuleActionsV3(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := validAction(tc.a, tc.phase, features); got != tc.ok {
+			if got := validAction(tc.a, tc.phase, features, false); got != tc.ok {
 				t.Fatalf("validAction = %v, want %v", got, tc.ok)
 			}
 		})

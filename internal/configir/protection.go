@@ -3,6 +3,7 @@ package configir
 import (
 	"fmt"
 	"slices"
+	"unicode/utf8"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
@@ -35,6 +36,16 @@ const (
 	// MaxCCRate bounds the request-per-second thresholds and the minimum
 	// origin request count.
 	MaxCCRate = 10_000_000
+	// Challenge failure bans and page texts (proto v0.29.0, feature
+	// challenge-v2): failures within FailureWindow seconds that ban a
+	// client network (0 off), the ban, and the longest title or hint in
+	// characters.
+	MinFailureThreshold  = 3
+	MaxFailureThreshold  = 100
+	MinFailureBanSeconds = 60
+	MaxFailureBanSeconds = 86400
+	FailureWindow        = 600
+	MaxChallengeText     = 200
 )
 
 // Challenge key roles: nodes sign with current and accept all three.
@@ -59,6 +70,62 @@ type Protection struct {
 	LogJA4  bool   `json:"log_ja4,omitempty"`
 	// CC is set only when the policy is enabled.
 	CC *CCPolicy `json:"cc,omitempty"`
+	// Feature challenge-v2: skip Under Attack and CC challenges for
+	// verified search engine crawlers; the challenge pages' title and hint
+	// (nil: the built-in texts); ban a client network for
+	// FailureBanSeconds after FailureThreshold failed challenge answers
+	// within FailureWindow seconds (0: off).
+	AllowVerifiedBots bool           `json:"allow_verified_bots,omitempty"`
+	ChallengeText     *ChallengeText `json:"challenge_text,omitempty"`
+	FailureThreshold  uint32         `json:"failure_threshold,omitempty"`
+	FailureBanSeconds uint32         `json:"failure_ban_seconds,omitempty"`
+}
+
+// ChallengeText is the title and hint of a site's challenge pages per
+// language, plain text (the data plane escapes it); empty values keep the
+// built-in text.
+type ChallengeText struct {
+	TitleZH string `json:"title_zh,omitempty"`
+	HintZH  string `json:"hint_zh,omitempty"`
+	TitleEN string `json:"title_en,omitempty"`
+	HintEN  string `json:"hint_en,omitempty"`
+}
+
+// validChallengeText reports whether s is a challenge page text: at most
+// 200 characters (code points) without control characters.
+func validChallengeText(s string) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= MaxChallengeText && !hasControl(s)
+}
+
+// buildChallengeText validates the page texts; nil when all are empty.
+func buildChallengeText(t *nodev1.ChallengeText) (*ChallengeText, error) {
+	out := ChallengeText{TitleZH: t.GetTitleZh(), HintZH: t.GetHintZh(), TitleEN: t.GetTitleEn(), HintEN: t.GetHintEn()}
+	for _, v := range []string{out.TitleZH, out.HintZH, out.TitleEN, out.HintEN} {
+		if !validChallengeText(v) {
+			return nil, fmt.Errorf("%w: challenge text of more than %d characters or with control characters", ErrRejected, MaxChallengeText)
+		}
+	}
+	if out == (ChallengeText{}) {
+		return nil, nil
+	}
+	return &out, nil
+}
+
+// buildFailureBan validates the challenge failure ban: threshold 0 (off)
+// or 3-100; the ban 60-86400 seconds while the threshold is set, 0 or
+// that range otherwise.
+func buildFailureBan(p *nodev1.SiteProtection, out *Protection) error {
+	threshold, seconds := p.GetFailureThreshold(), p.GetFailureBanSeconds()
+	if threshold != 0 && (threshold < MinFailureThreshold || threshold > MaxFailureThreshold) {
+		return fmt.Errorf("%w: challenge failure threshold %d out of range (%d-%d)", ErrRejected, threshold, MinFailureThreshold, MaxFailureThreshold)
+	}
+	if (threshold != 0 || seconds != 0) && (seconds < MinFailureBanSeconds || seconds > MaxFailureBanSeconds) {
+		return fmt.Errorf("%w: challenge failure ban %d s out of range (%d-%d)", ErrRejected, seconds, MinFailureBanSeconds, MaxFailureBanSeconds)
+	}
+	if threshold != 0 {
+		out.FailureThreshold, out.FailureBanSeconds = threshold, seconds
+	}
+	return nil
 }
 
 // CCPolicy is an enabled CC mitigation policy with the defaults applied.
@@ -117,8 +184,14 @@ func buildProtection(p *nodev1.SiteProtection) (*Protection, error) {
 	if p == nil {
 		return nil, nil
 	}
-	out := &Protection{UnderAttack: p.GetUnderAttack(), LogJA4: p.GetLogJa4()}
+	out := &Protection{UnderAttack: p.GetUnderAttack(), LogJA4: p.GetLogJa4(), AllowVerifiedBots: p.GetAllowVerifiedBots()}
 	var err error
+	if out.ChallengeText, err = buildChallengeText(p.GetChallengeText()); err != nil {
+		return nil, err
+	}
+	if err = buildFailureBan(p, out); err != nil {
+		return nil, err
+	}
 	if out.UnderAttackChallenge, err = challengeType(p.GetUnderAttackChallenge(), "js", "Under Attack challenge"); err != nil {
 		return nil, err
 	}
