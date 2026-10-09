@@ -198,7 +198,8 @@ test("release deletes own bans the console lifted, unless they expire later", fu
   eq(bans.match("site-a", "192.0.2.51"), "a")
   eq(select(2, bans.match("site-a", "203.0.113.7")), "c1")
   eq(bans.status().entries, 2)
-  local _, err, code = bans.release({ { site_id = "site-a", cidr = "192.0.2.0/24", expires_at = now } })
+  -- A ban a rule made may hold a network (proto v0.29.0): a /15 is none.
+  local _, err, code = bans.release({ { site_id = "site-a", cidr = "192.0.0.0/15", expires_at = now } })
   eq(code, 400); assert(err:find("cidr"), err)
 end)
 
@@ -289,6 +290,63 @@ test("own bans hold an IPv4 address or an IPv6 /64, never loopback", function()
   end
   eq(bans.add_auto("site-a", "2001:db8::/48", 60), nil, "only a /64")
   eq(bans.add_auto("site-a", "192.0.2.0/24", 60), nil, "only an address")
+end)
+
+test("bans rules make hold networks of IPv4 /16-/32 and IPv6 /48-/64, found by lookups", function()
+  -- proto v0.29.0 (waf-v2): the ban action's prefixes and rate limit bans.
+  assert(bans.add_rule("site-a", "192.0.2.77", 24, 0, 600, { reason = "waf_rule", metric = "waf_rule", rule_id = "r1" }))
+  eq(bans.match("site-a", "192.0.2.1"), "a", "the /24")
+  eq(bans.match("site-a", "192.0.3.1"), nil, "outside the /24")
+  eq(bans.match("site-b", "192.0.2.1"), nil, "another site")
+  assert(bans.add_rule("*", "2001:db8:aa:bb::1", 0, 48, 600, { reason = "waf_rule", rule_id = "r2" }))
+  eq(bans.match("site-b", "2001:db8:aa:ffff::9"), "a", "the platform /48")
+  eq(bans.match("site-b", "2001:db8:ab::9"), nil, "outside the /48")
+  assert(bans.add_rule("site-b", "198.51.100.9", 0, 0, 600, { reason = "rate_limit", metric = "rate_limit", observed = 11, threshold = 10,
+    window_seconds = 60, rule_id = "r3" }))
+  eq(bans.match("site-b", "198.51.100.9"), "a", "0: the address")
+  eq(bans.match("site-b", "198.51.100.10"), nil)
+  assert(bans.add_rule("site-c", "::ffff:203.0.113.200", 16, 64, 600, { rule_id = "r4" }))
+  assert(bans.add_rule("site-d", "203.0.113.200", nil, 48, 600, { rule_id = "r5" }), "an IPv6 prefix only: the IPv4 address")
+  eq(bans.match("site-d", "203.0.113.200"), "a")
+  eq(bans.match("site-d", "203.0.113.201"), nil)
+  eq(bans.match("site-c", "203.0.1.1"), "a", "IPv4-mapped: the IPv4 /16")
+  local list = bans.drain()
+  eq(#list, 5)
+  eq(list[1].ip, "192.0.2.0"); eq(list[1].prefix_len, 24); eq(list[1].rule_id, "r1"); eq(list[1].reason, "waf_rule")
+  eq(list[5].ip, "203.0.113.200"); eq(list[5].prefix_len, 32)
+  eq(list[2].site_id, "*"); eq(list[2].ip, "2001:db8:aa::"); eq(list[2].prefix_len, 48)
+  eq(list[3].prefix_len, 32); eq(list[3].observed, 11); eq(list[3].threshold, 10); eq(list[3].window_seconds, 60); eq(list[3].reason, "rate_limit")
+  eq(list[4].ip, "203.0.0.0"); eq(list[4].prefix_len, 16)
+  -- Out of range or protected.
+  eq(select(2, bans.add_rule("site-a", "192.0.2.1", 15, 0, 600, {})), "invalid address")
+  eq(select(2, bans.add_rule("site-a", "2001:db8::1", 0, 47, 600, {})), "invalid address")
+  eq(select(2, bans.add_rule("site-a", "2001:db8::1", 0, 65, 600, {})), "invalid address")
+  eq(select(2, bans.add_rule("site-a", "127.0.0.1", 16, 0, 600, {})), "protected address")
+  eq(select(2, bans.add_rule("bad site", "192.0.2.1", 0, 0, 600, {})), "invalid site id")
+  -- Released when the console lifts them.
+  local n = assert(bans.release({ { site_id = "site-a", cidr = "192.0.2.0/24", expires_at = ngx.now() + 600 },
+    { site_id = "*", cidr = "2001:db8:aa::/48", expires_at = ngx.now() + 600 } }))
+  eq(n, 2)
+  eq(bans.match("site-a", "192.0.2.1"), nil)
+  eq(bans.match("site-b", "2001:db8:aa:ffff::9"), nil)
+end)
+
+test("a rule bans a network once: never while a ban holds it", function()
+  assert(bans.add_rule("site-a", "192.0.2.77", 24, 0, 600, { rule_id = "r1" }))
+  eq(select(2, bans.add_rule("site-a", "192.0.2.78", 24, 0, 600, { rule_id = "r1" })), "held", "the same /24 again")
+  eq(select(2, bans.add_rule("site-a", "192.0.2.78", 32, 0, 600, { rule_id = "r1" })), "held", "inside the /24")
+  assert(bans.add_rule("site-a", "192.0.2.78", 16, 0, 600, { rule_id = "r1" }), "a wider network is not held")
+  -- Console bans hold networks too, platform bans for every site.
+  put("1", { ban("m1", "198.51.100.0/24", "platform", "m"), ban("c1", "203.0.113.0/24", "site", "c", nil, "site-a") })
+  eq(select(2, bans.add_rule("site-b", "198.51.100.7", 32, 0, 600, {})), "held", "a platform ban")
+  eq(select(2, bans.add_rule("*", "198.51.100.7", 24, 0, 600, {})), "held", "a platform ban at platform scope")
+  eq(select(2, bans.add_rule("site-a", "203.0.113.7", 32, 0, 600, {})), "held", "the site's console ban")
+  assert(bans.add_rule("site-b", "203.0.113.7", 32, 0, 600, {}), "another site's ban holds nothing here")
+  assert(bans.add_rule("*", "203.0.113.7", 32, 0, 600, {}), "a site's ban holds nothing for the platform")
+  eq(#bans.drain(), 4, "only the written bans are reported")
+  -- Automatic bans keep their own semantics (extend and report again).
+  assert(bans.add_auto("site-a", "192.0.2.1", 60))
+  assert(bans.add_auto("site-a", "192.0.2.1", 60))
 end)
 
 test("add_auto validates its input and extends an own ban", function()

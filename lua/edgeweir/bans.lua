@@ -2,8 +2,9 @@
 --
 -- Console bans arrive from the agent through the control API (PUT replaces
 -- the whole set, POST applies a delta); the node's own automatic bans are
--- added with add_auto() and queued for the agent to report, and deleted
--- with release() when the console lifts them. When a site's automatic ban
+-- added with add_auto(), the bans rules make (proto v0.29.0: an IPv4 /16-/32
+-- or IPv6 /48-/64 network, once) with add_rule(), both queued for the agent
+-- to report, and deleted with release() when the console lifts them. When a site's automatic ban
 -- goes (own or console automatic), CC counts its client afresh
 -- (edgeweir.cc.lifted). Nothing here reloads nginx.
 --
@@ -15,7 +16,12 @@
 --        automatic) or a (this node's own); the TTL is the remaining
 --        lifetime, so expired bans disappear by themselves
 --   #len|<scope>  prefix lengths of the scope's console bans ("4/32,6/48")
---   #loc|<scope>  the scope has (had) own bans (always /32 and /64)
+--   #loc|<scope>  the scope has (had) own bans of /32 and /64
+--   #lop|<scope>  the scope has (had) own bans of other lengths (bans
+--                 rules made, proto v0.29.0): #lol|<scope>|<family>/<len>
+--                 marks each such length (IPv4 16-31, IPv6 48-63)
+--   #once|<key>   a rule's ban of the network of e|... key is being
+--                 written (5 s): concurrent requests write it once
 --   #ver          bumped when a length list changes; workers cache the
 --                 lists per version
 --   #seq          console sequence of the set (decimal, zero-padded to 20
@@ -709,11 +715,33 @@ end
 -- ---------------------------------------------------------------------
 -- The node's own bans.
 
+-- mask clears the bits of bytes after len.
+local function mask(bytes, len)
+  for i = 1, #bytes do
+    local keep = len - (i - 1) * 8
+    if keep <= 0 then
+      bytes[i] = 0
+    elseif keep < 8 then
+      bytes[i] = band(bytes[i], band(lshift(0xff, 8 - keep), 0xff))
+    end
+  end
+  return bytes
+end
+
+-- rule_length reports whether len is what a ban a rule made may hold for
+-- an address of n bytes: IPv4 16-32, IPv6 48-64.
+local function rule_length(n, len)
+  if n == 4 then return len >= 16 and len <= 32 end
+  return len >= 48 and len <= 64
+end
+
 -- own_network returns the text, masked bytes and length of what an own ban
 -- of client holds: an IPv4 address (/32) or an IPv6 /64. client is an
 -- address (an IPv6 one stands for its /64) or such a prefix
--- ("2001:db8:1:2::/64"; "/128" from older reports is taken as given).
-local function own_network(client)
+-- ("2001:db8:1:2::/64"; "/128" from older reports is taken as given);
+-- with rules, also the IPv4 /16-/32 and IPv6 /48-/64 networks of bans
+-- rules made.
+local function own_network(client, rules)
   if not find(client or "", "/", 1, true) then
     local text, bytes, len = ipaddr.client_network(client)
     if not text then
@@ -722,15 +750,42 @@ local function own_network(client)
     return match(text, "^[^/]+"), bytes, len
   end
   local p = ipaddr.parse_prefix(client)
-  if not p or not (p.len == 32 and #p.bytes == 4) and not (#p.bytes == 16 and (p.len == 64 or p.len == 128)) then
+  local plain = (p and #p.bytes == 4 and p.len == 32) or (p and #p.bytes == 16 and (p.len == 64 or p.len == 128))
+  if not p or not (plain or (rules and rule_length(#p.bytes, p.len))) then
     return nil
   end
-  if p.len == 64 then
-    for i = 9, 16 do
-      p.bytes[i] = 0
-    end
-  end
+  mask(p.bytes, p.len)
   return ipaddr.format(p.bytes), p.bytes, p.len
+end
+
+-- rule_network returns the text, masked bytes and length of the network a
+-- rule bans for addr: an IPv4 address (IPv4-mapped IPv6 too) masked to
+-- prefix4, an IPv6 address to prefix6.
+local function rule_network(addr, prefix4, prefix6)
+  local a = ipaddr.parse(addr)
+  if not a then
+    return nil
+  end
+  if #a == 16 and a[11] == 0xff and a[12] == 0xff then
+    local mapped = true
+    for i = 1, 10 do
+      if a[i] ~= 0 then mapped = false break end
+    end
+    if mapped then a = { a[13], a[14], a[15], a[16] } end
+  end
+  local len
+  if #a == 4 then
+    len = tonumber(prefix4)
+    if not len or len == 0 then len = 32 end
+  else
+    len = tonumber(prefix6)
+    if not len or len == 0 then len = 64 end
+  end
+  if not rule_length(#a, len) then
+    return nil
+  end
+  mask(a, len)
+  return ipaddr.format(a), a, len
 end
 
 -- protected reports networks the node never bans on its own: loopback and
@@ -747,6 +802,21 @@ local function protected(bytes)
   return true
 end
 
+-- own_length records that scope has own bans of len for an address of n
+-- bytes, so that lookups try that length.
+local function own_length(dict, scope, n, len)
+  if (n == 4 and len == 32) or (n == 16 and (len == 64 or len == 128)) then
+    if dict:safe_add("#loc|" .. scope, true) then
+      dict:incr("#ver", 1)
+    end
+    return
+  end
+  local added = dict:safe_add("#lol|" .. scope .. "|" .. ((n == 4) and "4/" or "6/") .. len, true)
+  if dict:safe_add("#lop|" .. scope, true) or added then
+    dict:incr("#ver", 1)
+  end
+end
+
 -- add_auto bans a client on a site (site_id "*": every site, the
 -- platform scope of scan protection) for ttl seconds and queues it for
 -- reporting: an IPv4 address or an IPv6 /64 (see own_network). trigger =
@@ -755,12 +825,18 @@ end
 -- ones are refused. Returns true, or nil and an error ("full" when no room
 -- is left without evicting a console ban).
 function _M.add_auto(site_id, client, ttl, trigger)
-  if site_id ~= PLATFORM and not valid_id(site_id) then
-    return nil, "invalid site id"
-  end
   local ip, bytes, len = own_network(client)
   if not ip then
     return nil, "invalid address"
+  end
+  return _M.add_own(site_id, ip, bytes, len, ttl, trigger)
+end
+
+-- add_own bans the network ip / len (bytes masked) of scope site_id; see
+-- add_auto. trigger.rule_id names the rule of a ban a rule made.
+function _M.add_own(site_id, ip, bytes, len, ttl, trigger)
+  if site_id ~= PLATFORM and not valid_id(site_id) then
+    return nil, "invalid site id"
   end
   if protected(bytes) then
     return nil, "protected address"
@@ -783,6 +859,7 @@ function _M.add_auto(site_id, client, ttl, trigger)
     metric = type(trigger.metric) == "string" and sub(trigger.metric, 1, 64) or "",
     observed = tonumber(trigger.observed) or 0, threshold = tonumber(trigger.threshold) or 0,
     window_seconds = floor(tonumber(trigger.window_seconds) or 0),
+    rule_id = valid_id(trigger.rule_id) and trigger.rule_id or nil,
   })
   local result, err = true, nil
   local old = dict:get(key)
@@ -791,9 +868,7 @@ function _M.add_auto(site_id, client, ttl, trigger)
     if oexp and oexp > expires then
       expires = oexp
     end
-    if dict:safe_add("#loc|" .. site_id, true) then
-      dict:incr("#ver", 1)
-    end
+    own_length(dict, site_id, #bytes, len)
     trim(dict, now)
     local id = "local-" .. tostring(dict:incr("#aid", 1))
     local value = "a|" .. id .. "|" .. tostring(expires) .. "|" .. ip .. "/" .. len
@@ -817,8 +892,8 @@ end
 
 -- release deletes own bans the console lifted:
 -- list = [{site_id ("*" for a platform one), cidr, expires_at}], IPv4
--- addresses or IPv6 /64 (or
--- /128 of older own bans). An own ban there
+-- addresses or IPv6 /64 (or /128 of older own bans), and the networks of
+-- bans rules made (IPv4 /16-/32, IPv6 /48-/64). An own ban there
 -- is deleted only if it expires no later than expires_at (one second of
 -- slack for rounding): an own ban of the address made after the lift
 -- lasts longer and stays. Console bans are not touched. CC counts the
@@ -834,7 +909,7 @@ function _M.release(list)
     if type(b) ~= "table" or (b.site_id ~= PLATFORM and not valid_id(b.site_id)) then
       return nil, "#" .. i .. ": invalid site_id", 400
     end
-    local ip, bytes, len = own_network(type(b.cidr) == "string" and find(b.cidr, "/", 1, true) and b.cidr or "")
+    local ip, bytes, len = own_network(type(b.cidr) == "string" and find(b.cidr, "/", 1, true) and b.cidr or "", true)
     if not ip then
       return nil, "#" .. i .. ": invalid cidr", 400
     end
@@ -861,6 +936,58 @@ function _M.release(list)
   end
   dict:delete("#lock")
   return n
+end
+
+-- held reports whether a ban (console or own) of scope, or of the platform
+-- for a site scope, holds the whole network bytes / len.
+function _M.held(scope, bytes, len)
+  local dict = shdict()
+  local ver = dict:get("#ver")
+  if not ver then
+    return false
+  end
+  if ver ~= _M._cache_ver() then
+    _M._reset_cache(ver)
+  end
+  local scopes = { scope }
+  if scope ~= PLATFORM then
+    scopes[2] = PLATFORM
+  end
+  for _, sc in ipairs(scopes) do
+    if dict:get(key_for(sc, bytes, len)) then
+      return true
+    end
+    local lens = _M._lengths(dict, sc)
+    local list = lens and lens[(#bytes == 4) and "4" or "6"]
+    for i = 1, list and #list or 0 do
+      if list[i] <= len and dict:get(key_for(sc, bytes, list[i])) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- add_rule bans the network of addr a rule asked for (ban action, rate
+-- limit ban; proto v0.29.0): addr masked to prefix4 (IPv4, 16-32, 0 = 32)
+-- or prefix6 (IPv6, 48-64, 0 = 64), at scope ("*": every site) for ttl
+-- seconds, queued for reporting with trigger (reason waf_rule or
+-- rate_limit, rule_id). Once: nothing is written or reported while a ban
+-- already holds the network, or while another request writes it. Returns
+-- true, or nil and an error ("held" in those cases).
+function _M.add_rule(scope, addr, prefix4, prefix6, ttl, trigger)
+  local ip, bytes, len = rule_network(addr, prefix4, prefix6)
+  if not ip then
+    return nil, "invalid address"
+  end
+  if _M.held(scope, bytes, len) then
+    return nil, "held"
+  end
+  local dict = shdict()
+  if not dict:safe_add("#once|" .. key_for(scope, bytes, len), true, 5) then
+    return nil, "held"
+  end
+  return _M.add_own(scope, ip, bytes, len, ttl, trigger)
 end
 
 -- drain returns and removes up to max (default 1000) queued own bans.
@@ -907,8 +1034,9 @@ local function lengths(dict, scope)
   end
   local s = dict:get("#len|" .. scope)
   local own = dict:get("#loc|" .. scope)
+  local other = dict:get("#lop|" .. scope)
   c = false
-  if s or own then
+  if s or own or other then
     c = {}
     for fam, len in string.gmatch(s or "", "([46])/(%d+)") do
       add_len(c, fam, tonumber(len))
@@ -917,10 +1045,22 @@ local function lengths(dict, scope)
       add_len(c, "4", 32)
       add_len(c, "6", 64)
     end
+    if other then
+      -- Own bans rules made: IPv4 /16-/32, IPv6 /48-/64.
+      for len = 16, 32 do
+        if dict:get("#lol|" .. scope .. "|4/" .. len) then add_len(c, "4", len) end
+      end
+      for len = 48, 64 do
+        if dict:get("#lol|" .. scope .. "|6/" .. len) then add_len(c, "6", len) end
+      end
+    end
   end
   cache[scope] = c
   return c
 end
+_M._lengths = lengths
+_M._cache_ver = function() return cache_ver end
+_M._reset_cache = function(ver) cache, cache_ver = {}, ver end
 
 local function lookup(dict, scope, lens, bytes)
   local list = lens[(#bytes == 4) and "4" or "6"]
