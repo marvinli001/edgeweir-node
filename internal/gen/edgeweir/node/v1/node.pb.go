@@ -3575,7 +3575,10 @@ type AccessLog struct {
 	WafBlocked bool     `protobuf:"varint,14,opt,name=waf_blocked,json=wafBlocked,proto3" json:"waf_blocked,omitempty"`
 	// Request id the node answered with (X-Request-Id; the client's when it
 	// was valid). Error pages show the same id. Added in v0.12.0.
-	RequestId     string `protobuf:"bytes,15,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	RequestId string `protobuf:"bytes,15,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Rules with the log action that asked for this line (at most 8): such
+	// lines are written whatever the sample rate. Added in v0.29.0.
+	RuleIds       []string `protobuf:"bytes,16,rep,name=rule_ids,json=ruleIds,proto3" json:"rule_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3713,6 +3716,13 @@ func (x *AccessLog) GetRequestId() string {
 		return x.RequestId
 	}
 	return ""
+}
+
+func (x *AccessLog) GetRuleIds() []string {
+	if x != nil {
+		return x.RuleIds
+	}
+	return nil
 }
 
 // ReportLogsRequest is an immutable, ordered batch from the private node spool.
@@ -3912,8 +3922,9 @@ type Ban struct {
 	// At most 7 days after created_at.
 	ExpiresAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	Source    BanSource              `protobuf:"varint,6,opt,name=source,proto3,enum=edgeweir.node.v1.BanSource" json:"source,omitempty"`
-	// Reason code: abuse, attack, scanner, spam, other (manual), cc_ip_rate or
-	// unknown_host_scan (automatic).
+	// Reason code: abuse, attack, scanner, spam, other (manual), cc_ip_rate,
+	// unknown_host_scan or challenge_failures (automatic), waf_rule or
+	// rate_limit (made by a rule, BAN_SOURCE_AUTO; since v0.29.0).
 	Reason        string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -4178,7 +4189,10 @@ type AutoBan struct {
 	// BAN_SCOPE_PLATFORM: every site of the node, from scan protection
 	// (UnknownHosts, reason unknown_host_scan); unspecified is
 	// BAN_SCOPE_SITE. Added in v0.25.0.
-	Scope         BanScope `protobuf:"varint,10,opt,name=scope,proto3,enum=edgeweir.node.v1.BanScope" json:"scope,omitempty"`
+	Scope BanScope `protobuf:"varint,10,opt,name=scope,proto3,enum=edgeweir.node.v1.BanScope" json:"scope,omitempty"`
+	// The rule of a ban made by a rule (reasons waf_rule and rate_limit: any
+	// prefix of 16-32 bits for IPv4 and 48-64 for IPv6). Added in v0.29.0.
+	RuleId        string `protobuf:"bytes,11,opt,name=rule_id,json=ruleId,proto3" json:"rule_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4281,6 +4295,13 @@ func (x *AutoBan) GetScope() BanScope {
 		return x.Scope
 	}
 	return BanScope_BAN_SCOPE_UNSPECIFIED
+}
+
+func (x *AutoBan) GetRuleId() string {
+	if x != nil {
+		return x.RuleId
+	}
+	return ""
 }
 
 // ReportBansRequest uploads automatic bans, at most 1000 per request.
@@ -5144,7 +5165,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x10ErrorParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1a\n" +
-	"\x18ReportTaskResultResponse\"\xc1\x03\n" +
+	"\x18ReportTaskResultResponse\"\xdc\x03\n" +
 	"\tAccessLog\x12.\n" +
 	"\x04time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x17\n" +
 	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x1b\n" +
@@ -5167,7 +5188,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\vwaf_blocked\x18\x0e \x01(\bR\n" +
 	"wafBlocked\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x0f \x01(\tR\trequestId\"k\n" +
+	"request_id\x18\x0f \x01(\tR\trequestId\x12\x19\n" +
+	"\brule_ids\x18\x10 \x03(\tR\aruleIds\"k\n" +
 	"\x11ReportLogsRequest\x12%\n" +
 	"\x0ebatch_sequence\x18\x01 \x01(\x04R\rbatchSequence\x12/\n" +
 	"\x04logs\x18\x02 \x03(\v2\x1b.edgeweir.node.v1.AccessLogR\x04logs\"W\n" +
@@ -5202,7 +5224,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"removedIds\x12\x1a\n" +
 	"\bsequence\x18\x04 \x01(\x04R\bsequence\x12\x12\n" +
 	"\x04more\x18\x05 \x01(\bR\x04more\x12=\n" +
-	"\x0flifted_own_bans\x18\x06 \x03(\v2\x15.edgeweir.node.v1.BanR\rliftedOwnBans\"\xef\x02\n" +
+	"\x0flifted_own_bans\x18\x06 \x03(\v2\x15.edgeweir.node.v1.BanR\rliftedOwnBans\"\x88\x03\n" +
 	"\aAutoBan\x12\x17\n" +
 	"\asite_id\x18\x01 \x01(\tR\x06siteId\x12\x12\n" +
 	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x129\n" +
@@ -5216,7 +5238,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\tthreshold\x18\b \x01(\x01R\tthreshold\x12%\n" +
 	"\x0ewindow_seconds\x18\t \x01(\rR\rwindowSeconds\x120\n" +
 	"\x05scope\x18\n" +
-	" \x01(\x0e2\x1a.edgeweir.node.v1.BanScopeR\x05scope\"B\n" +
+	" \x01(\x0e2\x1a.edgeweir.node.v1.BanScopeR\x05scope\x12\x17\n" +
+	"\arule_id\x18\v \x01(\tR\x06ruleId\"B\n" +
 	"\x11ReportBansRequest\x12-\n" +
 	"\x04bans\x18\x01 \x03(\v2\x19.edgeweir.node.v1.AutoBanR\x04bans\"0\n" +
 	"\x12ReportBansResponse\x12\x1a\n" +
