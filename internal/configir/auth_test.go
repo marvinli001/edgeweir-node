@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -255,6 +256,37 @@ func TestAuthSecrets(t *testing.T) {
 	raw, _ := json.Marshal(got[0])
 	if !strings.Contains(string(raw), `"users":[{"name":"alice","iterations":10000`) || strings.Contains(string(raw), "credential") {
 		t.Fatalf("site table JSON %s", raw)
+	}
+}
+
+// TestAuthSecretIterationBounds: the node computes 1000 to 200000 PBKDF2
+// iterations; users hashed with fewer or more are left out, and a rule
+// left without users refuses its requests.
+func TestAuthSecretIterationBounds(t *testing.T) {
+	user := func(name string, n int) string {
+		return `{"name":"` + name + `","hash":"pbkdf2-sha256$` + strconv.Itoa(n) + `$` + strings.Repeat("ab", 16) + `$` + strings.Repeat("cd", 32) + `"}`
+	}
+	basic := &nodev1.AuthRule{Id: "b", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "b", CredentialVersion: 1, Basic: &nodev1.BasicAuth{Realm: "R"}}
+	attach := func(users ...string) *Plan {
+		rules, err := buildAuthRules(authSite(proto.Clone(basic).(*nodev1.AuthRule)), AddressPolicy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &Plan{Sites: []Site{{ID: "s", Origins: []Origin{{ID: "o"}}, AuthRules: rules}}}
+		p.AttachCredentials(map[string]Credential{"b": {Version: 1, SecretKey: `{"users":[` + strings.Join(users, ",") + `]}`}})
+		return p
+	}
+	p := attach(user("low", 999), user("min", 1000), user("max", 200000), user("high", 200001), user("huge", 2000000000))
+	var names []string
+	for _, u := range p.Sites[0].AuthRules[0].Users {
+		names = append(names, u.Name+":"+strconv.Itoa(u.Iterations))
+	}
+	if !slices.Equal(names, []string{"min:1000", "max:200000"}) || len(p.Warnings) != 0 {
+		t.Fatalf("users %v, warnings %v", names, p.Warnings)
+	}
+	p = attach(user("low", 999), user("high", 200001))
+	if p.Sites[0].AuthRules[0].Users != nil || len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "secret without usable users") {
+		t.Fatalf("out-of-range users: %+v %v", p.Sites[0].AuthRules[0], p.Warnings)
 	}
 }
 
