@@ -32,8 +32,9 @@ package main
 //	              "<call> error <error>"
 //	GET /h2-probes  "<protocol> <count>" per protocol of the /health
 //	              requests the HTTP/2 origins received
-//	GET /ws?host=&target=node:80  a WebSocket echo of "hello" through the
-//	              node: the echo ("ws <protocol the origin saw> hello"), or
+//	GET /ws?host=&target=node:80&origin=  a WebSocket echo of "hello"
+//	              through the node (with an Origin header when origin is
+//	              set): the echo ("ws <protocol the origin saw> hello"), or
 //	              "error <error>"
 
 import (
@@ -327,7 +328,11 @@ func wsCheck(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	target := cmpOr(r.URL.Query().Get("target"), "node:80")
-	c, _, err := websocket.Dial(ctx, "ws://"+target+"/ws", &websocket.DialOptions{Host: r.URL.Query().Get("host")})
+	opts := &websocket.DialOptions{Host: r.URL.Query().Get("host")}
+	if origin := r.URL.Query().Get("origin"); origin != "" {
+		opts.HTTPHeader = http.Header{"Origin": {origin}}
+	}
+	c, _, err := websocket.Dial(ctx, "ws://"+target+"/ws", opts)
 	if err != nil {
 		fmt.Fprintf(w, "error %v", err)
 		return

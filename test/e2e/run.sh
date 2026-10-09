@@ -72,8 +72,10 @@
 # (After 17: G10 suffix and pattern domains, unknown host handling and scan
 # protection; G11 several certificates per site chosen by the ClientHello,
 # client certificates, TLS session resumption, ticket key rotation and no
-# early data; G12 Basic, signed URLs A-D and forward authentication; then
-# the base configuration again.)
+# early data; G12 Basic, signed URLs A-D and forward authentication; G13
+# site block and allow lists, CORS preflights at the edge, hotlink
+# protection, user agents, security headers and WebSocket origins; then the
+# base configuration again.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1401,6 +1403,83 @@ leaks=$(compose logs node 2>&1 | grep -c 'g12-password\|g12-url-key\|g12-backup-
 [ "$leaks" = 0 ] || fail "the node's logs carry a G12 secret ($leaks lines)"
 pass "G12: no password, hash or key in the node's logs"
 rev=$(curl -fsS -X POST "$HELPER/g12?enabled=false")
+WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+
+# G13 (access-control-v1, ADR-0039): the site's block and allow lists by
+# the PROXY protocol's client address, CORS preflights answered at the edge
+# and CORS headers on cache hits, hotlink protection (403 and 302), user
+# agents, security headers on cache hits without Server, WebSocket origins
+# (g13.go). req, status_of and header_of are G12's.
+rev=$(curl -fsS -X POST "$HELPER/g13")
+WAIT_SECS=60 wait_for "G13 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+r=$(pp_request ac.g13.test 198.51.100.130 /g13-list | tr -d '\r')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 ip-blocked" ] || fail "site block list: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ "$(pp_status ac.g13.test 198.51.100.131)" = 200 ] || fail "a client on the site's block and allow lists"
+[ "$(pp_status ac.g13.test 198.51.100.129)" = 200 ] || fail "a client on neither list"
+resp=$(curl -fsS -X POST "$HELPER/ban?site=site-g13&cidr=198.51.100.132/31")
+WAIT_SECS=10 wait_for "site ban ${resp% *}" pp_banned ac.g13.test 198.51.100.133
+[ "$(pp_status ac.g13.test 198.51.100.132)" = 200 ] || fail "a site ban applied to a client on the site's allow list"
+curl -fsS -X POST "$HELPER/unban?id=${resp% *}" >/dev/null
+pass "G13: site block list 403 ip-blocked; the site's allow list skips it and the site's bans"
+
+r=$(req ac.g13.test /api/items -X OPTIONS -H 'Origin: https://app.g13.test' -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type')
+[ "$(status_of "$r")" = 204 ] || fail "CORS preflight: $(status_of "$r")"
+for want in 'Access-Control-Allow-Origin: https://app.g13.test' 'Access-Control-Allow-Credentials: true' \
+  'Access-Control-Allow-Methods: GET, POST' 'Access-Control-Allow-Headers: content-type' 'Access-Control-Max-Age: 600' \
+  'Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers' 'Cache-Control: no-store' 'X-Content-Type-Options: nosniff'; do
+  grep -qixF "$want" <<<"$r" || fail "CORS preflight without '$want': $r"
+done
+grep -q '^OPTIONS ' <<<"$r" && fail "the preflight reached the origin: $r"
+r=$(req ac.g13.test /api/items -X OPTIONS -H 'Origin: https://evil.g13.test' -H 'Access-Control-Request-Method: POST')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 cors-origin-denied" ] || fail "CORS preflight of another origin: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ -z "$(header_of "$r" Access-Control-Allow-Origin)" ] || fail "Access-Control-Allow-Origin for another origin"
+req ac.g13.test /api/data -H 'Origin: https://app.g13.test' >/dev/null
+r=$(req ac.g13.test /api/data -H 'Origin: https://app.g13.test')
+[ "$(header_of "$r" X-Cache)" = HIT ] || fail "CORS: the second request is not a cache hit"
+[ "$(header_of "$r" Access-Control-Allow-Origin) $(header_of "$r" Access-Control-Allow-Credentials) $(header_of "$r" Access-Control-Expose-Headers)" = "https://app.g13.test true X-Total" ] ||
+  fail "CORS headers on a cache hit: $r"
+[[ "$(header_of "$r" Vary)" == *Origin* ]] || fail "Vary without Origin: $(header_of "$r" Vary)"
+r=$(req ac.g13.test /api/data -H 'Origin: https://evil.g13.test')
+[ "$(header_of "$r" X-Cache)" = HIT ] && [ -z "$(header_of "$r" Access-Control-Allow-Origin)" ] || fail "another origin got the cached object's CORS headers"
+pass "G13: CORS preflights answered at the edge (204 with the Origin, credentials and Vary; 403 for other origins), CORS headers on cache hits"
+
+r=$(req ac.g13.test /img/a.png -H 'Referer: https://evil.g13.test/page')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 hotlink-denied" ] || fail "hotlink: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ "$(status_of "$(req ac.g13.test /img/a.png -H 'Referer: https://www.ac.g13.test/page')")" = 200 ] || fail "hotlink: a Referer of the site's own domain"
+[ "$(status_of "$(req ac.g13.test /img/a.png)")" = 200 ] || fail "hotlink: no Referer"
+[ "$(status_of "$(req ac.g13.test /img/a.css -H 'Referer: https://evil.g13.test/')")" = 200 ] || fail "hotlink: another extension"
+r=$(req redir.g13.test /img/a.png -H 'Referer: https://evil.g13.test/')
+loc=$(header_of "$r" Location)
+[ "$(status_of "$r")" = 302 ] && [[ "$loc" == */hotlink.png ]] && [ "$(header_of "$r" Cache-Control)" = no-store ] ||
+  fail "hotlink redirect: $(status_of "$r") $loc $(header_of "$r" Cache-Control)"
+[ "$(status_of "$(req redir.g13.test /hotlink.png -H 'Referer: https://evil.g13.test/')")" = 200 ] || fail "hotlink: the redirect target itself"
+pass "G13: hotlink 403 for other sites' pages, the site's domains and empty referers pass, 302 to the target"
+
+r=$(req ac.g13.test /ua -A 'BadBot/1.0')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 ua-denied" ] || fail "user agent deny: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ "$(status_of "$(req ac.g13.test /ua -A 'Googlebot BadBot/1.0')")" = 200 ] || fail "an allowed user agent that a deny rule matches too"
+pass "G13: user agents denied with 403 ua-denied, an allow rule wins"
+
+req ac.g13.test /sec >/dev/null
+r=$(req ac.g13.test /sec)
+[ "$(header_of "$r" X-Cache)" = HIT ] || fail "security headers: the second request is not a cache hit"
+[ "$(header_of "$r" X-Content-Type-Options) $(header_of "$r" X-Frame-Options) $(header_of "$r" Referrer-Policy)" = "nosniff DENY no-referrer" ] ||
+  fail "security headers on a cache hit: $r"
+grep -qi '^Server:' <<<"$r" && fail "Server header on a cache hit of ac.g13.test: $(grep -i '^Server:' <<<"$r")"
+grep -qi '^Server:' <<<"$(req ac.g13.test /img/b.png -H 'Referer: https://evil.g13.test/')" && fail "Server header on an error page of ac.g13.test"
+grep -qi '^Server:' <<<"$(req demo.test /g13-server)" || fail "no Server header on a site without security headers"
+pass "G13: security headers on cache hits and error pages, Server hidden"
+
+ws_req() { req ws.g13.test /ws -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$@"; }
+r=$(ws_req -H 'Origin: https://evil.g13.test')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 websocket-origin-denied" ] || fail "WebSocket from another origin: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+r=$(ws_req)
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 websocket-origin-denied" ] || fail "WebSocket without Origin: $(status_of "$r")"
+r=$(curl -fsS "$HELPER/ws?host=ws.g13.test&origin=http://ws.g13.test")
+[ "$r" = "ws HTTP/1.1 hello" ] || fail "WebSocket from the allowed origin: '$r'"
+pass "G13: WebSocket upgrades only from the site's origins (403 websocket-origin-denied)"
+rev=$(curl -fsS -X POST "$HELPER/g13?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
