@@ -59,7 +59,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "8e63f8cecdd7e637",
+            conf_id = "41b3ff4b0b0b9070",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -1002,10 +1002,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -1185,10 +1186,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -1364,10 +1366,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -1536,10 +1539,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -1716,10 +1720,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -1908,10 +1913,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -2095,10 +2101,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -2275,10 +2282,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -2453,10 +2461,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
@@ -2639,10 +2648,11 @@ http {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
-            # Timeouts towards origins are per site in the origin layer; these
-            # only bound the local hop (long for WebSocket).
-            proxy_send_timeout 3600s;
-            proxy_read_timeout 3600s;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
 
             proxy_cache $edgeweir_cache_zone;
             proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
