@@ -43,6 +43,12 @@ function _M.configure(servers, use_ipv6)
   ipv6 = use_ipv6 == true
 end
 
+-- nameservers returns the configured nameservers (edgeweir.bots looks
+-- crawlers up with them).
+function _M.nameservers()
+  return nameservers
+end
+
 local function is_ip(host)
   if host:find("^%d+%.%d+%.%d+%.%d+$") then
     return true

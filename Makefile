@@ -100,7 +100,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 		resty -I /lua --shdict "edgeweir_cc 8m" --shdict "edgeweir_bans 4m" /t/cc.lua && \
 		resty -I /lua --shdict "edgeweir_rate_61 256k" --shdict "edgeweir_rate_62 256k" --shdict "edgeweir_policy_logs 1m" /t/ratelimit.lua && \
 		resty -I /lua --shdict "edgeweir_bans 4m" /t/bans.lua && resty -I /lua --shdict "edgeweir_bans 64k" /t/bans_memory.lua && \
-		resty -I /lua /t/body.lua && \
+		resty -I /lua /t/body.lua && resty -I /lua --shdict "edgeweir_bots 1m" /t/bots.lua && \
 		resty -I /lua --shdict "edgeweir_l4 1m" --shdict "edgeweir_l4_state 1m" --shdict "edgeweir_l4_stats 1m" /t/l4.lua'
 
 .PHONY: docker
