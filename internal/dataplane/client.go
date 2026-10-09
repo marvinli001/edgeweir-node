@@ -206,6 +206,9 @@ type MinuteStats struct {
 	// LoggedRules counts the matches of rules with the log action, by rule
 	// id (the heaviest 20 of the minute).
 	LoggedRules map[string]uint64 `json:"logged_rules"`
+	// AuthFailures counts the requests access authentication refused
+	// (feature access-auth-v1).
+	AuthFailures uint64 `json:"auth_failures"`
 }
 
 // Client talks to the control socket.

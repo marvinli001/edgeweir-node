@@ -343,6 +343,7 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			TopIps:        topCounters(m.TopIPs),
 			WafRules:      wafRules(m.WAFRules),
 			LoggedRules:   loggedRules(m.LoggedRules),
+			AuthFailures:  m.AuthFailures,
 		})
 	}
 	return out

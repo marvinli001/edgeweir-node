@@ -245,6 +245,9 @@ type Site struct {
 	// the agent holds.
 	Purge    bool      `json:"purge,omitempty"`
 	PurgeKey *PurgeRef `json:"-"`
+	// AuthRules is the site's access authentication in order (feature
+	// access-auth-v1, ADR-0038).
+	AuthRules []AuthRule `json:"auth_rules,omitempty"`
 	// Maintenance is the site's maintenance mode (nil: off).
 	Maintenance *Maintenance `json:"maintenance,omitempty"`
 	// Charset adds a charset to text responses (nil: off).
@@ -327,7 +330,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -536,6 +539,11 @@ func (p *Plan) CredentialRefs() map[string]uint64 {
 		if s.PurgeKey != nil {
 			refs[s.PurgeKey.CredentialID] = s.PurgeKey.CredentialVersion
 		}
+		for _, r := range s.AuthRules {
+			if r.Credential != nil {
+				refs[r.Credential.CredentialID] = r.Credential.CredentialVersion
+			}
+		}
 		for _, o := range s.Origins {
 			if o.S3 != nil {
 				refs[o.S3.CredentialID] = o.S3.CredentialVersion
@@ -687,6 +695,10 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		if contents[id], err = buildContent(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
+		// Checked here for every site; built again below with the address policy.
+		if _, err = buildAuthRules(s, AddressPolicy{}); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if ports[id], err = buildSitePorts(s, listenerTLS); err != nil {
 			return nil, err
 		}
@@ -828,6 +840,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.AdditionalCertificateIDs = additional[id]
 		site.ClientCertificate = clientCerts[id]
 		site.Ports = ports[id]
+		if site.AuthRules, err = buildAuthRules(s, policy); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
@@ -1371,6 +1386,23 @@ func (p *Plan) AttachCredentials(creds map[string]Credential) {
 			continue
 		}
 		s.Origins = origins
+		// Access authentication without its secret refuses its requests
+		// (fail closed); the rule stays.
+		if len(s.AuthRules) > 0 {
+			rules := make([]AuthRule, len(s.AuthRules))
+			copy(rules, s.AuthRules)
+			for i := range rules {
+				var c Credential
+				var ok bool
+				if rules[i].Credential != nil {
+					c, ok = creds[rules[i].Credential.CredentialID]
+				}
+				if why := rules[i].attachAuthSecret(c, ok); why != "" {
+					p.Warnings = append(p.Warnings, fmt.Sprintf("site %s: access authentication rule %s: %s; its requests are refused", s.ID, rules[i].ID, why))
+				}
+			}
+			s.AuthRules = rules
+		}
 		sites = append(sites, s)
 	}
 	p.Sites = sites

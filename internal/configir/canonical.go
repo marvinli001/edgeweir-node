@@ -170,6 +170,17 @@ func CanonicalizeSite(s *nodev1.Site) {
 	slices.SortStableFunc(s.BulkRedirects, func(a, b *nodev1.BulkRedirect) int {
 		return cmp.Compare(a.GetSource(), b.GetSource())
 	})
+	// Access authentication rules keep their order; their lists are sets.
+	for _, r := range s.AuthRules {
+		r.Domains = sortedSet(r.Domains)
+		r.PathPrefixes = sortedSet(r.PathPrefixes)
+		r.Extensions = sortedSet(r.Extensions)
+		r.ExcludePathPrefixes = sortedSet(r.ExcludePathPrefixes)
+		if f := r.Forward; f != nil {
+			f.RequestHeaders = sortedSet(f.RequestHeaders)
+			f.ResponseHeaders = sortedSet(f.ResponseHeaders)
+		}
+	}
 	canonicalizeRules(s.Rules)
 }
 
@@ -237,4 +248,10 @@ func VerifyHash(c *nodev1.NodeConfig) error {
 		return fmt.Errorf("%w: revision %d announces %s, computed %s", ErrHashMismatch, c.GetRevision(), c.GetContentHash(), got)
 	}
 	return nil
+}
+
+// sortedSet sorts a list of strings (byte order) and drops duplicates.
+func sortedSet(list []string) []string {
+	slices.Sort(list)
+	return slices.Compact(list)
 }
