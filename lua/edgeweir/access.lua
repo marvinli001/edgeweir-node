@@ -34,9 +34,10 @@
 --     switch): 403 websocket-origin-denied otherwise.
 -- The header filter (edgeweir.router, after its own steps and before the
 -- response phases, so rules win; also nginx's own error pages):
---   response_headers(site, h, path): CORS response headers and the
---     security headers, on cache hits, origin responses and the node's own
---     answers alike.
+--   response_headers(site, h, path): CORS response headers (a preflight
+--     the origin answered gets those of the edge's own preflight answer) and
+--     the security headers, on cache hits, origin responses and the node's
+--     own answers alike.
 local expressions = require("edgeweir.expressions")
 
 local _M = {}
@@ -582,23 +583,30 @@ local function redirect(url)
   end
 end
 
--- preflight answers a CORS preflight with 204 (allow: its
--- Access-Control-Allow-Origin). The Access-Control-Allow-Headers are the
--- list, or with echo the request's Access-Control-Request-Headers; neither:
--- none. The response is not cached anywhere and keeps these headers in the
--- header filter.
-function _M.preflight(c, allow, request_headers)
-  ngx.ctx.edgeweir_preflight = true
-  local h = ngx.header
+-- set_preflight sets the preflight headers of an allowed Origin on h
+-- (allow: its Access-Control-Allow-Origin): credentials, the methods, the
+-- request headers (the list, or with echo the request's
+-- Access-Control-Request-Headers; neither: none) and the max age.
+local function set_preflight(c, h, allow, requested)
   h["Access-Control-Allow-Origin"] = allow
   if c.credentials then h["Access-Control-Allow-Credentials"] = "true" end
   h["Access-Control-Allow-Methods"] = c.methods
   local headers = c.headers
   if c.echo then
-    headers = request_headers ~= nil and request_headers ~= "" and request_headers or nil
+    headers = requested ~= nil and requested ~= "" and requested or nil
   end
   if headers then h["Access-Control-Allow-Headers"] = headers end
   h["Access-Control-Max-Age"] = c.max_age
+end
+
+-- preflight answers a CORS preflight with 204 (allow: its
+-- Access-Control-Allow-Origin; request_headers: its
+-- Access-Control-Request-Headers). The response is not cached anywhere and
+-- keeps these headers in the header filter.
+function _M.preflight(c, allow, request_headers)
+  ngx.ctx.edgeweir_preflight = true
+  local h = ngx.header
+  set_preflight(c, h, allow, request_headers)
   h["Vary"] = _M.PREFLIGHT_VARY
   h["Cache-Control"] = "no-store"
   return ngx.exit(ngx.HTTP_NO_CONTENT)
@@ -660,16 +668,48 @@ function _M.websocket_allowed(site, origin)
   return ws == nil or _M.websocket_origin_allowed(ws.origins, origin or "")
 end
 
--- vary_with_origin returns a Vary value (string or lines) with Origin
--- added, unchanged when it names Origin or "*".
-function _M.vary_with_origin(vary)
+local ORIGIN_VARY = { "Origin" }
+local PREFLIGHT_VARY_NAMES = { "Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers" }
+
+-- vary_with returns a Vary value (string or lines) with the names it does
+-- not name yet added (compared case-insensitively), unchanged when it names
+-- them all or "*".
+function _M.vary_with(vary, names)
   local value = type(vary) == "table" and concat(vary, ", ") or vary
-  if value == nil or value == "" then return "Origin" end
-  for token in gmatch(value, "[^,]+") do
+  local present = {}
+  for token in gmatch(value or "", "[^,]+") do
     local t = lower(trim(token))
-    if t == "origin" or t == "*" then return vary end
+    if t == "*" then return vary end
+    present[t] = true
   end
-  return value .. ", Origin"
+  local added = {}
+  for _, n in ipairs(names) do
+    if not present[lower(n)] then added[#added + 1] = n end
+  end
+  if #added == 0 then return vary end
+  local tail = concat(added, ", ")
+  if value == nil or value == "" then return tail end
+  return value .. ", " .. tail
+end
+
+-- vary_with_origin returns a Vary value with Origin added (see vary_with).
+function _M.vary_with_origin(vary)
+  return _M.vary_with(vary, ORIGIN_VARY)
+end
+
+-- origin_preflight tells whether the request is a CORS preflight: OPTIONS
+-- with Origin and Access-Control-Request-Method.
+local function origin_preflight()
+  local var = ngx.var
+  local origin, method = var.http_origin, var.http_access_control_request_method
+  return origin ~= nil and origin ~= "" and method ~= nil and method ~= "" and ngx.req.get_method() == "OPTIONS"
+end
+
+-- requested_headers returns the request's Access-Control-Request-Headers
+-- (several joined with ", "), nil without them.
+local function requested_headers()
+  local v = ngx.req.get_headers(0)["access-control-request-headers"]
+  return type(v) == "table" and concat(v, ", ") or v
 end
 
 -- strip_cors removes every Access-Control-* response header.
@@ -684,23 +724,32 @@ end
 -- keep_origin_headers, or when the response has no
 -- Access-Control-Allow-Origin, every Access-Control-* header is replaced
 -- by the site's for an allowed Origin; Vary always names Origin within the
--- CORS scope. The preflight answered at the edge keeps its own headers.
+-- CORS scope. A preflight the origin answered (preflight_to_origin) gets
+-- the headers of the edge's own preflight answer instead, with its status
+-- and body: Access-Control-Allow-Origin (and credentials), methods,
+-- request headers, max age, and Origin, Access-Control-Request-Method and
+-- Access-Control-Request-Headers in Vary. The preflight answered at the
+-- edge keeps its own headers.
 function _M.response_headers(site, h, path)
   local a = site._access
   if not a then return end
   local cors = a.cors
   if cors and not ngx.ctx.edgeweir_preflight and path_in_scope(path or "", cors.prefixes) then
+    local names = ORIGIN_VARY
     if not (cors.keep and h["Access-Control-Allow-Origin"] ~= nil) then
       strip_cors(h)
       local allow = _M.cors_allow_origin(cors, ngx.var.http_origin)
-      if allow then
+      if allow and cors.to_origin and origin_preflight() then
+        set_preflight(cors, h, allow, requested_headers())
+        names = PREFLIGHT_VARY_NAMES
+      elseif allow then
         h["Access-Control-Allow-Origin"] = allow
         if cors.credentials then h["Access-Control-Allow-Credentials"] = "true" end
         if cors.exposed then h["Access-Control-Expose-Headers"] = cors.exposed end
       end
     end
     local vary = h["Vary"]
-    local with = _M.vary_with_origin(vary)
+    local with = _M.vary_with(vary, names)
     if with ~= vary then h["Vary"] = with end
   end
   local s = a.security

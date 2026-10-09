@@ -164,7 +164,10 @@ local function install(revision)
       site("other", { { name = "other.test" } }),
       site("redir", { { name = "redir.test" } }, { access_control = { hotlink = { redirect_url = "/hotlink.png?v=1" } } }),
       site("pto", { { name = "pto.test" } }, { access_control = { cors = { allowed_origins = { "*" }, allowed_methods = { "GET" },
-        preflight_to_origin = true, keep_origin_headers = true }, user_agents = { rules = { { pattern = "*curl*" } } } } }),
+        preflight_to_origin = true, keep_origin_headers = true, echo_request_headers = true }, user_agents = { rules = { { pattern = "*curl*" } } } } }),
+      site("pto2", { { name = "pto2.test" } }, { access_control = { cors = { allowed_origins = { "https://app.test" }, allow_credentials = true,
+        allowed_methods = { "GET", "PUT" }, allowed_headers = { "content-type" }, exposed_headers = { "X-Total" }, max_age_seconds = 300,
+        preflight_to_origin = true } } }),
       site("guard", { { name = "guard.test" } }, { protection = { under_attack = true, under_attack_challenge = "js", pass_ttl = 3600 },
         access_control = { allow_list_ids = { "site-allow" } } }),
       site("cc", { { name = "cc.test" } }, { protection = { under_attack_challenge = "js", pass_ttl = 3600, cc = { ip_qps = 1, ip_ban = 60 } },
@@ -439,7 +442,9 @@ test("challenges and CC bans: site allow lists exempt", function()
 end)
 
 -- respond runs the edge header filter (edgeweir.router.header_filter) for
--- a response of site host with headers; req = { origin, uri, ctx, cache }.
+-- a response of site host with headers; req = { origin, uri, ctx, cache,
+-- method, acrm (Access-Control-Request-Method), request_headers }. It
+-- returns the response headers by lowercase name and the status.
 local function respond(host, headers, req)
   req = req or {}
   local runtime = ngx
@@ -448,17 +453,18 @@ local function respond(host, headers, req)
   local ctx = req.ctx or { edgeweir_site = s }
   local fake = setmetatable({
     var = { scheme = "http", host = host, uri = req.uri or "/api/x", upstream_cache_status = req.cache or "HIT", edgeweir_site = s.id,
-      edgeweir_no_cache = "1", http_origin = req.origin },
+      edgeweir_no_cache = "1", http_origin = req.origin, http_access_control_request_method = req.acrm },
     ctx = ctx, header = header, status = req.status or 200, is_subrequest = false,
     resp = { get_headers = function() local copy = {}; for k, v in pairs(raw) do copy[k] = v end; return copy end },
-    req = { get_method = function() return "GET" end, set_header = function() end, clear_header = function() end },
+    req = { get_method = function() return req.method or "GET" end, set_header = function() end, clear_header = function() end,
+      get_headers = function() return req.request_headers or {} end },
     log = function() end,
   }, { __index = runtime })
   _G.ngx = fake
   local ok, err = pcall(router.header_filter)
   _G.ngx = runtime
   assert(ok, err)
-  return raw
+  return raw, rawget(fake, "status")
 end
 
 test("CORS response headers: replaced for allowed origins, Vary: Origin, cache hits included", function()
@@ -496,6 +502,59 @@ test("CORS response headers: keep_origin_headers keeps a response's own, else ad
   h = respond("pto.test", { ["Access-Control-Allow-Methods"] = "GET" }, { origin = "https://a.test", uri = "/x" })
   eq(h["access-control-allow-origin"], "*", "\"*\" without credentials")
   eq(h["access-control-allow-methods"], nil, "replaced without the origin's Access-Control-Allow-Origin")
+end)
+
+test("preflights the origin answers get the edge's preflight headers, with the origin's status", function()
+  local pre = { method = "OPTIONS", origin = "https://app.test", acrm = "PUT", uri = "/x",
+    request_headers = { ["access-control-request-headers"] = "x-a" } }
+  local h, status = respond("pto2.test", { ["Access-Control-Allow-Origin"] = "*", ["Access-Control-Allow-Methods"] = "DELETE",
+    ["Content-Type"] = "text/plain", Vary = "Accept-Encoding" }, pre)
+  eq(status, 200, "the origin's status")
+  eq(h["access-control-allow-origin"], "https://app.test")
+  eq(h["access-control-allow-credentials"], "true")
+  eq(h["access-control-allow-methods"], "GET, PUT")
+  eq(h["access-control-allow-headers"], "content-type", "the list")
+  eq(h["access-control-max-age"], "300")
+  eq(h["access-control-expose-headers"], nil, "as the edge's own answer")
+  eq(h["vary"], "Accept-Encoding, Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+  eq(h["content-type"], "text/plain")
+  h = respond("pto2.test", {}, pre)
+  eq(h["vary"], access.PREFLIGHT_VARY, "the edge's Vary")
+  eq(respond("pto2.test", { Vary = "origin, access-control-request-method" }, pre)["vary"],
+    "origin, access-control-request-method, Access-Control-Request-Headers", "names already there")
+  eq(respond("pto2.test", { Vary = "*" }, pre)["vary"], "*")
+  -- Another origin: the origin's CORS headers go, none come.
+  h = respond("pto2.test", { ["Access-Control-Allow-Origin"] = "*" }, { method = "OPTIONS", origin = "https://evil.test", acrm = "PUT", uri = "/x" })
+  eq(h["access-control-allow-origin"], nil)
+  eq(h["access-control-allow-methods"], nil)
+  eq(h["vary"], "Origin")
+  -- Not preflights (no Access-Control-Request-Method, or GET): as before.
+  h = respond("pto2.test", {}, { method = "OPTIONS", origin = "https://app.test", uri = "/x" })
+  eq(h["access-control-allow-methods"], nil)
+  eq(h["access-control-expose-headers"], "X-Total")
+  eq(h["vary"], "Origin")
+  h = respond("pto2.test", {}, { origin = "https://app.test", acrm = "PUT", uri = "/x" })
+  eq(h["access-control-allow-methods"], nil)
+  eq(h["access-control-allow-origin"], "https://app.test")
+  -- keep_origin_headers: the origin's own when it sent
+  -- Access-Control-Allow-Origin, else the edge's (headers echoed).
+  local keep = { method = "OPTIONS", origin = "https://a.test", acrm = "GET", uri = "/x",
+    request_headers = { ["access-control-request-headers"] = { "x-a", "x-b" } } }
+  h = respond("pto.test", { ["Access-Control-Allow-Origin"] = "https://a.test", ["Access-Control-Allow-Methods"] = "POST" }, keep)
+  eq(h["access-control-allow-methods"], "POST")
+  eq(h["access-control-max-age"], nil)
+  eq(h["vary"], "Origin")
+  h = respond("pto.test", { ["Access-Control-Allow-Methods"] = "POST" }, keep)
+  eq(h["access-control-allow-origin"], "*")
+  eq(h["access-control-allow-methods"], "GET")
+  eq(h["access-control-allow-headers"], "x-a, x-b", "echoed")
+  eq(h["access-control-max-age"], "0")
+  eq(h["vary"], access.PREFLIGHT_VARY)
+  -- Sites answering preflights at the edge: one that reached the origin
+  -- anyway (a local listener) keeps the usual headers.
+  h = respond("ac.test", {}, { method = "OPTIONS", origin = "https://app.test", acrm = "GET" })
+  eq(h["access-control-allow-methods"], nil)
+  eq(h["access-control-expose-headers"], "X-Total")
 end)
 
 test("the preflight 204 keeps its headers through the header filter and gets the security headers", function()
