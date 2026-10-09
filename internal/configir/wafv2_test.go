@@ -221,6 +221,12 @@ func TestRulesBodyLimit(t *testing.T) {
 		if ok && planSite(t, p, "a").RulesBodyLimit != limit {
 			t.Errorf("rules body limit %d: plan %d", limit, planSite(t, p, "a").RulesBodyLimit)
 		}
+		if ok {
+			raw, _ := json.Marshal(planSite(t, p, "a"))
+			if has := strings.Contains(string(raw), `"rules_body_limit":`); has != (limit != 0) {
+				t.Errorf("rules body limit %d in the site table: %v", limit, has)
+			}
+		}
 	}
 }
 
