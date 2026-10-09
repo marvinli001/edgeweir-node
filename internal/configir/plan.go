@@ -252,6 +252,9 @@ type Site struct {
 	// AuthRules is the site's access authentication in order (feature
 	// access-auth-v1, ADR-0038).
 	AuthRules []AuthRule `json:"auth_rules,omitempty"`
+	// AccessControl is the site's access control (nil: none; feature
+	// access-control-v1, ADR-0039).
+	AccessControl *AccessControl `json:"access_control,omitempty"`
 	// Maintenance is the site's maintenance mode (nil: off).
 	Maintenance *Maintenance `json:"maintenance,omitempty"`
 	// Charset adds a charset to text responses (nil: off).
@@ -334,7 +337,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth, FeatureAccessControl}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -591,7 +594,8 @@ func defaultZone() CacheZone {
 // Whole-config rejections include unsupported capabilities/enums, invalid IDs,
 // invalid typed rules/list references, missing certificate references, invalid
 // TLS policy, invalid error pages, offline host reasons, active health checks
-// or session affinity (also without challenge keys), and the legacy
+// or session affinity (also without challenge keys), invalid access
+// authentication rules or access control (of any site), and the legacy
 // CacheRuleMatch.expression placeholder. M4 rules
 // use Site.rules instead. Invalid listeners/empty sites/cache conditions are
 // handled conservatively without widening a condition to match everything.
@@ -670,6 +674,11 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	contents := map[string]content{}
 	additional := map[string][]string{}
 	clientCerts := map[string]*ClientCertificate{}
+	access := map[string]*AccessControl{}
+	ipLists := map[string]bool{}
+	for _, l := range c.GetIpLists() {
+		ipLists[l.GetId()] = true
+	}
 	for _, s := range c.GetSites() {
 		id := s.GetId()
 		if additional[id], err = buildAdditionalCertificates(s, p.Certificates); err != nil {
@@ -701,6 +710,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		// Checked here for every site; built again below with the address policy.
 		if _, err = buildAuthRules(s, AddressPolicy{}); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if access[id], err = buildAccessControl(s, ipLists, opts.ExtraFeatures); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if ports[id], err = buildSitePorts(s, listenerTLS); err != nil {
@@ -847,6 +859,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		if site.AuthRules, err = buildAuthRules(s, policy); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
+		site.AccessControl = access[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)

@@ -31,6 +31,18 @@
 //     duplicates (proto v0.24.0);
 //   - session_ticket_keys by id; a site's additional_certificate_ids keep
 //     the site's order (proto v0.26.0);
+//   - a site's auth_rules keep their order, their domains, path_prefixes,
+//     extensions, exclude_path_prefixes and forward request_headers /
+//     response_headers ascending without duplicates (proto v0.27.0);
+//   - inside a site's access_control block_list_ids, allow_list_ids, the
+//     hotlink's allowed, denied, extensions, path_prefixes and
+//     exclude_path_prefixes, the user agents' path_prefixes and
+//     exclude_path_prefixes, CORS allowed_origins, allowed_headers,
+//     exposed_headers and path_prefixes, geo countries, subdivisions,
+//     path_prefixes and except_path_prefixes and websocket origins
+//     ascending without duplicates, geo asns ascending as numbers without
+//     duplicates; user agent rules and CORS allowed_methods keep their
+//     order (proto v0.28.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -181,7 +193,47 @@ func CanonicalizeSite(s *nodev1.Site) {
 			f.ResponseHeaders = sortedSet(f.ResponseHeaders)
 		}
 	}
+	canonicalizeAccessControl(s.AccessControl)
 	canonicalizeRules(s.Rules)
+}
+
+// canonicalizeAccessControl sorts the sets of a site's access control
+// (v0.28.0). User agent rules keep the operator's order and CORS methods
+// theirs (the order they are sent in); ASNs sort as numbers.
+func canonicalizeAccessControl(a *nodev1.AccessControl) {
+	if a == nil {
+		return
+	}
+	a.BlockListIds = sortedSet(a.BlockListIds)
+	a.AllowListIds = sortedSet(a.AllowListIds)
+	if h := a.Hotlink; h != nil {
+		h.Allowed = sortedSet(h.Allowed)
+		h.Denied = sortedSet(h.Denied)
+		h.Extensions = sortedSet(h.Extensions)
+		h.PathPrefixes = sortedSet(h.PathPrefixes)
+		h.ExcludePathPrefixes = sortedSet(h.ExcludePathPrefixes)
+	}
+	if u := a.UserAgents; u != nil {
+		u.PathPrefixes = sortedSet(u.PathPrefixes)
+		u.ExcludePathPrefixes = sortedSet(u.ExcludePathPrefixes)
+	}
+	if c := a.Cors; c != nil {
+		c.AllowedOrigins = sortedSet(c.AllowedOrigins)
+		c.AllowedHeaders = sortedSet(c.AllowedHeaders)
+		c.ExposedHeaders = sortedSet(c.ExposedHeaders)
+		c.PathPrefixes = sortedSet(c.PathPrefixes)
+	}
+	if g := a.Geo; g != nil {
+		g.Countries = sortedSet(g.Countries)
+		g.Subdivisions = sortedSet(g.Subdivisions)
+		slices.Sort(g.Asns)
+		g.Asns = slices.Compact(g.Asns)
+		g.PathPrefixes = sortedSet(g.PathPrefixes)
+		g.ExceptPathPrefixes = sortedSet(g.ExceptPathPrefixes)
+	}
+	if w := a.Websocket; w != nil {
+		w.Origins = sortedSet(w.Origins)
+	}
 }
 
 // canonicalizeRules sorts the query edits of the rules' actions. The rules
