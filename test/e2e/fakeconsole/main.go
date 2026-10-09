@@ -823,6 +823,7 @@ func main() {
 	g11Handlers(mux, c, *origin, clientCA)
 	g12Handlers(mux, c, *origin)
 	g13Handlers(mux, c, *origin)
+	g14Handlers(mux, c, *origin)
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, *token) })
 	mux.HandleFunc("GET /grpc", grpcCheck)
 	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)

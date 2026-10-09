@@ -74,8 +74,12 @@
 # client certificates, TLS session resumption, ticket key rotation and no
 # early data; G12 Basic, signed URLs A-D and forward authentication; G13
 # site block and allow lists, CORS preflights at the edge, hotlink
-# protection, user agents, security headers and WebSocket origins; then the
-# base configuration again.)
+# protection, user agents, security headers and WebSocket origins; G14 the
+# ban, respond, close and skip actions, CRS exclusions by path and target
+# and the config rules' CRS mode, request body fields (in memory and from
+# nginx's temporary file, truncated over the limit), access log lines of
+# log rules, rate limit bans, challenge page texts, challenge failure bans
+# and crawler claims DNS does not back; then the base configuration again.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1490,6 +1494,115 @@ r=$(curl -fsS "$HELPER/ws?host=ws.g13.test&origin=http://ws.g13.test")
 [ "$r" = "ws HTTP/1.1 hello" ] || fail "WebSocket from the allowed origin: '$r'"
 pass "G13: WebSocket upgrades only from the site's origins (403 websocket-origin-denied)"
 rev=$(curl -fsS -X POST "$HELPER/g13?enabled=false")
+WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+
+# G14 (waf-v2, rules-body-v1, challenge-v2, ADR-0040): the rule actions,
+# CRS exclusions by path, request body fields, rate limit bans and the
+# challenge additions (g14.go). Bans by the PROXY protocol's client address.
+features=$(curl -fsS "$HELPER/features")
+for f in waf-v2 rules-body-v1 challenge-v2; do grep -qx "$f" <<<"$features" || fail "$f not reported"; done
+rev=$(curl -fsS -X POST "$HELPER/g14")
+WAIT_SECS=60 wait_for "G14 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+r=$(pp_request waf.g14.test 198.51.100.141 /g14-ban | tr -d '\r')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 ip-banned" ] || fail "ban action: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+pp_banned waf.g14.test 198.51.100.141 || fail "the address the ban action banned is not banned"
+[ "$(pp_status waf.g14.test 198.51.100.140)" = 200 ] || fail "the ban action banned a neighbouring address"
+[ "$(pp_status demo.test 198.51.100.141)" = 200 ] || fail "the ban action's site ban reached another site"
+reported() { curl -fsS "$HELPER/g14/bans" | grep -q "$1"; }
+WAIT_SECS=30 wait_for "ban action reported" reported '^unspecified site-g14 198.51.100.141/32 waf_rule g14-ban '
+pass "G14: ban action answers 403 ip-banned, bans the address at site scope and reports it with the rule"
+
+r=$(req waf.g14.test /g14-respond)
+[ "$(status_of "$r") $(header_of "$r" Content-Type) $(header_of "$r" Cache-Control)" = "200 application/json no-store" ] ||
+  fail "respond: $(status_of "$r") $(header_of "$r" Content-Type) $(header_of "$r" Cache-Control)"
+[ "$(tail -1 <<<"$r")" = '{"ok":true}' ] && [ -z "$(header_of "$r" X-Edgeweir-Error)" ] || fail "respond body: $r"
+r=$(req waf.g14.test /g14-teapot)
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "418 rule-response" ] && grep -q '418' <<<"$r" || fail "respond with the error page: $(status_of "$r")"
+code=0; curl -s -o /dev/null -H 'Host: waf.g14.test' "$NODE/g14-close" || code=$?
+[ "$code" = 52 ] || fail "close: curl exit $code, want 52 (empty reply)"
+pass "G14: respond with a static body and with the error page of 418, close without a response"
+
+SQLI='id=1%27%20OR%20%271%27%3D%271'
+[ "$(crs waf.g14.test "$NODE/g14-other?$SQLI")" = "403 - waf-blocked" ] || fail "CRS on waf.g14.test: $(crs waf.g14.test "$NODE/g14-other?$SQLI")"
+[ "$(crs waf.g14.test "$NODE/g14-skipcrs?$SQLI")" = "200 MISS -" ] || fail "skip crs: $(crs waf.g14.test "$NODE/g14-skipcrs?$SQLI")"
+[ "$(crs waf.g14.test "$NODE/g14-detect?$SQLI")" = "200 MISS -" ] || fail "config crs detect: $(crs waf.g14.test "$NODE/g14-detect?$SQLI")"
+pass "G14: a skip action keeps one path out of the CRS, a config rule's detect mode lets it log, another path is still blocked"
+[ "$(crs waf.g14.test "$NODE/g14-excluded/x?$SQLI")" = "200 MISS -" ] || fail "exclusion by path: $(crs waf.g14.test "$NODE/g14-excluded/x?$SQLI")"
+[ "$(crs waf.g14.test --path-as-is "$NODE/g14-other/../g14-excluded/y?$SQLI")" = "200 MISS -" ] || fail "exclusion by the normalized path"
+[ "$(crs waf.g14.test --path-as-is "$NODE/g14-excluded/../g14-other?$SQLI")" = "403 - waf-blocked" ] ||
+  fail "an exclusion reached another path through ..: $(crs waf.g14.test --path-as-is "$NODE/g14-excluded/../g14-other?$SQLI")"
+[ "$(crs waf.g14.test "$NODE/g14-target?$SQLI")" = "200 MISS -" ] || fail "exclusion of a target: $(crs waf.g14.test "$NODE/g14-target?$SQLI")"
+[ "$(crs waf.g14.test "$NODE/g14-target?q=1%27%20OR%20%271%27%3D%271")" = "403 - waf-blocked" ] || fail "exclusion of a target: another argument"
+[ "$(crs waf.g14.test "$NODE/g14-target/x?$SQLI")" = "403 - waf-blocked" ] || fail "an exact exclusion matched a longer path"
+r=$(req waf.g14.test "/g14-excluded/echo-$RANDOM")
+grep -q 'from g14$' <<<"$r" && ! grep -qi '^header x-edgeweir-waf' <<<"$r" || fail "X-Edgeweir-Waf(-Ex) reached the origin: $r"
+pass "G14: CRS exclusions by path prefix (normalized, .. cannot move them) and by exact path for one argument"
+
+json() { # file [path] -> status; body in g14.b, headers in g14.h
+  curl -s -o "$TMPDIR_E2E/g14.b" -D "$TMPDIR_E2E/g14.h" -w '%{http_code}' -H 'Host: waf.g14.test' -H 'Content-Type: application/json' \
+    --data-binary "@$1" "$NODE${2:-/g14-api}"
+}
+sha256hex() { openssl dgst -sha256 <"$1" | awk '{print $NF}'; }
+denied_by_rule() { tr -d '\r' <"$TMPDIR_E2E/g14.h" | grep -qix 'x-edgeweir-error: policy-denied'; }
+printf '{"cmd":["rm -rf /"]}' >"$TMPDIR_E2E/rm.json"
+printf '{"cmd":["ls"]}' >"$TMPDIR_E2E/ls.json"
+pad=$(head -c 40000 /dev/zero | tr '\0' x)
+printf '{"pad":"%s","cmd":["rm -rf /"]}' "$pad" >"$TMPDIR_E2E/rm-big.json"
+printf '{"pad":"%s","cmd":["ls"]}' "$pad" >"$TMPDIR_E2E/ls-big.json"
+[ "$(json "$TMPDIR_E2E/rm.json")" = 403 ] && denied_by_rule || fail "a JSON body field: $(cat "$TMPDIR_E2E/g14.b")"
+[ "$(json "$TMPDIR_E2E/ls.json")" = 200 ] && [ "$(cat "$TMPDIR_E2E/g14.b")" = "body 14 $(sha256hex "$TMPDIR_E2E/ls.json")" ] ||
+  fail "a body the rules read must reach the origin as it was: $(cat "$TMPDIR_E2E/g14.b")"
+[ "$(json "$TMPDIR_E2E/rm-big.json")" = 403 ] && denied_by_rule || fail "a JSON body field of a 40 KB body (nginx's temporary file)"
+[ "$(json "$TMPDIR_E2E/ls-big.json")" = 200 ] && [ "$(cat "$TMPDIR_E2E/g14.b")" = "body $(wc -c <"$TMPDIR_E2E/ls-big.json" | tr -d ' ') $(sha256hex "$TMPDIR_E2E/ls-big.json")" ] ||
+  fail "a 40 KB body after the rules and the CRS: $(cat "$TMPDIR_E2E/g14.b")"
+# A form body (a content type the CRS allows) over and within the limit.
+upload() { curl -s -o "$TMPDIR_E2E/g14.b" -w '%{http_code}' -H 'Host: waf.g14.test' -H 'Content-Type: application/x-www-form-urlencoded' --data-binary "@$1" "$NODE/g14-upload"; }
+{ printf 'a='; head -c 70000 /dev/zero | tr '\0' a; } >"$TMPDIR_E2E/big.form"
+[ "$(upload "$TMPDIR_E2E/big.form")" = 422 ] && [ "$(cat "$TMPDIR_E2E/g14.b")" = truncated ] || fail "a body over the limit is not truncated: $(cat "$TMPDIR_E2E/g14.b")"
+printf 'a=small' >"$TMPDIR_E2E/small.form"
+[ "$(upload "$TMPDIR_E2E/small.form")" = 200 ] && [ "$(cat "$TMPDIR_E2E/g14.b")" = "body 7 $(sha256hex "$TMPDIR_E2E/small.form")" ] ||
+  fail "a body within the limit counted as truncated: $(cat "$TMPDIR_E2E/g14.b")"
+pass "G14: a JSON body field blocks (in memory and from the temporary file), bodies reach the origin, over the limit truncated"
+
+for i in 1 2; do pp_request waf.g14.test 198.51.100.146 "/g14-rl/$i" >/dev/null; done
+r=$(pp_request waf.g14.test 198.51.100.146 /g14-rl/3 | tr -d '\r')
+[ "$(status_of "$r")" = 429 ] || fail "rate limit: $(status_of "$r")"
+pp_banned waf.g14.test 198.51.100.146 || fail "the address over the rate limit is not banned"
+WAIT_SECS=30 wait_for "rate limit ban reported" reported '^unspecified site-g14 198.51.100.146/32 rate_limit g14-rl 3/2$'
+pass "G14: a rate limit with a ban answers 429 over the limit, then bans the address and reports the count"
+
+req waf.g14.test "/g14-log/x" >/dev/null
+logged() { curl -fsS "$HELPER/g14/logs" | grep -q "$1"; }
+WAIT_SECS=30 wait_for "access log line of the log rule" logged '^site-g14 200 /g14-log/x 10000 g14-log$'
+curl -fsS "$HELPER/g14/logs" | grep -q '^site-g14 [0-9]* /g14-respond ' && fail "a line without a log rule on a site without sampling"
+pass "G14: a log rule writes the access log line whatever the sample rate, with its id"
+
+r=$(req ch.g14.test /page -H 'Accept-Language: en')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Challenge)" = "403 js" ] || fail "Under Attack on ch.g14.test: $(status_of "$r")"
+grep -q '<title>G14 check</title>' <<<"$r" && grep -q '<h1>G14 check</h1><p class="hint">One moment &lt;please&gt;</p>' <<<"$r" ||
+  fail "challenge page without the site's English texts"
+grep -q '<h1>G14 检查</h1><p class="hint">请稍候</p>' <<<"$(req ch.g14.test /page -H 'Accept-Language: zh-CN')" || fail "challenge page without the site's Chinese texts"
+r=$(pp_request ch.g14.test 198.51.100.144 /page 'User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' | tr -d '\r')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Challenge)" = "403 js" ] || fail "a crawler claim DNS does not back skipped the challenge: $(status_of "$r")"
+pass "G14: challenge pages with the site's title and hint per language; an unverified crawler claim is challenged"
+
+pp_post() { # host client path body
+  exec 3<>"/dev/tcp/127.0.0.1/${E2E_PP_PORT:-28081}"
+  printf 'PROXY TCP4 %s 10.0.0.1 40000 8081\r\nPOST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+    "$2" "$3" "$1" "${#4}" "$4" >&3
+  cat <&3
+  exec 3<&-
+}
+for i in 1 2; do
+  r=$(pp_post ch.g14.test 198.51.100.143 /.edgeweir/challenge/verify "t=forged-$i&a=0&r=/" | tr -d '\r')
+  [ "$(status_of "$r")" = 303 ] || fail "a failed answer: $(status_of "$r")"
+done
+[ "$(pp_status ch.g14.test 198.51.100.143)" = 403 ] && ! pp_banned ch.g14.test 198.51.100.143 || fail "banned before the threshold"
+pp_post ch.g14.test 198.51.100.143 /.edgeweir/challenge/verify "t=forged-3&a=0&r=/" >/dev/null
+pp_banned ch.g14.test 198.51.100.143 || fail "three failed answers did not ban the address"
+WAIT_SECS=30 wait_for "challenge failure ban reported" reported '^unspecified site-g14c 198.51.100.143/32 challenge_failures - 3/3$'
+pass "G14: three failed challenge answers ban the address at site scope"
+rev=$(curl -fsS -X POST "$HELPER/g14?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
