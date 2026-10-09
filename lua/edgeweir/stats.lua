@@ -34,6 +34,17 @@ function _M.logged(site_id, rule_id)
   ngx.shared.edgeweir_stats:incr(minute .. "|" .. site_id .. "|l" .. rule_id, 1, 0, TTL)
 end
 
+-- auth_failed counts a request access authentication refused for the
+-- site's minute (metric "a", reported as MinuteStats.auth_failures).
+-- Requests on the local listeners are never checked.
+function _M.auth_failed(site_id)
+  if ngx.var.edgeweir_local == "1" then
+    return
+  end
+  local minute = floor(ngx.time() / 60) * 60
+  ngx.shared.edgeweir_stats:incr(minute .. "|" .. site_id .. "|a", 1, 0, TTL)
+end
+
 -- log(waf_location): waf_location in the edge layer's CRS and gRPC
 -- locations and in its error page location (a request may come there from
 -- either), where the request context comes back first and matched CRS
@@ -118,6 +129,8 @@ function _M.drain(now)
           b.cache_hits = b.cache_hits + v
         elseif metric == "miss" then
           b.cache_misses = b.cache_misses + v
+        elseif metric == "a" then
+          b.auth_failures = (b.auth_failures or 0) + v
         elseif sub(metric, 1, 1) == "s" then
           local code = sub(metric, 2)
           b.status_codes[code] = (b.status_codes[code] or 0) + v

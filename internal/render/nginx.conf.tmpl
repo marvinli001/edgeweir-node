@@ -405,6 +405,13 @@ http {
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
             set $edgeweir_x_cache_off "";
+            # Forward authentication subrequests (edgeweir.auth) set these
+            # through ngx.location.capture; /./edgeweir-auth reads them.
+            set $edgeweir_auth_site "";
+            set $edgeweir_auth_rule "";
+            set $edgeweir_auth_uri "";
+            set $edgeweir_auth_method "";
+            set $edgeweir_auth_host "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -412,6 +419,32 @@ http {
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # Forward authentication (edgeweir.auth): the subrequest goes through
+        # the origin layer (TLS verification, origin address policy), which
+        # sends it to the rule's service with the forwarded request headers
+        # and these, never a body. No client request reaches this path
+        # (nginx resolves the "." segments of every request's path).
+        location = /./edgeweir-auth {
+            internal;
+            proxy_pass http://edgeweir_origin_verify;
+            proxy_http_version 1.1;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Transfer-Encoding "";
+            proxy_set_header Connection "";
+            proxy_set_header X-Edgeweir-Site $edgeweir_auth_site;
+            proxy_set_header X-Edgeweir-Auth $edgeweir_auth_rule;
+            proxy_set_header X-Original-URI $edgeweir_auth_uri;
+            proxy_set_header X-Original-Method $edgeweir_auth_method;
+            proxy_set_header X-Original-Host $edgeweir_auth_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For {{ $.ForwardedFor }};
+            # The rule's timeout applies in the origin layer; this bounds the
+            # local hop.
+            proxy_read_timeout 15s;
+            proxy_send_timeout 15s;
         }
 {{- range $.WAFBodyLimits }}
 
@@ -660,6 +693,7 @@ stream {
             {{ .P }}_set_header X-Edgeweir-Rules "";
             {{ .P }}_set_header X-Edgeweir-Cache-Status "";
             {{ .P }}_set_header X-Edgeweir-Origin "";
+            {{ .P }}_set_header X-Edgeweir-Auth "";
 {{- if .Root.ModSecurityConf }}
             {{ .P }}_set_header {{ .Root.WAFHeader }} "";
 {{- end }}

@@ -27,6 +27,7 @@ local expressions = require("edgeweir.expressions")
 local ratelimit = require("edgeweir.ratelimit")
 local compress = require("edgeweir.compress")
 local clientcert = require("edgeweir.clientcert")
+local auth = require("edgeweir.auth")
 local _M = {}
 _M.phases = { "request-transform", "redirect", "config", "waf-custom", "ratelimit", "cache", "origin" }
 
@@ -316,7 +317,8 @@ function _M.request(site, headers)
   local values = {
     ["http.host"] = var.host, ["http.request.method"] = ngx.req.get_method(),
     ["http.request.uri.path"] = var.uri, ["http.request.uri.query"] = var.args or "",
-    ["http.request.uri"] = var.request_uri, ["ip.src"] = var.remote_addr,
+    -- Without a signed URL's signature (edgeweir.auth).
+    ["http.request.uri"] = auth.request_uri(), ["ip.src"] = var.remote_addr,
     ssl = scheme == "https",
   }
   if site._full_uri then
@@ -559,6 +561,12 @@ function _M.access(site, headers)
   ctx.platform_allowed = allowed
   if not allowed then
     for _, m in ipairs(cfg.blocks or {}) do if m(values["ip.src"]) then return { status = 403 } end end
+  end
+  -- Access authentication: after the lists, before the rule phases and the
+  -- cache (edgeweir.auth).
+  if site._auth then
+    local result = auth.check(site, _M.site_https_redirect)
+    if result then return result end
   end
   for _, phase in ipairs(_M.phases) do
     local result = run_group(cfg.groups and cfg.groups[phase], site, ctx, phase, "platform")

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
@@ -150,26 +151,30 @@ func TestAuthRulesRefused(t *testing.T) {
 			r.Url.TimeParam = "sign"
 			return r
 		}()},
-		"domain":           {func() *nodev1.AuthRule { r := urlRule("x"); r.Domains = []string{"A.test"}; return r }()},
-		"pattern":          {func() *nodev1.AuthRule { r := urlRule("x"); r.Domains = []string{"~(a"}; return r }()},
-		"prefix":           {func() *nodev1.AuthRule { r := urlRule("x"); r.PathPrefixes = []string{"a"}; return r }()},
-		"prefix query":     {func() *nodev1.AuthRule { r := urlRule("x"); r.ExcludePathPrefixes = []string{"/a?b"}; return r }()},
-		"extension":        {func() *nodev1.AuthRule { r := urlRule("x"); r.Extensions = []string{".jpg"}; return r }()},
-		"realm quote":      {{Id: "b", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "b", Basic: &nodev1.BasicAuth{Realm: `a"b`}}},
-		"realm long":       {{Id: "b", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "b", Basic: &nodev1.BasicAuth{Realm: strings.Repeat("r", 65)}}},
-		"basic secretless": {func() *nodev1.AuthRule { r := *basic; r.CredentialId = ""; return &r }()},
-		"forward secret":   {func() *nodev1.AuthRule { r := forward(func(*nodev1.ForwardAuth) {}); r.CredentialId = "f"; return r }()},
-		"scheme":           {forward(func(f *nodev1.ForwardAuth) { f.Url = "ftp://auth.test/" })},
-		"credentials":      {forward(func(f *nodev1.ForwardAuth) { f.Url = "https://u:p@auth.test/" })},
-		"fragment":         {forward(func(f *nodev1.ForwardAuth) { f.Url = "https://auth.test/#x" })},
-		"port":             {forward(func(f *nodev1.ForwardAuth) { f.Url = "https://auth.test:0/" })},
-		"timeout":          {forward(func(f *nodev1.ForwardAuth) { f.TimeoutMs = 10001 })},
-		"cache":            {forward(func(f *nodev1.ForwardAuth) { f.CacheSeconds = 301 })},
-		"host header":      {forward(func(f *nodev1.ForwardAuth) { f.RequestHeaders = []string{"host"} })},
-		"node header":      {forward(func(f *nodev1.ForwardAuth) { f.RequestHeaders = []string{"x-real-ip"} })},
-		"protected copy":   {forward(func(f *nodev1.ForwardAuth) { f.ResponseHeaders = []string{"set-cookie"} })},
-		"internal copy":    {forward(func(f *nodev1.ForwardAuth) { f.ResponseHeaders = []string{"x-edgeweir-site"} })},
-		"uppercase":        {forward(func(f *nodev1.ForwardAuth) { f.ResponseHeaders = []string{"X-Auth-User"} })},
+		"domain":       {func() *nodev1.AuthRule { r := urlRule("x"); r.Domains = []string{"A.test"}; return r }()},
+		"pattern":      {func() *nodev1.AuthRule { r := urlRule("x"); r.Domains = []string{"~(a"}; return r }()},
+		"prefix":       {func() *nodev1.AuthRule { r := urlRule("x"); r.PathPrefixes = []string{"a"}; return r }()},
+		"prefix query": {func() *nodev1.AuthRule { r := urlRule("x"); r.ExcludePathPrefixes = []string{"/a?b"}; return r }()},
+		"extension":    {func() *nodev1.AuthRule { r := urlRule("x"); r.Extensions = []string{".jpg"}; return r }()},
+		"realm quote":  {{Id: "b", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "b", Basic: &nodev1.BasicAuth{Realm: `a"b`}}},
+		"realm long":   {{Id: "b", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "b", Basic: &nodev1.BasicAuth{Realm: strings.Repeat("r", 65)}}},
+		"basic secretless": {func() *nodev1.AuthRule {
+			r := proto.Clone(basic).(*nodev1.AuthRule)
+			r.CredentialId = ""
+			return r
+		}()},
+		"forward secret": {func() *nodev1.AuthRule { r := forward(func(*nodev1.ForwardAuth) {}); r.CredentialId = "f"; return r }()},
+		"scheme":         {forward(func(f *nodev1.ForwardAuth) { f.Url = "ftp://auth.test/" })},
+		"credentials":    {forward(func(f *nodev1.ForwardAuth) { f.Url = "https://u:p@auth.test/" })},
+		"fragment":       {forward(func(f *nodev1.ForwardAuth) { f.Url = "https://auth.test/#x" })},
+		"port":           {forward(func(f *nodev1.ForwardAuth) { f.Url = "https://auth.test:0/" })},
+		"timeout":        {forward(func(f *nodev1.ForwardAuth) { f.TimeoutMs = 10001 })},
+		"cache":          {forward(func(f *nodev1.ForwardAuth) { f.CacheSeconds = 301 })},
+		"host header":    {forward(func(f *nodev1.ForwardAuth) { f.RequestHeaders = []string{"host"} })},
+		"node header":    {forward(func(f *nodev1.ForwardAuth) { f.RequestHeaders = []string{"x-real-ip"} })},
+		"protected copy": {forward(func(f *nodev1.ForwardAuth) { f.ResponseHeaders = []string{"set-cookie"} })},
+		"internal copy":  {forward(func(f *nodev1.ForwardAuth) { f.ResponseHeaders = []string{"x-edgeweir-site"} })},
+		"uppercase":      {forward(func(f *nodev1.ForwardAuth) { f.ResponseHeaders = []string{"X-Auth-User"} })},
 	}
 	for name, rules := range cases {
 		if _, err := buildAuthRules(authSite(rules...), AddressPolicy{}); err == nil {

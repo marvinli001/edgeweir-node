@@ -75,6 +75,7 @@ local setcookie = require("edgeweir.setcookie")
 local charset = require("edgeweir.charset")
 local purgemethod = require("edgeweir.purgemethod")
 local clientcert = require("edgeweir.clientcert")
+local auth = require("edgeweir.auth")
 
 local _M = {}
 
@@ -325,6 +326,12 @@ local function access()
   if site.purge and ngx.req.get_method() == "PURGE" then
     return purgemethod.handle(site)
   end
+  -- Access authentication: the rule, and a signed URL's signature removed
+  -- before anything reads the path (edgeweir.auth); checked after the
+  -- platform lists (edgeweir.policy).
+  if site._auth then
+    auth.select(site, acme)
+  end
   local original_path = var.uri
   -- Maintenance: 503 and the maintenance page, but for allowed addresses
   -- and paths and HTTP-01 requests for the origin; nothing is cached.
@@ -368,6 +375,7 @@ local function access()
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   if result and not (is_local and not result.location) then
+    if result.respond then return result.respond() end
     if result.challenge then return run_challenge(site, result.challenge, result.level) end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end

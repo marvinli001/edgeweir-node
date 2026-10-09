@@ -38,6 +38,7 @@ local lrucache = require("resty.lrucache")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
 local ipaddr = require("edgeweir.ipaddr")
+local auth = require("edgeweir.auth")
 local policy = require("edgeweir.policy")
 local ratelimit = require("edgeweir.ratelimit")
 local cc = require("edgeweir.cc")
@@ -304,6 +305,8 @@ function _M.prepare(s, cfg)
   s._rule_groups = policy.prepare_rules(s.rules, s._config.lists)
   s._bulk = policy.prepare_bulk(s.bulk_redirects)
   s._tls_pending = policy.prepare_tls_pending(s.domains)
+  -- Access authentication (access-auth-v1): rules, users and keys.
+  auth.prepare(s)
   -- The listener ports the site is served on (edge-ports-v1); nil: every
   -- listener. The HTTPS redirect's excluded domains, by name.
   if type(s.ports) == "table" and #s.ports > 0 then

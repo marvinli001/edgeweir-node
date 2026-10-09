@@ -52,9 +52,10 @@ local ipairs, pairs, tonumber, tostring, type = ipairs, pairs, tonumber, tostrin
 -- STATUSES are the statuses of node-generated responses that get error
 -- pages (the site's page of the status or of its class, else the built-in
 -- page) instead of plain text; 405 (S3 origins refusing a method) and 413
--- (a site's body limit) since proto v0.24.0.
-_M.STATUSES = { [400] = true, [403] = true, [405] = true, [413] = true, [414] = true, [429] = true,
-  [500] = true, [502] = true, [503] = true, [504] = true }
+-- (a site's body limit) since proto v0.24.0, 401 (access authentication,
+-- respond_auth) since proto v0.27.0.
+_M.STATUSES = { [400] = true, [401] = true, [403] = true, [405] = true, [413] = true, [414] = true,
+  [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
 
 -- PAGE_STATUSES are the statuses and classes (4: 4xx, 5: 5xx) a site may
 -- have pages for (feature site-content-v1 beyond 403, 429, 502-504).
@@ -225,13 +226,14 @@ local TITLES = {
     [400] = "请求无效", [403] = "访问被拒绝", [404] = "站点不存在", [413] = "请求内容过大", [414] = "网址过长",
     [429] = "请求过于频繁", [494] = "请求头过大", [497] = "需要使用 HTTPS", [500] = "边缘节点出错",
     [502] = "无法连接源站", [503] = "服务暂不可用", [504] = "源站响应超时", ["site-disabled"] = "站点已停用",
-    [405] = "不支持的请求方法", maintenance = "维护中",
+    [405] = "不支持的请求方法", maintenance = "维护中", [401] = "需要认证",
   },
   en = {
     [400] = "Bad request", [403] = "Access denied", [404] = "Site not found", [413] = "Request too large",
     [414] = "URL too long", [429] = "Too many requests", [494] = "Request header too large", [497] = "HTTPS required",
     [500] = "Edge error", [502] = "Origin unreachable", [503] = "Service unavailable", [504] = "Origin timed out",
     ["site-disabled"] = "Site disabled", [405] = "Method not allowed", maintenance = "Under maintenance",
+    [401] = "Authentication required",
   },
 }
 local LANG = { zh = "zh-CN", en = "en" }
@@ -246,7 +248,7 @@ local TEXT = {
     stamp = {
       [400] = "格式错误", [403] = "拦截", [404] = "未接入", [413] = "过大", [414] = "过长", [429] = "限速",
       [494] = "过大", [497] = "未加密", [500] = "出错", [502] = "无法连接", [503] = "暂不可用", [504] = "超时",
-      ["site-disabled"] = "已停用", other = "出错", [405] = "不支持", maintenance = "维护中",
+      ["site-disabled"] = "已停用", other = "出错", [405] = "不支持", maintenance = "维护中", [401] = "未认证",
     },
     todo = {
       [400] = "边缘节点无法解析这个请求，请检查网址后重试。",
@@ -264,6 +266,7 @@ local TEXT = {
       ["site-disabled"] = "网站管理员已停用此站点。",
       [405] = "这个网址不接受这种请求方法。",
       maintenance = "网站正在维护，请稍后再来。",
+      [401] = "这个网址需要登录，请输入用户名和密码后重试。",
       other = "请稍后重试。",
     },
   },
@@ -274,7 +277,7 @@ local TEXT = {
       [400] = "Malformed", [403] = "Blocked", [404] = "No site", [413] = "Too large", [414] = "Too long",
       [429] = "Rate limited", [494] = "Too large", [497] = "Not encrypted", [500] = "Error", [502] = "Unreachable",
       [503] = "Unavailable", [504] = "Timed out", ["site-disabled"] = "Disabled", other = "Error",
-      [405] = "Not allowed", maintenance = "Maintenance",
+      [405] = "Not allowed", maintenance = "Maintenance", [401] = "Not signed in",
     },
     todo = {
       [400] = "The edge couldn't read this request. Check the URL and try again.",
@@ -292,6 +295,7 @@ local TEXT = {
       ["site-disabled"] = "The site's owner has turned this site off.",
       [405] = "This address does not accept this request method.",
       maintenance = "The site is under maintenance. Please come back later.",
+      [401] = "This address needs a sign-in. Enter your user name and password, then try again.",
       other = "Try again shortly.",
     },
   },
@@ -306,6 +310,7 @@ local TEXT = {
 -- fading out unencrypted (plain HTTP on an HTTPS port).
 local SHAPES = {
   [400] = { at = 0, a = "garble", b = "held", mark = "query", w = 640 },
+  [401] = { at = 0, a = "fade", b = "held", mark = "lock", w = 480 },
   [403] = { at = 1, a = "flow", b = "held", mark = "stop", w = 760 },
   [404] = { at = 1, a = "flow", b = "fade", mark = "logo", w = 250, void = true },
   [413] = { at = 0, a = "swell", b = "held", mark = "wide", w = 880 },
@@ -607,6 +612,26 @@ end
 -- STATUSES) for site (nil: built-in page) and X-Edgeweir-Error code.
 function _M.respond(status, code, site)
   return send(status, code, template(site, status, code), _M.edge_values(status))
+end
+
+-- respond_auth answers a request access authentication (Basic) refused:
+-- 401 with WWW-Authenticate and the site's 401 page (or its 4xx page),
+-- else the built-in one. Redirect pages and replacement statuses do not
+-- apply: a redirect would drop the challenge, and browsers ask for
+-- credentials only on a 401.
+function _M.respond_auth(site, realm)
+  local page = _M.page_for(site, 401)
+  if page and page.redirect then
+    local pages = site._error_pages
+    page = pages[4] and not pages[4].redirect and pages[4] or nil
+  end
+  if page then
+    page = { parts = page.parts }
+  else
+    page = { parts = _M.builtin(language(ngx.var.http_accept_language), 401) }
+  end
+  ngx.header["WWW-Authenticate"] = 'Basic realm="' .. realm .. '", charset="UTF-8"'
+  return send(401, "auth-required", page, _M.edge_values(401))
 end
 
 -- maintenance answers an edge-layer request of a site in maintenance

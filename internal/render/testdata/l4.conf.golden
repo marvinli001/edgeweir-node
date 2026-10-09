@@ -49,6 +49,7 @@ http {
     lua_shared_dict edgeweir_cc 32m;
     lua_shared_dict edgeweir_tags 64m;
     lua_shared_dict edgeweir_purge_rate 1m;
+    lua_shared_dict edgeweir_auth 8m;
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).
     lua_capture_error_log 64k;
@@ -58,7 +59,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "2253413bd6b3a3b8",
+            conf_id = "30162719f08bc115",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -246,6 +247,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -295,6 +297,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -360,6 +363,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -410,6 +414,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -478,6 +483,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -528,6 +534,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -595,6 +602,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -646,6 +654,7 @@ http {
             proxy_set_header X-Edgeweir-Rules "";
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
+            proxy_set_header X-Edgeweir-Auth "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -717,6 +726,7 @@ http {
             grpc_set_header X-Edgeweir-Rules "";
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
+            grpc_set_header X-Edgeweir-Auth "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -765,6 +775,7 @@ http {
             grpc_set_header X-Edgeweir-Rules "";
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
+            grpc_set_header X-Edgeweir-Auth "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -835,6 +846,7 @@ http {
             grpc_set_header X-Edgeweir-Rules "";
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
+            grpc_set_header X-Edgeweir-Auth "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -884,6 +896,7 @@ http {
             grpc_set_header X-Edgeweir-Rules "";
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
+            grpc_set_header X-Edgeweir-Auth "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -949,6 +962,13 @@ http {
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
             set $edgeweir_x_cache_off "";
+            # Forward authentication subrequests (edgeweir.auth) set these
+            # through ngx.location.capture; /./edgeweir-auth reads them.
+            set $edgeweir_auth_site "";
+            set $edgeweir_auth_rule "";
+            set $edgeweir_auth_uri "";
+            set $edgeweir_auth_method "";
+            set $edgeweir_auth_host "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1010,6 +1030,32 @@ http {
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # Forward authentication (edgeweir.auth): the subrequest goes through
+        # the origin layer (TLS verification, origin address policy), which
+        # sends it to the rule's service with the forwarded request headers
+        # and these, never a body. No client request reaches this path
+        # (nginx resolves the "." segments of every request's path).
+        location = /./edgeweir-auth {
+            internal;
+            proxy_pass http://edgeweir_origin_verify;
+            proxy_http_version 1.1;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Transfer-Encoding "";
+            proxy_set_header Connection "";
+            proxy_set_header X-Edgeweir-Site $edgeweir_auth_site;
+            proxy_set_header X-Edgeweir-Auth $edgeweir_auth_rule;
+            proxy_set_header X-Original-URI $edgeweir_auth_uri;
+            proxy_set_header X-Original-Method $edgeweir_auth_method;
+            proxy_set_header X-Original-Host $edgeweir_auth_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # The rule's timeout applies in the origin layer; this bounds the
+            # local hop.
+            proxy_read_timeout 15s;
+            proxy_send_timeout 15s;
         }
 
         # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
@@ -1094,6 +1140,13 @@ http {
             set $edgeweir_strip_ae "";
             set $edgeweir_origin_override "";
             set $edgeweir_x_cache_off "";
+            # Forward authentication subrequests (edgeweir.auth) set these
+            # through ngx.location.capture; /./edgeweir-auth reads them.
+            set $edgeweir_auth_site "";
+            set $edgeweir_auth_rule "";
+            set $edgeweir_auth_uri "";
+            set $edgeweir_auth_method "";
+            set $edgeweir_auth_host "";
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
@@ -1155,6 +1208,32 @@ http {
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
+        # Forward authentication (edgeweir.auth): the subrequest goes through
+        # the origin layer (TLS verification, origin address policy), which
+        # sends it to the rule's service with the forwarded request headers
+        # and these, never a body. No client request reaches this path
+        # (nginx resolves the "." segments of every request's path).
+        location = /./edgeweir-auth {
+            internal;
+            proxy_pass http://edgeweir_origin_verify;
+            proxy_http_version 1.1;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Transfer-Encoding "";
+            proxy_set_header Connection "";
+            proxy_set_header X-Edgeweir-Site $edgeweir_auth_site;
+            proxy_set_header X-Edgeweir-Auth $edgeweir_auth_rule;
+            proxy_set_header X-Original-URI $edgeweir_auth_uri;
+            proxy_set_header X-Original-Method $edgeweir_auth_method;
+            proxy_set_header X-Original-Host $edgeweir_auth_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # The rule's timeout applies in the origin layer; this bounds the
+            # local hop.
+            proxy_read_timeout 15s;
+            proxy_send_timeout 15s;
         }
 
         # gRPC requests of sites that proxy gRPC: edgeweir.router hands them
@@ -1223,7 +1302,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "2253413bd6b3a3b8",
+            conf_id = "30162719f08bc115",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }

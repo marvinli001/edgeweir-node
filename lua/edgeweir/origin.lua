@@ -23,6 +23,12 @@
 --                  stale-while-revalidate and stale-if-error as
 --                  Cache-Control extensions (the original header travels in
 --                  X-Edgeweir-CC and the edge restores it).
+-- auth_access():   a forward authentication subrequest of the edge layer
+--                  (X-Edgeweir-Auth: the rule's id; edgeweir.auth): the
+--                  rule's service instead of the site's origins, resolved
+--                  and checked like them (origin address policy), one try
+--                  with the rule's timeout, only the forwarded request
+--                  headers; nothing here caches, intercepts or counts it.
 -- log():           passive health accounting from $upstream_status.
 -- error_page():    nginx's own errors in this layer (uncaught Lua errors,
 --                  requests nginx refuses): the stale copy first, as in
@@ -179,6 +185,69 @@ local function apply(c)
   return true
 end
 
+-- AUTH_BODY bounds the body of a forward authentication answer this
+-- layer passes on: one byte more than the edge accepts (edgeweir.auth
+-- MAX_BODY), so that the edge tells a larger one apart.
+_M.AUTH_BODY = 65537
+
+-- Request headers every forward authentication request keeps: the node's
+-- own (set by the edge's /./edgeweir-auth location).
+local AUTH_NODE_HEADERS = {
+  ["x-original-uri"] = true, ["x-original-method"] = true, ["x-original-host"] = true,
+  ["x-real-ip"] = true, ["x-forwarded-for"] = true,
+}
+
+-- auth_fail answers a forward authentication subrequest that cannot be
+-- sent (502): the edge treats it as the service being unavailable.
+local function auth_fail(site, rule_id, why)
+  ngx.log(ngx.INFO, "edgeweir: access authentication request not sent site=", site.id, " rule=", rule_id, ": ", why)
+  ngx.status = ngx.HTTP_BAD_GATEWAY
+  ngx.header["Content-Type"] = "text/plain; charset=utf-8"
+  ngx.header["Cache-Control"] = "no-store"
+  ngx.print("authentication service unavailable\n")
+  return ngx.exit(ngx.HTTP_OK)
+end
+
+function _M.auth_access(site, rule_id)
+  local rule
+  for _, r in ipairs(site._auth or {}) do
+    if r.id == rule_id and r.forward then rule = r; break end
+  end
+  if not rule then return auth_fail(site, rule_id, "no such rule") end
+  local f = rule.forward
+  local var = ngx.var
+  if f.forbidden then
+    return auth_fail(site, rule_id, "address " .. f.address .. " is a special-purpose address outside the origin allow list")
+  end
+  if f.scheme == "https" and var.edgeweir_trust_store == "missing" then
+    return auth_fail(site, rule_id, "no CA bundle to verify the service's certificate")
+  end
+  local ip, err = dns.resolve(f.address, store.config().allowed)
+  if not ip then return auth_fail(site, rule_id, err) end
+  local keep = rule._keep
+  if not keep then
+    keep = {}
+    for name in pairs(AUTH_NODE_HEADERS) do keep[name] = true end
+    for _, name in ipairs(rule.request_headers or {}) do keep[name] = true end
+    rule._keep = keep
+  end
+  for name in pairs(ngx.req.get_headers(0)) do
+    if not keep[name] then ngx.req.clear_header(name) end
+  end
+  var.edgeweir_upstream_scheme = f.scheme
+  var.edgeweir_upstream_host = f.host_header
+  var.edgeweir_upstream_uri = f.uri
+  var.edgeweir_authorization = keep.authorization and (var.http_authorization or "") or ""
+  var.edgeweir_amz_date = ""
+  var.edgeweir_amz_content_sha256 = ""
+  local sni = f.sni ~= nil and f.sni ~= "" and f.sni or nil
+  ngx.ctx.auth = {
+    ip = ip, port = f.port, sni = f.scheme == "https" and sni or nil,
+    ssl_name = f.scheme == "https" and (sni or f.address) or "",
+    timeout = (tonumber(f.timeout_ms) or 5000) / 1000,
+  }
+end
+
 function _M.access()
   local var = ngx.var
   local site_id = var.http_x_edgeweir_site
@@ -188,6 +257,12 @@ function _M.access()
   local site = store.site_current(site_id)
   if not site then
     return fail(ngx.HTTP_BAD_GATEWAY, "unknown-site")
+  end
+  -- Only the edge layer's /./edgeweir-auth location sets it (clients'
+  -- X-Edgeweir-* headers never get past the edge).
+  local auth_rule = var.http_x_edgeweir_auth
+  if auth_rule and auth_rule ~= "" then
+    return _M.auth_access(site, auth_rule)
   end
   -- Sites that do not retry after 502, 503 and 504 responses continue in
   -- the location whose next upstream conditions leave them out.
@@ -287,6 +362,20 @@ end
 
 function _M.balance()
   local ctx = ngx.ctx
+  local a = ctx.auth
+  if a then
+    -- One try: a failure is the service being unavailable.
+    if a.tried then return ngx.exit(ngx.ERROR) end
+    a.tried = true
+    ngx.var.edgeweir_ssl_name = a.ssl_name
+    local ok, err = ngx_balancer.set_current_peer(a.ip, a.port, a.sni)
+    if not ok then
+      ngx.log(ngx.ERR, "edgeweir: set_current_peer ", a.ip, ":", a.port, ": ", err)
+      return ngx.exit(ngx.ERROR)
+    end
+    ngx_balancer.set_timeouts(a.timeout, a.timeout, a.timeout)
+    return
+  end
   local n = (ctx.try or 0) + 1
   ctx.try = n
   local c = ctx.cands and ctx.cands[n]
@@ -529,8 +618,23 @@ function _M.header_filter()
   end
 end
 
--- body_filter sends the error page header_filter prepared.
+-- body_filter sends the error page header_filter prepared, and keeps at
+-- most AUTH_BODY bytes of a forward authentication answer.
 function _M.body_filter()
+  local a = ngx.ctx.auth
+  if a then
+    local chunk = ngx.arg[1]
+    if chunk and chunk ~= "" then
+      local room = _M.AUTH_BODY - (a.seen or 0)
+      a.seen = (a.seen or 0) + #chunk
+      if room <= 0 then
+        ngx.arg[1] = ""
+      elseif #chunk > room then
+        ngx.arg[1] = sub(chunk, 1, room)
+      end
+    end
+    return
+  end
   return errorpages.body_filter()
 end
 

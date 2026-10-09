@@ -48,6 +48,10 @@ const (
 	// second (lua/edgeweir/purgemethod.lua). Its keys are chosen by clients,
 	// so they live apart from the data plane's own state in DictMeta.
 	DictPurgeRate = "edgeweir_purge_rate"
+	// DictAuth holds access authentication state chosen by clients
+	// (lua/edgeweir/auth.lua): failed Basic verifications per site and
+	// client network, and cached forward authentication answers.
+	DictAuth = "edgeweir_auth"
 	// ZoneTLSSessions is the TLS session cache of the HTTPS listeners
 	// (ssl_session_cache shared:edgeweir_tls), not a lua_shared_dict.
 	ZoneTLSSessions = "edgeweir_tls"
@@ -57,7 +61,7 @@ const (
 // nginx keeps all shared memory zones in one
 // namespace, so a cache zone (proxy_cache_path keys_zone) named like one
 // of them would fail `nginx -t`: Build skips such zones.
-var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC, DictTags, DictPurgeRate}
+var SharedDicts = []string{DictSites, DictMeta, DictStats, DictPurge, DictHealth, DictPolicyLogs, DictTopStats, DictLogs, DictBans, DictChallenge, DictCC, DictTags, DictPurgeRate, DictAuth}
 
 // reservedZoneName reports whether a cache zone name collides with one of
 // the data plane's shared dicts.
