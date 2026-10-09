@@ -82,6 +82,8 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 挑战页自包含，不引用外部 URL，CSP 使用每个响应独立的 nonce；验证码图片由节点本地生成，答案不离开节点。
 - 保留前缀 `/.edgeweir/` 由边缘层直接处理，永不转发源站。
 - 访问控制（`access-control-v1`）在边缘层、缓存查找之前判定，缓存命中同样生效；防盗链与 UA 名单只看访客可以伪造的请求头，不能代替访问鉴权；WebSocket 来源名单拒绝没有 `Origin` 的升级请求。
+- 挑战失败封禁（`challenge-v2`）：verify 的失败按网站与客户端网络（IPv4 地址、IPv6 /64）计数，平台放行名单、本站放行名单与可信代理不计数，避免一个出口后的访客被别人的失败连带封禁。
+- 已验证爬虫（`challenge-v2`）：只认反向解析（PTR）得到搜索引擎官方域名、且该名称的正向解析含访客地址的请求，伪造 PTR 过不了正向检查；查询经节点自己的解析器，结果的可信度取决于该解析器（解析器被劫持时可能放行冒充者，不可用时爬虫照常被挑战）。不下载第三方 IP 列表；结果按地址缓存，同一地址同时只查一次。
 
 **源站与回源**
 
@@ -107,6 +109,9 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 配置在使用前校验 `content_hash`，无效的部分直接拒绝，不会带病应用。
 - 从磁盘加载 last-known-good 配置时同样校验哈希。
 - 客户端请求中自带的 `X-Edgeweir-*` 头会被删除，防止伪造内部头。
+- 内部头 `X-Edgeweir-Waf` 与 `X-Edgeweir-Waf-Ex`（CRS 的设置与按路径排除的条目）只由边缘层设置，回源前删除。按路径排除由 Lua 按 nginx 规范化后的路径判断，不交给 ModSecurity 的 `REQUEST_FILENAME`（不规范化，`/a/../b` 可绕过前缀匹配）；条目以内容哈希令牌对应生成的规则，站点表先于 reload 更新时不会把一个条目用到另一个路径上。
+- 规则读取请求体（`rules-body-v1`）只发生在规则（网站或全局）引用了请求体字段的网站、且表达式真正求值时；只读 `Content-Length` 不超过网站上限（至多 1 MiB）的请求体，分块编码、HTTP/2 与 HTTP/3 中没有 `Content-Length`、超过上限、WebSocket 与 gRPC 的请求体一律不读、视为截断，规则不能用来缓冲任意大的请求体。请求体不写日志。
+- 规则封禁（`waf-v2`）的前缀至多 IPv4 /16、IPv6 /48；平台放行名单、可信代理与本地监听的地址从不写入，网站范围不封本站放行名单；同一网络已有封禁时不再写入或上报。
 - `nginx.conf` 里只写入经过校验的值（端口、zone 名、大小、路径），站点等可变数据走 unix socket 进入 Lua，不拼进配置文件。
 
 ## 验证发布物
