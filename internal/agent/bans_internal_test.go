@@ -72,6 +72,18 @@ func TestProtectedPrefixes(t *testing.T) {
 	}
 }
 
+func TestRuleBanPrefix(t *testing.T) {
+	for cidr, want := range map[string]bool{"192.0.2.0/24": true, "10.0.0.0/16": true, "10.0.0.0/15": false, "192.0.2.1/32": true,
+		"2001:db8::/48": true, "2001:db8::/47": false, "2001:db8::/64": true, "2001:db8::1/128": false, "::ffff:192.0.2.0/120": false} {
+		if got := ruleBanPrefix(netip.MustParsePrefix(cidr)); got != want {
+			t.Errorf("ruleBanPrefix(%s) = %v", cidr, got)
+		}
+	}
+	if ruleBanPrefix(netip.MustParsePrefix("192.0.2.1/24")) {
+		t.Error("host bits accepted")
+	}
+}
+
 func TestConvertAutoBan(t *testing.T) {
 	b, ok := convertAutoBan(dataplane.AutoBan{SiteID: "site-a", IP: "2001:DB8::7", PrefixLen: 128, CreatedAt: 1790000000.5, ExpiresAt: 1790000060.5})
 	if !ok || b.GetCidr() != "2001:db8::7/128" || b.GetReason() != "cc_ip_rate" ||
@@ -97,7 +109,27 @@ func TestConvertAutoBan(t *testing.T) {
 	if b, _ := convertAutoBan(dataplane.AutoBan{SiteID: "site-a", IP: "192.0.2.1", ExpiresAt: 1}); b.GetScope() != nodev1.BanScope_BAN_SCOPE_UNSPECIFIED || b.GetSiteId() != "site-a" {
 		t.Fatalf("site ban = %v", b)
 	}
+	// Bans rules made carry the rule and may hold a network.
+	for _, c := range []struct {
+		site, ip string
+		bits     int
+		want     string
+	}{{"site-a", "192.0.2.0", 24, "192.0.2.0/24"}, {"site-a", "10.20.0.0", 16, "10.20.0.0/16"}, {"*", "2001:db8::", 48, "2001:db8::/48"},
+		{"site-a", "192.0.2.7", 32, "192.0.2.7/32"}, {"site-a", "2001:db8:1:2::", 64, "2001:db8:1:2::/64"}} {
+		b, ok := convertAutoBan(dataplane.AutoBan{SiteID: c.site, IP: c.ip, PrefixLen: c.bits, ExpiresAt: 1, Reason: "waf_rule", RuleID: "rule-1"})
+		if !ok || b.GetCidr() != c.want || b.GetRuleId() != "rule-1" || b.GetReason() != "waf_rule" {
+			t.Errorf("rule ban %s/%d converted = %v, %v; want %s", c.ip, c.bits, b, ok, c.want)
+		}
+	}
+	if b, _ := convertAutoBan(dataplane.AutoBan{SiteID: "site-a", IP: "192.0.2.1", PrefixLen: 32, ExpiresAt: 1}); b.GetRuleId() != "" {
+		t.Fatalf("an automatic ban with a rule: %v", b)
+	}
 	for _, bad := range []dataplane.AutoBan{
+		{SiteID: "site-a", IP: "192.0.0.0", PrefixLen: 15, ExpiresAt: 1, RuleID: "rule-1"},
+		{SiteID: "site-a", IP: "2001:db8::", PrefixLen: 47, ExpiresAt: 1, RuleID: "rule-1"},
+		{SiteID: "site-a", IP: "2001:db8::1", PrefixLen: 128, ExpiresAt: 1, RuleID: "rule-1"},
+		{SiteID: "site-a", IP: "192.0.2.1", PrefixLen: 24, ExpiresAt: 1, RuleID: "rule-1"}, // host bits
+		{SiteID: "site-a", IP: "192.0.2.0", PrefixLen: 24, ExpiresAt: 1, RuleID: "rule 1"},
 		{SiteID: "**", IP: "192.0.2.1", ExpiresAt: 1},
 		{SiteID: "site-a", IP: "not-an-ip", ExpiresAt: 1},
 		{SiteID: "site a", IP: "192.0.2.1", ExpiresAt: 1},

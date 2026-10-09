@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -447,6 +448,26 @@ func TestClientPutActiveHealth(t *testing.T) {
 	srv.Restart()
 	if got, _ = srv.Active(); got != nil {
 		t.Fatal("marks survived an nginx restart")
+	}
+}
+
+// TestDrainLogsCarriesRuleIDs: the log rules that asked for a line (proto
+// v0.29.0), at most 8 valid ids.
+func TestDrainLogsCarriesRuleIDs(t *testing.T) {
+	srv := fakedataplane.Start(t)
+	c := dataplane.NewClient(srv.Socket)
+	ids := []any{"r1", "bad id", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"}
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000000, "path": "/", "status": 200, "rule_ids": ids, "sample_rate": 10000})
+	srv.AddLogEntry(map[string]any{"site_id": "s1", "time": 1800000001, "path": "/", "status": 200})
+	logs, err := c.DrainLogs(context.Background())
+	if err != nil || len(logs) != 2 {
+		t.Fatalf("DrainLogs = %v, %v", logs, err)
+	}
+	if got := logs[0].GetRuleIds(); !slices.Equal(got, []string{"r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"}) || logs[0].GetSampleRate() != 10000 {
+		t.Fatalf("rule ids = %v", got)
+	}
+	if logs[1].GetRuleIds() != nil {
+		t.Fatalf("a sampled line with rules: %v", logs[1])
 	}
 }
 

@@ -56,7 +56,9 @@ type BanStatus struct {
 }
 
 // AutoBan is a ban the node created itself, from POST /v1/bans/auto/drain:
-// an IPv4 address (PrefixLen 32) or an IPv6 /64 (IP is the network).
+// an IPv4 address (PrefixLen 32) or an IPv6 /64 (IP is the network), or,
+// for a ban a rule made (RuleID set; reasons waf_rule and rate_limit), any
+// network of 16-32 bits (IPv4) or 48-64 bits (IPv6).
 type AutoBan struct {
 	SiteID        string  `json:"site_id"`
 	IP            string  `json:"ip"`
@@ -68,6 +70,7 @@ type AutoBan struct {
 	Observed      float64 `json:"observed"`
 	Threshold     float64 `json:"threshold"`
 	WindowSeconds uint32  `json:"window_seconds"`
+	RuleID        string  `json:"rule_id"`
 }
 
 // isEmptyJSON reports whether raw is absent, null or an empty object
@@ -202,7 +205,8 @@ func (c *Client) ListBans(ctx context.Context) (*BanStatus, []BanEntry, error) {
 type OwnBanRelease struct {
 	SiteID string `json:"site_id"`
 	// CIDR is what the own ban holds: an IPv4 address ("/32") or an IPv6
-	// /64 ("/128" for own bans of older nodes).
+	// /64 ("/128" for own bans of older nodes), or the network of a ban a
+	// rule made (IPv4 /16-/32, IPv6 /48-/64).
 	CIDR string `json:"cidr"`
 	// ExpiresAt is the console's expiry in Unix seconds (millisecond precision).
 	ExpiresAt float64 `json:"expires_at"`

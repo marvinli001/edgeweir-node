@@ -187,7 +187,7 @@ func (a *Agent) releaseOwnBans(ctx context.Context, lifted []*nodev1.Ban) {
 		expires := b.GetExpiresAt().AsTime()
 		// Scan protection's own bans are platform-wide ("*" in the data plane).
 		platform := b.GetScope() == nodev1.BanScope_BAN_SCOPE_PLATFORM && b.GetSiteId() == ""
-		if err != nil || !ownBanPrefix(prefix) || (!platform && !configir.ValidID(b.GetSiteId())) || b.GetExpiresAt() == nil {
+		if err != nil || !(ownBanPrefix(prefix) || ruleBanPrefix(prefix)) || (!platform && !configir.ValidID(b.GetSiteId())) || b.GetExpiresAt() == nil {
 			a.log.Warn("ignoring an invalid lifted ban from the console", "id", b.GetId(), "cidr", b.GetCidr())
 			continue
 		}
@@ -649,17 +649,32 @@ func ownBanPrefix(p netip.Prefix) bool {
 	return !p.Addr().Is4In6() && (p.Bits() == 64 || p.Bits() == 128)
 }
 
+// ruleBanPrefix reports whether p is what a ban a rule made may hold (ban
+// action, rate limit ban; proto v0.29.0): an IPv4 network of 16-32 bits or
+// an IPv6 network of 48-64 bits; host bits zero.
+func ruleBanPrefix(p netip.Prefix) bool {
+	if !p.IsValid() || p.Addr().Zone() != "" || p.Masked() != p || p.Addr().Is4In6() {
+		return false
+	}
+	if p.Addr().Is4() {
+		return p.Bits() >= 16 && p.Bits() <= 32
+	}
+	return p.Bits() >= 48 && p.Bits() <= 64
+}
+
 // platformOwnBan is the site id of the data plane's platform-wide own
 // bans (scan protection, unknown-host-v1).
 const platformOwnBan = "*"
 
 // convertAutoBan turns a drained own ban into its report: the address and
 // prefix length the data plane banned, as a canonical CIDR. A platform-wide
-// one (site "*") is reported with scope BAN_SCOPE_PLATFORM and no site.
+// one (site "*") is reported with scope BAN_SCOPE_PLATFORM and no site. A
+// ban a rule made carries the rule's id and may hold a wider network
+// (ruleBanPrefix).
 func convertAutoBan(b dataplane.AutoBan) (*nodev1.AutoBan, bool) {
 	ip, err := netip.ParseAddr(b.IP)
 	platform := b.SiteID == platformOwnBan
-	if err != nil || (!platform && !bans.ValidID(b.SiteID)) || b.ExpiresAt <= 0 {
+	if err != nil || (!platform && !bans.ValidID(b.SiteID)) || b.ExpiresAt <= 0 || (b.RuleID != "" && !configir.ValidID(b.RuleID)) {
 		return nil, false
 	}
 	bits := b.PrefixLen
@@ -670,7 +685,7 @@ func convertAutoBan(b dataplane.AutoBan) (*nodev1.AutoBan, bool) {
 		bits = ip.BitLen()
 	}
 	prefix := netip.PrefixFrom(ip.WithZone(""), bits)
-	if !ownBanPrefix(prefix) {
+	if (b.RuleID == "" && !ownBanPrefix(prefix)) || (b.RuleID != "" && !ruleBanPrefix(prefix)) {
 		return nil, false
 	}
 	reason := b.Reason
@@ -692,6 +707,7 @@ func convertAutoBan(b dataplane.AutoBan) (*nodev1.AutoBan, bool) {
 		Observed:      b.Observed,
 		Threshold:     b.Threshold,
 		WindowSeconds: b.WindowSeconds,
+		RuleId:        b.RuleID,
 	}, true
 }
 

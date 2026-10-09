@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"net/http"
@@ -29,6 +30,9 @@ type sampledLog struct {
 	WAFBlocked bool     `json:"waf_blocked"`
 	// RequestID is the X-Request-Id the node answered with.
 	RequestID string `json:"request_id"`
+	// RuleIDs are the log rules with access_log that asked for the line
+	// (at most 8; proto v0.29.0).
+	RuleIDs []string `json:"rule_ids"`
 }
 
 // maxRequestID bounds AccessLog.request_id.
@@ -36,6 +40,23 @@ const maxRequestID = 128
 
 // maxLogRuleIDs bounds AccessLog.waf_rule_ids.
 const maxLogRuleIDs = 16
+
+// maxLogRules bounds AccessLog.rule_ids.
+const maxLogRules = 8
+
+// logRules keeps the valid rule ids of a line, at most maxLogRules.
+func logRules(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if len(out) == maxLogRules {
+			break
+		}
+		if configir.ValidID(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
 
 func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 	var out struct {
@@ -62,7 +83,7 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 		}
 		logs = append(logs, &nodev1.AccessLog{
 			Time: timestamppb.New(time.UnixMilli(int64(l.Time * 1000))), SiteId: l.SiteID, ClientIp: l.ClientIP, Method: l.Method, Host: l.Host, Path: l.Path, Status: l.Status, BytesSent: l.BytesSent, DurationMs: l.DurationMS, CacheStatus: l.CacheStatus, SampleRate: l.SampleRate, Ja4: l.JA4,
-			WafRuleIds: l.WAFRuleIDs, WafBlocked: l.WAFBlocked, RequestId: l.RequestID,
+			WafRuleIds: l.WAFRuleIDs, WafBlocked: l.WAFBlocked, RequestId: l.RequestID, RuleIds: logRules(l.RuleIDs),
 		})
 	}
 	return logs, nil
