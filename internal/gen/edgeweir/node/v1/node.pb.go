@@ -2181,8 +2181,13 @@ type MinuteStats struct {
 	// a verified answer.
 	ChallengesIssued uint64 `protobuf:"varint,23,opt,name=challenges_issued,json=challengesIssued,proto3" json:"challenges_issued,omitempty"`
 	ChallengesPassed uint64 `protobuf:"varint,24,opt,name=challenges_passed,json=challengesPassed,proto3" json:"challenges_passed,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Bytes WebP / AVIF responses saved against their originals: for each
+	// complete 200 response to a GET served as a converted variant (cache hits
+	// included), the original's length minus the variant's (ImageConvert).
+	// Added in v0.31.0 (feature image-convert-v1).
+	ImageBytesSaved uint64 `protobuf:"varint,25,opt,name=image_bytes_saved,json=imageBytesSaved,proto3" json:"image_bytes_saved,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *MinuteStats) Reset() {
@@ -2379,6 +2384,13 @@ func (x *MinuteStats) GetChallengesIssued() uint64 {
 func (x *MinuteStats) GetChallengesPassed() uint64 {
 	if x != nil {
 		return x.ChallengesPassed
+	}
+	return 0
+}
+
+func (x *MinuteStats) GetImageBytesSaved() uint64 {
+	if x != nil {
+		return x.ImageBytesSaved
 	}
 	return 0
 }
@@ -5449,7 +5461,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x11renew_certificate\x18\x02 \x01(\bR\x10renewCertificate\x126\n" +
 	"\x17report_interval_seconds\x18\x03 \x01(\rR\x15reportIntervalSeconds\x12#\n" +
 	"\rtasks_pending\x18\x04 \x01(\bR\ftasksPending\x12\x14\n" +
-	"\x05probe\x18\x05 \x01(\bR\x05probe\"\x98\x0e\n" +
+	"\x05probe\x18\x05 \x01(\bR\x05probe\"\xc4\x0e\n" +
 	"\vMinuteStats\x122\n" +
 	"\x06minute\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x06minute\x12\x17\n" +
 	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x1a\n" +
@@ -5477,7 +5489,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\ftls_versions\x18\x15 \x03(\v2..edgeweir.node.v1.MinuteStats.TlsVersionsEntryR\vtlsVersions\x12T\n" +
 	"\rblock_reasons\x18\x16 \x03(\v2/.edgeweir.node.v1.MinuteStats.BlockReasonsEntryR\fblockReasons\x12+\n" +
 	"\x11challenges_issued\x18\x17 \x01(\x04R\x10challengesIssued\x12+\n" +
-	"\x11challenges_passed\x18\x18 \x01(\x04R\x10challengesPassed\x1a>\n" +
+	"\x11challenges_passed\x18\x18 \x01(\x04R\x10challengesPassed\x12*\n" +
+	"\x11image_bytes_saved\x18\x19 \x01(\x04R\x0fimageBytesSaved\x1a>\n" +
 	"\x10StatusCodesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1a;\n" +
