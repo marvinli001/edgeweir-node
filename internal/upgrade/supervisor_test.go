@@ -16,6 +16,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/childproc"
 )
 
 // The real test executable doubles as an independently started agent process.
@@ -47,7 +48,8 @@ func TestMain(m *testing.M) {
 		if os.Getenv("EDGEWEIR_UPGRADE_TEST_ENGINE") == "1" {
 			// Like the agent: OpenResty of the supervisor, started (or
 			// reloaded) once the configuration is installed.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			deadline, _ := time.Parse(time.RFC3339Nano, os.Getenv("EDGEWEIR_UPGRADE_TEST_DEADLINE"))
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			if !client.Engine(ctx) || NewRemoteEngine(socket, nil).Reload(ctx) != nil {
 				os.Exit(43)
 			}
@@ -60,18 +62,12 @@ func TestMain(m *testing.M) {
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+	childproc.UnignoreSIGHUP()
 	os.Exit(m.Run())
 }
 func wait(t *testing.T, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("condition did not complete")
+	childproc.Wait(t, "the condition", fn)
 }
 func fixture(t *testing.T) (Options, *Client) {
 	t.Helper()
@@ -81,6 +77,7 @@ func fixture(t *testing.T) (Options, *Client) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	t.Setenv("EDGEWEIR_UPGRADE_TEST_CHILD", "1")
+	t.Setenv("EDGEWEIR_UPGRADE_TEST_DEADLINE", childproc.Deadline(t).Format(time.RFC3339Nano))
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +87,9 @@ func fixture(t *testing.T) (Options, *Client) {
 	_ = os.WriteFile(filepath.Join(lua, "version"), []byte("0.1.0"), 0600)
 	_ = os.MkdirAll(filepath.Join(root, "config"), 0700)
 	_ = os.WriteFile(filepath.Join(root, "config", "current.binpb"), []byte("original LKG"), 0600)
-	opts := Options{Trust: Trust{StateDir: root}, Executable: exe, LuaDir: lua, Version: "0.1.0", Output: io.Discard, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), StableWindow: 100 * time.Millisecond, TrialTimeout: 2 * time.Second}
+	// A candidate that fails exits; the trial timeout only has to outlast
+	// a slow start of a healthy one.
+	opts := Options{Trust: Trust{StateDir: root}, Executable: exe, LuaDir: lua, Version: "0.1.0", Output: io.Discard, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), StableWindow: 100 * time.Millisecond, TrialTimeout: time.Until(childproc.Deadline(t))}
 	opts.prepare = func(_ context.Context, o Trust, t Task) (Bundle, error) {
 		dir := filepath.Join(o.StateDir, "upgrades", "releases", t.ID)
 		if err := os.MkdirAll(filepath.Join(dir, "lua"), 0700); err != nil {
@@ -132,7 +131,7 @@ func launch(t *testing.T, opts Options, client *Client) func() {
 			if err != nil {
 				t.Error(err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(time.Until(childproc.Deadline(t))):
 			t.Error("supervisor did not stop")
 		}
 	}
@@ -357,9 +356,10 @@ func fakeNginx(t *testing.T, dir string) (bin string, pids func() []string, hups
 	bin = filepath.Join(dir, "nginx")
 	script := `#!/bin/sh
 for a in "$@"; do [ "$a" = "-t" ] && exit 0; done
-echo $$ >> "` + dir + `/pids"
+# Signal handlers first: a reload may follow as soon as the pid is there.
 trap 'exit 0' QUIT TERM
 trap 'echo hup >> "` + dir + `/hups"' HUP
+echo $$ >> "` + dir + `/pids"
 while :; do sleep 0.05; done
 `
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
@@ -396,14 +396,20 @@ func TestOpenRestyOutlivesTheNodeProcess(t *testing.T) {
 	opts.Engine = &engine.Config{Bin: bin, Prefix: opts.Trust.StateDir, Conf: filepath.Join(opts.Trust.StateDir, "nginx.conf"),
 		Managed: true, StopTimeout: 2 * time.Second, Logger: opts.Log}
 	stop := launch(t, opts, client)
-	wait(t, func() bool { return len(pids()) == 1 })
+	childproc.Wait(t, "OpenResty to start", func() bool { return len(pids()) == 1 })
 	first := pids()[0]
 
 	up := "66666666-6666-4666-8666-666666666666"
 	if err := client.Stage(context.Background(), Task{ID: up, Version: "0.2.0"}); err != nil {
 		t.Fatal(err)
 	}
-	wait(t, func() bool { r, e := client.Result(context.Background()); return e == nil && r != nil && r.Success })
+	childproc.Wait(t, "the upgrade to succeed", func() bool {
+		r, e := client.Result(context.Background())
+		return e == nil && r != nil && r.Success
+	})
+	// The candidate reloaded before it reported healthy; the fake records
+	// the SIGHUP once its current sleep returns.
+	childproc.Wait(t, "the reload of the upgrade (SIGHUP)", func() bool { return hups() >= 1 })
 	if got := pids(); len(got) != 1 || !alive(first) || hups() < 1 {
 		t.Fatalf("after the upgrade: OpenResty pids %v (alive %v), reloads %d", got, alive(first), hups())
 	}
