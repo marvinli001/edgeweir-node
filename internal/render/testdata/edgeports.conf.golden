@@ -61,7 +61,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "9cdbafcd499e2459",
+            conf_id = "88766645ab5d7884",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -193,6 +193,17 @@ http {
         server unix:/run/edgeweir-node/origin-noverify-grpc.sock;
     }
 
+    # Edge -> the agent's image converter (ADR-0043): requests for a WebP or
+    # AVIF variant (edgeweir.imageconv). The agent passes them on to the
+    # origin layer named in X-Edgeweir-Image and converts the answer; like
+    # the origin layers, no keep-alive (the converter closes the connection
+    # without an answer when the origin layer did, so the edge serves its
+    # stale copy).
+    upstream edgeweir_image {
+        server unix:/run/edgeweir-node/image.sock;
+        keepalive 0;
+    }
+
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools
     # (keyed by address, port and SNI) are chosen per request in Lua.
     # nginx >= 1.29.7 caches upstream connections by default
@@ -268,6 +279,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -318,6 +330,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -384,6 +397,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -435,6 +449,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -504,6 +519,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -555,6 +571,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -623,6 +640,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -675,6 +693,7 @@ http {
             proxy_set_header X-Edgeweir-Cache-Status "";
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
+            proxy_set_header X-Edgeweir-Image "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -747,6 +766,7 @@ http {
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
+            grpc_set_header X-Edgeweir-Image "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -796,6 +816,7 @@ http {
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
+            grpc_set_header X-Edgeweir-Image "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -867,6 +888,7 @@ http {
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
+            grpc_set_header X-Edgeweir-Image "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -917,6 +939,7 @@ http {
             grpc_set_header X-Edgeweir-Cache-Status "";
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
+            grpc_set_header X-Edgeweir-Image "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -982,6 +1005,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1019,6 +1045,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1055,6 +1082,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1165,6 +1195,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1202,6 +1235,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1238,6 +1272,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1348,6 +1385,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1385,6 +1425,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1421,6 +1462,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1540,6 +1584,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1577,6 +1624,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1613,6 +1661,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1732,6 +1783,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1769,6 +1823,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1805,6 +1860,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1915,6 +1973,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1952,6 +2013,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1988,6 +2050,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2098,6 +2163,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2135,6 +2203,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2171,6 +2240,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2281,6 +2353,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2318,6 +2393,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2354,6 +2430,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2475,6 +2554,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2512,6 +2594,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2548,6 +2631,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2669,6 +2755,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2706,6 +2795,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2742,6 +2832,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2852,6 +2945,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2889,6 +2985,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2925,6 +3022,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -3043,6 +3143,9 @@ http {
             set $edgeweir_rules "";
             set $edgeweir_range_mode "";
             set $edgeweir_origin_layer "edgeweir_origin_verify";
+            # A WebP / AVIF variant's parameters for the image converter
+            # (edgeweir.imageconv); empty for every other request.
+            set $edgeweir_image "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -3080,6 +3183,7 @@ http {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -3116,6 +3220,9 @@ http {
             # The origin address that answered (edgeweir.origin), for the
             # access log only (edgeweir.accesslogs), cache hits included.
             proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;

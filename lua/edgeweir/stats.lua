@@ -22,6 +22,7 @@ local uaclass = require("edgeweir.uaclass")
 local accesslogs = require("edgeweir.accesslogs")
 local access = require("edgeweir.access")
 local geoip = require("edgeweir.geoip")
+local imageconv = require("edgeweir.imageconv")
 
 local _M = {}
 
@@ -175,6 +176,12 @@ function _M.log(waf_location)
     end
   end
   dict:incr(p .. "s" .. ngx.status, 1, 0, TTL)
+  -- Bytes WebP / AVIF variants saved (edgeweir.imageconv; metric "is",
+  -- MinuteStats.image_bytes_saved).
+  local saved = imageconv.saved(var.upstream_http_x_edgeweir_image_saved, ngx.status, ngx.req.get_method())
+  if saved > 0 then
+    dict:incr(p .. "is", saved, 0, TTL)
+  end
   if waf_ids then
     for i = 1, #waf_ids do
       dict:incr(p .. "w" .. waf_ids[i], 1, 0, TTL)
@@ -318,6 +325,8 @@ function _M.drain(now)
           b.cache_misses = b.cache_misses + v
         elseif metric == "a" then
           b.auth_failures = (b.auth_failures or 0) + v
+        elseif metric == "is" then
+          b.image_bytes_saved = (b.image_bytes_saved or 0) + v
         elseif sub(metric, 1, 1) == "s" then
           local code = sub(metric, 2)
           b.status_codes[code] = (b.status_codes[code] or 0) + v

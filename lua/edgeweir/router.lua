@@ -92,6 +92,7 @@ local bans = require("edgeweir.bans")
 local cc = require("edgeweir.cc")
 local challenge = require("edgeweir.challenge")
 local compress = require("edgeweir.compress")
+local imageconv = require("edgeweir.imageconv")
 local waf = require("edgeweir.waf")
 local errorpages = require("edgeweir.errorpages")
 local unknownhost = require("edgeweir.unknownhost")
@@ -555,6 +556,11 @@ local function access()
   if site.slice then
     var.edgeweir_range_mode = "slice"
   end
+  -- WebP / AVIF variants (ADR-0043): the class joins the key; a variant
+  -- goes through the agent's image converter and is never sliced.
+  if site.image_convert then
+    req.image = imageconv.route(site, var, ngx.ctx, headers, path)
+  end
 
   local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
   local tmax = purge.tag_max(site.id)
@@ -820,6 +826,11 @@ function _M.header_filter(waf_location)
     -- every response of the site, before the response phases: rules win.
     if site._access and not ngx.is_subrequest then
       accesscontrol.response_headers(site, h, ngx.ctx.edgeweir_original_path or var.uri)
+    end
+    -- Image responses of requests eligible for WebP / AVIF variants vary
+    -- by Accept, the original's included (edgeweir.imageconv).
+    if ngx.ctx.edgeweir_image_vary then
+      imageconv.vary(h)
     end
     if site._response_rules then
       local ok = pcall(policy.response, site)

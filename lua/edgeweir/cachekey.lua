@@ -252,7 +252,8 @@ end
 -- $uri), args (raw query string), user_agent, headers (lowercase name ->
 -- value or list, e.g. ngx.req.get_headers(0)), cookie (name -> value, see
 -- key_cookies), handed (the request was handed to the site as the default
--- site, unknown-host-v1) }. A handed request keeps its host in the key
+-- site, unknown-host-v1), image (a WebP / AVIF variant's class,
+-- edgeweir.imageconv) }. A handed request keeps its host in the key
 -- even where the site's key leaves the host out: any Host reaches the
 -- default site, and its origin may answer by Host.
 function _M.build(site, req, epoch)
@@ -281,6 +282,11 @@ function _M.build(site, req, epoch)
     local name = cookies[i]
     local v = req.cookie and req.cookie(name)
     parts[#parts + 1] = "|c:" .. escape(name, ESC_VALUE) .. "=" .. (v and escape(v, ESC_VALUE) or "")
+  end
+  -- A WebP / AVIF variant (edgeweir.imageconv): "avif" or "webp"; the
+  -- original's key has no class.
+  if req.image then
+    parts[#parts + 1] = "|i=" .. req.image
   end
   return _M.with_epoch(concat(parts), epoch)
 end

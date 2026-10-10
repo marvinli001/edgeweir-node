@@ -61,6 +61,10 @@ type Params struct {
 	// AgentSocket is the agent's unix socket for the data plane's requests
 	// (PURGE method; default: agent.sock next to ControlSocket).
 	AgentSocket string
+	// ImageSocket is the agent's image converter between the edge and the
+	// origin layer (upstream edgeweir_image, ADR-0043; default: image.sock
+	// next to ControlSocket).
+	ImageSocket string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
 	// OriginSocketNoVerify is the unix socket of the origin layer for sites
@@ -221,6 +225,9 @@ func (p Params) WithDefaults() Params {
 	if p.AgentSocket == "" && p.ControlSocket != "" {
 		p.AgentSocket = filepath.Join(filepath.Dir(p.ControlSocket), "agent.sock")
 	}
+	if p.ImageSocket == "" && p.ControlSocket != "" {
+		p.ImageSocket = filepath.Join(filepath.Dir(p.ControlSocket), "image.sock")
+	}
 	if p.EdgeSocket == "" && p.ControlSocket != "" {
 		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
 	}
@@ -277,6 +284,7 @@ func (p Params) Validate() error {
 		"TLS edge socket":                           p.EdgeTLSSocket,
 		"GeoIP socket":                              p.GeoIPSocket,
 		"agent socket":                              p.AgentSocket,
+		"image converter socket":                    p.ImageSocket,
 		"layer-4 control socket":                    p.L4Socket,
 	} {
 		if !safePath.MatchString(v) {
@@ -903,6 +911,17 @@ func (p Params) OriginLayerSockets() []string {
 	var out []string
 	for _, l := range originLayers(p.WithDefaults()) {
 		out = append(out, l.Socket)
+	}
+	return out
+}
+
+// OriginLayerSocketsByName maps the edge layer's upstream names of the
+// origin layers (the values of $edgeweir_origin_layer) to their unix
+// sockets (with defaults applied).
+func (p Params) OriginLayerSocketsByName() map[string]string {
+	out := map[string]string{}
+	for _, l := range originLayers(p.WithDefaults()) {
+		out[l.Name] = l.Socket
 	}
 	return out
 }

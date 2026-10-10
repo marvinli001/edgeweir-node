@@ -584,10 +584,12 @@ function _M.header_filter()
   local ctx = ngx.ctx
   local h = ngx.header
   -- Only this layer may set the stash header the edge restores, the
-  -- carrier of cached Set-Cookie lines and the origin address.
+  -- carrier of cached Set-Cookie lines and the origin address; only the
+  -- image converter the bytes a variant saved.
   h["X-Edgeweir-CC"] = nil
   h[setcookie.HEADER] = nil
   h[_M.UPSTREAM] = nil
+  h["X-Edgeweir-Image-Saved"] = nil
   local site = ctx.site
   if not site then
     return
