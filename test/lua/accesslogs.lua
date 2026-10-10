@@ -289,6 +289,16 @@ test("log field helpers: media type, Referer, UTF-8 cuts, GeoIP fields, upstream
   eq(addr, "10.0.0.5:8080"); eq(status, 200); eq(ms, 20)
   addr, status, ms = accesslogs.upstream({ upstream_status = "200 : 304", upstream_response_time = "0.001 : 1.5", upstream_cache_status = "REVALIDATED" })
   eq(addr, ""); eq(status, 304); eq(ms, 1500)
+  -- After a 304 nginx reads the stored headers again: their address is the
+  -- stored object's origin, not this request's.
+  addr, status, ms = accesslogs.upstream({ upstream_status = "304", upstream_response_time = "0.020", upstream_cache_status = "REVALIDATED",
+    upstream_http_x_edgeweir_upstream = "10.0.0.5:8080" })
+  eq(addr, "", "REVALIDATED: no address"); eq(status, 304); eq(ms, 20)
+  for _, cs in ipairs({ "MISS", "EXPIRED", "BYPASS" }) do
+    addr = accesslogs.upstream({ upstream_status = "200", upstream_response_time = "0.1", upstream_cache_status = cs,
+      upstream_http_x_edgeweir_upstream = "10.0.0.5:80" })
+    eq(addr, "10.0.0.5:80", cs .. ": this request's origin")
+  end
   for _, cs in ipairs({ "HIT", "STALE", "UPDATING" }) do
     addr, status, ms = accesslogs.upstream({ upstream_status = "200", upstream_response_time = "0.1", upstream_cache_status = cs,
       upstream_http_x_edgeweir_upstream = "10.0.0.5:80" })
@@ -491,6 +501,11 @@ test("lines carry the new fields, the site's optional fields, and the client's q
   log(out, { status = 200, cache = "HIT", upstream_status = "200", upstream_time = "0.5", upstream_addr = "10.0.0.5:80" })
   l = accesslogs.drain()[1]
   eq(l.upstream_addr, ""); eq(l.upstream_status, 0); eq(l.upstream_ms, 0)
+  -- Revalidated: the origin's status and time, no address.
+  log(request({ host = "plain.test", uri = "/r" }), { status = 200, cache = "REVALIDATED", upstream_status = "304", upstream_time = "0.007",
+    upstream_addr = "10.0.0.6:80" })
+  local rv = accesslogs.drain()[1]
+  eq(rv.cache_status, "REVALIDATED"); eq(rv.upstream_addr, ""); eq(rv.upstream_status, 304); eq(rv.upstream_ms, 7)
   eq(l.query, nil); eq(l.headers, nil); eq(l.peer_ip, nil)
   eq(l.http_version, "1.1"); eq(l.scheme, "http"); eq(l.tls_version, ""); eq(l.country, ""); eq(l.asn, 0)
   eq(l.sample_rate, 10000)

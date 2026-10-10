@@ -15,10 +15,11 @@
 -- query and fragment, the HTTP and TLS versions, the scheme, the client's
 -- country and network (the access phase's GeoIP record, else the worker's
 -- cache: no sockets here), the origin's address, status and time when the
--- request went to the origin (not for cache hits), the request's size, the
--- response's media type and the block reason with its rule. Sites add the
--- query string (log_query), request headers (log_headers) and the
--- connection's peer address (log_peer) when they record them.
+-- request went to the origin (not for cache hits; revalidated responses
+-- without the address), the request's size, the response's media type and
+-- the block reason with its rule. Sites add the query string (log_query),
+-- request headers (log_headers) and the connection's peer address
+-- (log_peer) when they record them.
 --
 -- The live view (edgeweir.tap) gets the same record, without the optional
 -- fields, for every request while someone watches it, sampled or not.
@@ -96,15 +97,19 @@ end
 -- X-Edgeweir-Upstream (set only by the origin layer, hidden from clients)
 -- and the edge's last $upstream_status and $upstream_response_time
 -- (including the origin layer's own retries); "", 0, 0 for responses from
--- the cache and the node's own answers.
+-- the cache and the node's own answers. A REVALIDATED response has no
+-- address: after the 304 nginx reads the stored headers again, and theirs
+-- names the origin of the stored object.
 function M.upstream(var)
   local status = var.upstream_status
-  if not status or status == "" or FROM_CACHE[var.upstream_cache_status or ""] then return "", 0, 0 end
+  local cache_status = var.upstream_cache_status or ""
+  if not status or status == "" or FROM_CACHE[cache_status] then return "", 0, 0 end
   local code = last_number(status)
   if not code or code < 100 or code > 599 or code ~= floor(code) then code = 0 end
   local seconds = last_number(var.upstream_response_time)
   local ms = seconds and math.min(86400000, floor(seconds * 1000 + 0.5)) or 0
-  return text(var.upstream_http_x_edgeweir_upstream, 128), code, ms
+  local addr = cache_status ~= "REVALIDATED" and text(var.upstream_http_x_edgeweir_upstream, 128) or ""
+  return addr, code, ms
 end
 
 -- geo_fields returns the country (uppercase alpha-2 or ""), network (0
