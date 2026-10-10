@@ -58,13 +58,14 @@ local SOURCES = { browsers = "browsers", operating_systems = "oses", devices = "
   tls_versions = "tls", block_reasons = "reasons" }
 
 -- referer_host returns the Referer's host for the statistics: a host name
--- (or IPv4 address) of at most 253 bytes, lowercase, without the port, not
--- the request's own host; nil otherwise.
+-- (labels of [a-z0-9_-]) or IPv4 address of at most 253 bytes, lowercase,
+-- without the port, not the request's own host; nil otherwise (IPv6
+-- literals included).
 function _M.referer_host(value, own)
   if type(value) == "table" then value = value[1] end
   if type(value) ~= "string" or value == "" then return nil end
   local host = access.referer_host(value)
-  if not host or #host > 253 or host == own or not host:match("^[a-z0-9][a-z0-9.-]*$") then return nil end
+  if not host or host == own or host:find(":", 1, true) then return nil end
   return host
 end
 
