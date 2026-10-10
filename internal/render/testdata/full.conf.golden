@@ -41,7 +41,7 @@ http {
     lua_shared_dict edgeweir_health 4m;
     lua_shared_dict edgeweir_policy_logs 1m;
     lua_shared_dict edgeweir_topstats 16m;
-    lua_shared_dict edgeweir_logs 8m;
+    lua_shared_dict edgeweir_logs 32m;
     lua_shared_dict edgeweir_bans 32m;
     lua_shared_dict edgeweir_challenge 8m;
     lua_shared_dict edgeweir_cc 32m;
@@ -60,7 +60,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "0ec6cec3c942f294",
+            conf_id = "b6e841121e8ec349",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",

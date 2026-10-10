@@ -528,6 +528,21 @@ func TestRenderPurgeDictSize(t *testing.T) {
 	}
 }
 
+// TestRenderAccessLogStores: the sampled access log queue holds 2000
+// lines of a few KB each (32 MiB), next to the live view's records and the
+// statistics summaries.
+func TestRenderAccessLogStores(t *testing.T) {
+	got, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"lua_shared_dict edgeweir_logs 32m;", "lua_shared_dict edgeweir_tap 4m;", "lua_shared_dict edgeweir_topstats 16m;"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("%q not rendered", want)
+		}
+	}
+}
+
 // TestRenderBanStore: --ban-dict-mb sizes edgeweir_bans and --ban-capacity
 // reaches edgeweir.bans through init_by_lua.
 func TestRenderChallengeAndCCStores(t *testing.T) {

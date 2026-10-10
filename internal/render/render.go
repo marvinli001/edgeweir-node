@@ -416,7 +416,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictHealth:     4,
 		configir.DictPolicyLogs: 1,
 		configir.DictTopStats:   16,
-		configir.DictLogs:       8,
+		configir.DictLogs:       32, // 2000 queued lines (accesslogs.lua) of a few KB: path, User-Agent, Referer, query and headers are the client's
 		configir.DictBans:       p.BanDictMB,
 		configir.DictChallenge:  p.ChallengeDictMB,
 		configir.DictCC:         p.CCDictMB,
