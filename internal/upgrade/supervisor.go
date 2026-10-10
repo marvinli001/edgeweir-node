@@ -254,7 +254,11 @@ func Run(ctx context.Context, opts Options) error {
 	// its statistics from OpenResty's counters on the way out).
 	s.startEngine()
 	defer s.stopEngine()
-	if err = s.start(s.state.Active); err != nil {
+	// The socket serves already: a staged task may be writing s.state.
+	s.mu.Lock()
+	err = s.startLocked(s.state.Active)
+	s.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	defer s.stop()
@@ -371,7 +375,6 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 }
-func (s *Supervisor) start(b Bundle) error { s.mu.Lock(); defer s.mu.Unlock(); return s.startLocked(b) }
 func (s *Supervisor) startLocked(b Bundle) error {
 	bin, lua := s.opts.Executable, s.opts.LuaDir
 	if b.Dir != "" {
