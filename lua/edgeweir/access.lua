@@ -46,12 +46,12 @@ local byte, find, gmatch, lower, match, sub = string.byte, string.find, string.g
 local concat = table.concat
 local ipairs, pairs, tonumber, tostring, type = ipairs, pairs, tonumber, tostring, type
 
--- Results of check.
-local IP_BLOCKED = { status = 403, code = "ip-blocked" }
-local GEO_DENIED = { status = 403, code = "geo-denied" }
-local CORS_DENIED = { status = 403, code = "cors-origin-denied" }
-local HOTLINK_DENIED = { status = 403, code = "hotlink-denied" }
-local UA_DENIED = { status = 403, code = "ua-denied" }
+-- Results of check, with their block reasons (edgeweir.reasons).
+local IP_BLOCKED = { status = 403, code = "ip-blocked", reason = "ip_blocked" }
+local GEO_DENIED = { status = 403, code = "geo-denied", reason = "region" }
+local CORS_DENIED = { status = 403, code = "cors-origin-denied", reason = "cors" }
+local HOTLINK_DENIED = { status = 403, code = "hotlink-denied", reason = "referer" }
+local UA_DENIED = { status = 403, code = "ua-denied", reason = "user_agent" }
 
 _M.DEFAULT_WEBSOCKET_IDLE = 3600
 _M.PREFLIGHT_VARY = "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
@@ -649,7 +649,7 @@ function _M.check(site, values, platform_allowed, site_allowed)
     local d = _M.hotlink_decision(hotlink, path, expressions.path_extension(path),
       values["http.request.headers.referer"], var.http_origin, site_host(site))
     if d == "deny" then
-      if hotlink.redirect then return { respond = redirect(hotlink.redirect) } end
+      if hotlink.redirect then return { respond = redirect(hotlink.redirect), reason = "referer" } end
       return HOTLINK_DENIED
     end
   end

@@ -39,6 +39,14 @@
 -- the site's allow lists. rules-body-v1 and challenge-v2: the request body
 -- and crawler fields are lazy (lazy_values): read only when an expression
 -- evaluates them, for sites whose rules read them.
+--
+-- Proto v0.30.0 (ADR-0041): refusals carry their block reason and rule
+-- (reason, rule_id; edgeweir.reasons), which edgeweir.router records where
+-- it acts on them: the platform block lists (ip_blocked), the site's
+-- access control (edgeweir.access), access authentication (auth), the
+-- custom rules' block, ban, close and 4xx / 5xx respond actions (rule)
+-- and rate limits over the limit (rate_limit); a rule's challenge names
+-- its rule (edgeweir.challenge records the reason once it challenges).
 local expressions = require("edgeweir.expressions")
 local ratelimit = require("edgeweir.ratelimit")
 local compress = require("edgeweir.compress")
@@ -623,7 +631,7 @@ local function run_group(group, site, ctx, phase, namespace)
   for _, rule in ipairs(group) do
     if rule.match(ctx.values) then
       local a = rule.action
-      if a.kind == "block" then return { status = a.status_code } end
+      if a.kind == "block" then return { status = a.status_code, reason = "rule", rule_id = rule.id } end
       if a.kind == "allow" then -- this WAF scope only; never skips platform rules or rate limits
         ctx.allowed = true -- but exempts the request from Under Attack and CC challenges
         break
@@ -633,12 +641,14 @@ local function run_group(group, site, ctx, phase, namespace)
         local scope = a.ban_scope == "platform" and "*" or site.id
         rule_ban(site, ctx, rule, scope, a.ban_prefix_v4, a.ban_prefix_v6, a.ban_seconds,
           { reason = "waf_rule", metric = "waf_rule" })
-        return { status = 403, code = "ip-banned", message = "banned" }
+        return { status = 403, code = "ip-banned", message = "banned", reason = "rule", rule_id = rule.id }
       end
       if a.kind == "respond" then
-        return { respond = function() return _M.respond(a, site) end }
+        -- Only error statuses are blocks.
+        local blocked = (tonumber(a.status_code) or 403) >= 400
+        return { respond = function() return _M.respond(a, site) end, reason = blocked and "rule" or nil, rule_id = blocked and rule.id or nil }
       end
-      if a.kind == "close" then return { close = true } end
+      if a.kind == "close" then return { close = true, reason = "rule", rule_id = rule.id } end
       if a.kind == "skip" and skip(a, ctx, namespace) then break end
       if a.kind == "challenge" then
         -- A sufficient pass continues with the next rules; otherwise the
@@ -646,7 +656,7 @@ local function run_group(group, site, ctx, phase, namespace)
         local challenge = require("edgeweir.challenge")
         local level = challenge.LEVELS[a.challenge]
         if not level then return { status = 503 } end
-        if challenge.pass_level(site) < level then return { challenge = a.challenge, level = level } end
+        if challenge.pass_level(site) < level then return { challenge = a.challenge, level = level, rule_id = rule.id } end
       end
       if a.kind == "log" then
         -- Counted per rule and minute for the console (feature rule-log-v1).
@@ -690,6 +700,8 @@ local function run_group(group, site, ctx, phase, namespace)
         and not (namespace == "site" and ctx.skip_rate_limits_site) then
         local result = ratelimit.check(site._rate_limit_dict, site.id, namespace, rule.id, a, ctx.values[a.key])
         if result then
+          -- Over the limit (not a missing partition's 503).
+          if result.count then result.reason, result.rule_id = "rate_limit", rule.id end
           -- waf-v2: the address over the limit is banned at site scope.
           local seconds = tonumber(a.ban_seconds) or 0
           if seconds > 0 and result.count then
@@ -716,7 +728,7 @@ function _M.access(site, headers, acme, site_allowed)
   ctx.platform_allowed = allowed
   ctx.site_allowed = site_allowed == true
   if not allowed then
-    for _, m in ipairs(cfg.blocks or {}) do if m(values["ip.src"]) then return { status = 403 } end end
+    for _, m in ipairs(cfg.blocks or {}) do if m(values["ip.src"]) then return { status = 403, reason = "ip_blocked" } end end
   end
   -- Access control (edgeweir.access): the site's block lists, geo, CORS
   -- preflights, hotlink and user agents, after the platform lists and

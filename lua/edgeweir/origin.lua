@@ -22,7 +22,10 @@
 --                  layer: X-Accel-Expires from the matching cache rule,
 --                  stale-while-revalidate and stale-if-error as
 --                  Cache-Control extensions (the original header travels in
---                  X-Edgeweir-CC and the edge restores it).
+--                  X-Edgeweir-CC and the edge restores it), and names
+--                  the origin address that answered in
+--                  X-Edgeweir-Upstream for the edge's access log (the
+--                  edge never sends it on, cache hits included).
 -- auth_access():   a forward authentication subrequest of the edge layer
 --                  (X-Edgeweir-Auth: the rule's id; edgeweir.auth): the
 --                  rule's service instead of the site's origins, resolved
@@ -542,6 +545,25 @@ function _M.decide(chain, status, size, cc, expires, authorized)
   return out
 end
 
+-- UPSTREAM is the header that names the origin address that answered.
+_M.UPSTREAM = "X-Edgeweir-Upstream"
+
+-- last_upstream returns the last address of an $upstream_addr value
+-- ("a, b : c": several attempts, internal redirects): an IPv4 or bracketed
+-- IPv6 address with its port, or a unix socket; nil for anything else (the
+-- name of a server group when no server could be selected).
+function _M.last_upstream(value)
+  if type(value) ~= "string" or value == "" then return nil end
+  local last = value:match("([^,]*)$")
+  last = last:match("^.* : (.*)$") or last
+  last = last:match("^%s*(.-)%s*$")
+  if #last > 128 then return nil end
+  if last:match("^%d+%.%d+%.%d+%.%d+:%d+$") or last:match("^%[[%x:.]+%]:%d+$") or last:match("^unix:[^%s%c]+$") then
+    return last
+  end
+  return nil
+end
+
 -- page_code returns the X-Edgeweir-Error code when the response must be
 -- replaced with an error page: nginx's own failure of the last attempt
 -- (no response header), or an origin error the site intercepts.
@@ -561,14 +583,16 @@ end
 function _M.header_filter()
   local ctx = ngx.ctx
   local h = ngx.header
-  -- Only this layer may set the stash header the edge restores and the
-  -- carrier of cached Set-Cookie lines.
+  -- Only this layer may set the stash header the edge restores, the
+  -- carrier of cached Set-Cookie lines and the origin address.
   h["X-Edgeweir-CC"] = nil
   h[setcookie.HEADER] = nil
+  h[_M.UPSTREAM] = nil
   local site = ctx.site
   if not site then
     return
   end
+  h[_M.UPSTREAM] = _M.last_upstream(ngx.var.upstream_addr)
   local status = ngx.status
   local chain = ctx.chain
   local var = ngx.var

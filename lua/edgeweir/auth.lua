@@ -285,8 +285,12 @@ function _M.request_uri()
   return state and state.stripped or ngx.var.request_uri
 end
 
+-- refused counts a refusal and names its block reason and rule
+-- (edgeweir.reasons, recorded by edgeweir.router).
 local function refused(site, result)
   stats.auth_failed(site.id)
+  local state = ngx.ctx.edgeweir_auth
+  result.reason, result.rule_id = "auth", state and state.rule and state.rule.id or nil
   return result
 end
 

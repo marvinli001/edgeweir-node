@@ -33,6 +33,12 @@
 -- failure_ban_seconds (edgeweir.bans, reason challenge_failures) and the
 -- count starts over.
 --
+-- Since proto v0.30.0 (ADR-0041): every challenge sent (a page, a cookie302
+-- redirect, the 403 for other methods) records the block reason challenge
+-- (edgeweir.reasons, with the rule that asked for it); pages and cookie302
+-- redirects count as challenges issued, passes signed after a verified
+-- answer as challenges passed (edgeweir.topstats, per site and minute).
+--
 -- Reserved prefix /.edgeweir/ (never proxied):
 --   POST /.edgeweir/challenge/verify     t (token), a (answer), r (return
 --        path), alt=pow (captcha token: switch to the proof of work)
@@ -47,6 +53,8 @@ local resty_sha256 = require("resty.sha256")
 local str = require("resty.string")
 local lrucache = require("resty.lrucache")
 local ipaddr = require("edgeweir.ipaddr")
+local reasons = require("edgeweir.reasons")
+local topstats = require("edgeweir.topstats")
 
 local _M = {}
 
@@ -739,8 +747,11 @@ local function difficulty(site, high)
 end
 
 -- render answers with a challenge page of kind (js, pow, pow_high,
--- captcha) at level for the return path ret.
-local function render(site, keys, kind, level, ret, failed)
+-- captcha) at level for the return path ret (rule_id: the rule that asked
+-- for it).
+local function render(site, keys, kind, level, ret, failed, rule_id)
+  reasons.set("challenge", rule_id)
+  topstats.challenge(site.id, "issued")
   local var = ngx.var
   local now = _M.clock()
   local f = {
@@ -794,12 +805,14 @@ end
 -- respond challenges the request at level with kind (cookie302, js, pow,
 -- pow_high or captcha). Requests other than GET and HEAD get a plain-text
 -- 403 with X-Edgeweir-Challenge: required (no page: an API client cannot
--- solve one); without keys 503 (the site's error page).
-function _M.respond(site, kind, level)
+-- solve one); without keys 503 (the site's error page). rule_id: the rule
+-- that asked for the challenge.
+function _M.respond(site, kind, level, rule_id)
   local keys = _M.keys()
   if not keys or not keys.current then return unavailable(site) end
   local method = ngx.req.get_method()
   if method ~= "GET" and method ~= "HEAD" then
+    reasons.set("challenge", rule_id)
     return text(403, { ["X-Edgeweir-Challenge"] = "required" }, "challenge required")
   end
   local var = ngx.var
@@ -810,9 +823,11 @@ function _M.respond(site, kind, level)
     local value = _M.sign_pass(keys.current, site.id, max(level, 1), prefix_of(var.remote_addr),
       ua_of(var.http_user_agent), now, now + ttl)
     ngx.header["X-Edgeweir-Challenge"] = "cookie302"
+    reasons.set("challenge", rule_id)
+    topstats.challenge(site.id, "issued")
     return redirect(302, ret, _M.pass_cookie(value, ttl, var.scheme == "https"))
   end
-  return render(site, keys, kind, level, ret, false)
+  return render(site, keys, kind, level, ret, false, rule_id)
 end
 
 local function field(args, name)
@@ -901,6 +916,7 @@ local function verify(site, uncounted)
   local level = max(f.level, _M.pass_level(site))
   local ttl = pass_ttl(site)
   local value = _M.sign_pass(keys.current, site.id, level, prefix, uah, now, now + ttl)
+  topstats.challenge(site.id, "passed")
   return redirect(303, ret, _M.pass_cookie(value, ttl, var.scheme == "https"))
 end
 

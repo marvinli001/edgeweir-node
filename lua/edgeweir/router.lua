@@ -70,6 +70,17 @@
 -- error_page(): answers nginx's own errors with error pages (error_page in
 -- nginx.conf): malformed requests, too large requests, plain HTTP on an
 -- HTTPS port, uncaught Lua errors and failures towards the origin layer.
+--
+-- Proto v0.30.0 (ADR-0041): every refusal records its block reason
+-- (edgeweir.reasons) where it happens: bans (ip_banned), CC bans (cc),
+-- client certificates (client_cert), maintenance (maintenance), WebSocket
+-- origins (websocket_origin) and the reasons edgeweir.policy's results
+-- carry; challenges record theirs (edgeweir.challenge). Once the site is
+-- known (not on the local listeners), the client's GeoIP record is looked
+-- up softly (edgeweir.geoip: 50 ms, skipped for 5 s after a failure) for
+-- the access logs and statistics, unless the site's rules read GeoIP
+-- anyway; sites that record request headers or the query string keep the
+-- client's (edgeweir.accesslogs).
 local store = require("edgeweir.store")
 local rules = require("edgeweir.rules")
 local cachekey = require("edgeweir.cachekey")
@@ -93,6 +104,9 @@ local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
 local accesscontrol = require("edgeweir.access")
 local bots = require("edgeweir.bots")
+local reasons = require("edgeweir.reasons")
+local geoip = require("edgeweir.geoip")
+local accesslogs = require("edgeweir.accesslogs")
 
 local _M = {}
 
@@ -189,9 +203,10 @@ function _M.verified_crawler(site)
   return ok and verified == true
 end
 
--- run_challenge answers with a challenge; failures fail closed (503).
-local function run_challenge(site, kind, level)
-  local ok, err = pcall(challenge.respond, site, kind, level)
+-- run_challenge answers with a challenge (rule_id: the rule that asked for
+-- it); failures fail closed (503).
+local function run_challenge(site, kind, level, rule_id)
+  local ok, err = pcall(challenge.respond, site, kind, level, rule_id)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: challenge failed site=", site.id, ": ", err)
     return deny(503, "challenge-unavailable", "challenge unavailable")
@@ -314,10 +329,18 @@ local function access()
     found = "handed"
   end
 
-  ngx.ctx.edgeweir_site = site
+  local ctx = ngx.ctx
+  ctx.edgeweir_site = site
   -- How the site was found (edgeweir.policy: no HTTPS redirect for a host
   -- whose HTTPS handshake would not complete).
-  ngx.ctx.edgeweir_found = found
+  ctx.edgeweir_found = found
+  if not is_local then
+    -- For the access logs and statistics; rules that read GeoIP look it up
+    -- themselves (edgeweir.policy).
+    if not site._geo then ctx.edgeweir_geo = geoip.lookup(var.remote_addr, true) or false end
+    -- The client's headers, before rules change them.
+    if site.log_headers then ctx.edgeweir_log_headers = accesslogs.request_headers(headers, site.log_headers) end
+  end
   if handed then
     local u = store.config().unknown
     ngx.ctx.edgeweir_default_certificate = u and u.default_certificate and u.unknown_host == "site" or false
@@ -340,6 +363,7 @@ local function access()
       local r = policy.site_https_redirect(site, host, var.request_uri, found, ngx.ctx.edgeweir_default_certificate)
       if r then return ngx.redirect(r.location, r.status) end
     end
+    reasons.set("client_cert")
     return deny(ngx.HTTP_FORBIDDEN, "client-cert-required", "client certificate required")
   end
   -- The site's allow lists (edgeweir.access): such clients skip the site's
@@ -350,6 +374,7 @@ local function access()
   -- site's allow lists); addresses on a platform allow list and trusted
   -- proxies of the client address setting are never banned.
   if not is_local and bans.match(not site_allowed and site.id or nil, remote_addr) and not _M.platform_allowed(site, var.remote_addr) and not store.trusted_proxy(site, var.remote_addr) then
+    reasons.set("ip_banned")
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   -- The PURGE method of sites that turned it on, before maintenance and
@@ -367,9 +392,13 @@ local function access()
   -- Maintenance: 503 and the maintenance page, but for allowed addresses
   -- and paths and HTTP-01 requests for the origin; nothing is cached.
   if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path) then
+    reasons.set("maintenance")
     return errorpages.maintenance(site)
   end
   ngx.ctx.edgeweir_original_path = original_path
+  -- The query string the access log records: the client's, without a
+  -- signed URL's signature, before rules rewrite it.
+  if site.log_query then ngx.ctx.edgeweir_original_args = var.args or "" end
   var.edgeweir_site = site.id
   -- CC counts every request of the site (edgeweir.cc), clients by their
   -- IPv4 address or IPv6 /64; trusted proxies (the address of requests
@@ -382,6 +411,7 @@ local function access()
   -- The reserved prefix is answered here and never reaches the origin.
   if sub(original_path, 1, 11) == "/.edgeweir/" then
     if cc_n and not site_allowed and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
+      reasons.set("cc")
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
     end
     -- Failed answers count towards the site's failure ban, but not for
@@ -407,14 +437,16 @@ local function access()
   -- Config rules may turn CC off for the request (it is still counted).
   local cc_on = not (pctx and pctx.cc_enabled == false)
   if cc_n and cc_on and not exempt and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
+    reasons.set("cc")
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
   if result and not (is_local and not result.location) then
+    if result.reason then reasons.set(result.reason, result.rule_id) end
     if result.respond then return result.respond() end
     -- A close action: no response, the connection (HTTP/2 and HTTP/3: the
     -- stream) is closed.
     if result.close then return ngx.exit(444) end
-    if result.challenge then return run_challenge(site, result.challenge, result.level) end
+    if result.challenge then return run_challenge(site, result.challenge, result.level, result.rule_id) end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
     return deny(result.status, result.code or "policy-denied", result.message or "request denied")
@@ -458,6 +490,7 @@ local function access()
     -- The site's WebSocket origins (edgeweir.access); clients on its allow
     -- lists are checked too, the local listeners are not.
     if not is_local and not accesscontrol.websocket_allowed(site, var.http_origin) then
+      reasons.set("websocket_origin")
       return deny(ngx.HTTP_FORBIDDEN, "websocket-origin-denied", "websocket origin denied")
     end
     -- Proxied as is, never cached.
@@ -536,6 +569,8 @@ function _M.access()
   -- The probes' health endpoint, for any Host, before CDN-Loop, HTTP-01,
   -- the site lookup, bans, rules and CC: never cached, counted or logged.
   if probehealth.is_request(ngx.req.get_method(), var.uri) then
+    -- Not even the live view sees them (edgeweir.stats).
+    ngx.ctx.edgeweir_probe = true
     return probehealth.respond()
   end
   -- A connection with the health SNI (or none) serves only that path,

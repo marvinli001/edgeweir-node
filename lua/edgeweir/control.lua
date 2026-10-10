@@ -8,6 +8,9 @@
 --   PUT  /v1/sites            replace the whole site table atomically
 --   POST /v1/stats/drain      return and delete completed per-minute counters
 --                             ({"all": true}: the current minute too)
+--   POST /v1/logs/drain       return and delete up to 1000 sampled access logs
+--   GET  /v1/logs/tap         the live view (edgeweir.tap): ?after=<seq>
+--                             [&site=<id>] -> {seq, entries, missed}
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
 --   POST /v1/purge            merge purge markers {id, markers}
 --   GET  /v1/origins/health   origins with recorded failures (passive check)
@@ -164,6 +167,19 @@ function _M.handle()
   if uri == "/v1/logs/drain" then
     if method ~= "POST" then return reply(405, { error = "method not allowed" }) end
     return reply(200, { logs = require("edgeweir.accesslogs").drain() })
+  end
+
+  if uri == "/v1/logs/tap" then
+    if method ~= "GET" then return reply(405, { error = "method not allowed" }) end
+    local args = ngx.req.get_uri_args(4)
+    local after, site = args.after, args.site
+    if type(after) ~= "string" or not after:match("^%d+$") or #after > 15 then
+      return reply(400, { error = "after must be a sequence number" })
+    end
+    if site ~= nil and (type(site) ~= "string" or not site:match("^[A-Za-z0-9_-]+$") or #site > 128) then
+      return reply(400, { error = "invalid site id" })
+    end
+    return reply(200, require("edgeweir.tap").read(tonumber(after), site))
   end
 
   if uri == "/v1/stats/drain" then
