@@ -81,7 +81,9 @@
 # log rules, rate limit bans, challenge page texts, challenge failure bans
 # and crawler claims DNS does not back; G16 access log fields and options,
 # blocked requests logged whatever the sample rate, the live view and the
-# statistics dimensions; then the base configuration again.)
+# statistics dimensions; then the base configuration again; G18 WebP / AVIF
+# variants by Accept, cached once each, the original over the limits,
+# purges of every variant and the saved bytes.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1669,6 +1671,57 @@ WAIT_SECS=180 wait_for "statistics dimensions uploaded" g16_dims
 pass "G16: countries, networks, referring hosts, user agent classes, versions and block reasons in the uploaded minutes"
 rev=$(curl -fsS -X POST "$HELPER/g16?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+
+# G18 (image-convert-v1, ADR-0043): WebP / AVIF variants of cached images.
+# img.test converts JPEG and PNG to both formats, webp.test JPEG to WebP.
+grep -qx image-convert-v1 <<<"$(curl -fsS "$HELPER/features")" || fail "feature image-convert-v1 not reported"
+img() { # host path [accept] [method] -> "<x-cache> <content-type> <vary|->", the body in $TMPDIR_E2E/img
+  curl -s -o "$TMPDIR_E2E/img" -D "$TMPDIR_E2E/img.h" ${4:+-X "$4"} -H "Host: $1" ${3:+-H "Accept: $3"} "$NODE$2" >/dev/null
+  tr -d '\r' <"$TMPDIR_E2E/img.h" | awk -F': ' '
+    tolower($1)=="x-cache" {c=$2} tolower($1)=="content-type" {t=$2}
+    tolower($1)=="vary" {n=split(tolower($2), v, / *, */); for (i=1; i<=n; i++) if (v[i]=="accept") a="vary"}
+    END {print c, t, (a ? a : "-")}'
+}
+magic() { od -An -tx1 -N12 "$TMPDIR_E2E/img" | tr -d ' \n'; }
+WEBP='image/webp,*/*'
+AVIF='image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+NAV='text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+[ "$(img img.test /pics/photo.jpg "$WEBP")" = "MISS image/webp vary" ] || fail "Accept: image/webp is not converted to WebP: $(img img.test /pics/photo.jpg "$WEBP")"
+[ "$(img img.test /pics/photo.jpg "$WEBP")" = "HIT image/webp vary" ] || fail "the WebP variant is not a HIT the second time"
+case "$(magic)" in 52494646????????57454250) ;; *) fail "the WebP variant is not a WebP file: $(magic)" ;; esac
+webp_size=$(wc -c <"$TMPDIR_E2E/img" | tr -d " ")
+grep -qi '^x-edgeweir-image' "$TMPDIR_E2E/img.h" && fail "the converter's headers reach the client"
+[ "$(img img.test /pics/photo.jpg "$AVIF")" = "MISS image/avif vary" ] || fail "Accept: image/avif is not converted to AVIF"
+[ "$(img img.test /pics/photo.jpg "$AVIF")" = "HIT image/avif vary" ] || fail "the AVIF variant is not a HIT the second time"
+case "$(magic)" in ????????6674797061766966) ;; *) fail "the AVIF variant is not an AVIF file: $(magic)" ;; esac
+[ "$(img img.test /pics/photo.jpg '*/*')" = "MISS image/jpeg vary" ] || fail "*/* does not get the original"
+[ "$(img img.test /pics/photo.jpg)" = "HIT image/jpeg vary" ] || fail "no Accept does not share the original's key"
+case "$(magic)" in ffd8ff*) ;; *) fail "the original is not the JPEG: $(magic)" ;; esac
+[ "$(img img.test /pics/photo.jpg "$NAV")" = "HIT image/jpeg vary" ] || fail "a navigation does not get the original"
+[ "$(curl -fsS -H 'Host: img.test' "$NODE/pics/count")" = 3 ] || fail "the origin served /pics/photo.jpg $(curl -fsS -H 'Host: img.test' "$NODE/pics/count") times, not once per class"
+pass "G18: Accept picks AVIF, WebP or the original (navigations the original), each cached once and HIT, Vary: Accept"
+[ "$(img img.test /pics/photo.jpg "$WEBP" HEAD)" = "HIT image/webp vary" ] || fail "HEAD of the WebP variant"
+grep -qi "^content-length: $webp_size" "$TMPDIR_E2E/img.h" || fail "HEAD of the WebP variant does not tell its length"
+curl -s -o "$TMPDIR_E2E/img" -H 'Host: img.test' -H "Accept: $WEBP" -H 'Range: bytes=0-11' "$NODE/pics/photo.jpg"
+case "$(magic)" in 52494646????????57454250) ;; *) fail "a range of the WebP variant is not its first bytes: $(magic)" ;; esac
+[ "$(img img.test /pics/photo "$WEBP")" = "MISS image/webp vary" ] || fail "a path without an extension is not converted"
+[ "$(img webp.test /pics/photo.jpg "$AVIF")" = "MISS image/webp vary" ] || fail "a WebP-only site answers AVIF clients with WebP"
+[ "$(img img.test /pics/icon.png "$WEBP")" = "MISS image/webp vary" ] || fail "the PNG is not converted"
+[ "$(img webp.test /pics/icon.png "$WEBP")" = "MISS image/png -" ] || fail "a site that does not convert PNG varies PNG paths"
+[ "$(img img.test /pics/app.js "$WEBP")" = "MISS text/javascript -" ] || fail "a script path varies by Accept"
+pass "G18: HEAD and ranges of a variant, paths without an extension, WebP-only sites, PNG, other paths untouched"
+[ "$(img img.test /pics/huge.jpg "$WEBP")" = "MISS image/jpeg vary" ] || fail "an image over the pixel limit is converted"
+[ "$(img img.test /pics/huge.jpg "$WEBP")" = "HIT image/jpeg vary" ] || fail "the original kept for the WebP class is not cached"
+[ "$(img img.test /pics/tiny.jpg "$WEBP")" = "MISS image/jpeg vary" ] || fail "an image under the size limit is converted"
+compose logs node | grep -q '"image converted"' || compose logs node | grep -q 'msg="image converted"' || fail "the agent logged no conversion"
+pass "G18: over the pixel limit and under the size limit the original is served and cached"
+task=$(curl -fsS -X POST "$HELPER/purge-prefix?site=site-img&host=img.test&path=/pics/")
+wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
+[ "$(img img.test /pics/photo.jpg "$WEBP")" = "MISS image/webp vary" ] || fail "a prefix purge left the WebP variant"
+[ "$(img img.test /pics/photo.jpg "$AVIF")" = "MISS image/avif vary" ] || fail "a prefix purge left the AVIF variant"
+pass "G18: purges clear every variant of a URL"
+WAIT_SECS=180 wait_for "saved bytes uploaded" sh -c "[ \"\$(curl -fsS $HELPER/g18/saved)\" -gt 0 ]"
+pass "G18: saved bytes reach the console ($(curl -fsS "$HELPER/g18/saved") bytes)"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
