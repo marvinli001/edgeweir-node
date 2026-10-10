@@ -297,6 +297,8 @@ make openresty-packages ARCH=arm64   # edgeweir-openresty 的 deb / rpm 与 SBOM
 make e2e           # 容器冒烟测试：模拟控制台 + 节点 + whoami 源站
 make proto-check   # 从 proto tag 重新生成并检查漂移
 make snapshot      # goreleaser 本地快照（不签名）
+make package-check # 检查 dist/ 中的包：构建标签、NOTICE、LICENSE、Lua 模块
+make notice        # 修改 go.mod 后重新生成 NOTICE
 ```
 
 `make e2e` 默认占用 127.0.0.1 的 28080、28081、28090。与其他 compose 项目并行时须同时指定项目名与端口：

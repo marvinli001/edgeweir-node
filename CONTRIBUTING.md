@@ -41,6 +41,8 @@
 | `make pin-check` | 第三方镜像没按 digest、GitHub Actions 没按 commit SHA 固定时失败（`scripts/check-pins.sh`，CI 运行） |
 | `make release-check` | 校验 goreleaser 配置 |
 | `make snapshot` | 本地构建发布物，不发布，不签名 |
+| `make package-check` | 检查 `dist/` 中的 deb、rpm、tar.gz：二进制以 `nodynamic,wasm2go` 构建、不链接 purego 与 wazero、`NOTICE` 与仓库一致且列出全部模块、带 LICENSE 与 Lua 模块（`scripts/check-packages.sh`） |
+| `make notice` | 修改 `go.mod` 后重新生成 `NOTICE`（`scripts/notice.sh`；新模块先核实许可证并加入脚本的清单） |
 
 提 PR 前，`go vet ./...` 和 `go test ./...` 必须通过。另外：
 

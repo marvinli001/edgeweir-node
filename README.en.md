@@ -297,6 +297,8 @@ make openresty-packages ARCH=arm64   # edgeweir-openresty deb / rpm and SBOM int
 make e2e           # container smoke test: fake console + node + whoami origins
 make proto-check   # regenerate from the proto tag and check for drift
 make snapshot      # local goreleaser snapshot (unsigned)
+make package-check # check the packages in dist/: build tags, NOTICE, LICENSE, Lua modules
+make notice        # regenerate NOTICE after changing go.mod
 ```
 
 `make e2e` binds 127.0.0.1 ports 28080, 28081 and 28090 by default. To run alongside another compose project, set both the project name and the ports:
