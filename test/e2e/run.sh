@@ -1632,10 +1632,10 @@ live=$!
 sleep 2
 r=$(g16_get log.g16.test 203.0.113.161 "/g16-a?x=1&y=two" "User-Agent: $FIREFOX" \
   "Referer: https://ref.g16.test/page?token=secret#frag" "X-Trace-Id: e2e-trace" | tr -d '\r')
-[ "$(status_of <<<"$r")" = 200 ] || fail "log.g16.test: $(status_of <<<"$r")"
+[ "$(status_of "$r")" = 200 ] || fail "log.g16.test: $(status_of "$r")"
 r=$(g16_get blk.g16.test 203.0.113.162 /g16-block "User-Agent: curl/8.0" | tr -d '\r')
-[ "$(status_of <<<"$r") $(header_of X-Edgeweir-Error <<<"$r")" = "403 policy-denied" ] || fail "blk.g16.test: $(status_of <<<"$r")"
-[ "$(status_of <<<"$(g16_get blk.g16.test 203.0.113.162 /g16-open | tr -d '\r')")" = 200 ] || fail "blk.g16.test /g16-open"
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 policy-denied" ] || fail "blk.g16.test: $(status_of "$r")"
+[ "$(status_of "$(g16_get blk.g16.test 203.0.113.162 /g16-open | tr -d '\r')")" = 200 ] || fail "blk.g16.test /g16-open"
 for i in 1 2 3; do curl -s -o /dev/null -H 'Host: log.g16.test' "$NODE/g16-live-$i"; done
 curl -s -o /dev/null -H 'Host: demo.test' "$NODE/g16-other-site"
 live_has() { grep -q "\"path\":\"$1\"" "$TMPDIR_E2E/g16-live.jsonl"; }
