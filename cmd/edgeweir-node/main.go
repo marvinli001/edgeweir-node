@@ -9,6 +9,7 @@
 //	edgeweir-node healthcheck [--control-socket PATH]
 //	edgeweir-node bans [--control-socket PATH] [--list]
 //	edgeweir-node security [--control-socket PATH]
+//	edgeweir-node accesslog [--site ID] [--json] [--socket PATH]
 //	edgeweir-node version
 //
 // Every flag can also be set with an environment variable
@@ -89,6 +90,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdBans(args[1:], stdout, stderr)
 	case "security":
 		return cmdSecurity(args[1:], stdout, stderr)
+	case "accesslog":
+		return cmdAccesslog(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version.String())
 		return 0
@@ -115,6 +118,7 @@ Usage:
   edgeweir-node healthcheck [--control-socket PATH]
   edgeweir-node bans [--control-socket PATH] [--list]
   edgeweir-node security [--control-socket PATH]
+  edgeweir-node accesslog [--site ID] [--json] [--socket PATH]
   edgeweir-node version
 
 Run "edgeweir-node <command> -h" for the flags of a command. Every flag can

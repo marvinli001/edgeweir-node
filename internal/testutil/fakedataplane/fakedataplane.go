@@ -78,6 +78,14 @@ type Server struct {
 	l4Pushes  []*dataplane.L4Table
 	l4Pending []dataplane.L4MinuteStats
 	failL4    int
+
+	// The live view (GET /v1/logs/tap, lua/edgeweir/tap.lua): numbered
+	// entries (nil: a missed number), the last number, the calls' queries
+	// and how many calls fail with 500.
+	tap      map[uint64]map[string]any
+	tapSeq   uint64
+	tapCalls []string
+	failTap  int
 }
 
 var (
@@ -348,6 +356,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(w, 200, map[string]any{"origins": s.health})
+	case r.URL.Path == "/v1/logs/tap" && r.Method == http.MethodGet:
+		s.tapCalls = append(s.tapCalls, r.URL.RawQuery)
+		if s.failTap > 0 {
+			s.failTap--
+			reply(w, 500, map[string]any{"error": "injected"})
+			return
+		}
+		after, err := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+		if err != nil {
+			reply(w, 400, map[string]any{"error": "after must be a sequence number"})
+			return
+		}
+		site := r.URL.Query().Get("site")
+		if s.tapSeq == 0 {
+			s.tapSeq = 1
+		}
+		entries, missed := []map[string]any{}, 0
+		if after == 0 || after > s.tapSeq {
+			reply(w, 200, map[string]any{"seq": s.tapSeq, "entries": map[string]any{}, "missed": 0})
+			return
+		}
+		for n := after + 1; n <= s.tapSeq; n++ {
+			e, ok := s.tap[n]
+			switch {
+			case !ok:
+				missed++
+			case site == "" || e["site_id"] == site:
+				entries = append(entries, e)
+			}
+		}
+		var list any = entries
+		if len(entries) == 0 {
+			list = map[string]any{} // the data plane's empty table
+		}
+		reply(w, 200, map[string]any{"seq": s.tapSeq, "entries": list, "missed": missed})
 	case r.URL.Path == "/v1/logs/drain" && r.Method == http.MethodPost:
 		out := s.logs
 		s.logs = nil
@@ -750,6 +793,37 @@ func (s *Server) AddStats(m ...dataplane.MinuteStats) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending = append(s.pending, m...)
+}
+
+// AddTapEntry numbers a raw live view entry (JSON fields); nil leaves the
+// number missing (expired, or over the data plane's rate).
+func (s *Server) AddTapEntry(entry map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tapSeq == 0 {
+		s.tapSeq = 1
+	}
+	s.tapSeq++
+	if entry != nil {
+		if s.tap == nil {
+			s.tap = map[uint64]map[string]any{}
+		}
+		s.tap[s.tapSeq] = entry
+	}
+}
+
+// TapCalls returns the queries of the live view calls so far.
+func (s *Server) TapCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.tapCalls)
+}
+
+// FailTap answers the next n live view calls with 500.
+func (s *Server) FailTap(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failTap = n
 }
 
 // AddLogEntry queues a raw sampled access log entry (JSON fields).
