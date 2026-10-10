@@ -1,0 +1,341 @@
+{
+  "description": "User-Agent values and the classes edgeweir.uaclass gives them (browser, operating system, device; ADR-0041). Real-world values of 2024-2026 browsers, crawlers and tools.",
+  "vectors": [
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "browser": "chrome",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "browser": "chrome",
+      "os": "macos",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "browser": "chrome",
+      "os": "linux",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
+      "browser": "chrome",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/129.0.6668.69 Mobile/15E148 Safari/604.1",
+      "browser": "chrome",
+      "os": "ios",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "browser": "chrome",
+      "os": "chromeos",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13; SM-X700) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      "browser": "chrome",
+      "os": "android",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 11; CUBOT X50) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
+      "browser": "chrome",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.2792.79",
+      "browser": "edge",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36 EdgA/129.0.2792.84",
+      "browser": "edge",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 EdgiOS/129.2792.84 Mobile/15E148 Safari/605.1.15",
+      "browser": "edge",
+      "os": "ios",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows Phone 10.0; Android 6.0.1; Microsoft; Lumia 950) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Mobile Safari/537.36 Edge/15.15063",
+      "browser": "edge",
+      "os": "windows",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+      "browser": "firefox",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+      "browser": "firefox",
+      "os": "linux",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",
+      "browser": "firefox",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/131.0 Mobile/15E148 Safari/605.1.15",
+      "browser": "firefox",
+      "os": "ios",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+      "browser": "safari",
+      "os": "macos",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+      "browser": "safari",
+      "os": "ios",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPad; CPU OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+      "browser": "safari",
+      "os": "ios",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) 85.0.4183.93/6.0 TV Safari/537.36",
+      "browser": "safari",
+      "os": "linux",
+      "device": "other"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 OPR/114.0.0.0",
+      "browser": "opera",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 OPR/114.0.0.0",
+      "browser": "opera",
+      "os": "macos",
+      "device": "desktop"
+    },
+    {
+      "ua": "Opera/9.80 (Android; Opera Mini/36.2.2254/119.132; U; id) Presto/2.12.423 Version/12.16",
+      "browser": "opera",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 14; SAMSUNG SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/122.0.0.0 Mobile Safari/537.36",
+      "browser": "samsung",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13; SM-X906C) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/23.0 Chrome/115.0.0.0 Safari/537.36",
+      "browser": "samsung",
+      "os": "android",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; U; Android 10; en-US; RMX1911 Build/QKQ1.200209.002) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/78.0.3904.108 UCBrowser/13.4.0.1306 Mobile Safari/537.36",
+      "browser": "uc",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; U; Android 12; zh-cn; V2154A Build/SP1A.210812.003) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/89.0.4389.72 MQQBrowser/13.6 Mobile Safari/537.36",
+      "browser": "qq",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.71 Safari/537.36 Core/1.94.229.400 QQBrowser/12.6.5700.400",
+      "browser": "qq",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 13; V2227A Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/111.0.5563.116 Mobile Safari/537.36 XWEB/1160065 MMWEBSDK/20231202 MMWEBID/2247 MicroMessenger/8.0.47.2560(0x28002F30) WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64",
+      "browser": "wechat",
+      "os": "android",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.44(0x18002c2d) NetType/WIFI Language/zh_CN",
+      "browser": "wechat",
+      "os": "ios",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0.0 Safari/537.36",
+      "browser": "yandex",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko",
+      "browser": "ie",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)",
+      "browser": "ie",
+      "os": "windows",
+      "device": "desktop"
+    },
+    {
+      "ua": "Mozilla/5.0 (Phone; OpenHarmony 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 ArkWeb/4.1.6.1 Mobile HuaweiBrowser/5.0.4.300",
+      "browser": "chrome",
+      "os": "harmonyos",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Tablet; OpenHarmony 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 ArkWeb/4.1.6.1 HuaweiBrowser/5.0.4.300",
+      "browser": "chrome",
+      "os": "harmonyos",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 12; HarmonyOS; NOH-AN00; HMSCore 6.11.0.302) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.88 HuaweiBrowser/14.0.2.311 Mobile Safari/537.36",
+      "browser": "chrome",
+      "os": "harmonyos",
+      "device": "mobile"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 9; KFTRWI) AppleWebKit/537.36 (KHTML, like Gecko) Silk/128.3.1 like Chrome/128.0.6613.187 Safari/537.36",
+      "browser": "chrome",
+      "os": "android",
+      "device": "tablet"
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.70 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Mozilla/5.0 (Linux; Android 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Mobile Safari/537.36 (compatible; Bytespider; spider-feedback@bytedance.com)",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "Twitterbot/1.0",
+      "browser": "crawler",
+      "os": "other",
+      "device": "crawler"
+    },
+    {
+      "ua": "curl/8.9.1",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "Wget/1.21.4",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "python-requests/2.32.3",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "Go-http-client/1.1",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "okhttp/4.12.0",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "PostmanRuntime/7.42.0",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Microsoft Windows 10.0.22631; en-US) PowerShell/7.4.5",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/129.0.6668.58 Safari/537.36",
+      "browser": "tool",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "SomeApp/1.0",
+      "browser": "other",
+      "os": "other",
+      "device": "other"
+    },
+    {
+      "ua": "",
+      "browser": "other",
+      "os": "other",
+      "device": "other"
+    }
+  ]
+}

@@ -276,7 +276,10 @@ end)
 test("geo: 403 geo-denied in scope, a failing lookup 503 policy-unavailable, none outside the scope", function()
   local real = geoip.lookup
   local lookups = 0
-  geoip.lookup = function(addr)
+  geoip.lookup = function(addr, soft)
+    -- Every request's soft lookup for the logs and statistics (ADR-0041)
+    -- is not access control's.
+    if soft then return nil end
     lookups = lookups + 1
     if addr == "192.0.2.99" then return nil end
     if addr == "192.0.2.77" then return { country = "CN", subdivision = "GD", asnum = 4134 } end
@@ -288,9 +291,9 @@ test("geo: 403 geo-denied in scope, a failing lookup 503 policy-unavailable, non
     denied({ addr = "192.0.2.99", uri = "/geo/x" }, 503, "policy-unavailable", "lookup failure")
     lookups = 0
     passes({ addr = "192.0.2.99", uri = "/other" }, "outside the scope")
-    eq(lookups, 0, "no lookup outside the scope")
+    eq(lookups, 0, "no access control lookup outside the scope")
     passes({ addr = "192.0.2.50", uri = "/geo/x" }, "site allow list")
-    eq(lookups, 0, "no lookup for site-allowed clients")
+    eq(lookups, 0, "no access control lookup for site-allowed clients")
   end)
   geoip.lookup = real
   assert(ok, err)
