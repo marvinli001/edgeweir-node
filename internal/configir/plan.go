@@ -280,6 +280,9 @@ type Site struct {
 	LogQuery   bool     `json:"log_query,omitempty"`
 	LogHeaders []string `json:"log_headers,omitempty"`
 	LogPeer    bool     `json:"log_peer,omitempty"`
+	// ImageConvert is the site's WebP / AVIF conversion (nil: off; feature
+	// image-convert-v1, ADR-0043).
+	ImageConvert *ImageConvert `json:"image_convert,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -695,6 +698,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	access := map[string]*AccessControl{}
 	bodyLimits := map[string]uint32{}
 	logHeaders := map[string][]string{}
+	images := map[string]*ImageConvert{}
 	ipLists := map[string]bool{}
 	for _, l := range c.GetIpLists() {
 		ipLists[l.GetId()] = true
@@ -739,6 +743,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if logHeaders[id], err = buildLogHeaders(s); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if images[id], err = buildImageConvert(s, opts.ExtraFeatures); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if ports[id], err = buildSitePorts(s, listenerTLS); err != nil {
@@ -889,6 +896,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.RulesBodyLimit = bodyLimits[id]
 		site.LogBlocked, site.LogQuery, site.LogPeer = s.GetLogBlocked(), s.GetLogQuery(), s.GetLogPeer()
 		site.LogHeaders = logHeaders[id]
+		site.ImageConvert = images[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
