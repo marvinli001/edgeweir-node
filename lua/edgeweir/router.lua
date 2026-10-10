@@ -334,13 +334,8 @@ local function access()
   -- How the site was found (edgeweir.policy: no HTTPS redirect for a host
   -- whose HTTPS handshake would not complete).
   ctx.edgeweir_found = found
-  if not is_local then
-    -- For the access logs and statistics; rules that read GeoIP look it up
-    -- themselves (edgeweir.policy).
-    if not site._geo then ctx.edgeweir_geo = geoip.lookup(var.remote_addr, true) or false end
-    -- The client's headers, before rules change them.
-    if site.log_headers then ctx.edgeweir_log_headers = accesslogs.request_headers(headers, site.log_headers) end
-  end
+  -- The client's headers, before rules change them.
+  if not is_local and site.log_headers then ctx.edgeweir_log_headers = accesslogs.request_headers(headers, site.log_headers) end
   if handed then
     local u = store.config().unknown
     ngx.ctx.edgeweir_default_certificate = u and u.default_certificate and u.unknown_host == "site" or false
@@ -396,6 +391,11 @@ local function access()
     return errorpages.maintenance(site)
   end
   ngx.ctx.edgeweir_original_path = original_path
+  -- The client's country and network for the access logs and statistics,
+  -- once the bans, the client certificate and maintenance let the request
+  -- through (the log phase reads the worker's cache for requests refused
+  -- before); rules that read GeoIP look it up themselves (edgeweir.policy).
+  if not is_local and not site._geo then ctx.edgeweir_geo = geoip.lookup(var.remote_addr, true) or false end
   -- The query string the access log records: the client's, without a
   -- signed URL's signature, before rules rewrite it.
   if site.log_query then ngx.ctx.edgeweir_original_args = var.args or "" end

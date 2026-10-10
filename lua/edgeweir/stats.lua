@@ -87,8 +87,9 @@ end
 
 -- geo returns the client's GeoIP record of the request: the access phase's
 -- (ngx.ctx.edgeweir_geo), else the worker's cache: that lookup failed or
--- was the rules' own, or the context is new (requests nginx redirected to
--- its error page).
+-- was the rules' own, the request was refused before it (bans, client
+-- certificates, maintenance), or the context is new (requests nginx
+-- redirected to its error page).
 function _M.geo(ctx, addr)
   local geo = ctx.edgeweir_geo
   return geo or geoip.peek(addr)

@@ -2,10 +2,11 @@
 -- every refusal (edgeweir.reasons), requests refused before the site was
 -- set counted and logged for it, the new and optional log fields, forced
 -- lines of sites with log_blocked sharing the budget of log rules, the
--- live view (edgeweir.tap), soft GeoIP lookups (edgeweir.geoip), the user
--- agent classification table (edgeweir.uaclass, test/lua/ua_vectors.json)
--- and the bounded statistics dimensions (edgeweir.topstats, stats.drain),
--- challenges issued and passed. Run with `make lua-test`:
+-- live view (edgeweir.tap), soft GeoIP lookups, their place and budget
+-- (edgeweir.geoip), the user agent classification table (edgeweir.uaclass,
+-- test/lua/ua_vectors.json) and the bounded statistics dimensions
+-- (edgeweir.topstats, stats.drain), challenges issued and passed. Run with
+-- `make lua-test`:
 --
 --   resty -I lua --shdict 'edgeweir_sites 1m' --shdict 'edgeweir_meta 1m' --shdict 'edgeweir_health 1m' \
 --     --shdict 'edgeweir_policy_logs 1m' --shdict 'edgeweir_stats 4m' --shdict 'edgeweir_topstats 4m' \
@@ -726,6 +727,94 @@ test("the access phase looks GeoIP up softly once the site is known, not on the 
     eq(out.ctx.edgeweir_geo, nil, "the rules' lookup instead")
   end)
   geoip.lookup = lookup
+  assert(ok, err)
+end)
+
+test("soft lookups that miss the cache are budgeted at 200 a second per worker, without backoff; cache hits and hard lookups are not", function()
+  local runtime = ngx
+  local connects, now, refuse = 0, 2000, false
+  local function fake_socket()
+    local lines = {}
+    return {
+      settimeout = function() end,
+      connect = function()
+        connects = connects + 1
+        if refuse then return nil, "refused" end
+        lines = { "HTTP/1.1 200 OK", "", '{"country":"NZ","subdivision":"","asnum":64512,"as_name":"S"}' }
+        return 1
+      end,
+      send = function() return 1 end,
+      receive = function() return table.remove(lines, 1) end,
+      close = function() end,
+    }
+  end
+  local fake = setmetatable({ socket = { tcp = fake_socket }, now = function() return now end }, { __index = runtime })
+  geoip.reset()
+  local socket = geoip.socket
+  geoip.socket = "/nonexistent/geo.sock"
+  _G.ngx = fake
+  local n = 0
+  local function addr() n = n + 1; return string.format("198.18.%d.%d", math.floor(n / 256), n % 256) end
+  local ok, err = pcall(function()
+    eq(geoip.SOFT_BUDGET, 200)
+    local first = addr()
+    eq(geoip.lookup(first, true).country, "NZ")
+    for _ = 2, geoip.SOFT_BUDGET do assert(geoip.lookup(addr(), true), "within the budget") end
+    eq(connects, geoip.SOFT_BUDGET)
+    eq(geoip.lookup(addr(), true), nil, "over the budget: unknown")
+    eq(connects, geoip.SOFT_BUDGET, "no socket over the budget")
+    eq(geoip.lookup(first, true).country, "NZ", "a cache hit needs no budget")
+    assert(geoip.lookup(addr()), "a hard lookup still asks")
+    eq(connects, geoip.SOFT_BUDGET + 1)
+    -- No backoff: the bucket refills at 200 a second (3.125 tokens in 1/64 s).
+    now = now + 1 / 64
+    for _ = 1, 3 do assert(geoip.lookup(addr(), true), "refilled") end
+    eq(geoip.lookup(addr(), true), nil, "three tokens in 1/64 s")
+    eq(connects, geoip.SOFT_BUDGET + 4)
+    -- The bucket holds at most one second's budget.
+    now = now + 60
+    local asked = connects
+    for _ = 1, geoip.SOFT_BUDGET do assert(geoip.lookup(addr(), true), "a full bucket") end
+    eq(geoip.lookup(addr(), true), nil, "never more than the budget at once")
+    eq(connects - asked, geoip.SOFT_BUDGET)
+    -- A failure still backs off, whatever the budget left.
+    now = now + 1
+    refuse = true
+    asked = connects
+    eq(geoip.lookup(addr(), true), nil, "refused")
+    eq(geoip.lookup(addr(), true), nil, "backing off")
+    eq(connects - asked, 1, "no socket while backing off")
+  end)
+  _G.ngx = runtime
+  geoip.socket = socket
+  geoip.reset()
+  assert(ok, err)
+end)
+
+test("the soft lookup comes after the bans, the client certificate and maintenance; requests refused before read the worker's cache", function()
+  local lookup, peek = geoip.lookup, geoip.peek
+  local calls = 0
+  geoip.lookup = function() calls = calls + 1; return { country = "NZ", asnum = 64512, as_name = "S" } end
+  geoip.peek = function(ip) if ip == "203.0.113.30" then return { country = "AU", asnum = 64513, as_name = "Cached" } end end
+  local ok, err = pcall(function()
+    local out = request({ host = "maint.test", addr = "203.0.113.30" })
+    eq(out.status, 503); eq(calls, 0, "maintenance"); eq(out.ctx.edgeweir_geo, nil)
+    log(out, { status = 503 })
+    out = request({ host = "cert.test", scheme = "https", sni = "cert.test", verify = "NONE", addr = "203.0.113.30" })
+    eq(out.code, "client-cert-required"); eq(calls, 0, "client certificate")
+    log(out, { status = 403 })
+    out = request({ uri = "/ban", addr = "203.0.113.31" })
+    eq(out.code, "ip-banned"); eq(calls, 1, "a rule's ban comes after the lookup")
+    out = request({ uri = "/", addr = "203.0.113.31" })
+    eq(select(1, reason_of(out)), "ip_banned"); eq(calls, 1, "a banned address")
+    out = request({ uri = "/", addr = "203.0.113.32" })
+    assert(out.passed, out.err); eq(calls, 2); eq(out.ctx.edgeweir_geo.country, "NZ")
+    local lines = {}
+    for _, l in ipairs(accesslogs.drain()) do lines[l.site_id .. " " .. l.block_reason] = l end
+    local m, c = assert(lines["maint maintenance"]), assert(lines["cert client_cert"])
+    eq(m.country, "AU", "the worker's cache"); eq(m.asn, 64513); eq(c.country, "AU")
+  end)
+  geoip.lookup, geoip.peek = lookup, peek
   assert(ok, err)
 end)
 
