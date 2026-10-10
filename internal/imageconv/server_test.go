@@ -306,6 +306,38 @@ func TestServerBusy(t *testing.T) {
 	}
 }
 
+// TestServerBufferBudget: originals read into memory share the memory
+// budget; without room the original streams through, cached briefly.
+func TestServerBufferBudget(t *testing.T) {
+	jpg := encodeJPEG(t, testImage(160, 120, false))
+	o := newOriginLayer(t, serveImage(jpg, "image/jpeg", map[string]string{"X-Accel-Expires": "3600"}))
+	s, do := converter(t, o, Config{Memory: 64 << 20})
+	if !s.buffers.acquire(context.Background(), 64<<20) {
+		t.Fatal("acquire")
+	}
+	resp := do(variantRequest(t, "GET", "/a.jpg", header))
+	if got := body(t, resp); !bytes.Equal(got, jpg) || resp.Header.Get("X-Accel-Expires") != "60" {
+		t.Fatalf("no buffer room: %d bytes, X-Accel-Expires %q", len(got), resp.Header.Get("X-Accel-Expires"))
+	}
+	s.buffers.release(64 << 20)
+	resp = do(variantRequest(t, "GET", "/a.jpg", header))
+	if resp.Header.Get("Content-Type") != "image/webp" {
+		t.Fatalf("with room again: %v", resp.Header)
+	}
+	// An original that could never fit is kept for good, not retried.
+	o2 := newOriginLayer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("X-Accel-Expires", "3600")
+		w.(http.Flusher).Flush()
+		w.Write(jpg)
+	})
+	_, do2 := converter(t, o2, Config{Memory: 1 << 20})
+	resp = do2(variantRequest(t, "GET", "/a.jpg", strings.Replace(header, "max=10485760", "max=2000000", 1)))
+	if got := body(t, resp); !bytes.Equal(got, jpg) || resp.Header.Get("X-Accel-Expires") != "3600" {
+		t.Fatalf("unknown length over the budget: %d bytes, X-Accel-Expires %q", len(got), resp.Header.Get("X-Accel-Expires"))
+	}
+}
+
 func TestServerRevalidation(t *testing.T) {
 	jpg := encodeJPEG(t, testImage(160, 120, false))
 	o := newOriginLayer(t, func(w http.ResponseWriter, r *http.Request) {

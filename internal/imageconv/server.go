@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -65,6 +66,10 @@ type Server struct {
 	cfg       Config
 	transport *http.Transport
 	lim       *limiter
+	// buffers bounds the originals read into memory before a slot is
+	// taken (Memory bytes in all): many misses of large images at once
+	// cannot grow the agent beyond it.
+	buffers *limiter
 }
 
 // New returns a Server.
@@ -75,7 +80,7 @@ func New(cfg Config) *Server {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
-	s := &Server{cfg: cfg, lim: newLimiter(cfg.Workers, cfg.Memory)}
+	s := &Server{cfg: cfg, lim: newLimiter(cfg.Workers, cfg.Memory), buffers: newLimiter(math.MaxInt, cfg.Memory)}
 	s.transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 			host, _, err := net.SplitHostPort(addr)
@@ -132,6 +137,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.pass(w, resp, nil, p, stripped, false)
 		return
 	}
+	// The original's length, or the most it may have, comes out of the
+	// buffer budget while it is held; without room within the slot wait
+	// it streams through like a busy conversion.
+	reserve := p.MaxSize + 1
+	if resp.ContentLength >= 0 {
+		reserve = resp.ContentLength
+	}
+	if reserve > s.cfg.Memory {
+		s.pass(w, resp, nil, p, stripped, false)
+		return
+	}
+	wait, cancel := context.WithTimeout(r.Context(), slotWait)
+	buffered := s.buffers.acquire(wait, reserve)
+	cancel()
+	if !buffered {
+		log.Info("image kept for now: no buffer room")
+		s.pass(w, resp, nil, p, stripped, true)
+		return
+	}
+	defer s.buffers.release(reserve)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, p.MaxSize+1))
 	if err != nil {
 		panic(http.ErrAbortHandler)
@@ -152,7 +177,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.pass(w, resp, body, p, stripped, false)
 		return
 	}
-	wait, cancel := context.WithTimeout(r.Context(), slotWait)
+	wait, cancel = context.WithTimeout(r.Context(), slotWait)
 	acquired := s.lim.acquire(wait, estimate)
 	cancel()
 	if !acquired {
