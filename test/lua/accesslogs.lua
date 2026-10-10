@@ -40,6 +40,7 @@ local function test(name, fn)
   ngx.shared[ratelimit.dict_name("log")]:flush_all()
   bans.forget()
   top.reset()
+  tap.reset()
   local ok, err = pcall(fn)
   if ok then
     passed = passed + 1
@@ -738,6 +739,59 @@ test("the live view stops before a number another worker is still storing and sh
   eq(r.seq, head - 1); eq(r.missed, 0)
   r = at(t + 5, function() return tap.read(head - 1) end)
   eq(r.seq, head); eq(r.missed, 1, "the head, taken long ago")
+end)
+
+test("workers remember the live view's marks for 250 ms: no dict read per request; viewers noticed and forgotten that much later", function()
+  local runtime = ngx
+  local real = ngx.shared.edgeweir_tap
+  local gets = 0
+  local counting = setmetatable({}, { __index = function(_, k)
+    local f = real[k]
+    if type(f) ~= "function" then return f end
+    return function(_, ...)
+      if k == "get" then gets = gets + 1 end
+      return f(real, ...)
+    end
+  end })
+  local t = math.floor(ngx.now()) + 1000
+  local function now_at(at, fn)
+    _G.ngx = setmetatable({ now = function() return at end, shared = setmetatable({ edgeweir_tap = counting }, { __index = runtime.shared }) },
+      { __index = runtime })
+    local ok, r = pcall(fn)
+    _G.ngx = runtime
+    assert(ok, r)
+    return r
+  end
+  local ok, err = pcall(function()
+    eq(tap.WATCH_TTL, 0.25)
+    now_at(t, function() for _ = 1, 1000 do assert(not tap.watching("log")) end end)
+    eq(gets, 2, "one read of \"*\" and one of the site's mark for 1000 requests")
+    -- Another worker answers a viewer of the site.
+    real:set("on|log", true, tap.ON_TTL)
+    eq(now_at(t + 0.2, function() return tap.watching("log") end), false, "not yet")
+    eq(now_at(t + 0.26, function() return tap.watching("log") end), true, "noticed within 250 ms")
+    eq(gets, 4)
+    -- The viewer's mark is gone: forgotten within 250 ms.
+    real:delete("on|log")
+    eq(now_at(t + 0.4, function() return tap.watching("log") end), true, "still remembered")
+    eq(now_at(t + 0.52, function() return tap.watching("log") end), false, "forgotten")
+    -- The worker that answers a viewer knows its mark at once.
+    eq(now_at(t + 0.6, function() return tap.watching("plain") end), false)
+    now_at(t + 0.6, function() tap.read(0, "plain") end)
+    eq(now_at(t + 0.6, function() return tap.watching("plain") end), true, "its own viewer")
+    now_at(t + 0.6, function() tap.read(0) end)
+    eq(now_at(t + 0.6, function() return tap.watching("") end), true, "a viewer of every request")
+    -- At most WATCH_KEYS marks remembered: then the worker starts over.
+    tap.reset()
+    real:delete("on|*")
+    now_at(t + 1, function() for i = 1, tap.WATCH_KEYS - 1 do assert(not tap.watching("s" .. i)) end end)
+    eq(tap.remembered(), tap.WATCH_KEYS, "\"*\" and the sites")
+    now_at(t + 1, function() for i = tap.WATCH_KEYS, tap.WATCH_KEYS + 10 do assert(not tap.watching("s" .. i)) end end)
+    eq(tap.remembered() < 30, true, "started over")
+  end)
+  _G.ngx = runtime
+  tap.reset()
+  assert(ok, err)
 end)
 
 test("the control API's live view: GET /v1/logs/tap with a sequence number and an optional site", function()

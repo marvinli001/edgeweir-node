@@ -4,15 +4,19 @@
 -- A viewer polls GET /v1/logs/tap?after=<seq>[&site=<id>] on the control
 -- socket. Each call marks "on|*" (every request, unknown hosts included)
 -- or "on|<site>" in lua_shared_dict edgeweir_tap for ON_TTL seconds. Only
--- while such a mark exists does the log phase record requests, at most
--- MAX_PER_SECOND a second on this node ("rate|<second>", counted before a
--- number is taken): a request's entry is encoded first, then it takes the
--- next sequence number and is kept under "e|<seq>" for ENTRY_TTL seconds,
--- so numbers stay dense. Requests over the rate take no number: "dropped"
--- counts them on this node, and every answer carries that total (the
--- viewer reports its growth between two answers as missed requests,
--- whatever site it watches). Without viewers a request costs two dict
--- reads.
+-- while such a mark exists (as a worker last saw it, at most WATCH_TTL
+-- ago) does the log phase record requests, at most MAX_PER_SECOND a second
+-- on this node ("rate|<second>", counted before a number is taken): a
+-- request's entry is encoded first, then it takes the next sequence number
+-- and is kept under "e|<seq>" for ENTRY_TTL seconds, so numbers stay
+-- dense. Requests over the rate take no number: "dropped" counts them on
+-- this node, and every answer carries that total (the viewer reports its
+-- growth between two answers as missed requests, whatever site it
+-- watches). Workers remember the marks they read for WATCH_TTL seconds (at
+-- most WATCH_KEYS sites and "*"), so that requests take no dict lock while
+-- nobody watches; a new viewer is noticed, and a gone one's mark
+-- forgotten, that much later (the worker that answers a viewer's call
+-- knows its mark at once).
 --
 -- Viewers read by sequence number, each on its own. A number without an
 -- entry is missed (it expired, or the worker that took it failed to store
@@ -38,9 +42,33 @@ _M.MAX_SCAN = 5000
 _M.WINDOW = _M.ENTRY_TTL * _M.MAX_PER_SECOND
 -- A missing number this close to the head may still be being written.
 _M.HEAD_GAP = 64
+_M.WATCH_TTL = 0.25
+_M.WATCH_KEYS = 1024
 
 local function dict()
   return ngx.shared.edgeweir_tap
+end
+
+-- The marks this worker saw ("*" or a site id): whether one existed, and
+-- until when that answer stands.
+local seen_on, seen_until, seen_n = {}, {}, 0
+
+local function remember(key, on, now)
+  if not seen_until[key] then
+    if seen_n >= _M.WATCH_KEYS then seen_on, seen_until, seen_n = {}, {}, 0 end
+    seen_n = seen_n + 1
+  end
+  seen_on[key], seen_until[key] = on, now + _M.WATCH_TTL
+end
+
+-- marked reports whether the mark of key exists, as this worker saw it in
+-- the last WATCH_TTL seconds.
+local function marked(d, key, now)
+  local u = seen_until[key]
+  if u and u > now then return seen_on[key] end
+  local on = d:get("on|" .. key) ~= nil
+  remember(key, on, now)
+  return on
 end
 
 -- watching reports whether a viewer watches requests of site_id ("" for
@@ -48,8 +76,19 @@ end
 function _M.watching(site_id)
   local d = dict()
   if not d then return false end
-  if d:get("on|*") then return true end
-  return site_id ~= nil and site_id ~= "" and d:get("on|" .. site_id) ~= nil
+  local now = ngx.now()
+  if marked(d, "*", now) then return true end
+  return site_id ~= nil and site_id ~= "" and marked(d, site_id, now)
+end
+
+-- remembered returns how many marks this worker remembers (tests).
+function _M.remembered()
+  return seen_n
+end
+
+-- reset forgets the marks this worker saw (tests).
+function _M.reset()
+  seen_on, seen_until, seen_n = {}, {}, 0
 end
 
 -- record numbers entry (a table with site_id) and keeps it, unless this
@@ -85,7 +124,9 @@ end
 -- never 0.
 function _M.read(after, site)
   local d = dict()
-  d:set("on|" .. (site or "*"), true, _M.ON_TTL)
+  local key = site or "*"
+  d:set("on|" .. key, true, _M.ON_TTL)
+  remember(key, true, ngx.now())
   local seq = d:get("seq")
   if not seq then
     d:add("seq", 1)
