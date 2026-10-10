@@ -47,6 +47,8 @@
 //     without duplicates, inside a site's waf every exclusion's rule_ids
 //     and targets ascending without duplicates; the exclusions keep the
 //     site's order (proto v0.29.0);
+//   - inside a site log_headers ascending without duplicates (proto
+//     v0.30.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -142,6 +144,7 @@ func CanonicalizeSite(s *nodev1.Site) {
 	}
 	slices.Sort(s.Ports)
 	s.Ports = slices.Compact(s.Ports)
+	s.LogHeaders = sortedSet(s.LogHeaders)
 	if s.Tls != nil {
 		slices.Sort(s.Tls.RedirectExcludedDomains)
 		s.Tls.RedirectExcludedDomains = slices.Compact(s.Tls.RedirectExcludedDomains)

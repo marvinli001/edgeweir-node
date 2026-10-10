@@ -268,6 +268,15 @@ type Site struct {
 	// RulesBodyLimit is the largest request body by Content-Length the
 	// rules read (0: 65536; feature rules-body-v1).
 	RulesBodyLimit uint32 `json:"rules_body_limit,omitempty"`
+	// Access log options (feature access-logs-v2, ADR-0041): LogBlocked
+	// writes a line for every request with a block reason whatever the
+	// sample rate; LogQuery, LogHeaders (lowercase names) and LogPeer add
+	// the query string, those request headers and the connection's peer
+	// address to the site's lines.
+	LogBlocked bool     `json:"log_blocked,omitempty"`
+	LogQuery   bool     `json:"log_query,omitempty"`
+	LogHeaders []string `json:"log_headers,omitempty"`
+	LogPeer    bool     `json:"log_peer,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -343,7 +352,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -682,6 +691,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	clientCerts := map[string]*ClientCertificate{}
 	access := map[string]*AccessControl{}
 	bodyLimits := map[string]uint32{}
+	logHeaders := map[string][]string{}
 	ipLists := map[string]bool{}
 	for _, l := range c.GetIpLists() {
 		ipLists[l.GetId()] = true
@@ -723,6 +733,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if bodyLimits[id], err = buildRulesBodyLimit(s); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if logHeaders[id], err = buildLogHeaders(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if ports[id], err = buildSitePorts(s, listenerTLS); err != nil {
@@ -871,6 +884,8 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		site.AccessControl = access[id]
 		site.RulesBodyLimit = bodyLimits[id]
+		site.LogBlocked, site.LogQuery, site.LogPeer = s.GetLogBlocked(), s.GetLogQuery(), s.GetLogPeer()
+		site.LogHeaders = logHeaders[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
