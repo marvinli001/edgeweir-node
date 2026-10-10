@@ -209,6 +209,34 @@ type MinuteStats struct {
 	// AuthFailures counts the requests access authentication refused
 	// (feature access-auth-v1).
 	AuthFailures uint64 `json:"auth_failures"`
+	// The bounded dimensions (feature stats-dims-v1, ADR-0041): requests
+	// and bytes sent per country ("" unknown, at most 250), the heaviest 50
+	// networks (by AS number, with names) and referring hosts, requests per
+	// user agent class, HTTP and TLS version and block reason, challenges
+	// issued and passed.
+	Countries        map[string]CountryCount `json:"countries"`
+	ASNs             map[string]ASNCount     `json:"asns"`
+	Referers         map[string]uint64       `json:"referers"`
+	Browsers         map[string]uint64       `json:"browsers"`
+	OperatingSystems map[string]uint64       `json:"operating_systems"`
+	Devices          map[string]uint64       `json:"devices"`
+	HTTPVersions     map[string]uint64       `json:"http_versions"`
+	TLSVersions      map[string]uint64       `json:"tls_versions"`
+	BlockReasons     map[string]uint64       `json:"block_reasons"`
+	ChallengesIssued uint64                  `json:"challenges_issued"`
+	ChallengesPassed uint64                  `json:"challenges_passed"`
+}
+
+// CountryCount is a country's requests and bytes sent in a minute.
+type CountryCount struct {
+	Requests  uint64 `json:"requests"`
+	BytesSent uint64 `json:"bytes_sent"`
+}
+
+// ASNCount is a network's requests in a minute (approximate) and its name.
+type ASNCount struct {
+	Requests uint64 `json:"requests"`
+	Name     string `json:"name"`
 }
 
 // Client talks to the control socket.

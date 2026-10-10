@@ -330,7 +330,7 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 				codes[uint32(c)] += v
 			}
 		}
-		out = append(out, &nodev1.MinuteStats{
+		ms := &nodev1.MinuteStats{
 			Minute:        timestamppb.New(time.Unix(m.Minute, 0).UTC()),
 			SiteId:        m.SiteID,
 			Requests:      m.Requests,
@@ -344,7 +344,9 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			WafRules:      wafRules(m.WAFRules),
 			LoggedRules:   loggedRules(m.LoggedRules),
 			AuthFailures:  m.AuthFailures,
-		})
+		}
+		applyDimensions(ms, m)
+		out = append(out, ms)
 	}
 	return out
 }
