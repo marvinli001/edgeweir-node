@@ -41,6 +41,18 @@ services:
     profiles: [tools]
     networks: [default]
 
+  # Synthetic GeoIP databases (test/geoip, no third-party data): IPinfo
+  # Lite's schema, 203.0.113.0/24 is NZ and AS64512 (access log and
+  # statistics checks). Writes the files and exits.
+  geoip:
+    build:
+      context: ../..
+      target: geoip-fixture
+    image: ${E2E_GEOIP_IMAGE:-edgeweir-node:e2e-geoip}
+    network_mode: none
+    volumes:
+      - geoip:/data
+
   node:
     build:
       context: ../..
@@ -48,6 +60,8 @@ services:
     depends_on:
       console:
         condition: service_healthy
+      geoip:
+        condition: service_completed_successfully
       whoami:
         condition: service_started
       hidden:
@@ -57,6 +71,7 @@ services:
       EDGEWEIR_TRUSTED_CA: /etc/edgeweir-e2e/origin-ca.pem
       # The cache usage reaches the heartbeat quickly.
       EDGEWEIR_CACHE_USAGE_INTERVAL: 5s
+      EDGEWEIR_GEOIP_IPINFO: /etc/edgeweir-geoip/ipinfo_lite.mmdb
     ports:
       - "127.0.0.1:${E2E_NODE_PORT:-28080}:80"
       - "127.0.0.1:${E2E_PP_PORT:-28081}:8081"
@@ -64,6 +79,7 @@ services:
     volumes:
       - node-state:/var/lib/edgeweir-node
       - origin-ca:/etc/edgeweir-e2e:ro
+      - geoip:/etc/edgeweir-geoip:ro
     networks: [default, isolated]
 
 networks:
@@ -73,3 +89,4 @@ networks:
 volumes:
   node-state:
   origin-ca:
+  geoip:

@@ -79,7 +79,9 @@
 # and the config rules' CRS mode, request body fields (in memory and from
 # nginx's temporary file, truncated over the limit), access log lines of
 # log rules, rate limit bans, challenge page texts, challenge failure bans
-# and crawler claims DNS does not back; then the base configuration again.)
+# and crawler claims DNS does not back; G16 access log fields and options,
+# blocked requests logged whatever the sample rate, the live view and the
+# statistics dimensions; then the base configuration again.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1603,6 +1605,69 @@ pp_banned ch.g14.test 198.51.100.143 || fail "three failed answers did not ban t
 WAIT_SECS=30 wait_for "challenge failure ban reported" reported '^unspecified site-g14c 198.51.100.143/32 challenge_failures - 3/3$'
 pass "G14: three failed challenge answers ban the address at site scope"
 rev=$(curl -fsS -X POST "$HELPER/g14?enabled=false")
+WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+
+# G16 (access-logs-v2, stats-dims-v1, ADR-0041): the access log fields and
+# a site's optional fields, a blocked request logged on a site that samples
+# nothing, the live view (edgeweir-node accesslog) and the statistics
+# dimensions (g16.go). GeoIP comes from the synthetic database
+# (203.0.113.0/24: NZ, AS64512) for the PROXY protocol's client address.
+features=$(curl -fsS "$HELPER/features")
+for f in access-logs-v2 stats-dims-v1; do grep -qx "$f" <<<"$features" || fail "$f not reported"; done
+rev=$(curl -fsS -X POST "$HELPER/g16")
+WAIT_SECS=60 wait_for "G16 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
+g16_get() { # host client path [header line...]
+  local host=$1 client=$2 path=$3 extra="" h
+  shift 3
+  for h in "$@"; do extra+="$h"$'\r\n'; done
+  exec 3<>"/dev/tcp/127.0.0.1/${E2E_PP_PORT:-28081}"
+  printf 'PROXY TCP4 %s 10.0.0.1 40000 8081\r\nGET %s HTTP/1.1\r\nHost: %s\r\n%sConnection: close\r\n\r\n' "$client" "$path" "$host" "$extra" >&3
+  cat <&3
+  exec 3<&-
+}
+FIREFOX='Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0'
+# The live view first: the data plane records only while someone watches.
+compose exec -T node timeout 8 edgeweir-node accesslog --json --site site-g16 >"$TMPDIR_E2E/g16-live.jsonl" 2>"$TMPDIR_E2E/g16-live.err" &
+live=$!
+sleep 2
+r=$(g16_get log.g16.test 203.0.113.161 "/g16-a?x=1&y=two" "User-Agent: $FIREFOX" \
+  "Referer: https://ref.g16.test/page?token=secret#frag" "X-Trace-Id: e2e-trace" | tr -d '\r')
+[ "$(status_of <<<"$r")" = 200 ] || fail "log.g16.test: $(status_of <<<"$r")"
+r=$(g16_get blk.g16.test 203.0.113.162 /g16-block "User-Agent: curl/8.0" | tr -d '\r')
+[ "$(status_of <<<"$r") $(header_of X-Edgeweir-Error <<<"$r")" = "403 policy-denied" ] || fail "blk.g16.test: $(status_of <<<"$r")"
+[ "$(status_of <<<"$(g16_get blk.g16.test 203.0.113.162 /g16-open | tr -d '\r')")" = 200 ] || fail "blk.g16.test /g16-open"
+for i in 1 2 3; do curl -s -o /dev/null -H 'Host: log.g16.test' "$NODE/g16-live-$i"; done
+curl -s -o /dev/null -H 'Host: demo.test' "$NODE/g16-other-site"
+live_has() { grep -q "\"path\":\"$1\"" "$TMPDIR_E2E/g16-live.jsonl"; }
+WAIT_SECS=10 wait_for "live requests" live_has /g16-live-3
+wait "$live" || true
+grep '"path":"/g16-a"' "$TMPDIR_E2E/g16-live.jsonl" | grep '"country":"NZ"' | grep '"site_id":"site-g16"' | grep -q '"http_version":"1.1"' ||
+  fail "live view without the request's fields: $(cat "$TMPDIR_E2E/g16-live.jsonl")"
+! grep -q '"query"\|g16-other-site\|g16-block' "$TMPDIR_E2E/g16-live.jsonl" || fail "live view: optional fields or other sites: $(cat "$TMPDIR_E2E/g16-live.jsonl")"
+pass "G16: edgeweir-node accesslog --json prints the site's requests live, with their fields"
+
+g16_logged() { curl -fsS "$HELPER/g16/logs" | grep -Eq "$1"; }
+WAIT_SECS=30 wait_for "access log line with the new fields" g16_logged \
+  '^site-g16 200 /g16-a rate=10000 ua=Mozilla/5\.0_\(X11;_Linux_x86_64;_rv:131\.0\)_Gecko/20100101_Firefox/131\.0 referer=https://ref\.g16\.test/page http=1\.1 scheme=http tls=- country=NZ asn=64512 as=Synthetic_AS64512 upstream=200 upstream_addr=[0-9.]+:80 ms=[0-9]+ bytes=[1-9][0-9]* type=text/plain reason=- rule=- query=x=1&y=two headers=x-trace-id:e2e-trace peer=[0-9a-f.:]+$'
+pass "G16: lines carry UA, Referer without its query, HTTP version, country, network, origin, media type, query, header and peer"
+WAIT_SECS=30 wait_for "the blocked request's line" g16_logged \
+  '^site-g16b 403 /g16-block rate=10000 ua=curl/8\.0 .* country=NZ asn=64512 .* upstream=0 upstream_addr=- .* reason=rule rule=g16-block query=- headers=- peer=-$'
+g16_logged '^site-g16b 200 /g16-open ' && fail "a line for an unblocked request on a site that samples nothing"
+pass "G16: a blocked request on a site that samples nothing is logged with its reason and rule"
+
+# Minutes are uploaded once complete (the agent drains every 60 s).
+g16_dims() {
+  local s
+  s=$(curl -fsS "$HELPER/g16/stats")
+  for want in '^site-g16 country NZ ' '^site-g16 asn 64512_Synthetic_AS64512 ' '^site-g16 referer ref\.g16\.test ' \
+    '^site-g16 browser firefox ' '^site-g16 os linux ' '^site-g16 device desktop ' '^site-g16 http 1\.1 ' '^site-g16 tls none ' \
+    '^site-g16b reason rule ' '^site-g16b browser tool '; do
+    grep -Eq "$want" <<<"$s" || return 1
+  done
+}
+WAIT_SECS=180 wait_for "statistics dimensions uploaded" g16_dims
+pass "G16: countries, networks, referring hosts, user agent classes, versions and block reasons in the uploaded minutes"
+rev=$(curl -fsS -X POST "$HELPER/g16?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
