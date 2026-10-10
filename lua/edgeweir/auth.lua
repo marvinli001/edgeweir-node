@@ -286,11 +286,14 @@ function _M.request_uri()
 end
 
 -- refused counts a refusal and names its block reason and rule
--- (edgeweir.reasons, recorded by edgeweir.router).
+-- (edgeweir.reasons, recorded by edgeweir.router); a service that does not
+-- answer (503 auth-unavailable) is no block.
 local function refused(site, result)
   stats.auth_failed(site.id)
-  local state = ngx.ctx.edgeweir_auth
-  result.reason, result.rule_id = "auth", state and state.rule and state.rule.id or nil
+  if result.code ~= "auth-unavailable" then
+    local state = ngx.ctx.edgeweir_auth
+    result.reason, result.rule_id = "auth", state and state.rule and state.rule.id or nil
+  end
   return result
 end
 

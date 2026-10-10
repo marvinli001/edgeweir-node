@@ -461,10 +461,13 @@ test("forward authentication: subrequest, 2xx copies headers, 401/403/3xx answer
   -- 302 without pass_redirects: refused with 403.
   result = forward_request(s, { status = 302, header = { Location = "https://login.test/" }, body = "" })
   eq(result and result.status, 403)
+  -- Refusals name their block reason and rule (ADR-0041).
+  eq(result.reason, "auth"); eq(result.rule_id, "r-forward")
   -- 5xx: 503, or through when the rule allows it.
   result = forward_request(s, { status = 502, header = {}, body = "" })
   eq(result and result.status, 503)
   eq(result.code, "auth-unavailable")
+  eq(result.reason, nil, "a service that does not answer is no block")
   local open = site({ rule("forward", { id = "open", forward = { url = "https://auth.test/v", request_headers = {}, timeout_ms = 100, allow_unavailable = true } }) })
   result = forward_request(open, { status = 504, header = {}, body = "" })
   eq(result, nil)
