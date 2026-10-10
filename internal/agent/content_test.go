@@ -152,9 +152,11 @@ func TestAgentCacheUsage(t *testing.T) {
 	}, nil, config)
 	defer e.stop()
 	var usage *nodev1.CacheZoneUsage
-	eventually(t, "cache usage reported", func() bool {
+	// Until the configuration is applied, the agent measures its built-in
+	// zone (configir.DefaultCacheZone).
+	eventually(t, "cache usage of the configured zone reported", func() bool {
 		s := e.console.LastStatus()
-		if s == nil || len(s.GetCacheUsage()) != 1 {
+		if s == nil || len(s.GetCacheUsage()) != 1 || s.GetCacheUsage()[0].GetName() != "default" {
 			return false
 		}
 		usage = s.GetCacheUsage()[0]
