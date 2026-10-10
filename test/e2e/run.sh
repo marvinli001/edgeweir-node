@@ -1713,7 +1713,10 @@ pass "G18: HEAD and ranges of a variant, paths without an extension, WebP-only s
 [ "$(img img.test /pics/huge.jpg "$WEBP")" = "MISS image/jpeg vary" ] || fail "an image over the pixel limit is converted"
 [ "$(img img.test /pics/huge.jpg "$WEBP")" = "HIT image/jpeg vary" ] || fail "the original kept for the WebP class is not cached"
 [ "$(img img.test /pics/tiny.jpg "$WEBP")" = "MISS image/jpeg vary" ] || fail "an image under the size limit is converted"
-compose logs node | grep -q '"image converted"' || compose logs node | grep -q 'msg="image converted"' || fail "the agent logged no conversion"
+# (The log is read completely first: with pipefail an early grep -q would
+# fail the pipeline.)
+compose logs --no-color node >"$TMPDIR_E2E/node.log" 2>&1
+grep -q 'msg="image converted"' "$TMPDIR_E2E/node.log" || fail "the agent logged no conversion"
 pass "G18: over the pixel limit and under the size limit the original is served and cached"
 task=$(curl -fsS -X POST "$HELPER/purge-prefix?site=site-img&host=img.test&path=/pics/")
 wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
