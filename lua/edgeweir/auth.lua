@@ -126,6 +126,7 @@ function _M.prepare(site)
   local rules = site.auth_rules
   if type(rules) ~= "table" or #rules == 0 then
     site._auth = nil
+    site._auth_signed_path = nil
     return
   end
   local out = {}
@@ -154,6 +155,13 @@ function _M.prepare(site)
     out[i] = c
   end
   site._auth = out
+  -- Rules whose signature is in the path (url_b, url_c): requests refused
+  -- before it is removed have no path to log (edgeweir.accesslogs).
+  local signed_path = false
+  for i = 1, #out do
+    if out[i].kind == "url_b" or out[i].kind == "url_c" then signed_path = true end
+  end
+  site._auth_signed_path = signed_path or nil
 end
 
 local function starts_with_any(path, prefixes)

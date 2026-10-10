@@ -140,6 +140,18 @@ function M.request_headers(headers, names)
   return any and out or nil
 end
 
+-- path returns the request's path for logs and statistics: the original
+-- path (after a signed URL's signature was removed, before rules rewrite
+-- it); for requests refused before that on a site whose signed URLs carry
+-- the signature in the path (url_b, url_c), nil: no path is recorded.
+function M.path(ctx, var)
+  local path = ctx.edgeweir_original_path
+  if path then return path end
+  local site = ctx.edgeweir_site
+  if site and site._auth_signed_path and not ctx.edgeweir_path_clean then return nil end
+  return var.uri
+end
+
 -- record builds the fields every line and live view record carries.
 local function record(var, site_id, geo, status)
   local country, asn, as_name = M.geo_fields(geo)
@@ -149,7 +161,7 @@ local function record(var, site_id, geo, status)
   return {
     time = ngx.now(), site_id = site_id, client_ip = clean(var.remote_addr, 64),
     method = clean(var.request_method, 32), host = clean(var.host, 253),
-    path = clean((ngx.ctx.edgeweir_original_path or var.uri or ""):match("^[^?#]*"), 2048),
+    path = clean((M.path(ngx.ctx, var) or ""):match("^[^?#]*"), 2048),
     status = status, bytes_sent = tonumber(var.bytes_sent) or 0,
     duration_ms = math.min(86400000, floor((tonumber(var.request_time) or 0) * 1000)),
     cache_status = clean(var.upstream_cache_status, 32),

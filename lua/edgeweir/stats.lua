@@ -158,7 +158,7 @@ function _M.log(waf_location)
   local p = minute .. "|" .. site .. "|"
   dict:incr(p .. "req", 1, 0, TTL)
   local out = tonumber(var.bytes_sent)
-  top.log(site, minute, ctx.edgeweir_original_path or var.uri, var.remote_addr, _M.dimensions(var, geo, out or 0))
+  top.log(site, minute, accesslogs.path(ctx, var), var.remote_addr, _M.dimensions(var, geo, out or 0))
   if out and out > 0 then
     dict:incr(p .. "out", out, 0, TTL)
   end

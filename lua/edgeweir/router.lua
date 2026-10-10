@@ -384,6 +384,8 @@ local function access()
   if site._auth then
     auth.select(site, acme)
   end
+  -- From here on the path carries no signature (edgeweir.accesslogs.path).
+  ngx.ctx.edgeweir_path_clean = true
   -- The query string the access log records: the client's, without a
   -- signed URL's signature, before rules rewrite it (requests refused
   -- before this point log none).

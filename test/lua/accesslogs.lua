@@ -468,6 +468,22 @@ test("requests refused before the site was set count and log for it; SNI mismatc
   eq(lines["log ip_banned"].path, "/")
 end)
 
+test("no path is recorded for requests refused before a signed URL's signature left the path", function()
+  local auth = require("edgeweir.auth")
+  local signed = { auth_rules = { { id = "a1", kind = "url_b", url = {} } } }
+  auth.prepare(signed)
+  eq(signed._auth_signed_path, true, "url_b carries its signature in the path")
+  local query = { auth_rules = { { id = "a2", kind = "url_a", url = {} } } }
+  auth.prepare(query)
+  eq(query._auth_signed_path, nil, "url_a carries it in the query string")
+  auth.prepare({ auth_rules = {} })
+  local site = { _auth_signed_path = true }
+  eq(accesslogs.path({ edgeweir_site = site }, { uri = "/1700000000/0123abcd/file" }), nil, "refused before selection")
+  eq(accesslogs.path({ edgeweir_site = site, edgeweir_path_clean = true }, { uri = "/file" }), "/file")
+  eq(accesslogs.path({ edgeweir_site = site, edgeweir_original_path = "/orig" }, { uri = "/x" }), "/orig")
+  eq(accesslogs.path({ edgeweir_site = {} }, { uri = "/plain" }), "/plain", "sites without such rules")
+end)
+
 -- Log fields ------------------------------------------------------------------
 
 test("lines carry the new fields, the site's optional fields, and the client's query and headers", function()
