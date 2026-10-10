@@ -19,7 +19,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | Cache and origins | `Host` routing, `proxy_cache`, cache rules with expression conditions and browser TTLs, origin-pool load balancing, HTTP/2 to origins and end-to-end gRPC, passive and active health checks, session affinity (signed cookie), purge (URL, prefix, host, site, Cache-Tag), prefetch (URLs and sitemaps, desktop and mobile variants, HTTP and HTTPS) |
 | Layer-4 forwarding | TCP / UDP ports forwarded to origins: weights, backup origins, passive health checks and retries on connect failures, connect and idle timeouts, allow / block lists, per-node concurrent and new-per-second limits; PROXY protocol v1 / v2 towards origins, listeners that accept the PROXY protocol; adding or removing ports reloads without dropping open connections, everything else is hot-updated; per-minute connections, refusals, peak concurrency and bytes |
 | Error pages | 403 / 429 / 502 / 503 / 504 from site templates or built-in pages (Chinese and English), optionally replacing origin errors; platform pages for unknown and disabled sites; `X-Request-Id` |
-| Statistics and logs | Per-minute statistics of sites and layer-4 applications (persisted, resumed by sequence), Top URL / IP, sampled access logs (off by default) |
+| Statistics and logs | Per-minute statistics of sites and layer-4 applications (persisted, resumed by sequence), Top URL / IP and bounded dimensions: countries, networks (ASN), referring hosts, browsers / operating systems / devices, HTTP and TLS versions, block reasons and challenges; sampled access logs (off by default) with User-Agent, Referer, protocol, country, origin and block reason, optionally the query string, request headers and the connection's peer address, and blocked requests logged whatever the sample rate; `edgeweir-node accesslog` shows requests live on the node |
 | Probes and host metrics | Regional probes `edgeweir-node probe` (no OpenResty) and nodes that also probe: TCP, HTTP and HTTPS checks of the targets the console names, reporting latency and loss; the edge listeners' health endpoint `/.edgeweir/health`; heartbeats carry CPU, load, memory, egress bandwidth and active connections |
 | GeoIP | Local MMDB lookups; release images bundle IPinfo Lite (country, ASN) |
 | Configuration reliability | Validated apply, rollback on activation failure, persisted last-known-good (LKG) configuration; serves LKG while the console is unreachable |
@@ -180,6 +180,7 @@ edgeweir-node probe [--state-dir DIR]                 # an enrolled probe
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # ban status (JSON); --list adds up to 1000 bans
 edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool, per-site CC levels (JSON)
+edgeweir-node accesslog [--site ID] [--json] [--socket PATH]   # this node's requests as they happen; Ctrl-C stops
 edgeweir-node version
 ```
 
@@ -187,6 +188,7 @@ edgeweir-node version
 - `run` polls the state directory every 2 s until enrolled and may start before `enroll`.
 - `supervise` adds signed upgrades, trials and rollback on top of `run`, and runs OpenResty itself: an upgrade or a restart of the agent process does not restart OpenResty. Upgrade tasks cannot install an older version than the running one (`--upgrade-allow-downgrade` allows it).
 - `probe` runs a regional probe: the first run enrolls with a one-time probe token (retrying while the console is unreachable), an enrolled probe ignores the token; missing enrollment settings exit with status 2.
+- `accesslog` reads the data plane's live view every 250 ms (control socket, the same permissions as `bans` and `security`; `--socket` is short for `--control-socket`), one request per line: time (UTC, milliseconds), client IP, method, Host, path (spaces as `%20`), status, bytes sent, duration, cache status (`-` without one) and `blocked=<reason>` when the node refused or challenged it; `--json` prints JSON Lines (with User-Agent, Referer, protocol, country, ASN, origin, blocking rule and the other fields). Sample rates do not apply, and the data plane records only while someone watches (it stops 5 s after the last call); without `--site` requests of unknown hosts are shown too. Requests missed (expired, or over the rate of 2000 per second and node) are counted on stderr. Query strings, request headers and peer addresses go only into the sampled logs of sites that record them, never here.
 
 | `enroll` flag | Default | Description |
 | --- | --- | --- |

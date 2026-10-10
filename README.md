@@ -19,7 +19,7 @@
 | 缓存与回源 | `Host` 路由、`proxy_cache`、表达式条件的缓存规则与浏览器 TTL、源站池负载均衡、HTTP/2 回源与端到端 gRPC、被动与主动健康检查、会话保持（签名 cookie）、清缓存（URL、前缀、Host、站点、Cache-Tag）、预热（URL 与 sitemap，桌面与移动变体，HTTP 与 HTTPS） |
 | 四层转发 | TCP / UDP 端口转发到源站：权重、备用源站、被动健康检查与连接失败重试，连接与空闲超时，放行 / 拦截名单，每节点并发与每秒新建上限；向源站发送 PROXY protocol v1 / v2，监听可接受 PROXY protocol；增删端口 reload 时已有连接不断开，其余变更热更新；按分钟统计连接、拒绝、并发峰值与字节数 |
 | 错误页 | 403 / 429 / 502 / 503 / 504 使用站点模板或内置页（中英文），可拦截源站错误；未知、停用站点的平台页；`X-Request-Id` |
-| 统计与日志 | 按站点与四层应用按分钟统计（持久化、按序号续传）、Top URL / IP、采样访问日志（默认关闭） |
+| 统计与日志 | 按站点与四层应用按分钟统计（持久化、按序号续传）、Top URL / IP，国家、运营商（ASN）、来源域名、浏览器 / 操作系统 / 设备、HTTP 与 TLS 版本、拦截原因与挑战的有界维度；采样访问日志（默认关闭，带 UA、Referer、协议、国家、回源与拦截原因，可选查询串、请求头与直连对端地址，被拦截的请求可不受采样率限制地记录）；`edgeweir-node accesslog` 在节点上实时查看请求 |
 | 探针与主机指标 | 区域探针 `edgeweir-node probe`（不带 OpenResty）与节点兼任探针：按控制台给出的目标做 TCP、HTTP、HTTPS 探测，上报延迟与丢包；边缘监听的健康端点 `/.edgeweir/health`；心跳携带 CPU、负载、内存、出口带宽与活动连接数 |
 | GeoIP | 本地 MMDB 查询；发布镜像内置 IPinfo Lite（国家、ASN） |
 | 配置可靠性 | 校验后应用、激活失败回退、last-known-good（LKG）持久化；控制台不可达时按 LKG 服务 |
@@ -180,6 +180,7 @@ edgeweir-node probe [--state-dir DIR]                 # 已注册的探针
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # 封禁状态（JSON）；--list 列出最多 1000 条
 edgeweir-node security [--control-socket PATH]        # 挑战密钥、验证码池、各站点 CC 级别（JSON）
+edgeweir-node accesslog [--site ID] [--json] [--socket PATH]   # 实时查看本节点的请求，Ctrl-C 结束
 edgeweir-node version
 ```
 
@@ -187,6 +188,7 @@ edgeweir-node version
 - `run` 在注册完成前每 2 秒检查状态目录，可先于 `enroll` 启动。
 - `supervise` 在 `run` 之上提供签名升级、试运行与回滚，并由它运行 OpenResty：升级或重启 agent 进程不重启 OpenResty。升级任务不能安装比当前更旧的版本（`--upgrade-allow-downgrade` 放行）。
 - `probe` 运行区域探针：首次运行用一次性探针 token 注册（控制台不可达时退避重试），已注册后忽略 token；缺少注册参数时退出码 2。
+- `accesslog` 每 250 毫秒读取数据面的实时查看（控制 socket，权限同 `bans`、`security`；`--socket` 是 `--control-socket` 的简写），每行一个请求：时间（UTC，毫秒）、客户端 IP、方法、Host、路径（空格写作 `%20`）、状态码、发送字节、耗时、缓存状态（没有时为 `-`），有拦截原因时追加 `blocked=<原因>`；`--json` 输出 JSON Lines（含 UA、Referer、协议、国家、ASN、回源、拦截规则等字段）。不受采样率限制，只在有人查看时采集（停止查看 5 秒后数据面不再记录）；不带 `--site` 时也包括未知域名的请求。过期或超出速率（每节点每秒 2000 条）而缺失的请求在标准错误输出计数。查询串、请求头与对端地址只进入开启了它们的网站的采样日志，不在这里显示。
 
 | `enroll` 参数 | 默认值 | 说明 |
 | --- | --- | --- |
