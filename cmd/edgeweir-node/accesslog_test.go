@@ -95,6 +95,8 @@ func TestAccesslogTails(t *testing.T) {
 		srv.AddTapEntry(map[string]any{"site_id": "s1", "time": 1800000001, "client_ip": "203.0.113.7", "method": "POST", "host": "a.test",
 			"path": "/two", "status": 403, "block_reason": "rule"})
 		waitFor(t, "two lines", func() bool { return strings.Count(stdout.String(), "\n") >= 2 })
+		srv.SetTapDropped(4) // requests over the data plane's rate take no number
+		waitFor(t, "the dropped requests reported", func() bool { return strings.Contains(stderr.String(), "4 requests missed") })
 		srv.FailTap(2)
 		waitFor(t, "the failure reported", func() bool { return strings.Contains(stderr.String(), "retrying") })
 		srv.AddTapEntry(map[string]any{"site_id": "s1", "time": 1800000002, "path": "/three", "status": 200})
@@ -121,13 +123,33 @@ func TestAccesslogTails(t *testing.T) {
 			!strings.HasSuffix(lines[1], " 403 0 0ms - blocked=rule") {
 			t.Errorf("text lines %q", lines)
 		}
-		if !strings.Contains(stderr.String(), "1 requests missed") || !strings.Contains(stderr.String(), "answers again") {
+		if !strings.Contains(stderr.String(), "1 requests missed") || !strings.Contains(stderr.String(), "answers again") ||
+			strings.Count(stderr.String(), "requests missed") != 2 {
 			t.Errorf("stderr %q", stderr.String())
 		}
 		for _, q := range srv.TapCalls() {
 			if !strings.HasSuffix(q, "&site=s1") {
 				t.Errorf("call %q without the site", q)
 			}
+		}
+	}
+}
+
+// TestAccesslogMissedSince: a page's missed requests are the numbers it
+// skipped plus the growth of the data plane's dropped total since the
+// previous page; a total that went down (nginx restarted) counts in full.
+func TestAccesslogMissedSince(t *testing.T) {
+	for _, c := range []struct {
+		missed, dropped, prev, want uint64
+	}{
+		{0, 0, 0, 0},
+		{2, 0, 0, 2},
+		{0, 7, 7, 0},
+		{1, 10, 7, 4},
+		{0, 3, 9, 3},
+	} {
+		if got := missedSince(&dataplane.TapPage{Missed: c.missed, Dropped: c.dropped}, c.prev); got != c.want {
+			t.Errorf("missed %d, dropped %d after %d: got %d, want %d", c.missed, c.dropped, c.prev, got, c.want)
 		}
 	}
 }

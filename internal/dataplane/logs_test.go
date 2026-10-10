@@ -89,8 +89,8 @@ func TestText(t *testing.T) {
 	}
 }
 
-// TestTap: the live view's pages, the site filter and the bounds of the
-// entries' fields.
+// TestTap: the live view's pages, the site filter, the dropped total and
+// the bounds of the entries' fields.
 func TestTap(t *testing.T) {
 	srv := fakedataplane.Start(t)
 	c := dataplane.NewClient(srv.Socket)
@@ -104,8 +104,9 @@ func TestTap(t *testing.T) {
 		"http_version": "9"})
 	srv.AddTapEntry(nil)
 	srv.AddTapEntry(map[string]any{"site_id": "", "time": 1800000001, "path": "/scan", "status": 404})
+	srv.SetTapDropped(3)
 	page, err := c.Tap(ctx, first.Seq, "")
-	if err != nil || page.Seq != 4 || page.Missed != 1 || len(page.Entries) != 2 {
+	if err != nil || page.Seq != 4 || page.Missed != 1 || page.Dropped != 3 || len(page.Entries) != 2 {
 		t.Fatalf("page = %+v, %v", page, err)
 	}
 	e := page.Entries[0]

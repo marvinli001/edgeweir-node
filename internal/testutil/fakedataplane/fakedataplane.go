@@ -80,12 +80,14 @@ type Server struct {
 	failL4    int
 
 	// The live view (GET /v1/logs/tap, lua/edgeweir/tap.lua): numbered
-	// entries (nil: a missed number), the last number, the calls' queries
-	// and how many calls fail with 500.
-	tap      map[uint64]map[string]any
-	tapSeq   uint64
-	tapCalls []string
-	failTap  int
+	// entries (nil: a missed number), the last number, the requests
+	// dropped over the rate, the calls' queries and how many calls fail
+	// with 500.
+	tap        map[uint64]map[string]any
+	tapSeq     uint64
+	tapDropped uint64
+	tapCalls   []string
+	failTap    int
 }
 
 var (
@@ -374,7 +376,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		entries, missed := []map[string]any{}, 0
 		if after == 0 || after > s.tapSeq {
-			reply(w, 200, map[string]any{"seq": s.tapSeq, "entries": map[string]any{}, "missed": 0})
+			reply(w, 200, map[string]any{"seq": s.tapSeq, "entries": map[string]any{}, "missed": 0, "dropped": s.tapDropped})
 			return
 		}
 		for n := after + 1; n <= s.tapSeq; n++ {
@@ -390,7 +392,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(entries) == 0 {
 			list = map[string]any{} // the data plane's empty table
 		}
-		reply(w, 200, map[string]any{"seq": s.tapSeq, "entries": list, "missed": missed})
+		reply(w, 200, map[string]any{"seq": s.tapSeq, "entries": list, "missed": missed, "dropped": s.tapDropped})
 	case r.URL.Path == "/v1/logs/drain" && r.Method == http.MethodPost:
 		out := s.logs
 		s.logs = nil
@@ -810,6 +812,14 @@ func (s *Server) AddTapEntry(entry map[string]any) {
 		}
 		s.tap[s.tapSeq] = entry
 	}
+}
+
+// SetTapDropped sets the live view's total of requests dropped over the
+// rate (lower than before: nginx restarted).
+func (s *Server) SetTapDropped(n uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tapDropped = n
 }
 
 // TapCalls returns the queries of the live view calls so far.

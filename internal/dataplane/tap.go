@@ -26,12 +26,15 @@ type TapEntry struct {
 }
 
 // TapPage is one answer of the live view: the entries after the sequence
-// number asked for, the last number read (to ask after next time) and how
-// many numbers were missed (expired or over the rate).
+// number asked for, the last number read (to ask after next time), how
+// many numbers were missed (expired) and the data plane's total of
+// requests it dropped over its rate since nginx started (they take no
+// number: a viewer counts the growth between two pages as missed).
 type TapPage struct {
 	Seq     uint64     `json:"seq"`
 	Entries []TapEntry `json:"entries"`
 	Missed  uint64     `json:"missed"`
+	Dropped uint64     `json:"dropped"`
 }
 
 // Tap reads the live view after seq (0: the first call, which only returns
@@ -46,11 +49,12 @@ func (c *Client) Tap(ctx context.Context, after uint64, site string) (*TapPage, 
 		Seq     uint64         `json:"seq"`
 		Entries List[TapEntry] `json:"entries"`
 		Missed  uint64         `json:"missed"`
+		Dropped uint64         `json:"dropped"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/v1/logs/tap?"+q.Encode(), nil, &out); err != nil {
 		return nil, err
 	}
-	page := &TapPage{Seq: out.Seq, Entries: out.Entries, Missed: out.Missed}
+	page := &TapPage{Seq: out.Seq, Entries: out.Entries, Missed: out.Missed, Dropped: out.Dropped}
 	for i := range page.Entries {
 		page.Entries[i].logFields = page.Entries[i].logFields.bounded()
 	}

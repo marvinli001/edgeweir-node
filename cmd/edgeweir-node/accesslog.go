@@ -25,7 +25,7 @@ var siteIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 // cmdAccesslog prints the requests this node serves as they happen (the
 // data plane's live view, ADR-0041 §6), whatever the sites' sample rates,
 // until SIGINT or SIGTERM. Missed requests (expired or over the data plane's
-// rate) are counted on stderr.
+// rate) are counted on stderr (see missedSince).
 func cmdAccesslog(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("accesslog", stderr)
 	controlSocket := fs.String("control-socket", defaultControlSocket, "unix socket of the data plane control API")
@@ -68,7 +68,7 @@ func tailAccessLog(ctx context.Context, c *dataplane.Client, site string, asJSON
 		}
 		return err
 	}
-	after := page.Seq
+	after, dropped := page.Seq, page.Dropped
 	enc := json.NewEncoder(stdout)
 	failing := false
 	ticker := time.NewTicker(interval)
@@ -103,11 +103,24 @@ func tailAccessLog(ctx context.Context, c *dataplane.Client, site string, asJSON
 				return err
 			}
 		}
-		if page.Missed > 0 {
-			fmt.Fprintf(stderr, "accesslog: %d requests missed\n", page.Missed)
+		if n := missedSince(page, dropped); n > 0 {
+			fmt.Fprintf(stderr, "accesslog: %d requests missed\n", n)
 		}
-		after = page.Seq
+		after, dropped = page.Seq, page.Dropped
 	}
+}
+
+// missedSince returns the requests a page shows as missed after a page
+// whose dropped total was prev: the numbers it skipped (expired entries)
+// and the requests the data plane dropped over its rate in between, which
+// took no number. The total counts the whole node's requests, whatever the
+// site watched; one below prev started again with nginx and counts in
+// full.
+func missedSince(page *dataplane.TapPage, prev uint64) uint64 {
+	if page.Dropped < prev {
+		return page.Missed + page.Dropped
+	}
+	return page.Missed + page.Dropped - prev
 }
 
 // entryTime is an entry's time in UTC.
