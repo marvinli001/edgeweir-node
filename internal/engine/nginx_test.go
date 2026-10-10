@@ -11,7 +11,14 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/marvinli001/edgeweir-node/internal/testutil/childproc"
 )
+
+func TestMain(m *testing.M) {
+	childproc.UnignoreSIGHUP()
+	os.Exit(m.Run())
+}
 
 // fakeNginx is a shell script standing in for the openresty binary.
 const fakeNginx = `#!/bin/sh
@@ -58,8 +65,11 @@ func setupFake(t *testing.T, managed bool) (*Nginx, string) {
 	}
 	n := New(Config{
 		Bin: bin, Prefix: dir, Conf: conf, Managed: managed,
-		StaleSockets: []string{stale}, StopTimeout: 2 * time.Second,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		StaleSockets: []string{stale},
+		// TestManagedLifecycle checks that nginx stops on SIGQUIT, not on
+		// the SIGKILL after StopTimeout.
+		StopTimeout: time.Until(childproc.Deadline(t)),
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	return n, dir
 }
@@ -71,18 +81,6 @@ func lines(t *testing.T, path string) int {
 		return 0
 	}
 	return strings.Count(string(b), "\n")
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 func TestParseVersion(t *testing.T) {
@@ -118,9 +116,12 @@ func TestVersionAndTest(t *testing.T) {
 
 func TestManagedLifecycle(t *testing.T) {
 	n, dir := setupFake(t, true)
+	deadline := childproc.Context(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	runDone := make(chan error, 1)
-	go func() { runDone <- n.Run(ctx) }()
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); _ = n.Run(ctx) }()
+	// A failed check stops nginx too; it would outlive the test otherwise.
+	t.Cleanup(func() { cancel(); <-runDone })
 
 	if n.Running() {
 		t.Fatal("nginx running before the first reload")
@@ -131,10 +132,10 @@ func TestManagedLifecycle(t *testing.T) {
 	}
 	select {
 	case <-n.Started():
-	case <-time.After(10 * time.Second):
+	case <-deadline.Done():
 		t.Fatal("nginx not started")
 	}
-	waitFor(t, "pid file", func() bool { return lines(t, filepath.Join(dir, "pid")) == 1 })
+	childproc.Wait(t, "pid file", func() bool { return lines(t, filepath.Join(dir, "pid")) == 1 })
 	if _, err := os.Stat(filepath.Join(dir, "stale.sock")); !os.IsNotExist(err) {
 		t.Fatal("stale socket not removed before start")
 	}
@@ -143,7 +144,7 @@ func TestManagedLifecycle(t *testing.T) {
 	if err := n.Reload(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "SIGHUP", func() bool { return lines(t, filepath.Join(dir, "hups")) >= 1 })
+	childproc.Wait(t, "SIGHUP", func() bool { return lines(t, filepath.Join(dir, "hups")) >= 1 })
 
 	// A crashed child is restarted.
 	pidBytes, _ := os.ReadFile(filepath.Join(dir, "pid"))
@@ -153,16 +154,16 @@ func TestManagedLifecycle(t *testing.T) {
 	}
 	select {
 	case <-n.Started():
-	case <-time.After(10 * time.Second):
+	case <-deadline.Done():
 		t.Fatal("nginx not restarted after crash")
 	}
-	waitFor(t, "second start", func() bool { return lines(t, filepath.Join(dir, "starts")) == 2 })
+	childproc.Wait(t, "second start", func() bool { return lines(t, filepath.Join(dir, "starts")) == 2 })
 
 	// Shutdown stops the child gracefully.
 	cancel()
 	select {
 	case <-runDone:
-	case <-time.After(10 * time.Second):
+	case <-deadline.Done():
 		t.Fatal("Run did not return after cancel")
 	}
 	if lines(t, filepath.Join(dir, "quits")) != 1 {
