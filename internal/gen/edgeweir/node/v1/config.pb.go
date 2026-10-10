@@ -1924,8 +1924,22 @@ type Site struct {
 	// read the body; other requests and sites never read it. Added in v0.29.0
 	// (feature rules-body-v1).
 	RulesBodyLimit uint32 `protobuf:"varint,31,opt,name=rules_body_limit,json=rulesBodyLimit,proto3" json:"rules_body_limit,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Access log options, all off by default (ADR-0041). Added in v0.30.0
+	// (feature access-logs-v2).
+	// log_blocked: requests with a block reason (blocked, challenged or
+	// refused by access authentication) always get a line, sample rate 10000;
+	// with the lines of log rules at most 100 per site and second on a node.
+	LogBlocked bool `protobuf:"varint,32,opt,name=log_blocked,json=logBlocked,proto3" json:"log_blocked,omitempty"`
+	// log_query: lines carry the query string (AccessLog.query).
+	LogQuery bool `protobuf:"varint,33,opt,name=log_query,json=logQuery,proto3" json:"log_query,omitempty"`
+	// log_headers: request headers lines carry (AccessLog.headers): at most 8
+	// lowercase names, never authorization, cookie or proxy-authorization.
+	LogHeaders []string `protobuf:"bytes,34,rep,name=log_headers,json=logHeaders,proto3" json:"log_headers,omitempty"`
+	// log_peer: lines carry the connection's peer address when it differs
+	// from the client address (AccessLog.peer_ip).
+	LogPeer       bool `protobuf:"varint,35,opt,name=log_peer,json=logPeer,proto3" json:"log_peer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Site) Reset() {
@@ -2173,6 +2187,34 @@ func (x *Site) GetRulesBodyLimit() uint32 {
 		return x.RulesBodyLimit
 	}
 	return 0
+}
+
+func (x *Site) GetLogBlocked() bool {
+	if x != nil {
+		return x.LogBlocked
+	}
+	return false
+}
+
+func (x *Site) GetLogQuery() bool {
+	if x != nil {
+		return x.LogQuery
+	}
+	return false
+}
+
+func (x *Site) GetLogHeaders() []string {
+	if x != nil {
+		return x.LogHeaders
+	}
+	return nil
+}
+
+func (x *Site) GetLogPeer() bool {
+	if x != nil {
+		return x.LogPeer
+	}
+	return false
 }
 
 // AuthRule is a site's access authentication rule. Its scope lists are
@@ -7038,7 +7080,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1e\n" +
 	"\vmax_size_mb\x18\x02 \x01(\x04R\tmaxSizeMb\x12 \n" +
 	"\fkeys_zone_mb\x18\x03 \x01(\rR\n" +
-	"keysZoneMb\"\x8a\f\n" +
+	"keysZoneMb\"\x84\r\n" +
 	"\x04Site\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -7080,7 +7122,13 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\n" +
 	"auth_rules\x18\x1d \x03(\v2\x1a.edgeweir.node.v1.AuthRuleR\tauthRules\x12F\n" +
 	"\x0eaccess_control\x18\x1e \x01(\v2\x1f.edgeweir.node.v1.AccessControlR\raccessControl\x12(\n" +
-	"\x10rules_body_limit\x18\x1f \x01(\rR\x0erulesBodyLimitB\x15\n" +
+	"\x10rules_body_limit\x18\x1f \x01(\rR\x0erulesBodyLimit\x12\x1f\n" +
+	"\vlog_blocked\x18  \x01(\bR\n" +
+	"logBlocked\x12\x1b\n" +
+	"\tlog_query\x18! \x01(\bR\blogQuery\x12\x1f\n" +
+	"\vlog_headers\x18\" \x03(\tR\n" +
+	"logHeaders\x12\x19\n" +
+	"\blog_peer\x18# \x01(\bR\alogPeerB\x15\n" +
 	"\x13_request_body_limit\"\xca\x03\n" +
 	"\bAuthRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12.\n" +
