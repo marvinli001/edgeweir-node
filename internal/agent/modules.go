@@ -13,12 +13,16 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/render"
 )
 
-// extraFeatures are the features that depend on this node's files rather
-// than on the agent version: GeoIP databases and OpenResty modules. Sites
-// may use them (configir.Options.ExtraFeatures) and ReportStatus announces
-// them.
+// extraFeatures are the features that depend on this node's files or
+// flags rather than on the agent version: GeoIP databases, OpenResty
+// modules and the image converter. Sites may use them
+// (configir.Options.ExtraFeatures) and ReportStatus announces them.
 func (a *Agent) extraFeatures() []string {
-	return append(slices.Clone(a.geoFeatures), a.moduleFeatures...)
+	out := append(slices.Clone(a.geoFeatures), a.moduleFeatures...)
+	if a.cfg.Image.Workers > 0 {
+		out = append(out, configir.FeatureImageConvert)
+	}
+	return out
 }
 
 var errNoModSecurity = errors.New("no ModSecurity module")

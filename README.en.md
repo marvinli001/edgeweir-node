@@ -34,7 +34,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement, layer-4 forwarding (stream); hot updates for sites, origins, certificates, rules and layer-4 applications over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.30.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v0.31.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules, ports, protocols and PROXY protocol settings of layer-4 applications) re-render `nginx.conf` and reload after `openresty -t`, the old workers serving open connections until they end; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
@@ -263,6 +263,9 @@ edgeweir-node version
 | `--nft-bin` | `nft` | nftables binary |
 | `--modsecurity-module` | `auto` | ModSecurity-nginx dynamic module: `auto` (the `modules/` directory of the edgeweir-openresty that `--nginx-bin` belongs to), a file path, or `off`; loaded only while a site runs the OWASP CRS |
 | `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS directory (`crs-setup.conf`, `rules/`); `unicode.mapping` comes from the sibling `modsecurity/` |
+| `--image-workers` | min(4, max(1, CPUs / 2)) | Concurrent WebP / AVIF conversions, each a child process on one CPU; 0 turns conversion off (the node does not announce `image-convert-v1` and cannot serve sites that convert) |
+| `--image-memory-mb` | `1024` | Memory the running conversions may use together, in MiB; each conversion's need is estimated from its pixels, larger images keep their original |
+| `--image-timeout` | `8s` | Longest conversion: the child is killed and the original kept |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
 

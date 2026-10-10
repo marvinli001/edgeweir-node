@@ -38,6 +38,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
+	"github.com/marvinli001/edgeweir-node/internal/imageconv"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
@@ -92,6 +93,10 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdSecurity(args[1:], stdout, stderr)
 	case "accesslog":
 		return cmdAccesslog(args[1:], stdout, stderr)
+	case imageconv.ChildCommand:
+		// One WebP / AVIF conversion for the agent's image converter
+		// (internal; not in the usage).
+		return imageconv.RunChild(args[1:], os.Stdin, stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version.String())
 		return 0
@@ -465,6 +470,9 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		modsecModule  = fs.String("modsecurity-module", "auto", "ModSecurity-nginx dynamic module for sites that run the OWASP CRS: auto (the edgeweir-openresty-modsecurity package next to --nginx-bin), a path, or off")
 		crsDir        = fs.String("crs-dir", render.DefaultCRSDir, "OWASP CRS directory (crs-setup.conf and rules/); unicode.mapping is read from ../modsecurity/")
+		imageWorkers  = fs.Int("image-workers", imageconv.DefaultWorkers(), "concurrent WebP / AVIF conversions, each a child process on one CPU (0 turns conversion off: sites that convert cannot be served by this node)")
+		imageMemoryMB = fs.Int("image-memory-mb", int(imageconv.DefaultMemory>>20), "memory the running WebP / AVIF conversions may use together, in MiB (each conversion's need is estimated from its pixels; larger images keep their original)")
+		imageTimeout  = fs.Duration("image-timeout", imageconv.DefaultTimeout, "longest WebP / AVIF conversion (the child is killed and the original kept)")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -504,6 +512,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *purgeTags < 1 {
 		fmt.Fprintln(stderr, "run: --purge-tags-per-site must be at least 1")
+		return 2
+	}
+	if *imageWorkers < 0 || *imageWorkers > 64 || *imageMemoryMB < 64 || *imageMemoryMB > 1<<20 || *imageTimeout < time.Second || *imageTimeout > 5*time.Minute {
+		fmt.Fprintln(stderr, "run: --image-workers must be 0-64, --image-memory-mb 64-1048576 and --image-timeout 1s-5m")
 		return 2
 	}
 	if *banCapacity < 1 || *banCapacity > render.MaxBanCapacity {
@@ -715,6 +727,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, IPinfoOptional: ipinfoOptional, City: *geoCity, ASN: *geoASN},
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
+		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -34,7 +34,7 @@
 | OpenResty 数据面 | 路由、缓存、回源、策略执行、四层转发（stream）；经本地 unix socket 接收站点、源站、证书、规则与四层应用的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.30.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v0.31.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则、四层应用的端口、协议与 PROXY protocol 设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload，已有连接由旧 worker 服务到结束；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
@@ -263,6 +263,9 @@ edgeweir-node version
 | `--nft-bin` | `nft` | nftables 可执行文件 |
 | `--modsecurity-module` | `auto` | ModSecurity-nginx 动态模块：`auto`（`--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 目录）、文件路径、`off`；只在有站点启用 OWASP CRS 时加载 |
 | `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS 目录（`crs-setup.conf`、`rules/`），`unicode.mapping` 取自同级 `modsecurity/` |
+| `--image-workers` | min(4, max(1, CPU 数 / 2)) | 同时进行的 WebP / AVIF 转换数，每个转换是一个只用一个 CPU 的子进程；0 关闭转换（节点不上报 `image-convert-v1`，开启转换的网站不能由它服务） |
+| `--image-memory-mb` | `1024` | 正在进行的转换合计可用的内存（MiB）；按像素估算每次转换的需要，超过时返回原图 |
+| `--image-timeout` | `8s` | 单次转换的最长时间，超时杀掉子进程并返回原图 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
 

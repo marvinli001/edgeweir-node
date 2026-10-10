@@ -144,6 +144,9 @@ type Config struct {
 	BanCapacity int
 	// Kernel runs nft scripts for kernel bans; nil disables them.
 	Kernel nft.Executor
+	// Image configures the WebP / AVIF converter (ADR-0043); Workers 0
+	// turns it off (the node does not announce image-convert-v1).
+	Image ImageOptions
 	// AutoBanInterval: the node's own bans are drained and reported this
 	// often (default 5s).
 	AutoBanInterval time.Duration
@@ -479,6 +482,9 @@ func (a *Agent) Run(parent context.Context) error {
 	spawn("dataplane", a.dataPlaneLoop)
 	spawn("cacheusage", a.cacheUsageLoop)
 	if err := a.serveAgentSocket(ctx, spawn); err != nil {
+		return err
+	}
+	if err := a.serveImageSocket(ctx, spawn); err != nil {
 		return err
 	}
 	spawn("activehealth", a.activeHealthLoop)

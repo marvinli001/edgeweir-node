@@ -209,6 +209,9 @@ type MinuteStats struct {
 	// AuthFailures counts the requests access authentication refused
 	// (feature access-auth-v1).
 	AuthFailures uint64 `json:"auth_failures"`
+	// ImageBytesSaved is what WebP / AVIF variants saved against their
+	// originals on complete 200 answers to GETs (feature image-convert-v1).
+	ImageBytesSaved uint64 `json:"image_bytes_saved"`
 	// The bounded dimensions (feature stats-dims-v1, ADR-0041): requests
 	// and bytes sent per country ("" unknown, at most 250), the heaviest 50
 	// networks (by AS number, with names) and referring hosts, requests per
