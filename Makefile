@@ -138,6 +138,10 @@ openresty-packages: ## Build the edgeweir-openresty(-modsecurity) deb/rpm packag
 e2e: ## Run the container smoke test (fake console + node + origin)
 	./test/e2e/run.sh
 
+.PHONY: package-check
+package-check: ## Check the artifacts in dist/ (binary tags, NOTICE, LICENSE, Lua modules); run after `make snapshot`
+	scripts/check-packages.sh
+
 .PHONY: notice
 notice: ## Regenerate NOTICE (third-party software in the binary) after changing go.mod
 	scripts/notice.sh
