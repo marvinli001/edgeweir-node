@@ -179,16 +179,17 @@ local function decide(site, dict)
   return true, 10000, rules
 end
 
--- log(waf_ids, waf_blocked, site_id, geo): the CRS rules that matched (at
--- most 16) and whether CRS blocked the request, for requests of CRS sites;
--- site_id is the site the request counts for ("" for none: the live view
--- only), geo the client's GeoIP record (nil: unknown).
-function M.log(waf_ids, waf_blocked, site_id, geo)
+-- log(waf_ids, waf_blocked, site_id, geo, tap_only): the CRS rules that
+-- matched (at most 16) and whether CRS blocked the request, for requests
+-- of CRS sites; site_id is the request's site ("" for none), geo the
+-- client's GeoIP record (nil: unknown); tap_only: a request no site counts
+-- (the live view only).
+function M.log(waf_ids, waf_blocked, site_id, geo, tap_only)
   if ngx.is_subrequest then return end
   local ctx = ngx.ctx
   local site = ctx.edgeweir_site
   if not site_id then site_id = site and site.id or "" end
-  if site and site.id ~= site_id then site = nil end
+  if tap_only or (site and site.id ~= site_id) then site = nil end
   local dict = ngx.shared.edgeweir_logs
   local write, rate, rules = false, nil, nil
   if site then write, rate, rules = decide(site, dict) end

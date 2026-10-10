@@ -560,6 +560,24 @@ test("the live view records nothing without viewers, per site or every request w
   r = tap.read(all.seq)
   eq(#r.entries, 1); eq(r.entries[1].site_id, ""); eq(r.entries[1].path, "/scan")
   eq(#tap.read(all.seq, "log").entries, 0, "a site's viewer does not see them")
+  -- Requests no site counts carry the site that was found, and get no
+  -- sampled line (plain.test samples everything).
+  local purge = require("edgeweir.purgemethod")
+  local handle = purge.handle
+  purge.handle = function() ngx.status = 200; return ngx.exit(200) end
+  local before = tap.read(0).seq
+  local ok, err = pcall(function()
+    log(request({ host = "purge.test", method = "PURGE", uri = "/purged" }), { status = 200 })
+    log(request({ host = "plain.test", scheme = "https", sni = "other.test", uri = "/sni" }), { status = 421 })
+  end)
+  purge.handle = handle
+  assert(ok, err)
+  r = tap.read(before)
+  eq(#r.entries, 2); eq(r.entries[1].site_id, "purge"); eq(r.entries[2].site_id, "plain"); eq(r.entries[2].status, 421)
+  eq(#tap.read(before, "plain").entries, 1, "the site's viewer sees its uncounted requests")
+  ngx.shared.edgeweir_logs:flush_all()
+  log(request({ host = "plain.test", scheme = "https", sni = "other.test" }), { status = 421 })
+  eq(#accesslogs.drain(), 0, "no sampled line for a request the site does not count")
 end)
 
 test("the live view counts expired and rate-limited numbers as missed, catches up, resets after a restart", function()

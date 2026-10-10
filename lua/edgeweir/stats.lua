@@ -141,9 +141,10 @@ function _M.log(waf_location)
     if ctx_site and ctx.edgeweir_reason then
       site = ctx_site.id
     else
-      -- The live view sees every other request (but the probes').
+      -- The live view sees every other request (but the probes'), with
+      -- the site it found (SNI mismatches, PURGE) or none.
       if not ctx.edgeweir_probe then
-        accesslogs.log(nil, nil, "", _M.geo(ctx, var.remote_addr))
+        accesslogs.log(nil, nil, ctx_site and ctx_site.id or "", _M.geo(ctx, var.remote_addr), true)
       end
       return
     end
