@@ -9,7 +9,7 @@
 --
 --   resty -I lua --shdict 'edgeweir_sites 1m' --shdict 'edgeweir_meta 1m' --shdict 'edgeweir_health 1m' \
 --     --shdict 'edgeweir_policy_logs 1m' --shdict 'edgeweir_stats 4m' --shdict 'edgeweir_topstats 4m' \
---     --shdict 'edgeweir_logs 1m' --shdict 'edgeweir_tap 4m' --shdict 'edgeweir_bans 1m' --shdict 'edgeweir_cc 1m' \
+--     --shdict 'edgeweir_logs 32m' --shdict 'edgeweir_tap 4m' --shdict 'edgeweir_bans 1m' --shdict 'edgeweir_cc 1m' \
 --     --shdict 'edgeweir_challenge 1m' --shdict 'edgeweir_purge 1m' --shdict 'edgeweir_tags 1m' \
 --     --shdict 'edgeweir_auth 1m' --shdict 'edgeweir_purge_rate 1m' --shdict 'edgeweir_rate_6c6f67 256k' test/lua/accesslogs.lua
 local cjson = require("cjson.safe")
@@ -530,6 +530,25 @@ test("log_blocked: blocked requests get a line whatever the rate, sharing 100 a 
   out.ctx.edgeweir_site = { id = "maint", log_sample_rate = 0 }
   log(out, { status = 503 })
   eq(#accesslogs.drain(), 0, "no log_blocked: no line")
+end)
+
+test("the queue holds 2000 lines with client-sized path, User-Agent and Referer in edgeweir_logs as rendered (32 MiB)", function()
+  local logs = ngx.shared.edgeweir_logs
+  eq(logs:capacity() >= 32 * 1024 * 1024, true, "run with edgeweir_logs 32m, as internal/render declares it")
+  -- plain.test samples every request.
+  local out = request({ host = "plain.test", uri = "/" .. string.rep("a", 2047), headers = {
+    ["user-agent"] = string.rep("u", 512), referer = "https://r.test/" .. string.rep("r", 1009) } })
+  assert(out.passed, out.err)
+  for _ = 1, accesslogs.MAX_PENDING do log(out, { status = 200 }) end
+  eq(logs:llen("pending"), accesslogs.MAX_PENDING)
+  eq(logs:get("dropped"), nil, "every line fits")
+  log(out, { status = 200 })
+  eq(logs:llen("pending"), accesslogs.MAX_PENDING, "the queue's bound")
+  eq(logs:get("dropped"), 1)
+  local lines = accesslogs.drain()
+  eq(#lines, 1000)
+  eq(#lines[1].path, 2048); eq(#lines[1].user_agent, 512); eq(#lines[1].referer, 1024)
+  eq(#cjson.encode(lines[1]) > 3800, true, "lines of about 4 KB")
 end)
 
 -- The live view ---------------------------------------------------------------

@@ -26,7 +26,9 @@ local json = require("cjson.safe")
 local reasons = require("edgeweir.reasons")
 local tap = require("edgeweir.tap")
 local M = {}
+-- Lines the queue holds for the agent (edgeweir_logs is sized for them).
 local MAX_PENDING = 2000
+M.MAX_PENDING = MAX_PENDING
 M.MAX_FORCED = 100
 
 local byte, find, floor, lower, match, sub = string.byte, string.find, math.floor, string.lower, string.match, string.sub
