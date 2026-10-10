@@ -39,7 +39,7 @@ http {
     lua_shared_dict edgeweir_purge 32m;
     lua_shared_dict edgeweir_health 4m;
     lua_shared_dict edgeweir_policy_logs 1m;
-    lua_shared_dict edgeweir_topstats 8m;
+    lua_shared_dict edgeweir_topstats 16m;
     lua_shared_dict edgeweir_logs 8m;
     lua_shared_dict edgeweir_bans 32m;
     lua_shared_dict edgeweir_challenge 8m;
@@ -48,6 +48,7 @@ http {
     lua_shared_dict edgeweir_purge_rate 1m;
     lua_shared_dict edgeweir_auth 8m;
     lua_shared_dict edgeweir_bots 4m;
+    lua_shared_dict edgeweir_tap 4m;
     # Error-level log lines, per worker, to tell TLS failures of origin
     # attempts apart from connection failures (edgeweir.upstreamerr).
     lua_capture_error_log 64k;
@@ -57,7 +58,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "cd21d7e2222ffee7",
+            conf_id = "c33dcb565fecb484",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -1020,6 +1021,9 @@ http {
             # included; edgeweir.router turns them back into Set-Cookie only
             # on the response fetched for the request.
             proxy_hide_header X-Edgeweir-Set-Cookie;
+            # The origin address that answered (edgeweir.origin), for the
+            # access log only (edgeweir.accesslogs), cache hits included.
+            proxy_hide_header X-Edgeweir-Upstream;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1077,6 +1081,7 @@ http {
             grpc_hide_header X-Request-Id;
             grpc_hide_header Cache-Tag;
             grpc_hide_header X-Edgeweir-Affinity;
+            grpc_hide_header X-Edgeweir-Upstream;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
@@ -1199,6 +1204,9 @@ http {
             # included; edgeweir.router turns them back into Set-Cookie only
             # on the response fetched for the request.
             proxy_hide_header X-Edgeweir-Set-Cookie;
+            # The origin address that answered (edgeweir.origin), for the
+            # access log only (edgeweir.accesslogs), cache hits included.
+            proxy_hide_header X-Edgeweir-Upstream;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1256,6 +1264,7 @@ http {
             grpc_hide_header X-Request-Id;
             grpc_hide_header Cache-Tag;
             grpc_hide_header X-Edgeweir-Affinity;
+            grpc_hide_header X-Edgeweir-Upstream;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }

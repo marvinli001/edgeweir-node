@@ -501,6 +501,7 @@ http {
             grpc_hide_header X-Request-Id;
             grpc_hide_header Cache-Tag;
             grpc_hide_header X-Edgeweir-Affinity;
+            grpc_hide_header X-Edgeweir-Upstream;
             add_header X-Request-Id $edgeweir_request_id always;
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
@@ -653,6 +654,9 @@ stream {
             # included; edgeweir.router turns them back into Set-Cookie only
             # on the response fetched for the request.
             proxy_hide_header X-Edgeweir-Set-Cookie;
+            # The origin address that answered (edgeweir.origin), for the
+            # access log only (edgeweir.accesslogs), cache hits included.
+            proxy_hide_header X-Edgeweir-Upstream;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;

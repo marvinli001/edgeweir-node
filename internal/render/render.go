@@ -415,7 +415,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictPurge:      p.PurgeDictMB,
 		configir.DictHealth:     4,
 		configir.DictPolicyLogs: 1,
-		configir.DictTopStats:   8,
+		configir.DictTopStats:   16,
 		configir.DictLogs:       8,
 		configir.DictBans:       p.BanDictMB,
 		configir.DictChallenge:  p.ChallengeDictMB,
@@ -424,6 +424,7 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		configir.DictPurgeRate:  1,
 		configir.DictAuth:       8,
 		configir.DictBots:       4,
+		configir.DictTap:        4,
 	}
 	out := make([]sharedDict, 0, len(configir.SharedDicts))
 	for _, name := range configir.SharedDicts {
