@@ -4,6 +4,7 @@ package imageconv
 
 import (
 	"os/exec"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -17,9 +18,9 @@ const dataHeadroom = 256 << 20
 // limitSelf bounds the child: its writable private memory (RLIMIT_DATA,
 // which Linux counts for anonymous mappings; RLIMIT_AS would also count the
 // address space the Go runtime reserves without using it) to memory plus
-// headroom, no
-// file it could write, at most 16 descriptors, and no capabilities (the
-// agent may hold CAP_NET_BIND_SERVICE as an ambient capability).
+// headroom, no file it could write, at most 16 descriptors, and no
+// capabilities (the agent may hold CAP_NET_BIND_SERVICE as an ambient
+// capability).
 func limitSelf(memory int64) error {
 	limits := []struct {
 		resource int
@@ -35,17 +36,54 @@ func limitSelf(memory int64) error {
 			return err
 		}
 	}
-	// Ambient capabilities first, then the permitted, effective and
-	// inheritable sets of every thread (capabilities are per thread).
-	if _, _, errno := syscall.AllThreadsSyscall6(syscall.SYS_PRCTL, unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0, 0); errno != 0 && errno != syscall.EINVAL {
-		return errno
-	}
+	return dropCapabilities()
+}
+
+// dropCapabilities clears the ambient set, then the permitted, effective
+// and inheritable sets of every thread (capabilities are per thread). A
+// runtime that counts as cgo (a build without the release tags links
+// purego's stand-in for it) cannot change every thread: then the calling
+// goroutine stays on its thread, which drops them, and does the conversion
+// there (RunChild runs it on the calling goroutine).
+func dropCapabilities() error {
 	header := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var data [2]unix.CapUserData
-	if _, _, errno := syscall.AllThreadsSyscall(syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0])), 0); errno != 0 {
+	ambient := [3]uintptr{syscall.SYS_PRCTL, unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL}
+	capset := [3]uintptr{syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0]))}
+	errno, ok := allThreads(ambient)
+	if ok {
+		if errno != 0 && errno != syscall.EINVAL {
+			return errno
+		}
+		if errno, _ = allThreads(capset); errno != 0 {
+			return errno
+		}
+		droppedEveryThread = true
+		return nil
+	}
+	runtime.LockOSThread()
+	if _, _, errno := syscall.RawSyscall(ambient[0], ambient[1], ambient[2], 0); errno != 0 && errno != syscall.EINVAL {
+		return errno
+	}
+	if _, _, errno := syscall.RawSyscall(capset[0], capset[1], capset[2], 0); errno != 0 {
 		return errno
 	}
 	return nil
+}
+
+// droppedEveryThread records which way dropCapabilities went (tests).
+var droppedEveryThread bool
+
+// allThreads runs a system call on every thread; ok is false when the
+// runtime cannot (it panics when it counts as cgo).
+func allThreads(call [3]uintptr) (errno syscall.Errno, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	_, _, errno = syscall.AllThreadsSyscall(call[0], call[1], call[2], 0)
+	return errno, true
 }
 
 // childProcess sets what the agent asks of the child process: killed with
