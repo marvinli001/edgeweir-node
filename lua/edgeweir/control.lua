@@ -10,7 +10,7 @@
 --                             ({"all": true}: the current minute too)
 --   POST /v1/logs/drain       return and delete up to 1000 sampled access logs
 --   GET  /v1/logs/tap         the live view (edgeweir.tap): ?after=<seq>
---                             [&site=<id>] -> {seq, entries, missed}
+--                             [&site=<id>] -> {seq, entries, missed, dropped}
 --   PUT  /v1/purge            replace the purge marker set {id, markers}
 --   POST /v1/purge            merge purge markers {id, markers}
 --   GET  /v1/origins/health   origins with recorded failures (passive check)

@@ -600,19 +600,35 @@ test("the live view records nothing without viewers, per site or every request w
   eq(#accesslogs.drain(), 0, "no sampled line for a request the site does not count")
 end)
 
-test("the live view counts expired and rate-limited numbers as missed, catches up, resets after a restart", function()
+-- at runs fn with ngx.now() returning t (the live view's clock).
+local function at(t, fn)
+  local runtime = ngx
+  _G.ngx = setmetatable({ now = function() return t end }, { __index = runtime })
+  local ok, r = pcall(fn)
+  _G.ngx = runtime
+  assert(ok, r)
+  return r
+end
+
+test("the live view counts expired numbers as missed and requests over the rate as dropped, catches up, resets after a restart", function()
   local d = ngx.shared.edgeweir_tap
+  ngx.update_time()
+  local now = ngx.now()
   local start = tap.read(0).seq
   for i = 1, 3 do log(request({ uri = "/n" .. i }), { status = 200 }) end
   d:delete("e|" .. (start + 2)) -- expired
-  local r = tap.read(start)
-  eq(#r.entries, 2); eq(r.missed, 1); eq(r.seq, start + 3)
-  -- Over the rate: numbered, not kept.
+  -- Read later: no number of the last second, none still being written.
+  local r = at(now + 5, function() return tap.read(start) end)
+  eq(#r.entries, 2); eq(r.missed, 1); eq(r.seq, start + 3); eq(r.dropped, 0)
+  -- Over the rate: no number, counted as dropped (dense numbers).
   ngx.update_time()
-  d:set("rate|" .. math.floor(ngx.now()), tap.MAX_PER_SECOND, 2)
+  local second = math.floor(ngx.now())
+  d:set("rate|" .. second, tap.MAX_PER_SECOND, 2)
+  d:set("rate|" .. (second + 1), tap.MAX_PER_SECOND, 3)
   log(request({ uri = "/over" }), { status = 200 })
   local r2 = tap.read(r.seq)
-  eq(#r2.entries, 0); eq(r2.missed, 1); eq(r2.seq, r.seq + 1)
+  eq(#r2.entries, 0); eq(r2.missed, 0, "no number taken"); eq(r2.seq, r.seq); eq(r2.dropped, 1)
+  eq(d:get("seq"), start + 3, "numbers stay dense")
   -- Far behind: the numbers beyond the window are missed at once.
   d:set("seq", r2.seq + tap.WINDOW + 10)
   local r3 = tap.read(r2.seq)
@@ -620,7 +636,7 @@ test("the live view counts expired and rate-limited numbers as missed, catches u
   -- A viewer ahead of the node (nginx restarted): the current number.
   d:set("seq", 5)
   local r4 = tap.read(1000)
-  eq(r4.seq, 5); eq(#r4.entries, 0); eq(r4.missed, 0)
+  eq(r4.seq, 5); eq(#r4.entries, 0); eq(r4.missed, 0); eq(r4.dropped, 1)
   -- At most MAX_ENTRIES entries per call.
   d:flush_all()
   for i = 1, tap.MAX_ENTRIES + 5 do tap.record({ site_id = "log", i = i }) end
@@ -629,6 +645,44 @@ test("the live view counts expired and rate-limited numbers as missed, catches u
   eq(#r5.entries, tap.MAX_ENTRIES); eq(r5.seq, tap.MAX_ENTRIES + 1); eq(r5.entries[1].i, 1)
   r5 = tap.read(r5.seq, "log")
   eq(#r5.entries, 5, "the rest, for the site's viewer")
+end)
+
+test("the live view stops before a number another worker is still storing and shows it next time; older or farther gaps are missed", function()
+  local d = ngx.shared.edgeweir_tap
+  local t = math.floor(ngx.now()) + 100.5
+  -- take stands in for another worker that took a number and has not
+  -- stored its entry yet.
+  local function take(now)
+    return at(now, function() d:incr("rate|" .. math.floor(now), 1, 0, 2); return d:incr("seq", 1) end)
+  end
+  local function record(now, i) at(now, function() tap.record({ site_id = "log", i = i }) end) end
+  local start = at(t, function() return tap.read(0).seq end)
+  record(t, 1)
+  local taken = take(t)
+  record(t, 3)
+  local r = at(t + 0.1, function() return tap.read(start) end)
+  eq(#r.entries, 1); eq(r.entries[1].i, 1); eq(r.missed, 0); eq(r.seq, taken - 1, "stops before the number being stored")
+  d:set("e|" .. taken, cjson.encode({ site_id = "log", i = 2 }), tap.ENTRY_TTL)
+  r = at(t + 0.2, function() return tap.read(r.seq) end)
+  eq(#r.entries, 2); eq(r.entries[1].i, 2); eq(r.entries[2].i, 3); eq(r.missed, 0); eq(r.seq, taken + 1)
+  -- Still missing after about a second: lost, missed.
+  local lost = take(t)
+  record(t, 5)
+  r = at(t + 0.4, function() return tap.read(lost - 1) end)
+  eq(r.seq, lost - 1, "young: wait"); eq(#r.entries, 0); eq(r.missed, 0)
+  r = at(t + 2.5, function() return tap.read(lost - 1) end)
+  eq(#r.entries, 1); eq(r.entries[1].i, 5); eq(r.missed, 1); eq(r.seq, lost + 1)
+  -- HEAD_GAP numbers or more behind the head: missed however young.
+  local far = take(t + 3)
+  for i = 1, tap.HEAD_GAP do record(t + 3, 100 + i) end
+  r = at(t + 3.1, function() return tap.read(far - 1) end)
+  eq(#r.entries, tap.HEAD_GAP); eq(r.missed, 1); eq(r.seq, far + tap.HEAD_GAP)
+  -- The head itself, being stored: the read waits there.
+  local head = take(t + 3)
+  r = at(t + 3.2, function() return tap.read(head - 1) end)
+  eq(r.seq, head - 1); eq(r.missed, 0)
+  r = at(t + 5, function() return tap.read(head - 1) end)
+  eq(r.seq, head); eq(r.missed, 1, "the head, taken long ago")
 end)
 
 test("the control API's live view: GET /v1/logs/tap with a sequence number and an optional site", function()
@@ -650,7 +704,7 @@ test("the control API's live view: GET /v1/logs/tap with a sequence number and a
     return rawget(fake, "status"), cjson.decode(raw), raw
   end
   local status, body, raw = call("GET", { after = "0" })
-  eq(status, 200); eq(body.seq, 1); eq(body.missed, 0)
+  eq(status, 200); eq(body.seq, 1); eq(body.missed, 0); eq(body.dropped, 0)
   assert(raw:find('"entries":[]', 1, true), "entries as a JSON array: " .. raw)
   eq(tap.watching("any"), true, "every request watched")
   status, body = call("GET", { after = "1", site = "log" })
