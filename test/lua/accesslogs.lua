@@ -611,6 +611,37 @@ test("the live view counts expired and rate-limited numbers as missed, catches u
   eq(#r5.entries, 5, "the rest, for the site's viewer")
 end)
 
+test("the control API's live view: GET /v1/logs/tap with a sequence number and an optional site", function()
+  local control = require("edgeweir.control")
+  local function call(method, args)
+    local runtime = ngx
+    local out = { body = {} }
+    local fake = setmetatable({
+      var = { uri = "/v1/logs/tap" }, header = {},
+      req = { get_method = function() return method end, get_uri_args = function() return args end },
+      print = function(b) out.body[#out.body + 1] = b end,
+      exit = function() end,
+    }, { __index = runtime })
+    _G.ngx = fake
+    local ok, err = pcall(control.handle)
+    _G.ngx = runtime
+    assert(ok, err)
+    local raw = table.concat(out.body)
+    return rawget(fake, "status"), cjson.decode(raw), raw
+  end
+  local status, body, raw = call("GET", { after = "0" })
+  eq(status, 200); eq(body.seq, 1); eq(body.missed, 0)
+  assert(raw:find('"entries":[]', 1, true), "entries as a JSON array: " .. raw)
+  eq(tap.watching("any"), true, "every request watched")
+  status, body = call("GET", { after = "1", site = "log" })
+  eq(status, 200); eq(body.seq, 1)
+  eq((call("GET", { after = "-1" })), 400)
+  eq((call("GET", {})), 400)
+  eq((call("GET", { after = "1", site = "a/b" })), 400)
+  eq((call("GET", { after = "1", site = { "a", "b" } })), 400)
+  eq((call("POST", { after = "1" })), 405)
+end)
+
 -- Soft GeoIP lookups ------------------------------------------------------------
 
 test("soft GeoIP lookups wait 50 ms and back off 5 s after a failure; hard ones wait 200 ms and never back off", function()
