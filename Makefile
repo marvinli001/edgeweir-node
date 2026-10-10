@@ -17,6 +17,9 @@ COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 PKG     := github.com/marvinli001/edgeweir-node/internal/version
 LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
+# Release build tags (.goreleaser.yaml, Dockerfile): the WebP / AVIF
+# encoders as transpiled Go only.
+GO_TAGS := nodynamic,wasm2go
 
 # --- edgeweir-openresty -------------------------------------------------------
 # OpenResty with Brotli, Zstandard, ModSecurity and the OWASP CRS, built from
@@ -38,7 +41,7 @@ help: ## Show this help
 
 .PHONY: build
 build: ## Build a static binary into bin/
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o bin/edgeweir-node ./cmd/edgeweir-node
+	CGO_ENABLED=0 go build -trimpath -tags $(GO_TAGS) -ldflags '$(LDFLAGS)' -o bin/edgeweir-node ./cmd/edgeweir-node
 
 .PHONY: vet
 vet: ## Run go vet
@@ -90,6 +93,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 		resty -I /lua --shdict "edgeweir_sites 4m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_cc 1m" --shdict "edgeweir_bans 1m" /t/domains.lua && \
 		resty -I /lua /t/sigv4.lua && resty -I /lua /t/expressions.lua && resty -I /lua /t/http3.lua && resty -I /lua /t/ja4.lua && \
 		resty -I /lua /t/compress.lua && \
+		resty -I /lua --shdict "edgeweir_stats 1m" --shdict "edgeweir_topstats 1m" --shdict "edgeweir_logs 1m" /t/imageconv.lua && \
 		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" --shdict "edgeweir_health 1m" \
 			--shdict "edgeweir_challenge 1m" --shdict "edgeweir_policy_logs 1m" --shdict "edgeweir_purge_rate 1m" /t/content.lua && \
 		resty -I /lua --shdict "edgeweir_sites 1m" --shdict "edgeweir_meta 1m" /t/probehealth.lua && \
@@ -133,6 +137,10 @@ openresty-packages: ## Build the edgeweir-openresty(-modsecurity) deb/rpm packag
 .PHONY: e2e
 e2e: ## Run the container smoke test (fake console + node + origin)
 	./test/e2e/run.sh
+
+.PHONY: notice
+notice: ## Regenerate NOTICE (third-party software in the binary) after changing go.mod
+	scripts/notice.sh
 
 .PHONY: release-check
 release-check: ## Validate the goreleaser configuration

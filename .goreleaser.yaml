@@ -32,6 +32,13 @@ builds:
       - arm64
     flags:
       - -trimpath
+    # The WebP / AVIF encoders (github.com/gen2brain/webp, avif) as
+    # transpiled Go only: no system libraries through purego (nodynamic),
+    # no wazero runtime compiling WebAssembly in every conversion process
+    # (wasm2go). NOTICE lists what they contain.
+    tags:
+      - nodynamic
+      - wasm2go
     ldflags:
       - -s -w
       - -X github.com/marvinli001/edgeweir-node/internal/version.Version={{ .Version }}
@@ -58,6 +65,7 @@ archives:
       mtime: "{{ .CommitDate }}"
     files:
       - src: LICENSE
+      - src: NOTICE
         info:
           mtime: "{{ .CommitDate }}"
       - src: README.md
@@ -155,6 +163,11 @@ nfpms:
           mtime: "{{ .CommitDate }}"
       - src: LICENSE
         dst: /usr/share/doc/edgeweir-node/LICENSE
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: NOTICE
+        dst: /usr/share/doc/edgeweir-node/NOTICE
         file_info:
           mode: 0644
           mtime: "{{ .CommitDate }}"

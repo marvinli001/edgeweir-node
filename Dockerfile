@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -tags nodynamic,wasm2go \
       -ldflags "-s -w \
         -X github.com/marvinli001/edgeweir-node/internal/version.Version=${VERSION} \
         -X github.com/marvinli001/edgeweir-node/internal/version.Commit=${COMMIT} \
@@ -169,6 +169,7 @@ COPY --from=openresty-build /out/tree/usr/lib/edgeweir-openresty/ /usr/lib/edgew
 COPY --from=openresty-build /out/tree/usr/share/edgeweir-openresty/ /usr/share/edgeweir-openresty/
 COPY --from=openresty-build /out/tree/usr/share/doc/edgeweir-openresty/ /usr/share/doc/edgeweir-openresty/
 COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
+COPY LICENSE NOTICE /usr/share/doc/edgeweir-node/
 COPY --from=verifier /cosign /usr/local/bin/cosign
 COPY lua/ /usr/share/edgeweir-node/lua/
 # ipinfo_lite.mmdb + NOTICE, or nothing when built without the token.
