@@ -66,8 +66,9 @@ func TestSubprocessOutputCapCannotBeBypassedByReaderFrom(t *testing.T) {
 }
 func TestSecondSupervisorCannotRollBackALiveTrial(t *testing.T) {
 	opts, client := fixture(t)
+	// The trial stays live for 2 s after the candidate's first health
+	// report; the fixture's trial timeout outlasts a slow start.
 	opts.StableWindow = 2 * time.Second
-	opts.TrialTimeout = 6 * time.Second
 	stop := launch(t, opts, client)
 	defer stop()
 	id := "44444444-4444-4444-8444-444444444444"
