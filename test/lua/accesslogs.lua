@@ -96,8 +96,10 @@ local function install()
       site("log", "log.test", { rules = LOG_RULES, log_blocked = true, log_query = true, log_headers = { "accept-language", "x-trace-id" },
         log_peer = true, websocket = false }),
       site("plain", "plain.test", { log_sample_rate = 10000, rules = { rule("p-block", "waf-custom", path_is("/blocked"), { kind = "block", status_code = 403 }) } }),
-      site("maint", "maint.test", { log_blocked = true, maintenance = { retry_after = 60 } }),
-      site("cert", "cert.test", { log_blocked = true, client_certificate = { mode = "required" } }),
+      site("maint", "maint.test", { log_blocked = true, log_query = true, maintenance = { retry_after = 60 },
+        auth_rules = { { id = "mau", kind = "url_a", secret_version = 1, path_prefixes = { "/secure/" },
+          url = { validity_seconds = 1800, skew_seconds = 300, sign_param = "sign", time_param = "t" }, keys = { KEY } } } }),
+      site("cert", "cert.test", { log_blocked = true, log_query = true, client_certificate = { mode = "required" } }),
       site("ac", "ac.test", { log_blocked = true, access_control = {
         block_list_ids = { "site-block" },
         hotlink = { allow_empty = true, allowed = { "friend.test" }, extensions = { "png" } },
@@ -515,6 +517,44 @@ test("lines carry the new fields, the site's optional fields, and the client's q
   log(out, { status = 200 })
   l = accesslogs.drain()[1]
   eq(l.peer_ip, nil, "same as the client"); eq(l.headers, nil, "none of the recorded headers"); eq(l.query, "")
+end)
+
+test("lines take the query string and headers the access phase took from the client, never the request's current ones", function()
+  local sign = "1800000000-r4nd-0123456789abcdef0123456789abcdef"
+  -- Refused before the query string is taken (a ban, a client
+  -- certificate): a signed URL's signature would still be in it.
+  request({ uri = "/ban", addr = "192.0.2.50" })
+  local out = request({ uri = "/secure/f?x=1&sign=" .. sign, addr = "192.0.2.50", headers = { ["x-trace-id"] = "t1" } })
+  eq(select(1, reason_of(out)), "ip_banned"); eq(out.ctx.edgeweir_original_args, nil)
+  log(out, { status = 403 })
+  out = request({ host = "cert.test", uri = "/?x=2&sign=" .. sign, scheme = "https", sni = "cert.test", verify = "NONE" })
+  eq(out.code, "client-cert-required")
+  log(out, { status = 403 })
+  -- Maintenance comes after the signature's removal: the rest is logged.
+  out = request({ host = "maint.test", uri = "/secure/f?x=3&sign=" .. sign })
+  eq(out.status, 503); eq(out.var.args, "x=3")
+  log(out, { status = 503 })
+  local lines = {}
+  for _, l in ipairs(accesslogs.drain()) do lines[l.site_id .. " " .. l.block_reason] = l end
+  local ban, cert, maint = assert(lines["log ip_banned"]), assert(lines["cert client_cert"]), assert(lines["maint maintenance"])
+  eq(ban.query, nil, "no query string before it was taken"); eq(cert.query, nil)
+  eq(maint.query, "x=3", "without the signature")
+  eq(ban.headers["x-trace-id"], "t1", "headers are taken once the site is known")
+  -- None of the recorded headers sent: none logged, whatever rules or
+  -- forward authentication add later.
+  out = request({ uri = "/logged", addr = "203.0.113.40" })
+  eq(out.ctx.edgeweir_log_headers, false, "taken, none present")
+  out.ctx.edgeweir_policy.log_rules = { "r-log" }
+  out.headers["x-trace-id"] = "injected"
+  log(out, { status = 200 })
+  eq(accesslogs.drain()[1].headers, nil, "never the request's current headers")
+  -- A context the access phase never filled: no headers, no query string.
+  out = request({ uri = "/logged?y=1", addr = "203.0.113.41", headers = { ["x-trace-id"] = "client" } })
+  out.ctx.edgeweir_log_headers, out.ctx.edgeweir_original_args = nil, nil
+  out.ctx.edgeweir_policy.log_rules = { "r-log" }
+  log(out, { status = 200 })
+  local l = accesslogs.drain()[1]
+  eq(l.headers, nil, "nothing taken, no headers"); eq(l.query, nil)
 end)
 
 test("log_blocked: blocked requests get a line whatever the rate, sharing 100 a second with log rules", function()

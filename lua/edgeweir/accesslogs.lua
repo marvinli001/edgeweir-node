@@ -213,11 +213,17 @@ function M.log(waf_ids, waf_blocked, site_id, geo, tap_only)
   entry.waf_rule_ids = waf_ids and #waf_ids > 0 and setmetatable(waf_ids, json.array_mt) or nil
   entry.waf_blocked = waf_blocked or nil
   entry.rule_ids = rules and setmetatable({ unpack(rules, 1, math.min(#rules, 8)) }, json.array_mt) or nil
-  -- The site's optional fields (access-logs-v2).
-  if site.log_query then entry.query = text(ctx.edgeweir_original_args or var.args, 2048) end
-  if site.log_headers then
-    entry.headers = ctx.edgeweir_log_headers or M.request_headers(ngx.req.get_headers(0), site.log_headers)
+  -- The site's optional fields (access-logs-v2): the query string and
+  -- headers as the access phase took them from the client, never the
+  -- request's current ones (rules and forward authentication change
+  -- them). Requests refused before the query string was taken (bans,
+  -- client certificates: a signed URL's signature was still in it) log
+  -- none, nor do requests whose context the access phase never filled.
+  if site.log_query then
+    local query = ctx.edgeweir_original_args
+    if query then entry.query = text(query, 2048) end
   end
+  if site.log_headers then entry.headers = ctx.edgeweir_log_headers or nil end
   if site.log_peer then
     local peer = var.realip_remote_addr
     if peer and peer ~= "unix:" and peer ~= var.remote_addr then entry.peer_ip = clean(peer, 64) end

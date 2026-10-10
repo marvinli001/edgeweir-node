@@ -334,8 +334,9 @@ local function access()
   -- How the site was found (edgeweir.policy: no HTTPS redirect for a host
   -- whose HTTPS handshake would not complete).
   ctx.edgeweir_found = found
-  -- The client's headers, before rules change them.
-  if not is_local and site.log_headers then ctx.edgeweir_log_headers = accesslogs.request_headers(headers, site.log_headers) end
+  -- The client's headers, before rules change them (false: none of the
+  -- recorded ones; the log phase never reads the request's own).
+  if not is_local and site.log_headers then ctx.edgeweir_log_headers = accesslogs.request_headers(headers, site.log_headers) or false end
   if handed then
     local u = store.config().unknown
     ngx.ctx.edgeweir_default_certificate = u and u.default_certificate and u.unknown_host == "site" or false
@@ -383,6 +384,10 @@ local function access()
   if site._auth then
     auth.select(site, acme)
   end
+  -- The query string the access log records: the client's, without a
+  -- signed URL's signature, before rules rewrite it (requests refused
+  -- before this point log none).
+  if site.log_query then ngx.ctx.edgeweir_original_args = var.args or "" end
   local original_path = var.uri
   -- Maintenance: 503 and the maintenance page, but for allowed addresses
   -- and paths and HTTP-01 requests for the origin; nothing is cached.
@@ -396,9 +401,6 @@ local function access()
   -- through (the log phase reads the worker's cache for requests refused
   -- before); rules that read GeoIP look it up themselves (edgeweir.policy).
   if not is_local and not site._geo then ctx.edgeweir_geo = geoip.lookup(var.remote_addr, true) or false end
-  -- The query string the access log records: the client's, without a
-  -- signed URL's signature, before rules rewrite it.
-  if site.log_query then ngx.ctx.edgeweir_original_args = var.args or "" end
   var.edgeweir_site = site.id
   -- CC counts every request of the site (edgeweir.cc), clients by their
   -- IPv4 address or IPv6 /64; trusted proxies (the address of requests
