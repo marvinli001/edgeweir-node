@@ -6,6 +6,8 @@
 
 节点的 OpenResty（edgeweir-openresty 与 edgeweir-openresty-modsecurity 两个包，以及容器镜像里的同一份文件）由第三方开源组件构建，各组件按自己的许可证分发，均允许商业使用：OpenResty 及其模块、nginx（BSD）、LuaJIT、lua-cjson、Brotli、libxml2（MIT）、OpenSSL、ModSecurity、ModSecurity-nginx、OWASP CRS（Apache-2.0）、PCRE2（BSD-3-Clause WITH PCRE2-exception）、zlib（Zlib）、Zstandard（按 BSD-3-Clause）、YAJL（ISC）等。组件清单与许可证全文见 `/usr/share/doc/edgeweir-openresty/NOTICE`。
 
+节点程序 `edgeweir-node` 本身编进的第三方组件（Go 模块，以及图片格式转换用的 libwebp、libavif、aom、dav1d、libyuv，均为 BSD / MIT / ISC / Apache-2.0 许可，libwebp、aom、libyuv 另附免版税的专利授权）同样允许商业使用，清单与许可证全文见包内 `/usr/share/doc/edgeweir-node/NOTICE`（仓库根目录 `NOTICE`）。
+
 - 允许个人和企业在遵守 AGPL 的前提下使用、修改、分发及经营收费服务，没有“仅限个人”或“禁止商用”的附加条款。AGPL 不禁止收费或竞争；源码与网络交互义务以 LICENSE 为准。
 - 已有的节点与数据面能力（含心跳与数据面健康上报、采样访问日志、`ReportStats` 统计、内置 IPinfo Lite、HTTP/2 与 HTTP/3），以及控制面的组织、成员、权限、隔离和现有控制台 / 后台继续开源，不以官方许可证限制节点、组织、成员或站点数量。资源保护与权限限制仍正常执行。
 - 以下数据面能力属于独立商业产品：L2 回源聚合节点与 Tiered Cache（含 Topologies、按延迟选父节点）、组内缓存共享（一致性哈希分片、缓存索引节点）、访问日志直推自定义 sink 与 Logpush、Prometheus 指标、GeoIP 热更新、103 Early Hints、Speculation-Rules、0-RTT、Tunnels、边缘计算、XDP / eBPF。
@@ -21,5 +23,7 @@
 The node has no official license gates or vendor phone-home. An expired vendor license or licensing outage must not stop existing CDN traffic. Node identity, mTLS and artifact signatures serve security, not commercial licensing. Separate commercial products do not amend LICENSE, withdraw existing rights, grant a plugin linking exception or automatically authorize proprietary reuse of contributions. See the console's [LICENSING.en.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.en.md) for the shared boundary.
 
 The node's OpenResty (the edgeweir-openresty and edgeweir-openresty-modsecurity packages and the same files in the container image) is built from third-party open-source components under their own licenses, all of which permit commercial use: OpenResty and its modules, nginx (BSD), LuaJIT, lua-cjson, Brotli, libxml2 (MIT), OpenSSL, ModSecurity, ModSecurity-nginx, the OWASP CRS (Apache-2.0), PCRE2 (BSD-3-Clause WITH PCRE2-exception), zlib (Zlib), Zstandard (under BSD-3-Clause), YAJL (ISC) and others. The component list and the full license texts are in `/usr/share/doc/edgeweir-openresty/NOTICE`.
+
+The third-party components compiled into the `edgeweir-node` program itself (Go modules, and libwebp, libavif, aom, dav1d and libyuv for image format conversion, all under BSD, MIT, ISC or Apache-2.0 licenses, with royalty-free patent grants for libwebp, aom and libyuv) permit commercial use as well; the list and the full license texts are in `/usr/share/doc/edgeweir-node/NOTICE` (`NOTICE` at the repository root).
 
 Release images bundle the [IPinfo Lite](https://ipinfo.io/lite) database unmodified under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/); it is data, not AGPL code. IP address data is powered by [IPinfo](https://ipinfo.io).
