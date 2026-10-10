@@ -178,7 +178,7 @@ function _M.log(waf_location)
   dict:incr(p .. "s" .. ngx.status, 1, 0, TTL)
   -- Bytes WebP / AVIF variants saved (edgeweir.imageconv; metric "is",
   -- MinuteStats.image_bytes_saved).
-  local saved = imageconv.saved(var.upstream_http_x_edgeweir_image_saved, ngx.status, ngx.req.get_method())
+  local saved = imageconv.saved(var.upstream_http_x_edgeweir_image_saved, ngx.status, var.request_method)
   if saved > 0 then
     dict:incr(p .. "is", saved, 0, TTL)
   end
