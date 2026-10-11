@@ -25,12 +25,17 @@
 --
 -- Basic: PBKDF2-HMAC-SHA256 hashes from the rule's secret; results are kept
 -- per worker (success 60 s, failure 10 s, keyed by the SHA-256 of the
--- Authorization value and the secret's version). PBKDF2 holds the worker,
--- so every verification counts before it hashes: per site, a client network
--- (IPv4 address, IPv6 /64) gets BASIC_ATTEMPTS and its wider network (IPv4
--- /24, IPv6 /48) BASIC_WIDE_ATTEMPTS in BASIC_WINDOW seconds, a site
--- BASIC_SITE_RATE per second and the node BASIC_NODE_RATE per second; past
--- any of them 429 without hashing (results already kept still answer). Forward authentication: a subrequest to
+-- decoded user name and password and the secret's version, so every
+-- spelling of the Basic scheme with the same credentials shares one
+-- result). PBKDF2 holds the worker, so every verification counts before it
+-- hashes: per site, a client network (IPv4 address, IPv6 /64) gets
+-- BASIC_ATTEMPTS and its wider network (IPv4 /24, IPv6 /48)
+-- BASIC_WIDE_ATTEMPTS in BASIC_WINDOW seconds, a site BASIC_SITE_RATE per
+-- second and the node BASIC_NODE_RATE per second; past any of them 429
+-- without hashing (results already kept still answer). An attempt the
+-- site's or the node's budget refuses is given back to the client's
+-- networks (and to the site, when the node refused): only verifications
+-- that hash count against them. Forward authentication: a subrequest to
 -- /./edgeweir-auth, which the origin layer sends to the service (origin
 -- address policy, TLS verification, the rule's timeout); 2xx and 401/403
 -- answers may be cached in edgeweir_auth, keyed by the forwarded headers.
@@ -410,6 +415,13 @@ local function over(dict, key, limit, ttl)
   return n == nil or n > limit
 end
 
+-- give_back takes back an attempt counted under key. Without an initial
+-- value incr changes only a counter that still exists: one that expired or
+-- was evicted meanwhile is not created again (as -1, without expiry).
+local function give_back(dict, key)
+  dict:incr(key, -1)
+end
+
 -- basic_limited counts a verification about to hash and returns the
 -- seconds to wait when it must not (see the module comment), and the keys of
 -- the network counters (a success gives its count back).
@@ -425,7 +437,13 @@ local function basic_limited(site, addr, now)
   if over(dict, kf, _M.BASIC_ATTEMPTS, _M.BASIC_WINDOW) or over(dict, kw, _M.BASIC_WIDE_ATTEMPTS, _M.BASIC_WINDOW) then
     return _M.BASIC_WINDOW - now % _M.BASIC_WINDOW
   end
-  if over(dict, "bs|" .. id .. "|" .. now, _M.BASIC_SITE_RATE, 1) or over(dict, "bn|" .. now, _M.BASIC_NODE_RATE, 1) then
+  local ks = "bs|" .. id .. "|" .. now
+  local site_over = over(dict, ks, _M.BASIC_SITE_RATE, 1)
+  if site_over or over(dict, "bn|" .. now, _M.BASIC_NODE_RATE, 1) then
+    -- Refused for the site's or the node's sake, not the client's.
+    give_back(dict, kf)
+    give_back(dict, kw)
+    if not site_over then give_back(dict, ks) end
     return 1
   end
   return nil, kf, kw
@@ -440,7 +458,9 @@ local function basic(site, rule)
   local header = var.http_authorization
   local name, password = _M.parse_basic(header)
   if not name then return deny() end
-  local key = rule.id .. ":" .. rule.version .. ":" .. sha256_hex(header)
+  -- The credentials, not their spelling ("basic", spaces): a variant of a
+  -- known header must not cost another verification.
+  local key = rule.id .. ":" .. rule.version .. ":" .. sha256_hex(name, ":", password)
   local known = results:get(key)
   local dict = ngx.shared.edgeweir_auth
   if known == nil then
@@ -458,8 +478,8 @@ local function basic(site, rule)
       results:set(key, name, _M.SUCCESS_TTL)
       dict:safe_set("bok|" .. key, name, _M.SUCCESS_TTL)
       -- Successes do not count against the client's networks.
-      dict:incr(kf, -1, 0)
-      dict:incr(kw, -1, 0)
+      give_back(dict, kf)
+      give_back(dict, kw)
     else
       known = false
       results:set(key, false, _M.FAILURE_TTL)

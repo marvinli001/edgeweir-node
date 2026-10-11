@@ -443,6 +443,43 @@ test("Basic: 401 with the challenge, credentials removed, user header, caches", 
   eq(state.headers["x-auth-user"], nil)
 end)
 
+test("Basic: every spelling of the same credentials shares one result (no second hash)", function()
+  ngx.shared.edgeweir_auth:flush_all()
+  local s = site({ rule("basic", { id = "spellings" }) })
+  local derive = auth.verify_password
+  local calls = 0
+  auth.verify_password = function(...) calls = calls + 1; return derive(...) end
+  local function spellings(credentials)
+    local b = ngx.encode_base64(credentials)
+    return { "Basic " .. b, "basic " .. b, "BASIC " .. b, "BaSiC " .. b, "Basic  " .. b, "Basic\t" .. b,
+      " Basic " .. b .. " ", "\tbasic\t\t" .. b .. "\t" }
+  end
+  for i, header in ipairs(spellings("alice:correct horse")) do
+    eq(basic_request(s, { authorization = header }, { addr = "203.0.113.50" }), nil, "spelling " .. i)
+  end
+  eq(calls, 1, "one verification for every spelling of a valid credential")
+  for i, header in ipairs(spellings("alice:wrong horse")) do
+    local result = basic_request(s, { authorization = header }, { addr = "203.0.113.51" })
+    assert(result and result.respond, "spelling " .. i .. " refused")
+  end
+  eq(calls, 2, "one verification for every spelling of a wrong one")
+  -- So a holder of valid credentials cannot spend the site's or the node's budget.
+  ngx.shared.edgeweir_auth:flush_all()
+  local saved_site = auth.BASIC_SITE_RATE
+  auth.BASIC_SITE_RATE = 1
+  for i = 1, 40 do
+    local header = string.rep(" ", i % 7) .. (i % 2 == 0 and "basic" or "BASIC") .. string.rep(" ", i) .. ngx.encode_base64("alice:correct horse")
+    eq(basic_request(s, { authorization = header }, { addr = "203.0.113.52" }), nil, "variant " .. i)
+  end
+  eq(calls, 2, "no verification for variants of a kept success")
+  local result = basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:someone else") }, { addr = "198.51.100.60" })
+  assert(result and result.respond, "another client still gets verified: " .. tostring(result and result.status))
+  eq(calls, 3)
+  auth.BASIC_SITE_RATE = saved_site
+  auth.verify_password = derive
+  ngx.shared.edgeweir_auth:flush_all()
+end)
+
 test("Basic: a client network gets 10 verifications per window, then 429 without hashing", function()
   ngx.shared.edgeweir_auth:flush_all()
   local s = site({ rule("basic", { id = "limited" }) })
@@ -510,6 +547,99 @@ test("Basic: the wider network, the site and the node have budgets too, counted 
   auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = saved_site, saved_node
   auth.verify_password = derive
   ngx.shared.edgeweir_auth:flush_all()
+end)
+
+-- counted sums the counters of a kind ("bf", "bw", "bs", "bn") in
+-- edgeweir_auth (across windows and seconds).
+local function counted(kind)
+  local dict, sum = ngx.shared.edgeweir_auth, 0
+  for _, k in ipairs(dict:get_keys(0)) do
+    if k:sub(1, #kind + 1) == kind .. "|" then sum = sum + (dict:get(k) or 0) end
+  end
+  return sum
+end
+
+test("Basic: an attempt the site's or the node's budget refuses does not count against the client", function()
+  local s = site({ rule("basic", { id = "refund" }) })
+  local derive = auth.verify_password
+  local calls = 0
+  auth.verify_password = function(...) calls = calls + 1; return derive(...) end
+  local saved_site, saved_node = auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE
+  -- attempts returns the 429s and the longest Retry-After.
+  local function attempts(n, addr, step)
+    local limited, retry = 0, 0
+    for i = 1, n do
+      local result = basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:" .. step .. i) }, { addr = addr })
+      if result.status == 429 then limited = limited + 1; retry = math.max(retry, result.retry_after) end
+    end
+    return limited, retry
+  end
+  -- The site's budget: one verification a second; 15 attempts of one client.
+  ngx.shared.edgeweir_auth:flush_all()
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = 1, 1000
+  calls = 0
+  local limited, retry = attempts(15, "203.0.113.70", "site")
+  assert(calls >= 1 and calls <= 2 and limited == 15 - calls, "site budget: " .. calls .. " verifications, " .. limited .. " limited")
+  eq(retry, 1, "refused by the site's budget, not the client's")
+  eq(counted("bf"), calls, "the client network counts only the verifications")
+  eq(counted("bw"), calls, "so does its wider network")
+  -- The client can still use its own attempts once the site has budget again.
+  auth.BASIC_SITE_RATE = 1000
+  calls = 0
+  limited = attempts(5, "203.0.113.70", "site-after")
+  eq(limited, 0, "not locked out by the site's refusals")
+  eq(calls, 5)
+  -- The node's budget: the client's and the site's counters get the attempt back.
+  ngx.shared.edgeweir_auth:flush_all()
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = 1000, 1
+  calls = 0
+  limited, retry = attempts(15, "198.51.100.70", "node")
+  assert(calls >= 1 and calls <= 2 and limited == 15 - calls, "node budget: " .. calls .. " verifications, " .. limited .. " limited")
+  eq(retry, 1, "refused by the node's budget, not the client's")
+  eq(counted("bf"), calls, "client network")
+  eq(counted("bw"), calls, "wider network")
+  eq(counted("bs"), calls, "the site's budget counts only the verifications")
+  -- The client's own limit still counts every attempt it refuses.
+  ngx.shared.edgeweir_auth:flush_all()
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = 1000, 1000
+  calls = 0
+  limited = attempts(12, "192.0.2.70", "own")
+  assert(calls >= 10 and calls <= 11, "own limit: " .. calls .. " verifications")
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = saved_site, saved_node
+  auth.verify_password = derive
+  ngx.shared.edgeweir_auth:flush_all()
+end)
+
+test("Basic: a success gives back only counters that still exist (no -1 without expiry)", function()
+  local dict = ngx.shared.edgeweir_auth
+  dict:flush_all()
+  local s = site({ rule("basic", { id = "expired" }) })
+  local derive = auth.verify_password
+  -- The counters expire (or are evicted) while the password is hashed.
+  auth.verify_password = function(...)
+    for _, k in ipairs(dict:get_keys(0)) do dict:delete(k) end
+    return derive(...)
+  end
+  eq(basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:correct horse") }, { addr = "203.0.113.80" }), nil)
+  auth.verify_password = derive
+  for _, k in ipairs(dict:get_keys(0)) do
+    assert(k:sub(1, 3) ~= "bf|" and k:sub(1, 3) ~= "bw|", "counter " .. k .. " created again: " .. tostring(dict:get(k)))
+  end
+  -- A counter that still exists keeps its expiry.
+  dict:flush_all()
+  s = site({ rule("basic", { id = "kept" }) })
+  eq(basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:correct horse") }, { addr = "203.0.113.81" }), nil)
+  local seen = 0
+  for _, k in ipairs(dict:get_keys(0)) do
+    if k:sub(1, 3) == "bf|" or k:sub(1, 3) == "bw|" then
+      seen = seen + 1
+      eq(dict:get(k), 0, k)
+      local ttl = dict:ttl(k)
+      assert(ttl and ttl > 0, k .. " lost its expiry: " .. tostring(ttl))
+    end
+  end
+  eq(seen, 2, "client counters")
+  dict:flush_all()
 end)
 
 test("forward answers never evict the counters (safe_set)", function()
