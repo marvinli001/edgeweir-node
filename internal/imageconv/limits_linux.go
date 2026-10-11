@@ -3,8 +3,11 @@
 package imageconv
 
 import (
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -17,16 +20,16 @@ const dataHeadroom = 256 << 20
 
 // limitSelf bounds the child: its writable private memory (RLIMIT_DATA,
 // which Linux counts for anonymous mappings; RLIMIT_AS would also count the
-// address space the Go runtime reserves without using it) to memory plus
-// headroom, no file it could write, at most 16 descriptors, and no
-// capabilities (the agent may hold CAP_NET_BIND_SERVICE as an ambient
-// capability).
+// address space the Go runtime reserves without using it) to what it already
+// has plus memory plus headroom, no file it could write, at most 16
+// descriptors, and no capabilities (the agent may hold CAP_NET_BIND_SERVICE
+// as an ambient capability).
 func limitSelf(memory int64) error {
 	limits := []struct {
 		resource int
 		value    uint64
 	}{
-		{unix.RLIMIT_DATA, uint64(memory) + dataHeadroom},
+		{unix.RLIMIT_DATA, dataInUse() + uint64(memory) + dataHeadroom},
 		{unix.RLIMIT_FSIZE, 0},
 		{unix.RLIMIT_NOFILE, 16},
 		{unix.RLIMIT_CORE, 0},
@@ -37,6 +40,27 @@ func limitSelf(memory int64) error {
 		}
 	}
 	return dropCapabilities()
+}
+
+// dataInUse is the process's data size now (VmData, what RLIMIT_DATA
+// counts): a few MiB in release builds, terabytes of shadow memory in a
+// race-detector build, which a limit of memory plus headroom alone would
+// leave no room beyond.
+func dataInUse() uint64 {
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		if v, ok := strings.CutPrefix(line, "VmData:"); ok {
+			kb, err := strconv.ParseUint(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "kB")), 10, 64)
+			if err != nil {
+				return 0
+			}
+			return kb << 10
+		}
+	}
+	return 0
 }
 
 // dropCapabilities clears the ambient set, then the permitted, effective
@@ -75,7 +99,8 @@ func dropCapabilities() error {
 var droppedEveryThread bool
 
 // allThreads runs a system call on every thread; ok is false when the
-// runtime cannot (it panics when it counts as cgo).
+// runtime cannot: it panics when it counts as cgo (purego's stand-in) and
+// returns ENOTSUP when it is linked with cgo (CGO_ENABLED=1 builds).
 func allThreads(call [3]uintptr) (errno syscall.Errno, ok bool) {
 	defer func() {
 		if recover() != nil {
@@ -83,6 +108,9 @@ func allThreads(call [3]uintptr) (errno syscall.Errno, ok bool) {
 		}
 	}()
 	_, _, errno = syscall.AllThreadsSyscall(call[0], call[1], call[2], 0)
+	if errno == syscall.ENOTSUP {
+		return 0, false
+	}
 	return errno, true
 }
 
