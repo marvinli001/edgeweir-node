@@ -1549,7 +1549,10 @@ SQLI='id=1%27%20OR%20%271%27%3D%271'
 [ "$(crs waf.g14.test "$NODE/g14-detect?$SQLI")" = "200 MISS -" ] || fail "config crs detect: $(crs waf.g14.test "$NODE/g14-detect?$SQLI")"
 pass "G14: a skip action keeps one path out of the CRS, a config rule's detect mode lets it log, another path is still blocked"
 [ "$(crs waf.g14.test "$NODE/g14-excluded/x?$SQLI")" = "200 MISS -" ] || fail "exclusion by path: $(crs waf.g14.test "$NODE/g14-excluded/x?$SQLI")"
-[ "$(crs waf.g14.test --path-as-is "$NODE/g14-other/../g14-excluded/y?$SQLI")" = "200 MISS -" ] || fail "exclusion by the normalized path"
+# Dot segments make the raw path ambiguous (edgeweir.uripath): no exclusion
+# applies even where the normalized path is under one.
+[ "$(crs waf.g14.test --path-as-is "$NODE/g14-other/../g14-excluded/y?$SQLI")" = "403 - waf-blocked" ] ||
+  fail "an exclusion applied to an ambiguous path: $(crs waf.g14.test --path-as-is "$NODE/g14-other/../g14-excluded/y?$SQLI")"
 [ "$(crs waf.g14.test --path-as-is "$NODE/g14-excluded/../g14-other?$SQLI")" = "403 - waf-blocked" ] ||
   fail "an exclusion reached another path through ..: $(crs waf.g14.test --path-as-is "$NODE/g14-excluded/../g14-other?$SQLI")"
 [ "$(crs waf.g14.test "$NODE/g14-target?$SQLI")" = "200 MISS -" ] || fail "exclusion of a target: $(crs waf.g14.test "$NODE/g14-target?$SQLI")"
@@ -1557,7 +1560,7 @@ pass "G14: a skip action keeps one path out of the CRS, a config rule's detect m
 [ "$(crs waf.g14.test "$NODE/g14-target/x?$SQLI")" = "403 - waf-blocked" ] || fail "an exact exclusion matched a longer path"
 r=$(req waf.g14.test "/g14-excluded/echo-$RANDOM")
 grep -q 'from g14$' <<<"$r" && ! grep -qi '^header x-edgeweir-waf' <<<"$r" || fail "X-Edgeweir-Waf(-Ex) reached the origin: $r"
-pass "G14: CRS exclusions by path prefix (normalized, .. cannot move them) and by exact path for one argument"
+pass "G14: CRS exclusions by path prefix (normalized; none for ambiguous raw paths) and by exact path for one argument"
 
 json() { # file [path] -> status; body in g14.b, headers in g14.h
   curl -s -o "$TMPDIR_E2E/g14.b" -D "$TMPDIR_E2E/g14.h" -w '%{http_code}' -H 'Host: waf.g14.test' -H 'Content-Type: application/json' \

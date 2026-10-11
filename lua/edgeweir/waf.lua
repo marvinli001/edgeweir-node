@@ -25,10 +25,12 @@
 -- a skip action exempts from the CRS), and the site's exclusion entries
 -- whose path matches the client's normalized path (the original $uri, a
 -- signed URL's signature removed; exact, or as a byte prefix; empty: every
--- path) are named by their tokens in X-Edgeweir-Waf-Ex (",<token>,...,"):
+-- path; none for an ambiguous raw path, edgeweir.uripath) are named by their
+-- tokens in X-Edgeweir-Waf-Ex (",<token>,...,"):
 -- the generated rules remove their CRS rules or targets. Both headers are
 -- removed before the request goes to the origin layer.
 local _M = {}
+local uripath = require("edgeweir.uripath")
 
 local HEADER = "X-Edgeweir-Waf"
 _M.HEADER = HEADER
@@ -81,10 +83,11 @@ end
 
 -- exclusion_value is the X-Edgeweir-Waf-Ex value of a request with the
 -- normalized path: the tokens of the site's exclusion entries whose path
--- matches, ",<token>,<token>,"; nil when none does.
-function _M.exclusion_value(waf, path)
+-- matches, ",<token>,<token>,"; nil when none does, and for an ambiguous
+-- raw path (edgeweir.uripath), which the origin may route elsewhere.
+function _M.exclusion_value(waf, path, ambiguous)
   local list = waf and waf.exclusions
-  if type(list) ~= "table" or #list == 0 or type(path) ~= "string" then return nil end
+  if ambiguous or type(list) ~= "table" or #list == 0 or type(path) ~= "string" then return nil end
   local tokens = {}
   for i = 1, #list do
     local e = list[i]
@@ -163,7 +166,7 @@ function _M.enter(site)
   local mode = _M.mode(site, ctx.edgeweir_policy)
   if not mode then return end
   ngx.req.set_header(HEADER, _M.header_value(site.id, site.waf, mode))
-  local ex = _M.exclusion_value(site.waf, ctx.edgeweir_original_path or ngx.var.uri)
+  local ex = _M.exclusion_value(site.waf, ctx.edgeweir_original_path or ngx.var.uri, uripath.request_ambiguous())
   if ex then ngx.req.set_header(EX_HEADER, ex) end
   ctx.edgeweir_waf = true
   ngx.var.edgeweir_ctx_ref = _M.stash_ctx(ctx)

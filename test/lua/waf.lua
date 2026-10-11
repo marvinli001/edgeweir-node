@@ -159,6 +159,7 @@ test("exclusion entries match the normalized path exactly, as a byte prefix or a
   eq(waf.exclusion_value(w, "/login"), ",bbbbbbbbbbbbbbbb,cccccccccccccccc,")
   eq(waf.exclusion_value(w, "/login/x"), ",cccccccccccccccc,", "exact")
   eq(waf.exclusion_value(w, "/bad"), ",cccccccccccccccc,", "an invalid token is left out")
+  eq(waf.exclusion_value(w, "/api/x", true), nil, "an ambiguous raw path gets no exclusion (edgeweir.uripath)")
   eq(waf.exclusion_value({ exclusions = { { path = "/a", token = "dddddddddddddddd" } } }, "/b"), nil)
   eq(waf.exclusion_value({ mode = "block" }, "/a"), nil, "no entries")
   eq(waf.exclusion_value(w, nil), nil)
