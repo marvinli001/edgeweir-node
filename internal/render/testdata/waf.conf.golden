@@ -65,7 +65,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "eb886a21bacbf217",
+            conf_id = "29f40cf05aa03594",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -1125,7 +1125,8 @@ http {
             proxy_set_header X-Forwarded-Host $edgeweir_auth_host;
             proxy_set_header X-Forwarded-Uri $edgeweir_auth_uri;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # The visitor's address only: services read the leftmost entry.
+            proxy_set_header X-Forwarded-For $remote_addr;
             proxy_set_header CDN-Loop $edgeweir_cdn_loop;
             # The rule's timeout applies in the origin layer; this bounds the
             # local hop.
@@ -1476,7 +1477,8 @@ http {
             proxy_set_header X-Forwarded-Host $edgeweir_auth_host;
             proxy_set_header X-Forwarded-Uri $edgeweir_auth_uri;
             proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # The visitor's address only: services read the leftmost entry.
+            proxy_set_header X-Forwarded-For $remote_addr;
             proxy_set_header CDN-Loop $edgeweir_cdn_loop;
             # The rule's timeout applies in the origin layer; this bounds the
             # local hop.

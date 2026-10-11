@@ -8,21 +8,25 @@
 -- segments after decoding or drops ";" parameters (Java servlets) can route
 -- such a request to another path than the one checked: "/admin/..%2Fx" is
 -- "/x" here and under "/admin/" at a Go ServeMux origin. A request is
--- ambiguous when its raw path holds an encoded "/", "\" or ".", a "\", a
--- ";" or a dot segment. Then scopes that add a check include it, exemptions
+-- ambiguous when its raw path holds an encoded "/", "\", ".", "%" or ";",
+-- a "%u" escape, a "\", a ";", a "#" (nginx cuts $uri there), a dot segment,
+-- or starts with "//" (a host to URL parsers such as Node's). Then scopes that add a check include it, exemptions
 -- and scopes that grant something (CORS) never apply, HTTP-01 is not
 -- recognized and nothing is cached.
 local _M = {}
 
 local find, lower, sub = string.find, string.lower, string.sub
 
+-- Escapes origins decode into separators, dots or parameters (lowercase).
+local MARKERS = { "%2f", "%5c", "%2e", "%25", "%3b", "%u" }
+
 -- ambiguous reports whether raw_path (the request URI before "?") is
 -- ambiguous in the sense above.
 function _M.ambiguous(raw_path)
-  if find(raw_path, "[\\;]") then return true end
+  if find(raw_path, "[\\;#]") or sub(raw_path, 1, 2) == "//" then return true end
   local p = lower(raw_path)
-  if find(p, "%2f", 1, true) or find(p, "%5c", 1, true) or find(p, "%2e", 1, true) then
-    return true
+  for _, m in ipairs(MARKERS) do
+    if find(p, m, 1, true) then return true end
   end
   -- Dot segments: "/./", "/../", or one at the end.
   return find(p, "/%.%.?/") ~= nil or find(p, "/%.%.?$") ~= nil

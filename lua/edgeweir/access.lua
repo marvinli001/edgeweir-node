@@ -742,7 +742,10 @@ function _M.response_headers(site, h, path)
   local a = site._access
   if not a then return end
   local cors = a.cors
-  if cors and not ngx.ctx.edgeweir_preflight and not uripath.request_ambiguous() and path_in_scope(path or "", cors.prefixes) then
+  if cors and not ngx.ctx.edgeweir_preflight and uripath.request_ambiguous() then
+    -- Outside the CORS scope, and the origin's own CORS headers grant nothing.
+    strip_cors(h)
+  elseif cors and not ngx.ctx.edgeweir_preflight and path_in_scope(path or "", cors.prefixes) then
     local names = ORIGIN_VARY
     if not (cors.keep and h["Access-Control-Allow-Origin"] ~= nil) then
       strip_cors(h)

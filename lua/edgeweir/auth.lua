@@ -141,9 +141,11 @@ function _M.prepare(site)
     local c = {
       id = r.id, kind = r.kind, version = tostring(r.secret_version or 0),
       prefixes = r.path_prefixes or {}, excludes = r.exclude_path_prefixes or {},
+      prefixes_lower = {},
       extensions = r.extensions and #r.extensions > 0 and set_of(r.extensions) or nil,
       basic = r.basic, forward = r.forward, url = r.url, keys = r.keys or {},
     }
+    for j, p in ipairs(c.prefixes) do c.prefixes_lower[j] = lower(p) end
     if r.domains and #r.domains > 0 then
       c.domains = {}
       for j, d in ipairs(r.domains) do c.domains[j] = domain_matcher(d) end
@@ -191,19 +193,23 @@ local function starts_with_any(path, prefixes)
   return false
 end
 
+local function domain_match(rule, host)
+  if not rule.domains then return true end
+  for i = 1, #rule.domains do
+    if rule.domains[i](host) then return true end
+  end
+  return false
+end
+
 -- in_scope reports whether a request for host and path (normalized,
 -- without B/C signature segments) is in a rule's scope. An ambiguous path
 -- (edgeweir.uripath) is in every path scope and under no excluded prefix.
+-- Path prefixes compare without ASCII case (origins such as Express route
+-- "/ADMIN/" to "/admin/"); excluded prefixes compare exactly.
 function _M.in_scope(rule, host, path, ambiguous)
-  if rule.domains then
-    local hit = false
-    for i = 1, #rule.domains do
-      if rule.domains[i](host) then hit = true; break end
-    end
-    if not hit then return false end
-  end
+  if not domain_match(rule, host) then return false end
   if ambiguous then return true end
-  if #rule.prefixes > 0 and not starts_with_any(path, rule.prefixes) then return false end
+  if #rule.prefixes_lower > 0 and not starts_with_any(lower(path), rule.prefixes_lower) then return false end
   if rule.extensions and not rule.extensions[expressions.path_extension(path)] then return false end
   return not starts_with_any(path, rule.excludes)
 end
@@ -270,15 +276,30 @@ end
 function _M.select(site, acme)
   local rules = site._auth
   if not rules then return end
-  if acme then return clear_identity(site) end
+  -- Only the node sets these: removed from every request, set again by the
+  -- rule that checks it.
+  clear_identity(site)
+  if acme then return end
   local var = ngx.var
   local uri = var.uri
-  if sub(uri, 1, 11) == "/.edgeweir/" then return clear_identity(site) end
+  if sub(uri, 1, 11) == "/.edgeweir/" then return end
   local host = var.host or ""
   local request_uri = var.request_uri
   local q = find(request_uri, "?", 1, true)
   local raw_path = q and sub(request_uri, 1, q - 1) or request_uri
   local ambiguous = uripath.request_ambiguous()
+  if ambiguous then
+    -- The origin may route an ambiguous path under any rule's scope: with
+    -- more than one rule for the host, which one applies cannot be told.
+    local matched = 0
+    for i = 1, #rules do
+      if domain_match(rules[i], host) then matched = matched + 1 end
+    end
+    if matched > 1 then
+      ngx.ctx.edgeweir_auth = { ambiguous = true, request_uri = request_uri }
+      return
+    end
+  end
   for i = 1, #rules do
     local rule = rules[i]
     local path, sig = uri, nil
@@ -312,7 +333,6 @@ function _M.select(site, acme)
       return
     end
   end
-  clear_identity(site)
 end
 
 -- request_uri is the request URI the rules see: without the signature of a
@@ -391,7 +411,8 @@ local function over(dict, key, limit, ttl)
 end
 
 -- basic_limited counts a verification about to hash and returns the
--- seconds to wait when it must not (see the module comment).
+-- seconds to wait when it must not (see the module comment), and the keys of
+-- the network counters (a success gives its count back).
 local function basic_limited(site, addr, now)
   local dict = ngx.shared.edgeweir_auth
   local window = floor(now / _M.BASIC_WINDOW)
@@ -399,14 +420,15 @@ local function basic_limited(site, addr, now)
   local wide = bytes and ipaddr.wide_network(bytes, bits) or tostring(addr)
   net = net or tostring(addr)
   local id = site.id
-  if over(dict, "bf|" .. id .. "|" .. net .. "|" .. window, _M.BASIC_ATTEMPTS, _M.BASIC_WINDOW)
-    or over(dict, "bw|" .. id .. "|" .. wide .. "|" .. window, _M.BASIC_WIDE_ATTEMPTS, _M.BASIC_WINDOW) then
+  local kf = "bf|" .. id .. "|" .. net .. "|" .. window
+  local kw = "bw|" .. id .. "|" .. wide .. "|" .. window
+  if over(dict, kf, _M.BASIC_ATTEMPTS, _M.BASIC_WINDOW) or over(dict, kw, _M.BASIC_WIDE_ATTEMPTS, _M.BASIC_WINDOW) then
     return _M.BASIC_WINDOW - now % _M.BASIC_WINDOW
   end
   if over(dict, "bs|" .. id .. "|" .. now, _M.BASIC_SITE_RATE, 1) or over(dict, "bn|" .. now, _M.BASIC_NODE_RATE, 1) then
     return 1
   end
-  return nil
+  return nil, kf, kw
 end
 
 local function basic(site, rule)
@@ -420,14 +442,24 @@ local function basic(site, rule)
   if not name then return deny() end
   local key = rule.id .. ":" .. rule.version .. ":" .. sha256_hex(header)
   local known = results:get(key)
+  local dict = ngx.shared.edgeweir_auth
   if known == nil then
-    local retry = basic_limited(site, var.remote_addr, ngx.time())
+    -- A success another worker verified (no second hash for it).
+    local shared = dict:get("bok|" .. key)
+    if shared then known = shared; results:set(key, shared, _M.SUCCESS_TTL) end
+  end
+  if known == nil then
+    local retry, kf, kw = basic_limited(site, var.remote_addr, ngx.time())
     if retry then
       return refused(site, { status = 429, code = "auth-rate-limited", retry_after = retry })
     end
     if _M.verify_password(rule.users[name], password) then
       known = name
       results:set(key, name, _M.SUCCESS_TTL)
+      dict:safe_set("bok|" .. key, name, _M.SUCCESS_TTL)
+      -- Successes do not count against the client's networks.
+      dict:incr(kf, -1, 0)
+      dict:incr(kw, -1, 0)
     else
       known = false
       results:set(key, false, _M.FAILURE_TTL)
@@ -581,6 +613,7 @@ function _M.check(site, https_redirect)
     local r = https_redirect(site, var.host, state.request_uri, ctx.edgeweir_found, ctx.edgeweir_default_certificate)
     if r then return r end
   end
+  if state.ambiguous then return refused(site, { status = 400, code = "auth-path-ambiguous" }) end
   local rule = state.rule
   if rule.kind == "basic" then return basic(site, rule) end
   if rule.kind == "forward" then return forward(site, rule, state) end

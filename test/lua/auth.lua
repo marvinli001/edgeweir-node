@@ -286,11 +286,12 @@ end)
 test("an ambiguous raw path is in every path scope and under no exclusion (edgeweir.uripath)", function()
   local uripath = require("edgeweir.uripath")
   for _, p in ipairs({ "/admin/..%2Fx", "/admin/..%2fx", "/a/%2e%2e/x", "/a/.%2E/x", "/a%5Cb", "/a\\b",
-    "/video.mp4;x=1", "/admin;x/y", "/a/../b", "/a/./b", "/a/..", "/a/." }) do
+    "/video.mp4;x=1", "/admin;x/y", "/a/../b", "/a/./b", "/a/..", "/a/.", "//public/admin", "/a#b",
+    "/admin/..%252Fx", "/a%3Bb", "/%u002e%u002e/x" }) do
     eq(uripath.ambiguous(p), true, p)
   end
   for _, p in ipairs({ "/", "/admin/x", "/a/b.c/d", "/a..b/c", "/.well-known/acme-challenge/t", "/%61dmin/x",
-    "/a%20b", "/a/.hidden", "/a/..b", "//a" }) do
+    "/a%20b", "/a/.hidden", "/a/..b", "/a//b" }) do
     eq(uripath.ambiguous(p), false, p)
   end
   eq(uripath.raw_path("/a/b?c=/../d"), "/a/b")
@@ -307,6 +308,24 @@ test("an ambiguous raw path is in every path scope and under no exclusion (edgew
   eq(chosen("a.test", "/public/x", "/public/x"), nil, "unambiguous paths keep their scope")
   eq(chosen("a.test", "/admin/public/x", "/admin/public/x"), nil, "and their exclusions")
   eq(chosen("b.test", "/admin/..%2Fx", "/x"), nil, "domains still apply")
+  eq(chosen("a.test", "/ADMIN/x", "/ADMIN/x"), "admin", "prefixes compare without ASCII case")
+  eq(chosen("a.test", "/admin/PUBLIC/x", "/admin/PUBLIC/x"), "admin", "exclusions compare exactly")
+  -- Two rules for the host: an ambiguous path is refused, whichever rule it may reach.
+  local two = site({
+    rule("basic", { id = "team", path_prefixes = { "/team/" } }),
+    rule("basic", { id = "admin", path_prefixes = { "/admin/" } }),
+  })
+  local result = with_request({ host = "a.test", raw = "/team/..%2Fadmin/secret", uri = "/admin/secret",
+    headers = { authorization = "Basic " .. ngx.encode_base64("alice:correct horse") } }, function()
+    auth.select(two, false)
+    return auth.check(two, policy.site_https_redirect)
+  end)
+  eq(result and result.status, 400); eq(result.code, "auth-path-ambiguous"); eq(result.reason, "auth")
+  result = with_request({ host = "a.test", raw = "/admin/x", uri = "/admin/x" }, function()
+    auth.select(two, false)
+    return auth.check(two, policy.site_https_redirect)
+  end)
+  assert(result and result.respond, "an unambiguous path keeps its own rule")
 end)
 
 test("identity headers rules set are removed from requests no rule checks", function()
@@ -322,6 +341,10 @@ test("identity headers rules set are removed from requests no rule checks", func
   eq(state.headers["x-other"], "kept")
   _, state = with_request({ uri = "/.well-known/acme-challenge/t", headers = { ["x-auth-user"] = "mallory" } }, function() auth.select(s, true) end)
   eq(state.headers["x-auth-user"], nil, "HTTP-01")
+  -- A request another rule checks loses them too (the forward rule copies only its own).
+  _, state = with_request({ uri = "/app/x", headers = { ["x-auth-user"] = "root", ["x-user"] = "mallory" } }, function() auth.select(s, false) end)
+  eq(state.headers["x-auth-user"], nil, "checked by the forward rule")
+  eq(state.headers["x-user"], nil)
 end)
 
 test("scope of B and C uses the path without the signature", function()
