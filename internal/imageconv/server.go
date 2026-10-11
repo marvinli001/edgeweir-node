@@ -156,8 +156,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.pass(w, resp, nil, p, stripped, true)
 		return
 	}
-	defer s.buffers.release(reserve)
-	body, err := io.ReadAll(io.LimitReader(resp.Body, p.MaxSize+1))
+	release := sync.OnceFunc(func() { s.buffers.release(reserve) })
+	defer release()
+	// A trickling original gives its room back after the conversion
+	// timeout and streams through, cached briefly.
+	reader := &deadlineReader{r: resp.Body, deadline: time.Now().Add(s.cfg.Timeout)}
+	body, err := io.ReadAll(io.LimitReader(reader, p.MaxSize+1))
+	if errors.Is(err, errSlowOriginal) {
+		release()
+		log.Info("image kept for now: original too slow")
+		s.pass(w, resp, body, p, stripped, true)
+		return
+	}
 	if err != nil {
 		panic(http.ErrAbortHandler)
 	}
@@ -307,6 +317,23 @@ func (s *Server) pass(w http.ResponseWriter, resp *http.Response, head []byte, p
 		// A truncated answer must not look complete to the edge's cache.
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// errSlowOriginal ends reading an original past its deadline.
+var errSlowOriginal = errors.New("original too slow")
+
+// deadlineReader fails a read that starts after the deadline; a read that
+// waits for data is bounded by the origin layer's own timeouts.
+type deadlineReader struct {
+	r        io.Reader
+	deadline time.Time
+}
+
+func (d *deadlineReader) Read(p []byte) (int, error) {
+	if time.Now().After(d.deadline) {
+		return 0, errSlowOriginal
+	}
+	return d.r.Read(p)
 }
 
 // transientTTLValue caps an X-Accel-Expires value at TransientTTL seconds

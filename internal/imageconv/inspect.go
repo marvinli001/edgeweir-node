@@ -129,12 +129,18 @@ func inspectJPEG(d []byte) (Info, error) {
 
 var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 
+// maxICCProfile is the largest embedded ICC profile read.
+const maxICCProfile = 64 << 10
+
 func inspectPNG(d []byte) (Info, error) {
 	if !bytes.HasPrefix(d, pngSignature) {
 		return Info{}, unsupported("not a PNG")
 	}
 	info := Info{Orientation: 1}
 	srgb, gamma := false, uint32(0)
+	// One iCCP and no sRGB with it (PNG 3, 11.3.2.4): a file with more is
+	// not decompressed again and again.
+	iccp, srgbChunk := false, false
 	i := len(pngSignature)
 	first := true
 	for {
@@ -162,22 +168,27 @@ func inspectPNG(d []byte) (Info, error) {
 		case "acTL":
 			return Info{}, unsupported("animated PNG")
 		case "sRGB":
-			srgb = true
+			if iccp {
+				return Info{}, unsupported("iCCP")
+			}
+			srgb, srgbChunk = true, true
 		case "gAMA":
 			if n == 4 {
 				gamma = binary.BigEndian.Uint32(data)
 			}
 		case "iCCP":
 			name, rest, ok := bytes.Cut(data, []byte{0})
-			if !ok || len(name) == 0 || len(rest) < 1 || rest[0] != 0 {
+			if iccp || srgbChunk || !ok || len(name) == 0 || len(rest) < 1 || rest[0] != 0 {
 				return Info{}, unsupported("iCCP")
 			}
+			iccp = true
 			zr, err := zlib.NewReader(bytes.NewReader(rest[1:]))
 			if err != nil {
 				return Info{}, unsupported("iCCP")
 			}
-			profile, err := io.ReadAll(io.LimitReader(zr, 4<<20))
-			if err != nil || !isSRGB(profile) {
+			// sRGB profiles are a few KiB; a larger one is not sRGB.
+			profile, err := io.ReadAll(io.LimitReader(zr, maxICCProfile+1))
+			if err != nil || len(profile) > maxICCProfile || !isSRGB(profile) {
 				return Info{}, unsupported("ICC profile")
 			}
 			srgb = true

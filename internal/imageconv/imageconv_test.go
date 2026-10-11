@@ -220,6 +220,7 @@ func TestInspectPNG(t *testing.T) {
 		t.Fatalf("plain PNG: %+v %v", info, err)
 	}
 	gamma := func(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+	srgbICCP := iccpChunk(t, iccProfile("RGB ", "sRGB built-in", false))
 	ok := map[string][]byte{
 		"sRGB chunk":           withChunk(base, "sRGB", []byte{0}),
 		"gAMA 1/2.2":           withChunk(base, "gAMA", gamma(45455)),
@@ -242,9 +243,15 @@ func TestInspectPNG(t *testing.T) {
 		"gAMA 1.0":       withChunk(base, "gAMA", gamma(100000)),
 		"P3 ICC profile": withChunk(base, "iCCP", iccpChunk(t, iccProfile("RGB ", "Display P3", false))),
 		"broken iCCP":    withChunk(base, "iCCP", []byte("x\x00\x00garbage")),
-		"truncated":      base[:30],
-		"not a PNG":      []byte("\xFF\xD8\xFF"),
-		"IHDR not first": append(append([]byte{}, pngSignature...), withChunk(base, "sRGB", []byte{0})[33:]...),
+		// One iCCP, no sRGB with it, no profile over 64 KiB: a bomb of many
+		// chunks is refused before a second one is inflated.
+		"two iCCP":        withChunk(withChunk(base, "iCCP", srgbICCP), "iCCP", srgbICCP),
+		"iCCP after sRGB": withChunk(withChunk(base, "iCCP", srgbICCP), "sRGB", []byte{0}),
+		"sRGB after iCCP": withChunk(withChunk(base, "sRGB", []byte{0}), "iCCP", srgbICCP),
+		"large profile":   withChunk(base, "iCCP", iccpChunk(t, append(iccProfile("RGB ", "sRGB built-in", false), make([]byte, 64<<10)...))),
+		"truncated":       base[:30],
+		"not a PNG":       []byte("\xFF\xD8\xFF"),
+		"IHDR not first":  append(append([]byte{}, pngSignature...), withChunk(base, "sRGB", []byte{0})[33:]...),
 	}
 	for name, img := range bad {
 		if _, err := Inspect(img, PNG); !errors.Is(err, ErrUnsupported) {

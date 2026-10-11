@@ -338,6 +338,32 @@ func TestServerBufferBudget(t *testing.T) {
 	}
 }
 
+func TestServerSlowOriginal(t *testing.T) {
+	jpg := encodeJPEG(t, testImage(160, 120, false))
+	// The original trickles in past the timeout: it streams through whole,
+	// cached briefly, and its buffer room is free again.
+	o := newOriginLayer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Content-Length", strconv.Itoa(len(jpg)))
+		w.Header().Set("X-Accel-Expires", "3600")
+		for i := 0; i < len(jpg); i += 1024 {
+			w.Write(jpg[i:min(i+1024, len(jpg))])
+			w.(http.Flusher).Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	s, do := converter(t, o, Config{Memory: 64 << 20, Timeout: 100 * time.Millisecond})
+	resp := do(variantRequest(t, "GET", "/a.jpg", header))
+	if got := body(t, resp); !bytes.Equal(got, jpg) || resp.Header.Get("X-Accel-Expires") != "60" ||
+		resp.Header.Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("slow original: %d of %d bytes, %q, X-Accel-Expires %q", len(got), len(jpg), resp.Header.Get("Content-Type"), resp.Header.Get("X-Accel-Expires"))
+	}
+	if !s.buffers.acquire(context.Background(), 64<<20) {
+		t.Fatal("the slow original kept its buffer room")
+	}
+	s.buffers.release(64 << 20)
+}
+
 func TestServerRevalidation(t *testing.T) {
 	jpg := encodeJPEG(t, testImage(160, 120, false))
 	o := newOriginLayer(t, func(w http.ResponseWriter, r *http.Request) {
