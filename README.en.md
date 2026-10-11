@@ -165,6 +165,17 @@ When the console is only reachable over HTTPS (for example on Render), nodes rea
 | Proxy | The WebSocket handshake follows `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` |
 | Version | 0.2.0 and later |
 
+## Versions
+
+| Item | Rule |
+| --- | --- |
+| Releases | [GitHub Releases](https://github.com/marvinli001/edgeweir-node/releases): semantic versions `vX.Y.Z` with signed checksums, SBOMs, and build provenance; images `ghcr.io/marvinli001/edgeweir-node:X.Y.Z` and `X.Y`. The install command takes the latest release unless `--version` names one |
+| Patch version | Fixes, no new capabilities |
+| Minor version | New capability names (`*-vN`), new commands, new optional settings |
+| Major version | Removing a capability or proto field, an incompatible state directory or `identity.json`, raised install requirements (glibc floor, distributions), re-enrollment |
+| With the console | The console sends configuration by the capabilities a node reports, not by version number; a `stable` console supports every 1.x minor version, and 0.x nodes only use the capabilities they report |
+| Proto | The 1.x wire format only grows compatibly; an incompatible change needs proto v2 and node 2.0.0 |
+
 ## Command line
 
 ```text

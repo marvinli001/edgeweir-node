@@ -165,6 +165,17 @@ sudo systemctl enable --now edgeweir-probe
 | 代理 | WebSocket 握手遵循 `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` |
 | 版本 | 0.2.0 起 |
 
+## 版本
+
+| 项目 | 规则 |
+| --- | --- |
+| 发布 | [GitHub Releases](https://github.com/marvinli001/edgeweir-node/releases)：语义化版本 `vX.Y.Z`，签名的 checksums、SBOM 与构建来源证明；镜像 `ghcr.io/marvinli001/edgeweir-node:X.Y.Z` 与 `X.Y`。安装命令默认取最新发布，`--version` 指定版本 |
+| 补丁版本 | 修复，没有新能力 |
+| 次版本 | 新能力名（`*-vN`）、新命令、新的可选配置 |
+| 主版本 | 去掉能力或 proto 字段、state 目录或 `identity.json` 不兼容、提高安装要求（glibc 下限、发行版）、需要重新注册 |
+| 与控制台 | 控制台按节点上报的能力下发配置，不比较版本号；`stable` 控制台支持 1.x 的全部次版本，0.x 节点只能使用其上报的能力 |
+| proto | 1.x 的线格式只做兼容的新增；不兼容的改动需要 proto v2 与节点 2.0.0 |
+
 ## 命令行
 
 ```text
