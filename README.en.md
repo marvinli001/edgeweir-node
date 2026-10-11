@@ -296,7 +296,7 @@ edgeweir-node version
 
 ## Build and test
 
-Requirements: Go 1.27.1, Docker; buf, goreleaser and syft for releases.
+Requirements: Go 1.27.2, Docker; buf, goreleaser and syft for releases.
 
 ```sh
 make build         # static binary in bin/

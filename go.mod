@@ -1,6 +1,6 @@
 module github.com/marvinli001/edgeweir-node
 
-go 1.27.1
+go 1.27.2
 
 require (
 	connectrpc.com/connect v1.21.0
@@ -9,8 +9,8 @@ require (
 	github.com/gen2brain/webp v0.6.4
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/oschwald/maxminddb-golang/v2 v2.6.0
-	golang.org/x/crypto v0.50.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/sys v0.48.0
 	google.golang.org/protobuf v1.36.12
 )
 

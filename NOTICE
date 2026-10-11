@@ -4,7 +4,7 @@ Copyright the Edgeweir authors. Licensed under AGPL-3.0-only (LICENSE).
 edgeweir-node includes the following third-party software. Their license
 texts follow below.
 
-Go (standard library), go 1.27.1: BSD-3-Clause
+Go (standard library), go 1.27.2: BSD-3-Clause
 
 Go modules:
   connectrpc.com/connect v1.21.0: Apache-2.0
@@ -12,8 +12,8 @@ Go modules:
   github.com/gen2brain/avif v0.6.0: MIT
   github.com/gen2brain/webp v0.6.4: MIT
   github.com/oschwald/maxminddb-golang/v2 v2.6.0: ISC
-  golang.org/x/crypto v0.50.0: BSD-3-Clause
-  golang.org/x/sys v0.47.0: BSD-3-Clause
+  golang.org/x/crypto v0.57.0: BSD-3-Clause
+  golang.org/x/sys v0.48.0: BSD-3-Clause
   google.golang.org/protobuf v1.36.12: BSD-3-Clause
 
 C libraries compiled to WebAssembly and transpiled to Go inside
@@ -354,7 +354,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 
 -------------------------------------------------------------------------------
-golang.org/x/crypto v0.50.0: LICENSE
+golang.org/x/crypto v0.57.0: LICENSE
 -------------------------------------------------------------------------------
 
 Copyright 2009 The Go Authors.
@@ -386,7 +386,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 -------------------------------------------------------------------------------
-golang.org/x/crypto v0.50.0: PATENTS
+golang.org/x/crypto v0.57.0: PATENTS
 -------------------------------------------------------------------------------
 
 Additional IP Rights Grant (Patents)
@@ -413,7 +413,7 @@ rights granted to you under this License for this implementation of Go
 shall terminate as of the date such litigation is filed.
 
 -------------------------------------------------------------------------------
-golang.org/x/sys v0.47.0: LICENSE
+golang.org/x/sys v0.48.0: LICENSE
 -------------------------------------------------------------------------------
 
 Copyright 2009 The Go Authors.
@@ -445,7 +445,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 -------------------------------------------------------------------------------
-golang.org/x/sys v0.47.0: PATENTS
+golang.org/x/sys v0.48.0: PATENTS
 -------------------------------------------------------------------------------
 
 Additional IP Rights Grant (Patents)

@@ -296,7 +296,7 @@ edgeweir-node version
 
 ## 构建与测试
 
-依赖：Go 1.27.1、Docker；发布另需 buf、goreleaser、syft。
+依赖：Go 1.27.2、Docker；发布另需 buf、goreleaser、syft。
 
 ```sh
 make build         # 静态二进制，输出至 bin/
