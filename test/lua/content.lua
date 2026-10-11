@@ -191,6 +191,13 @@ test("maintenance: allowed addresses and paths, the page and Retry-After", funct
   eq(router.maintenance_allowed(s, "198.51.100.1", "/"), false)
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", true), false, "ambiguous path (edgeweir.uripath)")
   eq(router.maintenance_allowed(s, "192.0.2.7", "/", true), true, "allowed address, ambiguous path")
+  -- The edge passes edgeweir.uripath.no_exemption: "//" too.
+  local uripath = require("edgeweir.uripath")
+  eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", uripath.no_exemption("/api/status//1")), false, "// under an allowed path")
+  eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", uripath.no_exemption("/api/status/1")), true)
+  local src = assert(io.open("/lua/edgeweir/router.lua")):read("*a")
+  assert(src:find("maintenance_allowed(site, var.remote_addr, original_path, uripath.request_no_exemption())", 1, true),
+    "the edge asks maintenance_allowed with request_no_exemption")
   eq(errorpages.render(s._maintenance_page, { status = "503", host = "s.test" }), "<p>503 s.test</p>")
   local bare = site({ maintenance = {} })
   eq(bare._maintenance_allow, nil)

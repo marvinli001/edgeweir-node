@@ -109,7 +109,7 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 配置在使用前校验 `content_hash`，无效的部分直接拒绝，不会带病应用。
 - 从磁盘加载 last-known-good 配置时同样校验哈希。
 - 客户端请求中自带的 `X-Edgeweir-*` 头会被删除，防止伪造内部头。
-- 内部头 `X-Edgeweir-Waf` 与 `X-Edgeweir-Waf-Ex`（CRS 的设置与按路径排除的条目）只由边缘层设置，回源前删除。按路径排除由 Lua 按 nginx 规范化后的路径判断，不交给 ModSecurity 的 `REQUEST_FILENAME`（不规范化，`/a/../b` 可绕过前缀匹配）；条目以内容哈希令牌对应生成的规则，站点表先于 reload 更新时不会把一个条目用到另一个路径上。
+- 内部头 `X-Edgeweir-Waf` 与 `X-Edgeweir-Waf-Ex`（CRS 的设置与按路径排除的条目）只由边缘层设置，回源前删除。按路径排除由 Lua 按 nginx 规范化后的路径判断，不交给 ModSecurity 的 `REQUEST_FILENAME`（不规范化，`/a/../b` 可绕过前缀匹配）；原始路径有歧义或含 `//`（源站可能路由到别处）时不用任何排除条目；条目以内容哈希令牌对应生成的规则，站点表先于 reload 更新时不会把一个条目用到另一个路径上。
 - 规则读取请求体（`rules-body-v1`）只发生在规则（网站或全局）引用了请求体字段的网站、且表达式真正求值时；只读 `Content-Length` 不超过网站上限（至多 1 MiB）的请求体，分块编码、HTTP/2 与 HTTP/3 中没有 `Content-Length`、超过上限、WebSocket 与 gRPC 的请求体一律不读、视为截断，规则不能用来缓冲任意大的请求体。请求体不写日志。
 - 访问日志（`access-logs-v2`）：客户端 IP、User-Agent、Referer（不含查询与片段）与网站开启时的查询串、请求头（从不记录 `Authorization`、`Cookie`、`Proxy-Authorization`）、直连对端地址可能属于个人数据，采样后经 mTLS 上报。实时查看（`edgeweir-node accesslog`）只经本地控制 socket，只在有人查看时采集，记录 10 秒后过期，不含这些可选字段。内部头 `X-Edgeweir-Upstream`（回源地址）只由回源层设置（先删掉源站带来的同名头），边缘层从不转给客户端，缓存命中同样。
 - 规则封禁（`waf-v2`）的前缀至多 IPv4 /16、IPv6 /48；平台放行名单、可信代理与本地监听的地址从不写入，网站范围不封本站放行名单；同一网络已有封禁时不再写入或上报。

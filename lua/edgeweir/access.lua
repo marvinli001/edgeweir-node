@@ -257,11 +257,12 @@ end
 
 -- path_in_scope tells whether path is under a prefix (none: every path) and
 -- under no excluded one. An ambiguous path (edgeweir.uripath) is in every
--- scope and under no excluded prefix.
-function _M.path_in_scope(path, prefixes, excluded, ambiguous)
+-- scope and under no excluded prefix; no_exemption (a raw path with "//",
+-- edgeweir.uripath.no_exemption): under no excluded prefix.
+function _M.path_in_scope(path, prefixes, excluded, ambiguous, no_exemption)
   if ambiguous then return true end
   if prefixes and #prefixes > 0 and not starts_with_any(path, prefixes) then return false end
-  return not (excluded and starts_with_any(path, excluded))
+  return no_exemption or not (excluded and starts_with_any(path, excluded))
 end
 local path_in_scope = _M.path_in_scope
 
@@ -364,12 +365,17 @@ end
 -- hotlink_decision returns "skip" for requests out of scope, else "pass"
 -- or "deny". extension: http.request.uri.path.extension; site_host(host)
 -- tells whether the node resolves host to the site. An ambiguous path
--- (edgeweir.uripath) is in scope and never the redirect target.
-function _M.hotlink_decision(c, path, extension, referer, origin, site_host, ambiguous)
+-- (edgeweir.uripath) is in scope and never the redirect target;
+-- no_exemption (a raw path with "//"): under no excluded prefix and never
+-- the redirect target.
+function _M.hotlink_decision(c, path, extension, referer, origin, site_host, ambiguous, no_exemption)
   if not ambiguous then
     local selected = c.everything or (c.extensions ~= nil and c.extensions[extension] == true) or starts_with_any(path, c.prefixes)
-    if not selected or starts_with_any(path, c.excludes) then return "skip" end
-    if c.redirect_path and path == c.redirect_path then return "skip" end
+    if not selected then return "skip" end
+    if not no_exemption then
+      if starts_with_any(path, c.excludes) then return "skip" end
+      if c.redirect_path and path == c.redirect_path then return "skip" end
+    end
   end
   local values = {}
   if referer and referer ~= "" then values[#values + 1] = referer end
@@ -625,6 +631,7 @@ function _M.check(site, values, platform_allowed, site_allowed)
   local a = site._access
   local path = values["http.request.uri.path"] or ""
   local ambiguous = uripath.request_ambiguous()
+  local no_exemption = uripath.request_no_exemption()
   if not site_allowed then
     local block = a.block
     if block and not platform_allowed then
@@ -634,7 +641,7 @@ function _M.check(site, values, platform_allowed, site_allowed)
       end
     end
     local geo = a.geo
-    if geo and path_in_scope(path, geo.prefixes, geo.excepts, ambiguous) then
+    if geo and path_in_scope(path, geo.prefixes, geo.excepts, ambiguous, no_exemption) then
       local record = geo.empty and {} or geo_record(values, values["ip.src"])
       if _M.geo_decision(geo, record) == "deny" then return GEO_DENIED end
     end
@@ -655,14 +662,14 @@ function _M.check(site, values, platform_allowed, site_allowed)
   local hotlink = a.hotlink
   if hotlink then
     local d = _M.hotlink_decision(hotlink, path, expressions.path_extension(path),
-      values["http.request.headers.referer"], var.http_origin, site_host(site), ambiguous)
+      values["http.request.headers.referer"], var.http_origin, site_host(site), ambiguous, no_exemption)
     if d == "deny" then
       if hotlink.redirect then return { respond = redirect(hotlink.redirect), reason = "referer" } end
       return HOTLINK_DENIED
     end
   end
   local ua = a.user_agents
-  if ua and path_in_scope(path, ua.prefixes, ua.excludes, ambiguous)
+  if ua and path_in_scope(path, ua.prefixes, ua.excludes, ambiguous, no_exemption)
     and _M.user_agent_decision(ua.rules, values["http.request.headers.user-agent"] or "") == "deny" then
     return UA_DENIED
   end

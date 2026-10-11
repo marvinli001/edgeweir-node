@@ -73,6 +73,11 @@ test("vectors: path scopes", function()
   -- An ambiguous raw path (edgeweir.uripath) is in every scope, under no exclusion.
   eq(access.path_in_scope("/x", { "/admin/" }, nil, true), true, "ambiguous, outside the prefix")
   eq(access.path_in_scope("/admin/public/x", { "/admin/" }, { "/admin/public/" }, true), true, "ambiguous, excluded")
+  -- A raw path with "//" (edgeweir.uripath.no_exemption): under no exclusion,
+  -- otherwise compared as $uri.
+  eq(access.path_in_scope("/admin/public/x", { "/admin/" }, { "/admin/public/" }, false, true), true, "//, excluded")
+  eq(access.path_in_scope("/x", { "/admin/" }, nil, false, true), false, "//, outside the prefix")
+  eq(access.path_in_scope("/x", {}, { "/x" }, false, true), true, "//, no prefixes")
 end)
 
 test("vectors: user agents", function()
@@ -105,6 +110,10 @@ test("hotlink: an ambiguous path is in scope, under no exclusion and never the r
   eq(access.hotlink_decision(c, "/free/a.jpg", "jpg", nil, nil, site_host, true), "deny", "ambiguous, excluded")
   eq(access.hotlink_decision(c, "/a.png", "png", nil, nil, site_host, true), "deny", "ambiguous, another extension")
   eq(access.hotlink_decision(c, "/hotlink.jpg", "jpg", nil, nil, site_host, true), "deny", "ambiguous redirect target")
+  -- A raw path with "//": no exclusion, no redirect target, the same scope.
+  eq(access.hotlink_decision(c, "/free/a.jpg", "jpg", nil, nil, site_host, false, true), "deny", "//, excluded")
+  eq(access.hotlink_decision(c, "/hotlink.jpg", "jpg", nil, nil, site_host, false, true), "deny", "//, redirect target")
+  eq(access.hotlink_decision(c, "/a.png", "png", nil, nil, site_host, false, true), "skip", "//, another extension")
 end)
 
 test("vectors: geo", function()
@@ -211,7 +220,7 @@ local function request(req)
   for k, v in pairs(req.headers or {}) do headers[k:lower()] = v end
   local uri = req.uri or "/"
   local var = {
-    scheme = "http", host = req.host or "ac.test", uri = uri, request_uri = uri, server_port = "80",
+    scheme = "http", host = req.host or "ac.test", uri = uri, request_uri = req.raw or uri, server_port = "80",
     remote_addr = req.addr or "192.0.2.1", edgeweir_request_id = "req-1", edgeweir_local = req["local"] and "1" or "",
     http_origin = headers.origin, http_access_control_request_method = headers["access-control-request-method"],
     http_upgrade = headers.upgrade, http_user_agent = headers["user-agent"],
@@ -414,6 +423,9 @@ test("user agents: an allow rule beats deny rules, excluded paths, exemptions", 
   passes({ headers = { ["user-agent"] = "Mozilla/5.0" } })
   passes({}, "no User-Agent")
   passes({ uri = "/robots.txt", headers = { ["user-agent"] = "curl/8" } }, "excluded path")
+  -- nginx merges "//" in $uri; the origin may not: no exclusion applies.
+  passes({ uri = "/robots.txt/x", headers = { ["user-agent"] = "curl/8" } }, "excluded path, deeper")
+  denied({ uri = "/robots.txt/x", raw = "/robots.txt//x", headers = { ["user-agent"] = "curl/8" } }, 403, "ua-denied", "// under an excluded path")
   passes({ addr = "192.0.2.50", headers = { ["user-agent"] = "curl/8" } }, "site allow list")
   -- Several headers are joined with ", " (http.user_agent).
   denied({ headers = { ["user-agent"] = { "x", "curl" } } }, 403, "ua-denied", "joined")

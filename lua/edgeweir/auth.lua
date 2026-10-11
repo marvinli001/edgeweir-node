@@ -208,15 +208,17 @@ end
 
 -- in_scope reports whether a request for host and path (normalized,
 -- without B/C signature segments) is in a rule's scope. An ambiguous path
--- (edgeweir.uripath) is in every path scope and under no excluded prefix.
--- Path prefixes compare without ASCII case (origins such as Express route
--- "/ADMIN/" to "/admin/"); excluded prefixes compare exactly.
-function _M.in_scope(rule, host, path, ambiguous)
+-- (edgeweir.uripath) is in every path scope and under no excluded prefix;
+-- no_exemption (a raw path with "//", edgeweir.uripath.no_exemption): under
+-- no excluded prefix. Path prefixes compare without ASCII case (origins such
+-- as Express route "/ADMIN/" to "/admin/"); excluded prefixes compare
+-- exactly.
+function _M.in_scope(rule, host, path, ambiguous, no_exemption)
   if not domain_match(rule, host) then return false end
   if ambiguous then return true end
   if #rule.prefixes_lower > 0 and not starts_with_any(lower(path), rule.prefixes_lower) then return false end
   if rule.extensions and not rule.extensions[expressions.path_extension(path)] then return false end
-  return not starts_with_any(path, rule.excludes)
+  return no_exemption or not starts_with_any(path, rule.excludes)
 end
 
 -- Query elements: name (text before the first "=") and value.
@@ -293,6 +295,7 @@ function _M.select(site, acme)
   local q = find(request_uri, "?", 1, true)
   local raw_path = q and sub(request_uri, 1, q - 1) or request_uri
   local ambiguous = uripath.request_ambiguous()
+  local no_exemption = uripath.request_no_exemption()
   if ambiguous then
     -- The origin may route an ambiguous path under any rule's scope: with
     -- more than one rule for the host, which one applies cannot be told.
@@ -319,7 +322,7 @@ function _M.select(site, acme)
         sig = nil
       end
     end
-    if _M.in_scope(rule, host, path, ambiguous) then
+    if _M.in_scope(rule, host, path, ambiguous, no_exemption) then
       local state = { rule = rule, request_uri = request_uri }
       if kind == "url_a" or kind == "url_d" then
         sig = _M.parse_query(kind, rule.url, var.args)

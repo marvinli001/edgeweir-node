@@ -23,8 +23,9 @@ import (
 // (it echoes the request) and the base site's "cache everything" rule:
 //
 //	basic.g12.test  Basic (alice / g12-password), X-Auth-User to the origin
-//	scope.g12.test  Basic under /admin/ only (paths that may route under it
-//	                at the origin are checked too, edgeweir.uripath)
+//	scope.g12.test  Basic under /admin/ only, /admin/public/ excluded (paths
+//	                that may route under it at the origin are checked too,
+//	                edgeweir.uripath)
 //	url.g12.test    signed URLs: A for .mp4, B under /b/, C under /c/, D
 //	                everywhere else, keys g12UrlKey and g12BackupKey
 //	fwd.g12.test    forward authentication at console:8086: /login/ passes
@@ -121,7 +122,8 @@ func g12Config(origin string) *nodev1.NodeConfig {
 		CredentialVersion: 1, Basic: &nodev1.BasicAuth{Realm: "G12", UserHeader: true}}}
 	sc := site("site-g12s", "scope.g12.test", origin, 80)
 	sc.AuthRules = []*nodev1.AuthRule{{Id: "g12-scope", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "g12-basic",
-		CredentialVersion: 1, PathPrefixes: []string{"/admin/"}, Basic: &nodev1.BasicAuth{Realm: "G12"}}}
+		CredentialVersion: 1, PathPrefixes: []string{"/admin/"}, ExcludePathPrefixes: []string{"/admin/public/"},
+		Basic: &nodev1.BasicAuth{Realm: "G12"}}}
 	u := site("site-g12u", "url.g12.test", origin, 80)
 	a := g12URLRule("g12-url-a", nodev1.AuthKind_AUTH_KIND_URL_A)
 	a.Extensions = []string{"mp4"}

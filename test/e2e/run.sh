@@ -1367,13 +1367,18 @@ for p in '/admin/..%2Fx' '/admin/..%2fx' '/admin/x/..%2F..%2Fy' '/admin;p/x' '/a
   [ "$(status_of "$r")" = 401 ] || fail "scope: the ambiguous path $p: $(status_of "$r")"
 done
 [ "$(status_of "$(req scope.g12.test '/admin/..%2Fx' --path-as-is -u alice:g12-password)")" = 200 ] || fail "scope: credentials on an ambiguous path"
+# nginx merges "//"; an origin that keeps the empty segment may route
+# /admin//public/x under /admin/: exclusions do not apply to it.
+[ "$(status_of "$(req scope.g12.test /admin/public/x)")" = 200 ] || fail "scope: the excluded /admin/public/x"
+r=$(req scope.g12.test '/admin//public/x' --path-as-is)
+[ "$(status_of "$r")" = 401 ] || fail "scope: an exclusion applied to /admin//public/x: $(status_of "$r")"
 for i in 1 2; do
   r=$(req demo.test '/g12-amb/..%2Fpage' --path-as-is)
   [ "$(status_of "$r") $(header_of "$r" X-Cache)" = "200 BYPASS" ] || fail "an ambiguous path was cached: $(status_of "$r") $(header_of "$r" X-Cache)"
 done
 r=$(req ua.test '/x/..%2F.well-known/acme-challenge/origin-token_1' --path-as-is)
 grep -q '^Hostname:' <<<"$r" && fail "a path normalized to an HTTP-01 token skipped Under Attack"
-pass "G12: ambiguous raw paths (encoded separators, dot segments, path parameters) are in every auth scope, never cached, never HTTP-01"
+pass "G12: ambiguous raw paths (encoded separators, dot segments, path parameters) are in every auth scope, never cached, never HTTP-01; no exclusion for //"
 
 now=$(date +%s)
 key=g12-url-key-0123456789
@@ -1555,12 +1560,15 @@ pass "G14: a skip action keeps one path out of the CRS, a config rule's detect m
   fail "an exclusion applied to an ambiguous path: $(crs waf.g14.test --path-as-is "$NODE/g14-other/../g14-excluded/y?$SQLI")"
 [ "$(crs waf.g14.test --path-as-is "$NODE/g14-excluded/../g14-other?$SQLI")" = "403 - waf-blocked" ] ||
   fail "an exclusion reached another path through ..: $(crs waf.g14.test --path-as-is "$NODE/g14-excluded/../g14-other?$SQLI")"
+# Nor to a raw path with "//", which nginx merges and the origin may not.
+[ "$(crs waf.g14.test --path-as-is "$NODE/g14-excluded//y?$SQLI")" = "403 - waf-blocked" ] ||
+  fail "an exclusion applied to a raw path with //: $(crs waf.g14.test --path-as-is "$NODE/g14-excluded//y?$SQLI")"
 [ "$(crs waf.g14.test "$NODE/g14-target?$SQLI")" = "200 MISS -" ] || fail "exclusion of a target: $(crs waf.g14.test "$NODE/g14-target?$SQLI")"
 [ "$(crs waf.g14.test "$NODE/g14-target?q=1%27%20OR%20%271%27%3D%271")" = "403 - waf-blocked" ] || fail "exclusion of a target: another argument"
 [ "$(crs waf.g14.test "$NODE/g14-target/x?$SQLI")" = "403 - waf-blocked" ] || fail "an exact exclusion matched a longer path"
 r=$(req waf.g14.test "/g14-excluded/echo-$RANDOM")
 grep -q 'from g14$' <<<"$r" && ! grep -qi '^header x-edgeweir-waf' <<<"$r" || fail "X-Edgeweir-Waf(-Ex) reached the origin: $r"
-pass "G14: CRS exclusions by path prefix (normalized; none for ambiguous raw paths) and by exact path for one argument"
+pass "G14: CRS exclusions by path prefix (normalized; none for ambiguous raw paths or //) and by exact path for one argument"
 
 json() { # file [path] -> status; body in g14.b, headers in g14.h
   curl -s -o "$TMPDIR_E2E/g14.b" -D "$TMPDIR_E2E/g14.h" -w '%{http_code}' -H 'Host: waf.g14.test' -H 'Content-Type: application/json' \

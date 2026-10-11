@@ -295,6 +295,14 @@ test("an ambiguous raw path is in every path scope and under no exclusion (edgew
     eq(uripath.ambiguous(p), false, p)
   end
   eq(uripath.raw_path("/a/b?c=/../d"), "/a/b")
+  -- "//" anywhere: not ambiguous (nginx merges it, scopes compare $uri), but
+  -- no exemption applies.
+  for _, p in ipairs({ "/a//b", "/admin//public/x", "/a/b//", "//public/admin", "/admin/..%2Fx" }) do
+    eq(uripath.no_exemption(p), true, p)
+  end
+  for _, p in ipairs({ "/", "/admin/public/x", "/a/b/", "/a%2F%2Fb" }) do
+    eq(uripath.no_exemption(p), uripath.ambiguous(p), p)
+  end
   local s = site({
     rule("url_a", { id = "admin", domains = { "a.test" }, path_prefixes = { "/admin/" }, exclude_path_prefixes = { "/admin/public/" } }),
   })
@@ -310,6 +318,11 @@ test("an ambiguous raw path is in every path scope and under no exclusion (edgew
   eq(chosen("b.test", "/admin/..%2Fx", "/x"), nil, "domains still apply")
   eq(chosen("a.test", "/ADMIN/x", "/ADMIN/x"), "admin", "prefixes compare without ASCII case")
   eq(chosen("a.test", "/admin/PUBLIC/x", "/admin/PUBLIC/x"), "admin", "exclusions compare exactly")
+  -- An origin that keeps the empty segment may route "/admin//public/x" to a
+  -- handler of "/admin/": the exclusion does not apply.
+  eq(chosen("a.test", "/admin//public/x", "/admin/public/x"), "admin", "// under the exclusion")
+  eq(chosen("a.test", "/admin/public//x", "/admin/public/x"), "admin", "// past the exclusion")
+  eq(chosen("a.test", "/x//admin/y", "/x/admin/y"), nil, "// is compared as $uri otherwise")
   -- Two rules for the host: an ambiguous path is refused, whichever rule it may reach.
   local two = site({
     rule("basic", { id = "team", path_prefixes = { "/team/" } }),
@@ -326,6 +339,9 @@ test("an ambiguous raw path is in every path scope and under no exclusion (edgew
     return auth.check(two, policy.site_https_redirect)
   end)
   assert(result and result.respond, "an unambiguous path keeps its own rule")
+  -- "//" is no ambiguity: its own rule, no 400.
+  local _, _, fake = with_request({ host = "a.test", raw = "/team//x", uri = "/team/x" }, function() auth.select(two, false) end)
+  eq(fake.ctx.edgeweir_auth and fake.ctx.edgeweir_auth.rule and fake.ctx.edgeweir_auth.rule.id, "team", "// keeps its rule")
 end)
 
 test("identity headers rules set are removed from requests no rule checks", function()

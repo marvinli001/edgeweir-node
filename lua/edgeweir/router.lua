@@ -397,7 +397,7 @@ local function access()
   local original_path = var.uri
   -- Maintenance: 503 and the maintenance page, but for allowed addresses
   -- and paths and HTTP-01 requests for the origin; nothing is cached.
-  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path, uripath.request_ambiguous()) then
+  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path, uripath.request_no_exemption()) then
     reasons.set("maintenance")
     return errorpages.maintenance(site)
   end
@@ -615,15 +615,15 @@ end
 
 -- maintenance_allowed reports whether a request of a site in maintenance
 -- is served as usual: its client address in the allowed CIDRs or its
--- original path under an allowed prefix (not an ambiguous one,
--- edgeweir.uripath).
-function _M.maintenance_allowed(site, addr, path, ambiguous)
+-- original path under an allowed prefix (not when no_exemption: an
+-- ambiguous raw path or one with "//", edgeweir.uripath.no_exemption).
+function _M.maintenance_allowed(site, addr, path, no_exemption)
   local allow = site._maintenance_allow
   if allow and addr and allow(addr) then
     return true
   end
   local prefixes = site.maintenance.allow_prefixes
-  if type(prefixes) == "table" and not ambiguous then
+  if type(prefixes) == "table" and not no_exemption then
     for i = 1, #prefixes do
       local p = prefixes[i]
       if sub(path, 1, #p) == p then
