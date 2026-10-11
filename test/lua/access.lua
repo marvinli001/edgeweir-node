@@ -70,6 +70,9 @@ end)
 
 test("vectors: path scopes", function()
   for _, v in ipairs(vectors.pathScope) do check(access.path_in_scope(v.path, v.prefixes, v.excluded), v.result, v.path) end
+  -- An ambiguous raw path (edgeweir.uripath) is in every scope, under no exclusion.
+  eq(access.path_in_scope("/x", { "/admin/" }, nil, true), true, "ambiguous, outside the prefix")
+  eq(access.path_in_scope("/admin/public/x", { "/admin/" }, { "/admin/public/" }, true), true, "ambiguous, excluded")
 end)
 
 test("vectors: user agents", function()
@@ -92,6 +95,16 @@ test("vectors: hotlink", function()
     local r = v.req
     check(access.hotlink_decision(compiled, r.path, r.extension, r.referer, r.origin, function(h) return hosts[h] == true end), v.result, v.name)
   end
+end)
+
+test("hotlink: an ambiguous path is in scope, under no exclusion and never the redirect target", function()
+  local c = access.compile_hotlink({ allow_empty = false, allow_site_domains = true, allowed = {}, denied = {},
+    extensions = { "jpg" }, exclude_path_prefixes = { "/free/" }, redirect_url = "/hotlink.jpg" })
+  local site_host = function() return false end
+  eq(access.hotlink_decision(c, "/free/a.jpg", "jpg", nil, nil, site_host), "skip", "excluded")
+  eq(access.hotlink_decision(c, "/free/a.jpg", "jpg", nil, nil, site_host, true), "deny", "ambiguous, excluded")
+  eq(access.hotlink_decision(c, "/a.png", "png", nil, nil, site_host, true), "deny", "ambiguous, another extension")
+  eq(access.hotlink_decision(c, "/hotlink.jpg", "jpg", nil, nil, site_host, true), "deny", "ambiguous redirect target")
 end)
 
 test("vectors: geo", function()

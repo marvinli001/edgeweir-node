@@ -1358,6 +1358,23 @@ grep -qi '^Authorization:' <<<"$r" && fail "Authorization reached the origin"
 [ "$(status_of "$(req basic.g12.test /g12-basic -u alice:wrong-password)")" = 401 ] || fail "a wrong password"
 pass "G12: Basic 401 with the challenge, 200 with credentials (removed, X-Auth-User added), cache hits still checked"
 
+# Raw paths an origin may route elsewhere than nginx's normalized $uri
+# (edgeweir.uripath): in every auth scope, never cached, never HTTP-01.
+[ "$(status_of "$(req scope.g12.test /page)")" = 200 ] || fail "scope: a path outside /admin/"
+[ "$(status_of "$(req scope.g12.test /admin/x)")" = 401 ] || fail "scope: /admin/x"
+for p in '/admin/..%2Fx' '/admin/..%2fx' '/admin/x/..%2F..%2Fy' '/admin;p/x' '/admin/.%2E/x' '/x/../admin/y'; do
+  r=$(req scope.g12.test "$p" --path-as-is)
+  [ "$(status_of "$r")" = 401 ] || fail "scope: the ambiguous path $p: $(status_of "$r")"
+done
+[ "$(status_of "$(req scope.g12.test '/admin/..%2Fx' --path-as-is -u alice:g12-password)")" = 200 ] || fail "scope: credentials on an ambiguous path"
+for i in 1 2; do
+  r=$(req demo.test '/g12-amb/..%2Fpage' --path-as-is)
+  [ "$(status_of "$r") $(header_of "$r" X-Cache)" = "200 BYPASS" ] || fail "an ambiguous path was cached: $(status_of "$r") $(header_of "$r" X-Cache)"
+done
+r=$(req ua.test '/x/..%2F.well-known/acme-challenge/origin-token_1' --path-as-is)
+grep -q '^Hostname:' <<<"$r" && fail "a path normalized to an HTTP-01 token skipped Under Attack"
+pass "G12: ambiguous raw paths (encoded separators, dot segments, path parameters) are in every auth scope, never cached, never HTTP-01"
+
 now=$(date +%s)
 key=g12-url-key-0123456789
 sa=$(md5hex "/v/a.mp4@$now@r1@$key")

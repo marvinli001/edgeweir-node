@@ -196,8 +196,9 @@ _M.AUTH_BODY = 65537
 -- Request headers every forward authentication request keeps: the node's
 -- own (set by the edge's /./edgeweir-auth location).
 local AUTH_NODE_HEADERS = {
-  ["x-original-uri"] = true, ["x-original-method"] = true, ["x-original-host"] = true,
-  ["x-real-ip"] = true, ["x-forwarded-for"] = true,
+  ["x-original-uri"] = true, ["x-original-method"] = true, ["x-original-host"] = true, ["x-original-url"] = true,
+  ["x-forwarded-method"] = true, ["x-forwarded-proto"] = true, ["x-forwarded-host"] = true, ["x-forwarded-uri"] = true,
+  ["x-real-ip"] = true, ["x-forwarded-for"] = true, ["cdn-loop"] = true,
 }
 
 -- auth_fail answers a forward authentication subrequest that cannot be

@@ -25,9 +25,12 @@
 --
 -- Basic: PBKDF2-HMAC-SHA256 hashes from the rule's secret; results are kept
 -- per worker (success 60 s, failure 10 s, keyed by the SHA-256 of the
--- Authorization value and the secret's version); a client network gets at
--- most BASIC_FAILURES failed verifications per site in BASIC_WINDOW seconds,
--- then 429 without hashing. Forward authentication: a subrequest to
+-- Authorization value and the secret's version). PBKDF2 holds the worker,
+-- so every verification counts before it hashes: per site, a client network
+-- (IPv4 address, IPv6 /64) gets BASIC_ATTEMPTS and its wider network (IPv4
+-- /24, IPv6 /48) BASIC_WIDE_ATTEMPTS in BASIC_WINDOW seconds, a site
+-- BASIC_SITE_RATE per second and the node BASIC_NODE_RATE per second; past
+-- any of them 429 without hashing (results already kept still answer). Forward authentication: a subrequest to
 -- /./edgeweir-auth, which the origin layer sends to the service (origin
 -- address policy, TLS verification, the rule's timeout); 2xx and 401/403
 -- answers may be cached in edgeweir_auth, keyed by the forwarded headers.
@@ -44,6 +47,7 @@ local ipaddr = require("edgeweir.ipaddr")
 local expressions = require("edgeweir.expressions")
 local errorpages = require("edgeweir.errorpages")
 local stats = require("edgeweir.stats")
+local uripath = require("edgeweir.uripath")
 
 local _M = {}
 
@@ -60,8 +64,11 @@ _M.LOCATION = "/./edgeweir-auth"
 -- the site's error page).
 _M.MAX_BODY = 65536
 -- Failed Basic verifications per site and client network per window.
-_M.BASIC_FAILURES = 10
+_M.BASIC_ATTEMPTS = 10
+_M.BASIC_WIDE_ATTEMPTS = 100
 _M.BASIC_WINDOW = 10
+_M.BASIC_SITE_RATE = 20
+_M.BASIC_NODE_RATE = 50
 _M.SUCCESS_TTL = 60
 _M.FAILURE_TTL = 10
 -- Iterations of the dummy hash computed for unknown users.
@@ -155,6 +162,18 @@ function _M.prepare(site)
     out[i] = c
   end
   site._auth = out
+  -- The request headers rules set for the origin (X-Auth-User, copied
+  -- service headers): removed from requests no rule checks.
+  local identity, seen = {}, {}
+  for _, r in ipairs(rules) do
+    local names = r.forward and r.forward.response_headers or {}
+    if r.kind == "basic" and r.basic and r.basic.user_header then names = { "x-auth-user" } end
+    for _, n in ipairs(names) do
+      n = lower(n)
+      if not seen[n] then seen[n] = true; identity[#identity + 1] = n end
+    end
+  end
+  site._auth_identity = identity
   -- Rules whose signature is in the path (url_b, url_c): requests refused
   -- before it is removed have no path to log (edgeweir.accesslogs).
   local signed_path = false
@@ -173,8 +192,9 @@ local function starts_with_any(path, prefixes)
 end
 
 -- in_scope reports whether a request for host and path (normalized,
--- without B/C signature segments) is in a rule's scope.
-function _M.in_scope(rule, host, path)
+-- without B/C signature segments) is in a rule's scope. An ambiguous path
+-- (edgeweir.uripath) is in every path scope and under no excluded prefix.
+function _M.in_scope(rule, host, path, ambiguous)
   if rule.domains then
     local hit = false
     for i = 1, #rule.domains do
@@ -182,6 +202,7 @@ function _M.in_scope(rule, host, path)
     end
     if not hit then return false end
   end
+  if ambiguous then return true end
   if #rule.prefixes > 0 and not starts_with_any(path, rule.prefixes) then return false end
   if rule.extensions and not rule.extensions[expressions.path_extension(path)] then return false end
   return not starts_with_any(path, rule.excludes)
@@ -241,16 +262,23 @@ end
 
 -- select picks the request's rule and removes a signed URL's signature
 -- (see the module comment). acme: an HTTP-01 request.
+local function clear_identity(site)
+  local names = site._auth_identity
+  for i = 1, #names do ngx.req.clear_header(names[i]) end
+end
+
 function _M.select(site, acme)
   local rules = site._auth
-  if not rules or acme then return end
+  if not rules then return end
+  if acme then return clear_identity(site) end
   local var = ngx.var
   local uri = var.uri
-  if sub(uri, 1, 11) == "/.edgeweir/" then return end
+  if sub(uri, 1, 11) == "/.edgeweir/" then return clear_identity(site) end
   local host = var.host or ""
   local request_uri = var.request_uri
   local q = find(request_uri, "?", 1, true)
   local raw_path = q and sub(request_uri, 1, q - 1) or request_uri
+  local ambiguous = uripath.request_ambiguous()
   for i = 1, #rules do
     local rule = rules[i]
     local path, sig = uri, nil
@@ -265,7 +293,7 @@ function _M.select(site, acme)
         sig = nil
       end
     end
-    if _M.in_scope(rule, host, path) then
+    if _M.in_scope(rule, host, path, ambiguous) then
       local state = { rule = rule, request_uri = request_uri }
       if kind == "url_a" or kind == "url_d" then
         sig = _M.parse_query(kind, rule.url, var.args)
@@ -284,6 +312,7 @@ function _M.select(site, acme)
       return
     end
   end
+  clear_identity(site)
 end
 
 -- request_uri is the request URI the rules see: without the signature of a
@@ -354,6 +383,32 @@ function _M.parse_basic(header)
   return sub(decoded, 1, colon - 1), sub(decoded, colon + 1)
 end
 
+-- over counts one attempt under key and tells whether it is past limit (a
+-- counter that cannot be kept counts as past it).
+local function over(dict, key, limit, ttl)
+  local n = dict:incr(key, 1, 0, ttl)
+  return n == nil or n > limit
+end
+
+-- basic_limited counts a verification about to hash and returns the
+-- seconds to wait when it must not (see the module comment).
+local function basic_limited(site, addr, now)
+  local dict = ngx.shared.edgeweir_auth
+  local window = floor(now / _M.BASIC_WINDOW)
+  local net, bytes, bits = ipaddr.client_network(addr)
+  local wide = bytes and ipaddr.wide_network(bytes, bits) or tostring(addr)
+  net = net or tostring(addr)
+  local id = site.id
+  if over(dict, "bf|" .. id .. "|" .. net .. "|" .. window, _M.BASIC_ATTEMPTS, _M.BASIC_WINDOW)
+    or over(dict, "bw|" .. id .. "|" .. wide .. "|" .. window, _M.BASIC_WIDE_ATTEMPTS, _M.BASIC_WINDOW) then
+    return _M.BASIC_WINDOW - now % _M.BASIC_WINDOW
+  end
+  if over(dict, "bs|" .. id .. "|" .. now, _M.BASIC_SITE_RATE, 1) or over(dict, "bn|" .. now, _M.BASIC_NODE_RATE, 1) then
+    return 1
+  end
+  return nil
+end
+
 local function basic(site, rule)
   local var = ngx.var
   local b = rule.basic
@@ -366,12 +421,9 @@ local function basic(site, rule)
   local key = rule.id .. ":" .. rule.version .. ":" .. sha256_hex(header)
   local known = results:get(key)
   if known == nil then
-    local dict = ngx.shared.edgeweir_auth
-    local now = ngx.time()
-    local window = floor(now / _M.BASIC_WINDOW)
-    local limit = "bf|" .. site.id .. "|" .. (ipaddr.client_network(var.remote_addr) or tostring(var.remote_addr)) .. "|" .. window
-    if (dict:get(limit) or 0) >= _M.BASIC_FAILURES then
-      return refused(site, { status = 429, code = "auth-rate-limited", retry_after = _M.BASIC_WINDOW - now % _M.BASIC_WINDOW })
+    local retry = basic_limited(site, var.remote_addr, ngx.time())
+    if retry then
+      return refused(site, { status = 429, code = "auth-rate-limited", retry_after = retry })
     end
     if _M.verify_password(rule.users[name], password) then
       known = name
@@ -379,7 +431,6 @@ local function basic(site, rule)
     else
       known = false
       results:set(key, false, _M.FAILURE_TTL)
-      dict:incr(limit, 1, 0, _M.BASIC_WINDOW)
     end
   end
   if not known then return deny() end
@@ -446,7 +497,11 @@ local function unavailable(site, rule, status)
   if ngx.shared.edgeweir_policy_logs:safe_add("auth:" .. rule.id, true, 60) then
     ngx.log(ngx.NOTICE, "edgeweir: access authentication service failed site=", site.id, " rule=", rule.id, " status=", status)
   end
-  if rule.forward.allow_unavailable then return nil end
+  if rule.forward.allow_unavailable then
+    -- No identity from the service: none from the visitor either.
+    copy(rule.forward, nil)
+    return nil
+  end
   return refused(site, { status = 503, code = "auth-unavailable" })
 end
 
@@ -508,7 +563,8 @@ local function forward(site, rule, state)
     answer.l = values["location"]
   end
   if cache_key and ((s >= 200 and s < 300) or s == 401 or s == 403) then
-    dict:set(cache_key, cjson.encode(answer), f.cache_seconds)
+    -- safe_set: cached answers never evict Basic's counters in the same dict.
+    dict:safe_set(cache_key, cjson.encode(answer), f.cache_seconds)
   end
   return outcome(site, rule, answer)
 end

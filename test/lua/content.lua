@@ -189,6 +189,8 @@ test("maintenance: allowed addresses and paths, the page and Retry-After", funct
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1"), true)
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/"), false)
   eq(router.maintenance_allowed(s, "198.51.100.1", "/"), false)
+  eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", true), false, "ambiguous path (edgeweir.uripath)")
+  eq(router.maintenance_allowed(s, "192.0.2.7", "/", true), true, "allowed address, ambiguous path")
   eq(errorpages.render(s._maintenance_page, { status = "503", host = "s.test" }), "<p>503 s.test</p>")
   local bare = site({ maintenance = {} })
   eq(bare._maintenance_allow, nil)

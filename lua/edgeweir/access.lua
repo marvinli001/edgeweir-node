@@ -39,6 +39,7 @@
 --     the security headers, on cache hits, origin responses and the node's
 --     own answers alike.
 local expressions = require("edgeweir.expressions")
+local uripath = require("edgeweir.uripath")
 
 local _M = {}
 
@@ -255,8 +256,10 @@ local function starts_with_any(path, prefixes)
 end
 
 -- path_in_scope tells whether path is under a prefix (none: every path) and
--- under no excluded one.
-function _M.path_in_scope(path, prefixes, excluded)
+-- under no excluded one. An ambiguous path (edgeweir.uripath) is in every
+-- scope and under no excluded prefix.
+function _M.path_in_scope(path, prefixes, excluded, ambiguous)
+  if ambiguous then return true end
   if prefixes and #prefixes > 0 and not starts_with_any(path, prefixes) then return false end
   return not (excluded and starts_with_any(path, excluded))
 end
@@ -360,11 +363,14 @@ end
 
 -- hotlink_decision returns "skip" for requests out of scope, else "pass"
 -- or "deny". extension: http.request.uri.path.extension; site_host(host)
--- tells whether the node resolves host to the site.
-function _M.hotlink_decision(c, path, extension, referer, origin, site_host)
-  local selected = c.everything or (c.extensions ~= nil and c.extensions[extension] == true) or starts_with_any(path, c.prefixes)
-  if not selected or starts_with_any(path, c.excludes) then return "skip" end
-  if c.redirect_path and path == c.redirect_path then return "skip" end
+-- tells whether the node resolves host to the site. An ambiguous path
+-- (edgeweir.uripath) is in scope and never the redirect target.
+function _M.hotlink_decision(c, path, extension, referer, origin, site_host, ambiguous)
+  if not ambiguous then
+    local selected = c.everything or (c.extensions ~= nil and c.extensions[extension] == true) or starts_with_any(path, c.prefixes)
+    if not selected or starts_with_any(path, c.excludes) then return "skip" end
+    if c.redirect_path and path == c.redirect_path then return "skip" end
+  end
   local values = {}
   if referer and referer ~= "" then values[#values + 1] = referer end
   if c.check_origin and origin and origin ~= "" then values[#values + 1] = origin end
@@ -618,6 +624,7 @@ end
 function _M.check(site, values, platform_allowed, site_allowed)
   local a = site._access
   local path = values["http.request.uri.path"] or ""
+  local ambiguous = uripath.request_ambiguous()
   if not site_allowed then
     local block = a.block
     if block and not platform_allowed then
@@ -627,7 +634,7 @@ function _M.check(site, values, platform_allowed, site_allowed)
       end
     end
     local geo = a.geo
-    if geo and path_in_scope(path, geo.prefixes, geo.excepts) then
+    if geo and path_in_scope(path, geo.prefixes, geo.excepts, ambiguous) then
       local record = geo.empty and {} or geo_record(values, values["ip.src"])
       if _M.geo_decision(geo, record) == "deny" then return GEO_DENIED end
     end
@@ -636,7 +643,8 @@ function _M.check(site, values, platform_allowed, site_allowed)
   local cors = a.cors
   if cors and not cors.to_origin and ngx.req.get_method() == "OPTIONS" then
     local origin, method = var.http_origin, var.http_access_control_request_method
-    if origin and origin ~= "" and method and method ~= "" and path_in_scope(path, cors.prefixes) then
+    -- CORS grants access: an ambiguous path is outside its scope.
+    if origin and origin ~= "" and method and method ~= "" and not ambiguous and path_in_scope(path, cors.prefixes) then
       local allow = _M.cors_allow_origin(cors, origin)
       if not allow then return CORS_DENIED end
       local requested = values["http.request.headers.access-control-request-headers"]
@@ -647,14 +655,14 @@ function _M.check(site, values, platform_allowed, site_allowed)
   local hotlink = a.hotlink
   if hotlink then
     local d = _M.hotlink_decision(hotlink, path, expressions.path_extension(path),
-      values["http.request.headers.referer"], var.http_origin, site_host(site))
+      values["http.request.headers.referer"], var.http_origin, site_host(site), ambiguous)
     if d == "deny" then
       if hotlink.redirect then return { respond = redirect(hotlink.redirect), reason = "referer" } end
       return HOTLINK_DENIED
     end
   end
   local ua = a.user_agents
-  if ua and path_in_scope(path, ua.prefixes, ua.excludes)
+  if ua and path_in_scope(path, ua.prefixes, ua.excludes, ambiguous)
     and _M.user_agent_decision(ua.rules, values["http.request.headers.user-agent"] or "") == "deny" then
     return UA_DENIED
   end
@@ -734,7 +742,7 @@ function _M.response_headers(site, h, path)
   local a = site._access
   if not a then return end
   local cors = a.cors
-  if cors and not ngx.ctx.edgeweir_preflight and path_in_scope(path or "", cors.prefixes) then
+  if cors and not ngx.ctx.edgeweir_preflight and not uripath.request_ambiguous() and path_in_scope(path or "", cors.prefixes) then
     local names = ORIGIN_VARY
     if not (cors.keep and h["Access-Control-Allow-Origin"] ~= nil) then
       strip_cors(h)

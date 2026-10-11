@@ -283,6 +283,47 @@ test("scope: domains of every form, prefixes, extensions, exclusions, first rule
   eq(fake.ctx.edgeweir_auth, nil, "HTTP-01")
 end)
 
+test("an ambiguous raw path is in every path scope and under no exclusion (edgeweir.uripath)", function()
+  local uripath = require("edgeweir.uripath")
+  for _, p in ipairs({ "/admin/..%2Fx", "/admin/..%2fx", "/a/%2e%2e/x", "/a/.%2E/x", "/a%5Cb", "/a\\b",
+    "/video.mp4;x=1", "/admin;x/y", "/a/../b", "/a/./b", "/a/..", "/a/." }) do
+    eq(uripath.ambiguous(p), true, p)
+  end
+  for _, p in ipairs({ "/", "/admin/x", "/a/b.c/d", "/a..b/c", "/.well-known/acme-challenge/t", "/%61dmin/x",
+    "/a%20b", "/a/.hidden", "/a/..b", "//a" }) do
+    eq(uripath.ambiguous(p), false, p)
+  end
+  eq(uripath.raw_path("/a/b?c=/../d"), "/a/b")
+  local s = site({
+    rule("url_a", { id = "admin", domains = { "a.test" }, path_prefixes = { "/admin/" }, exclude_path_prefixes = { "/admin/public/" } }),
+  })
+  local function chosen(host, raw, uri)
+    local _, _, fake = with_request({ host = host, raw = raw, uri = uri }, function() auth.select(s, false) end)
+    return fake.ctx.edgeweir_auth and fake.ctx.edgeweir_auth.rule.id or nil
+  end
+  eq(chosen("a.test", "/admin/..%2Fsecret.txt", "/secret.txt"), "admin", "normalized out of the prefix")
+  eq(chosen("a.test", "/admin/secret/..%2Fpublic/x", "/admin/public/x"), "admin", "normalized into the exclusion")
+  eq(chosen("a.test", "/admin;x/y", "/admin;x/y"), "admin", "path parameters")
+  eq(chosen("a.test", "/public/x", "/public/x"), nil, "unambiguous paths keep their scope")
+  eq(chosen("a.test", "/admin/public/x", "/admin/public/x"), nil, "and their exclusions")
+  eq(chosen("b.test", "/admin/..%2Fx", "/x"), nil, "domains still apply")
+end)
+
+test("identity headers rules set are removed from requests no rule checks", function()
+  local s = site({
+    rule("basic", { id = "admin", path_prefixes = { "/admin/" }, basic = { realm = "r", user_header = true } }),
+    rule("forward", { id = "fwd", path_prefixes = { "/app/" }, forward = { url = "https://auth.test/v", request_headers = {},
+      timeout_ms = 100, response_headers = { "X-User", "x-groups" } } }),
+  })
+  eq(table.concat(s._auth_identity, ","), "x-auth-user,x-user,x-groups")
+  local headers = { ["x-auth-user"] = "mallory", ["x-user"] = "mallory", ["x-groups"] = "admins", ["x-other"] = "kept" }
+  local _, state = with_request({ uri = "/public", headers = headers }, function() auth.select(s, false) end)
+  eq(state.headers["x-auth-user"], nil); eq(state.headers["x-user"], nil); eq(state.headers["x-groups"], nil)
+  eq(state.headers["x-other"], "kept")
+  _, state = with_request({ uri = "/.well-known/acme-challenge/t", headers = { ["x-auth-user"] = "mallory" } }, function() auth.select(s, true) end)
+  eq(state.headers["x-auth-user"], nil, "HTTP-01")
+end)
+
 test("scope of B and C uses the path without the signature", function()
   local now = ngx.time()
   local s = site({ rule("url_c", { path_prefixes = { "/video/" } }) })
@@ -379,7 +420,7 @@ test("Basic: 401 with the challenge, credentials removed, user header, caches", 
   eq(state.headers["x-auth-user"], nil)
 end)
 
-test("Basic: a client network gets 10 failed verifications per window, then 429 without hashing", function()
+test("Basic: a client network gets 10 verifications per window, then 429 without hashing", function()
   ngx.shared.edgeweir_auth:flush_all()
   local s = site({ rule("basic", { id = "limited" }) })
   local derive = auth.verify_password
@@ -402,6 +443,56 @@ test("Basic: a client network gets 10 failed verifications per window, then 429 
   -- Another network is not limited.
   result = basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:correct horse") }, { addr = "203.0.113.200" })
   eq(result, nil)
+end)
+
+test("Basic: the wider network, the site and the node have budgets too, counted before hashing", function()
+  local s = site({ rule("basic", { id = "budget" }) })
+  local derive = auth.verify_password
+  local calls = 0
+  auth.verify_password = function(...) calls = calls + 1; return derive(...) end
+  -- Each step its own passwords: results already kept answer without hashing.
+  local function attempts(addrs, step)
+    local limited = 0
+    for i, addr in ipairs(addrs) do
+      local result = basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:" .. step .. i .. addr) }, { addr = addr })
+      if result.status == 429 then limited = limited + 1 end
+    end
+    return limited
+  end
+  -- 12 /64s of one IPv6 /48, 9 attempts each: the /48's 100 hold back the rest.
+  ngx.shared.edgeweir_auth:flush_all()
+  local addrs = {}
+  for n = 1, 12 do
+    for i = 1, 9 do addrs[#addrs + 1] = string.format("2001:db8:1:%x::%x", n, i) end
+  end
+  local saved_site, saved_node = auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = 1000, 1000
+  calls = 0
+  local limited = attempts(addrs, "wide")
+  assert(calls >= 100 and calls <= 108 and limited >= 0, "a /48 got " .. calls .. " verifications")
+  -- A site's budget per second, whatever the networks.
+  ngx.shared.edgeweir_auth:flush_all()
+  auth.BASIC_SITE_RATE = 3
+  calls = 0
+  limited = attempts({ "198.51.100.1", "198.51.101.1", "198.51.102.1", "198.51.103.1", "198.51.104.1" }, "site")
+  assert(calls >= 3 and calls <= 5 and limited == 5 - calls, "site budget: " .. calls .. " verifications, " .. limited .. " limited")
+  -- The node's budget, across sites.
+  ngx.shared.edgeweir_auth:flush_all()
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = 1000, 2
+  calls = 0
+  limited = attempts({ "198.51.100.1", "198.51.101.1", "198.51.102.1", "198.51.103.1" }, "node")
+  assert(calls >= 2 and calls <= 4 and limited == 4 - calls, "node budget: " .. calls .. " verifications, " .. limited .. " limited")
+  local result = basic_request(s, { authorization = "Basic " .. ngx.encode_base64("alice:again") }, { addr = "198.51.105.1" })
+  if result.status == 429 then eq(result.retry_after, 1) end
+  auth.BASIC_SITE_RATE, auth.BASIC_NODE_RATE = saved_site, saved_node
+  auth.verify_password = derive
+  ngx.shared.edgeweir_auth:flush_all()
+end)
+
+test("forward answers never evict the counters (safe_set)", function()
+  local src = assert(io.open("/lua/edgeweir/auth.lua")):read("*a")
+  assert(src:find("dict:safe_set(cache_key", 1, true), "cached answers use safe_set")
+  assert(not src:find("dict:set(cache_key", 1, true), "no forcible set of answers")
 end)
 
 test("HTTPS first: a plain HTTP request the site redirects is redirected before any check", function()
@@ -468,9 +559,11 @@ test("forward authentication: subrequest, 2xx copies headers, 401/403/3xx answer
   eq(result and result.status, 503)
   eq(result.code, "auth-unavailable")
   eq(result.reason, nil, "a service that does not answer is no block")
-  local open = site({ rule("forward", { id = "open", forward = { url = "https://auth.test/v", request_headers = {}, timeout_ms = 100, allow_unavailable = true } }) })
-  result = forward_request(open, { status = 504, header = {}, body = "" })
+  local open = site({ rule("forward", { id = "open", forward = { url = "https://auth.test/v", request_headers = {}, timeout_ms = 100,
+    allow_unavailable = true, response_headers = { "x-auth-user" } } }) })
+  result, state = forward_request(open, { status = 504, header = {}, body = "" }, { cookie = "sid=1", ["x-auth-user"] = "mallory" })
   eq(result, nil)
+  eq(state.headers["x-auth-user"], nil, "let through without the service: the visitor's identity headers removed")
   -- 3xx passed on when the rule says so.
   local redirects = site({ rule("forward", { id = "login", forward = { url = "https://auth.test/v", request_headers = {}, timeout_ms = 100, pass_redirects = true } }) })
   result = forward_request(redirects, { status = 302, header = { Location = "https://login.test/?rd=x" }, body = "" })

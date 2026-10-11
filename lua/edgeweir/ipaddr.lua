@@ -244,6 +244,16 @@ function _M.client_network(addr)
   return _M.format(a) .. "/64", a, 64
 end
 
+-- wide_network returns the wider network of a client network (bytes and
+-- prefix length from client_network): an IPv4 address's /24, an IPv6 /64's
+-- /48, as text ("192.0.2.0/24", "2001:db8:1::/48").
+function _M.wide_network(bytes, bits)
+  local a, keep, len = {}, 3, 24
+  if bits ~= 32 then keep, len = 6, 48 end
+  for i = 1, #bytes do a[i] = i <= keep and bytes[i] or 0 end
+  return _M.format(a) .. "/" .. len
+end
+
 local forbidden_prefixes = {}
 for i = 1, #FORBIDDEN do
   forbidden_prefixes[i] = assert(_M.parse_prefix(FORBIDDEN[i]))

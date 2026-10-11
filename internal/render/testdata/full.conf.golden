@@ -60,7 +60,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "1f1d0d97648440e5",
+            conf_id = "2cbb7a11b212dd9a",
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
@@ -1114,8 +1114,16 @@ http {
             proxy_set_header X-Original-URI $edgeweir_auth_uri;
             proxy_set_header X-Original-Method $edgeweir_auth_method;
             proxy_set_header X-Original-Host $edgeweir_auth_host;
+            proxy_set_header X-Original-URL $scheme://$edgeweir_auth_host$edgeweir_auth_uri;
+            # The names services such as Authelia read: set here, so the
+            # visitor's own copies never reach the service.
+            proxy_set_header X-Forwarded-Method $edgeweir_auth_method;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Host $edgeweir_auth_host;
+            proxy_set_header X-Forwarded-Uri $edgeweir_auth_uri;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
             # The rule's timeout applies in the origin layer; this bounds the
             # local hop.
             proxy_read_timeout 15s;
@@ -1304,8 +1312,16 @@ http {
             proxy_set_header X-Original-URI $edgeweir_auth_uri;
             proxy_set_header X-Original-Method $edgeweir_auth_method;
             proxy_set_header X-Original-Host $edgeweir_auth_host;
+            proxy_set_header X-Original-URL $scheme://$edgeweir_auth_host$edgeweir_auth_uri;
+            # The names services such as Authelia read: set here, so the
+            # visitor's own copies never reach the service.
+            proxy_set_header X-Forwarded-Method $edgeweir_auth_method;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Host $edgeweir_auth_host;
+            proxy_set_header X-Forwarded-Uri $edgeweir_auth_uri;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
             # The rule's timeout applies in the origin layer; this bounds the
             # local hop.
             proxy_read_timeout 15s;
@@ -1494,8 +1510,16 @@ http {
             proxy_set_header X-Original-URI $edgeweir_auth_uri;
             proxy_set_header X-Original-Method $edgeweir_auth_method;
             proxy_set_header X-Original-Host $edgeweir_auth_host;
+            proxy_set_header X-Original-URL $scheme://$edgeweir_auth_host$edgeweir_auth_uri;
+            # The names services such as Authelia read: set here, so the
+            # visitor's own copies never reach the service.
+            proxy_set_header X-Forwarded-Method $edgeweir_auth_method;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Host $edgeweir_auth_host;
+            proxy_set_header X-Forwarded-Uri $edgeweir_auth_uri;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $edgeweir_forwarded_for;
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
             # The rule's timeout applies in the origin layer; this bounds the
             # local hop.
             proxy_read_timeout 15s;

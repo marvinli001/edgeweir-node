@@ -108,6 +108,7 @@ local bots = require("edgeweir.bots")
 local reasons = require("edgeweir.reasons")
 local geoip = require("edgeweir.geoip")
 local accesslogs = require("edgeweir.accesslogs")
+local uripath = require("edgeweir.uripath")
 
 local _M = {}
 
@@ -295,7 +296,9 @@ local function access()
   end
 
   local host = var.host
-  local token = var.uri:match("^/%.well%-known/acme%-challenge/([A-Za-z0-9_-]+)$")
+  -- HTTP-01 on the raw path: a path that only normalizes to one (such as
+  -- "/x/..%2F.well-known/acme-challenge/t") skips nothing (edgeweir.uripath).
+  local token = uripath.raw_path(var.request_uri or ""):match("^/%.well%-known/acme%-challenge/([A-Za-z0-9_-]+)$")
   if token then
     for _, challenge in ipairs(store.config().http_challenges or {}) do
       if challenge.domain == host and challenge.token == token and challenge.expires_at > ngx.time() then
@@ -394,7 +397,7 @@ local function access()
   local original_path = var.uri
   -- Maintenance: 503 and the maintenance page, but for allowed addresses
   -- and paths and HTTP-01 requests for the origin; nothing is cached.
-  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path) then
+  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path, uripath.request_ambiguous()) then
     reasons.set("maintenance")
     return errorpages.maintenance(site)
   end
@@ -518,7 +521,9 @@ local function access()
   var.edgeweir_origin_layer = _M.origin_layer(site)
 
   local method = ngx.req.get_method()
-  if (method ~= "GET" and method ~= "HEAD") or acme then
+  -- An ambiguous path may be another path at the origin than the key's
+  -- (edgeweir.uripath): never stored or served from the cache.
+  if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous() then
     var.edgeweir_range_mode = "pass"
     return true
   end
@@ -610,14 +615,15 @@ end
 
 -- maintenance_allowed reports whether a request of a site in maintenance
 -- is served as usual: its client address in the allowed CIDRs or its
--- original path under an allowed prefix.
-function _M.maintenance_allowed(site, addr, path)
+-- original path under an allowed prefix (not an ambiguous one,
+-- edgeweir.uripath).
+function _M.maintenance_allowed(site, addr, path, ambiguous)
   local allow = site._maintenance_allow
   if allow and addr and allow(addr) then
     return true
   end
   local prefixes = site.maintenance.allow_prefixes
-  if type(prefixes) == "table" then
+  if type(prefixes) == "table" and not ambiguous then
     for i = 1, #prefixes do
       local p = prefixes[i]
       if sub(path, 1, #p) == p then
