@@ -61,8 +61,9 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "81ff2c310e226146",
-            geoip_socket = "/run/edgeweir-node/control.sock.geo",
+            conf_id = "6ba2a23c2c98b86f",
+            -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
+            geoip_socket = "",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "/run/edgeweir-node/agent.sock",
             -- Bans held in edgeweir_bans (edgeweir.bans).

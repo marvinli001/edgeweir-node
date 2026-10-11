@@ -68,7 +68,8 @@ http {
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
             conf_id = "{{ .ConfID }}",
-            geoip_socket = "{{ .GeoIPSocket }}",
+            -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
+            geoip_socket = "{{ if .GeoIPServed }}{{ .GeoIPSocket }}{{ end }}",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
             agent_socket = "{{ .AgentSocket }}",
             -- Bans held in edgeweir_bans (edgeweir.bans).

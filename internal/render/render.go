@@ -57,7 +57,12 @@ type Params struct {
 	// (edgeweir.router).
 	EdgeSocket    string
 	EdgeTLSSocket string
-	GeoIPSocket   string
+	// GeoIPSocket is the agent's GeoIP lookup socket (default:
+	// ControlSocket + ".geo"). nginx.conf names it only when GeoIPServed
+	// is set: without a GeoIP database the agent serves nothing there, and
+	// an empty geoip_socket keeps the workers from trying to connect.
+	GeoIPSocket string
+	GeoIPServed bool
 	// AgentSocket is the agent's unix socket for the data plane's requests
 	// (PURGE method; default: agent.sock next to ControlSocket).
 	AgentSocket string

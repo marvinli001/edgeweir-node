@@ -65,6 +65,7 @@ func TestRenderFullGolden(t *testing.T) {
 	p.WorkerConnections = 8192
 	p.WorkerRlimitNofile = 65536
 	p.TrustedCA = "/etc/ssl/certs/ca-certificates.crt"
+	p.GeoIPServed = true
 	plan := &configir.Plan{
 		Listeners: []configir.Listener{
 			{Port: 80, HTTP2: true},
@@ -84,6 +85,45 @@ func TestRenderFullGolden(t *testing.T) {
 		t.Fatal("site data leaked into nginx.conf")
 	}
 	golden(t, "full.conf.golden", got)
+}
+
+// Package-installed nodes have no GeoIP database: the agent serves no
+// GeoIP socket, so nginx.conf must not name one (a worker connecting to a
+// missing socket logs a [crit] line on every soft lookup).
+func TestRenderGeoIPSocketOnlyWhenServed(t *testing.T) {
+	for _, tc := range []struct {
+		served bool
+		p      func() Params
+		want   string
+	}{
+		{false, params, `geoip_socket = "",`},
+		{true, params, `geoip_socket = "/run/edgeweir-node/control.sock.geo",`},
+		{true, func() Params { p := params(); p.GeoIPSocket = "/run/geo/lookup.sock"; return p }, `geoip_socket = "/run/geo/lookup.sock",`},
+		{false, func() Params { p := params(); p.GeoIPSocket = "/run/geo/lookup.sock"; return p }, `geoip_socket = "",`},
+	} {
+		p := tc.p()
+		p.GeoIPServed = tc.served
+		got, err := Render(p, configir.Bootstrap(80))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := bytes.Count(got, []byte("geoip_socket = ")); n != 1 {
+			t.Fatalf("served=%v: %d geoip_socket lines", tc.served, n)
+		}
+		if !bytes.Contains(got, []byte(tc.want)) {
+			t.Errorf("served=%v socket=%q: nginx.conf lacks %s", tc.served, p.GeoIPSocket, tc.want)
+		}
+		if !tc.served && bytes.Contains(got, []byte(p.WithDefaults().GeoIPSocket)) {
+			t.Errorf("served=false: nginx.conf names the GeoIP socket %q", p.WithDefaults().GeoIPSocket)
+		}
+	}
+	// The socket path is still checked when nothing is served: the agent
+	// serves it as soon as a database is configured.
+	p := params()
+	p.GeoIPSocket = "/run/geo sock"
+	if _, err := Render(p, configir.Bootstrap(80)); err == nil {
+		t.Error("unsafe GeoIP socket accepted while not served")
+	}
 }
 
 func TestRenderIgnoresHotSiteFieldsAndRevision(t *testing.T) {

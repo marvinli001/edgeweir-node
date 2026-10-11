@@ -64,7 +64,9 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 			break
 		}
 	}
-	conf, err := render.Render(a.cfg.Render, plan)
+	params := a.cfg.Render
+	params.GeoIPServed = len(a.geoFeatures) > 0
+	conf, err := render.Render(params, plan)
 	if err != nil {
 		return &permanentError{err}
 	}
