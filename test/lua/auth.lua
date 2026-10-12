@@ -342,6 +342,37 @@ test("an ambiguous raw path is in every path scope and under no exclusion (edgew
   -- "//" is no ambiguity: its own rule, no 400.
   local _, _, fake = with_request({ host = "a.test", raw = "/team//x", uri = "/team/x" }, function() auth.select(two, false) end)
   eq(fake.ctx.edgeweir_auth and fake.ctx.edgeweir_auth.rule and fake.ctx.edgeweir_auth.rule.id, "team", "// keeps its rule")
+  -- One forward rule: the service would decide on a path the origin may read
+  -- otherwise, so it is refused too and the service is not asked.
+  local fwd = site({ rule("forward", { path_prefixes = { "/app/" } }) })
+  local ok = { status = 200, header = {}, body = "" }
+  local state
+  result, state = with_request({ host = "a.test", raw = "/app/..%2Fadmin/x", uri = "/admin/x", answer = ok }, function()
+    auth.select(fwd, false)
+    return auth.check(fwd, policy.site_https_redirect)
+  end)
+  eq(result and result.status, 400, "one forward rule"); eq(result.code, "auth-path-ambiguous")
+  eq(state.captures, 0, "the service is not asked")
+  result, state = with_request({ host = "a.test", raw = "/public/x;v=1", uri = "/public/x;v=1", answer = ok }, function()
+    auth.select(fwd, false)
+    return auth.check(fwd, policy.site_https_redirect)
+  end)
+  eq(result and result.code, "auth-path-ambiguous", "outside the rule's prefixes too")
+  result, state = with_request({ host = "a.test", raw = "/app/x", uri = "/app/x", answer = ok }, function()
+    auth.select(fwd, false)
+    return auth.check(fwd, policy.site_https_redirect)
+  end)
+  eq(result, nil, "an unambiguous path asks the service"); eq(state.captures, 1)
+  local other = site({ rule("forward", { domains = { "b.test" } }) })
+  _, _, fake = with_request({ host = "a.test", raw = "/app/..%2Fx", uri = "/x" }, function() auth.select(other, false) end)
+  eq(fake.ctx.edgeweir_auth, nil, "a host no rule covers is not refused")
+  -- One rule of another kind needs no path decision: its credentials, no 400.
+  local one = site({ rule("basic", { path_prefixes = { "/team/" } }) })
+  result = with_request({ host = "a.test", raw = "/team/..%2Fadmin/x", uri = "/admin/x" }, function()
+    auth.select(one, false)
+    return auth.check(one, policy.site_https_redirect)
+  end)
+  assert(result and result.respond, "one Basic rule asks for credentials")
 end)
 
 test("identity headers rules set are removed from requests no rule checks", function()

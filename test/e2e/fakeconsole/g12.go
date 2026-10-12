@@ -34,6 +34,7 @@ import (
 //	                3xx on, /open/ lets requests through when the service
 //	                fails, /down/ asks a failing service, everything else
 //	                /check with answers cached 30 s
+//	fwd1.g12.test   one forward authentication rule (/check, /app/ only)
 //
 // The authentication service on :8086: /check answers 200 with X-Auth-User
 // for the cookie sid=good, else 401 (Bearer challenge, JSON body); /login
@@ -147,7 +148,10 @@ func g12Config(origin string) *nodev1.NodeConfig {
 	f.AuthRules[0].PathPrefixes = []string{"/login/"}
 	f.AuthRules[1].PathPrefixes = []string{"/open/"}
 	f.AuthRules[2].PathPrefixes = []string{"/down/"}
-	cfg := config(append(baseSites(origin), b, sc, u, f)...)
+	one := site("site-g12f1", "fwd1.g12.test", origin, 80)
+	one.AuthRules = []*nodev1.AuthRule{g12Forward("g12-one", "/check", func(*nodev1.ForwardAuth) {})}
+	one.AuthRules[0].PathPrefixes = []string{"/app/"}
+	cfg := config(append(baseSites(origin), b, sc, u, f, one)...)
 	cfg.RequiredFeatures = append(cfg.RequiredFeatures, configir.FeatureAccessAuth)
 	return cfg
 }

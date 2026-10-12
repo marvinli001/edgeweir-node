@@ -1431,6 +1431,13 @@ r=$(req fwd.g12.test /down/x)
 [ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "503 auth-unavailable" ] || fail "forward: a failing service: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
 [ "$(status_of "$(req fwd.g12.test /open/x)")" = 200 ] || fail "forward: a failing service that lets requests through"
 pass "G12: forward authentication allows, refuses (401 passed on), redirects, copies headers, caches answers, 503 when unavailable"
+before=$(auth_calls)
+r=$(req fwd1.g12.test '/app/..%2Fx' --path-as-is -H 'Cookie: sid=good')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "400 auth-path-ambiguous" ] || fail "one forward rule: an ambiguous path: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ "$(auth_calls)" = "$before" ] || fail "one forward rule: the service was asked about an ambiguous path"
+[ "$(status_of "$(req fwd1.g12.test /app/x -H 'Cookie: sid=good')")" = 200 ] || fail "one forward rule: an allowed request"
+[ "$(status_of "$(req fwd1.g12.test /other/x -H 'Cookie: sid=bad')")" = 200 ] || fail "one forward rule: a path outside its scope"
+pass "G12: one forward authentication rule refuses an ambiguous path (400) without asking the service"
 
 leaks=$(compose logs node 2>&1 | grep -c 'g12-password\|g12-url-key\|g12-backup-key\|pbkdf2-sha256' || true)
 [ "$leaks" = 0 ] || fail "the node's logs carry a G12 secret ($leaks lines)"

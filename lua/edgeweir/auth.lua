@@ -13,7 +13,10 @@
 -- path segments, cut from the normalized $uri), so that maintenance, CC,
 -- the rules (http.request.uri and full_uri included), the cache key, purge
 -- markers and the origin see the URI without it. HTTP-01 requests and the
--- reserved prefix /.edgeweir/ are never selected.
+-- reserved prefix /.edgeweir/ are never selected. An ambiguous raw path
+-- (edgeweir.uripath) is refused with 400 auth-path-ambiguous when more than
+-- one rule covers the host, or when the one rule is forward authentication
+-- (the service decides on a path the origin may read otherwise).
 --
 -- check(site, https_redirect) runs inside edgeweir.policy after the
 -- platform allow and block lists, before the rule phases (the local
@@ -306,12 +309,14 @@ function _M.select(site, acme, headers)
   local no_exemption = uripath.request_no_exemption()
   if ambiguous then
     -- The origin may route an ambiguous path under any rule's scope: with
-    -- more than one rule for the host, which one applies cannot be told.
-    local matched = 0
+    -- more than one rule for the host, which one applies cannot be told. A
+    -- forward authentication service decides on the path it is given, which
+    -- the origin may read otherwise, so its rule refuses one too.
+    local matched, only = 0, nil
     for i = 1, #rules do
-      if domain_match(rules[i], host) then matched = matched + 1 end
+      if domain_match(rules[i], host) then matched = matched + 1; only = rules[i] end
     end
-    if matched > 1 then
+    if matched > 1 or (only and only.kind == "forward") then
       ngx.ctx.edgeweir_auth = { ambiguous = true, request_uri = request_uri }
       return
     end
