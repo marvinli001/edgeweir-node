@@ -1348,6 +1348,9 @@ r=$(req basic.g12.test /g12-basic)
 [ "$(status_of "$r")" = 401 ] || fail "Basic without credentials: $(status_of "$r")"
 [ "$(header_of "$r" WWW-Authenticate)" = 'Basic realm="G12", charset="UTF-8"' ] || fail "Basic challenge: $(header_of "$r" WWW-Authenticate)"
 [ "$(header_of "$r" X-Edgeweir-Error)" = auth-required ] || fail "Basic error code: $(header_of "$r" X-Edgeweir-Error)"
+# The rules never see the identity headers a visitor sends: g12-identity
+# (X-Auth-User: mallory, 403) stays quiet.
+[ "$(status_of "$(req basic.g12.test /g12-basic -H 'X-Auth-User: mallory')")" = 401 ] || fail "a rule saw the visitor's X-Auth-User"
 r=$(req basic.g12.test /g12-basic -u alice:g12-password -H 'X-Auth-User: mallory')
 [ "$(status_of "$r")" = 200 ] || fail "Basic with credentials: $(status_of "$r")"
 grep -q '^X-Auth-User: alice$' <<<"$r" || fail "the origin did not get X-Auth-User"

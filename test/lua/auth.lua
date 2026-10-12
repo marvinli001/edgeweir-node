@@ -361,6 +361,14 @@ test("identity headers rules set are removed from requests no rule checks", func
   _, state = with_request({ uri = "/app/x", headers = { ["x-auth-user"] = "root", ["x-user"] = "mallory" } }, function() auth.select(s, false) end)
   eq(state.headers["x-auth-user"], nil, "checked by the forward rule")
   eq(state.headers["x-user"], nil)
+  -- The request headers the rules read (edgeweir.router's snapshot, taken
+  -- before select) lose them as well, HTTP-01 requests included.
+  for _, acme in ipairs({ false, true }) do
+    local snapshot = { ["x-auth-user"] = "mallory", ["x-user"] = "mallory", ["x-groups"] = "admins", ["x-other"] = "kept" }
+    with_request({ uri = "/admin/x", headers = { ["x-auth-user"] = "mallory" } }, function() auth.select(s, acme, snapshot) end)
+    eq(snapshot["x-auth-user"], nil, "snapshot"); eq(snapshot["x-user"], nil); eq(snapshot["x-groups"], nil)
+    eq(snapshot["x-other"], "kept")
+  end
 end)
 
 test("scope of B and C uses the path without the signature", function()

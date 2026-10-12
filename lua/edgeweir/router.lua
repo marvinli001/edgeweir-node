@@ -384,9 +384,10 @@ local function access()
   end
   -- Access authentication: the rule, and a signed URL's signature removed
   -- before anything reads the path (edgeweir.auth); checked after the
-  -- platform lists (edgeweir.policy).
+  -- platform lists (edgeweir.policy). The identity headers the visitor sent
+  -- are gone from headers too: the rules never read them.
   if site._auth then
-    auth.select(site, acme)
+    auth.select(site, acme, headers)
   end
   -- From here on the path carries no signature (edgeweir.accesslogs.path).
   ngx.ctx.edgeweir_path_clean = true

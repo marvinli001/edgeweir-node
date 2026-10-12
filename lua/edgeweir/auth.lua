@@ -3,15 +3,17 @@
 --
 -- prepare(site) compiles a site's rules when the site table is installed.
 --
--- select(site, acme) runs in the edge layer's access phase after bans and
--- the PURGE method, before maintenance, CC and the rules: it picks the
--- first enabled rule whose scope the request matches (domains, path
--- prefixes, extensions, excluded prefixes) and, for signed URLs, parses the
--- signature and removes it at once (kinds A and D: their query parameters;
--- B and C: the two leading path segments, cut from the normalized $uri), so
--- that maintenance, CC, the rules (http.request.uri and full_uri included),
--- the cache key, purge markers and the origin see the URI without it. HTTP-01
--- requests and the reserved prefix /.edgeweir/ are never selected.
+-- select(site, acme, headers) runs in the edge layer's access phase after
+-- bans and the PURGE method, before maintenance, CC and the rules: it
+-- removes the identity headers rules set from the request and from headers
+-- (the request headers the rules read), picks the first enabled rule whose
+-- scope the request matches (domains, path prefixes, extensions, excluded
+-- prefixes) and, for signed URLs, parses the signature and removes it at
+-- once (kinds A and D: their query parameters; B and C: the two leading
+-- path segments, cut from the normalized $uri), so that maintenance, CC,
+-- the rules (http.request.uri and full_uri included), the cache key, purge
+-- markers and the origin see the URI without it. HTTP-01 requests and the
+-- reserved prefix /.edgeweir/ are never selected.
 --
 -- check(site, https_redirect) runs inside edgeweir.policy after the
 -- platform allow and block lists, before the rule phases (the local
@@ -273,19 +275,25 @@ function _M.parse_segments(kind, raw_path)
   return { ts = ts, hash = hash, rest = rest, prefix = "/" .. first .. "/" .. second }
 end
 
--- select picks the request's rule and removes a signed URL's signature
--- (see the module comment). acme: an HTTP-01 request.
-local function clear_identity(site)
+-- clear_identity removes the identity headers from the request and from
+-- headers (lower-case names, as ngx.req.get_headers returns them).
+local function clear_identity(site, headers)
   local names = site._auth_identity
-  for i = 1, #names do ngx.req.clear_header(names[i]) end
+  for i = 1, #names do
+    ngx.req.clear_header(names[i])
+    if headers then headers[names[i]] = nil end
+  end
 end
 
-function _M.select(site, acme)
+-- select picks the request's rule and removes a signed URL's signature
+-- (see the module comment). acme: an HTTP-01 request; headers: the
+-- request headers the rules read (edgeweir.router).
+function _M.select(site, acme, headers)
   local rules = site._auth
   if not rules then return end
-  -- Only the node sets these: removed from every request, set again by the
-  -- rule that checks it.
-  clear_identity(site)
+  -- Only the node sets these: removed from every request (and from what the
+  -- rules read), set again by the rule that checks it.
+  clear_identity(site, headers)
   if acme then return end
   local var = ngx.var
   local uri = var.uri

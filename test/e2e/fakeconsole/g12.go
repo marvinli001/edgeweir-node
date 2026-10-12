@@ -22,7 +22,9 @@ import (
 // G12 (access-auth-v1, ADR-0038): the sites, all with the whoami origin
 // (it echoes the request) and the base site's "cache everything" rule:
 //
-//	basic.g12.test  Basic (alice / g12-password), X-Auth-User to the origin
+//	basic.g12.test  Basic (alice / g12-password), X-Auth-User to the origin;
+//	                rule g12-identity blocks X-Auth-User: mallory (the rules
+//	                never see the identity headers a visitor sends)
 //	scope.g12.test  Basic under /admin/ only, /admin/public/ excluded (paths
 //	                that may route under it at the origin are checked too,
 //	                edgeweir.uripath)
@@ -120,6 +122,9 @@ func g12Config(origin string) *nodev1.NodeConfig {
 	b := site("site-g12b", "basic.g12.test", origin, 80)
 	b.AuthRules = []*nodev1.AuthRule{{Id: "g12-basic", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "g12-basic",
 		CredentialVersion: 1, Basic: &nodev1.BasicAuth{Realm: "G12", UserHeader: true}}}
+	b.Rules = append(b.Rules, &nodev1.EdgeRule{Id: "g12-identity", Phase: "waf-custom",
+		Expression: &nodev1.RuleExpression{Op: "eq", Field: "http.request.headers.x-auth-user", ValueType: "string", Value: "mallory"},
+		Action:     &nodev1.RuleAction{Kind: "block", StatusCode: 403}})
 	sc := site("site-g12s", "scope.g12.test", origin, 80)
 	sc.AuthRules = []*nodev1.AuthRule{{Id: "g12-scope", Kind: nodev1.AuthKind_AUTH_KIND_BASIC, CredentialId: "g12-basic",
 		CredentialVersion: 1, PathPrefixes: []string{"/admin/"}, ExcludePathPrefixes: []string{"/admin/public/"},
