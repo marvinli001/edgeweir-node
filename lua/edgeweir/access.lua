@@ -7,7 +7,8 @@
 -- "*" any host), the host of a Referer, origin forms and request Origins
 -- (scheme, lowercase host and port; the default port left out; "*." one
 -- label), path scopes (prefixes of the normalized path, $uri with a signed
--- URL's signature removed), user agent rules (the rule engine's wildcard,
+-- URL's signature removed; ASCII case-insensitive, excluded prefixes and
+-- CORS prefixes exact), user agent rules (the rule engine's wildcard,
 -- edgeweir.expressions), hotlink, geo, the Access-Control-Allow-Origin of
 -- an Origin and WebSocket origins.
 --
@@ -255,16 +256,36 @@ local function starts_with_any(path, prefixes)
   return false
 end
 
+-- under_prefix tells whether path starts with one of prefixes, ignoring the
+-- case of ASCII letters (LuaJIT's string.lower folds A-Z only, whatever the
+-- locale).
+local function under_prefix(path, prefixes)
+  local folded = lower(path)
+  for i = 1, #prefixes do
+    local p = lower(prefixes[i])
+    if sub(folded, 1, #p) == p then return true end
+  end
+  return false
+end
+
 -- path_in_scope tells whether path is under a prefix (none: every path) and
--- under no excluded one. An ambiguous path (edgeweir.uripath) is in every
+-- under no excluded one. Prefixes ignore the case of ASCII letters (an
+-- origin may not tell /Admin from /admin), excluded prefixes match exactly;
+-- nothing is decoded. An ambiguous path (edgeweir.uripath) is in every
 -- scope and under no excluded prefix; no_exemption (a raw path with "//",
 -- edgeweir.uripath.no_exemption): under no excluded prefix.
 function _M.path_in_scope(path, prefixes, excluded, ambiguous, no_exemption)
   if ambiguous then return true end
-  if prefixes and #prefixes > 0 and not starts_with_any(path, prefixes) then return false end
+  if prefixes and #prefixes > 0 and not under_prefix(path, prefixes) then return false end
   return no_exemption or not (excluded and starts_with_any(path, excluded))
 end
 local path_in_scope = _M.path_in_scope
+
+-- cors_in_scope tells whether path is under one of the CORS prefixes (none:
+-- every path). CORS grants access, so its prefixes match exactly.
+local function cors_in_scope(path, prefixes)
+  return #prefixes == 0 or starts_with_any(path, prefixes)
+end
 
 -- valid_user_agent_pattern: "" or 1-512 printable ASCII bytes forming a
 -- wildcard (a backslash only before "*" or "\", at most 8 "*").
@@ -364,13 +385,14 @@ end
 
 -- hotlink_decision returns "skip" for requests out of scope, else "pass"
 -- or "deny". extension: http.request.uri.path.extension; site_host(host)
--- tells whether the node resolves host to the site. An ambiguous path
--- (edgeweir.uripath) is in scope and never the redirect target;
--- no_exemption (a raw path with "//"): under no excluded prefix and never
--- the redirect target.
+-- tells whether the node resolves host to the site. Path prefixes ignore
+-- ASCII case as in path_in_scope; excluded prefixes and the redirect target
+-- match exactly. An ambiguous path (edgeweir.uripath) is in scope and never
+-- the redirect target; no_exemption (a raw path with "//"): under no
+-- excluded prefix and never the redirect target.
 function _M.hotlink_decision(c, path, extension, referer, origin, site_host, ambiguous, no_exemption)
   if not ambiguous then
-    local selected = c.everything or (c.extensions ~= nil and c.extensions[extension] == true) or starts_with_any(path, c.prefixes)
+    local selected = c.everything or (c.extensions ~= nil and c.extensions[extension] == true) or under_prefix(path, c.prefixes)
     if not selected then return "skip" end
     if not no_exemption then
       if starts_with_any(path, c.excludes) then return "skip" end
@@ -651,7 +673,7 @@ function _M.check(site, values, platform_allowed, site_allowed)
   if cors and not cors.to_origin and ngx.req.get_method() == "OPTIONS" then
     local origin, method = var.http_origin, var.http_access_control_request_method
     -- CORS grants access: an ambiguous path is outside its scope.
-    if origin and origin ~= "" and method and method ~= "" and not ambiguous and path_in_scope(path, cors.prefixes) then
+    if origin and origin ~= "" and method and method ~= "" and not ambiguous and cors_in_scope(path, cors.prefixes) then
       local allow = _M.cors_allow_origin(cors, origin)
       if not allow then return CORS_DENIED end
       local requested = values["http.request.headers.access-control-request-headers"]
@@ -752,7 +774,7 @@ function _M.response_headers(site, h, path)
   if cors and not ngx.ctx.edgeweir_preflight and uripath.request_ambiguous() then
     -- Outside the CORS scope, and the origin's own CORS headers grant nothing.
     strip_cors(h)
-  elseif cors and not ngx.ctx.edgeweir_preflight and path_in_scope(path or "", cors.prefixes) then
+  elseif cors and not ngx.ctx.edgeweir_preflight and cors_in_scope(path or "", cors.prefixes) then
     local names = ORIGIN_VARY
     if not (cors.keep and h["Access-Control-Allow-Origin"] ~= nil) then
       strip_cors(h)

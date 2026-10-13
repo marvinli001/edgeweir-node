@@ -309,6 +309,8 @@ test("geo: 403 geo-denied in scope, a failing lookup 503 policy-unavailable, non
   end
   local ok, err = pcall(function()
     denied({ addr = "192.0.2.77", uri = "/geo/x" }, 403, "geo-denied")
+    -- The origin may not tell /GEO/ from /geo/: scope prefixes ignore ASCII case.
+    denied({ addr = "192.0.2.77", uri = "/GEO/x" }, 403, "geo-denied", "the prefix in another case")
     passes({ addr = "192.0.2.78", uri = "/geo/x" }, "another country")
     denied({ addr = "192.0.2.99", uri = "/geo/x" }, 503, "policy-unavailable", "lookup failure")
     lookups = 0
@@ -355,6 +357,8 @@ test("CORS preflights: 204 at the edge with the preflight headers, 403 for other
   -- Not preflights: outside the scope, without Access-Control-Request-Method,
   -- other methods.
   passes({ method = "OPTIONS", uri = "/static/x", headers = { origin = "https://app.test", ["access-control-request-method"] = "GET" } })
+  -- CORS grants access: its prefixes match exactly.
+  passes({ method = "OPTIONS", uri = "/API/x", headers = { origin = "https://app.test", ["access-control-request-method"] = "GET" } })
   passes({ method = "OPTIONS", uri = "/api/x", headers = { origin = "https://app.test" } })
   passes({ method = "GET", uri = "/api/x", headers = { origin = "https://evil.test", ["access-control-request-method"] = "GET" } })
   -- Handed to the origin, through the later steps (a user agent rule).
@@ -399,6 +403,7 @@ test("hotlink: 403 hotlink-denied, own domains, empty referers, scope, exemption
   denied(img("android-app://x/"), 403, "hotlink-denied", "unparseable")
   passes({ uri = "/i/a.css", headers = { referer = "https://evil.test/" } }, "another extension")
   denied({ uri = "/dl/a.zip", headers = { referer = "https://evil.test/" } }, 403, "hotlink-denied", "path prefix")
+  denied({ uri = "/Dl/a.zip", headers = { referer = "https://evil.test/" } }, 403, "hotlink-denied", "path prefix in another case")
   passes(img("https://evil.test/", { addr = "192.0.2.50" }), "site allow list")
   denied(img("https://evil.test/", { addr = "198.51.100.10" }), 403, "hotlink-denied", "platform allow lists do not skip it")
   -- HTTP-01 requests for the origin and the local listeners skip steps 4-8.
@@ -423,6 +428,7 @@ test("user agents: an allow rule beats deny rules, excluded paths, exemptions", 
   passes({ headers = { ["user-agent"] = "Mozilla/5.0" } })
   passes({}, "no User-Agent")
   passes({ uri = "/robots.txt", headers = { ["user-agent"] = "curl/8" } }, "excluded path")
+  denied({ uri = "/ROBOTS.TXT", headers = { ["user-agent"] = "curl/8" } }, 403, "ua-denied", "excluded paths match exactly")
   -- nginx merges "//" in $uri; the origin may not: no exclusion applies.
   passes({ uri = "/robots.txt/x", headers = { ["user-agent"] = "curl/8" } }, "excluded path, deeper")
   denied({ uri = "/robots.txt/x", raw = "/robots.txt//x", headers = { ["user-agent"] = "curl/8" } }, 403, "ua-denied", "// under an excluded path")
