@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 )
@@ -317,5 +319,60 @@ func TestProbeCommand(t *testing.T) {
 	}
 	if n, _ := console.ProbeCounters(); n != 0 {
 		t.Fatal("probe token sent despite the pin mismatch")
+	}
+}
+
+// TestSetServerCommand: set-server checks the address with the node's
+// identity first and changes nothing when the check fails.
+func TestSetServerCommand(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := realMain([]string{"set-server"}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "--server is required") {
+		t.Fatalf("without --server: code=%d stderr=%q", code, errOut.String())
+	}
+	errOut.Reset()
+	if code := realMain([]string{"set-server", "--server", "https://user@console.test"}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "credentials") {
+		t.Fatalf("userinfo: code=%d stderr=%q", code, errOut.String())
+	}
+	dir := filepath.Join(t.TempDir(), "state")
+	errOut.Reset()
+	if code := realMain([]string{"set-server", "--server", "https://console.test", "--state-dir", dir}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "not enrolled") {
+		t.Fatalf("not enrolled: code=%d stderr=%q", code, errOut.String())
+	}
+
+	console, err := fakeconsole.New(fakeconsole.Options{NodeID: "node-cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := console.StartTLS(t)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	console.AddToken("cli-token")
+	if _, err := enroll.Run(context.Background(), enroll.Options{ServerURL: "https://127.0.0.1:" + port, Token: "cli-token", CASHA256: console.CA.Pin(), StateDir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	idFile := filepath.Join(dir, "identity.json")
+	before, _ := os.ReadFile(idFile)
+	errOut.Reset()
+	if code := realMain([]string{"set-server", "--server", "https://127.0.0.1:1", "--state-dir", dir}, &out, &errOut); code != 1 ||
+		!strings.Contains(errOut.String(), "(unreachable)") || !strings.Contains(errOut.String(), "nothing changed") {
+		t.Fatalf("unreachable: code=%d stderr=%q", code, errOut.String())
+	}
+	if after, _ := os.ReadFile(idFile); !bytes.Equal(before, after) {
+		t.Fatal("identity.json changed after a failed check")
+	}
+	out.Reset()
+	if code := realMain([]string{"set-server", "--server", "https://localhost:" + port, "--state-dir", dir}, &out, &errOut); code != 0 ||
+		!strings.Contains(out.String(), "now https://localhost:"+port) {
+		t.Fatalf("set-server: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	var id struct {
+		NodeID   string `json:"node_id"`
+		Server   string `json:"server_url"`
+		Fallback string `json:"fallback_server_url"`
+		Source   string `json:"server_source"`
+	}
+	raw, _ := os.ReadFile(idFile)
+	if err := json.Unmarshal(raw, &id); err != nil || id.NodeID != "node-cli" || id.Server != "https://localhost:"+port ||
+		id.Fallback != "https://127.0.0.1:"+port || id.Source != "command" {
+		t.Fatalf("identity.json = %s (%v)", raw, err)
 	}
 }

@@ -6,6 +6,7 @@
 //	                  [--lua-dir DIR] [--control-socket PATH] [--kernel-bans auto|off] ...
 //	EDGEWEIR_TOKEN=T edgeweir-node probe --server URL --ca-sha256 HEX [--server-name N] [--state-dir DIR]
 //	edgeweir-node probe [--state-dir DIR]   (once enrolled)
+//	edgeweir-node set-server --server URL [--server-name N] [--probe] [--state-dir DIR]
 //	edgeweir-node healthcheck [--control-socket PATH]
 //	edgeweir-node bans [--control-socket PATH] [--list]
 //	edgeweir-node security [--control-socket PATH]
@@ -85,6 +86,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdRunMode(args[1:], stderr, true)
 	case "probe":
 		return cmdProbe(args[1:], stderr)
+	case "set-server":
+		return cmdSetServer(args[1:], stdout, stderr)
 	case "healthcheck":
 		return cmdHealthcheck(args[1:], stderr)
 	case "bans":
@@ -120,6 +123,7 @@ Usage:
   edgeweir-node supervise --manage-nginx [flags]
   EDGEWEIR_TOKEN=TOKEN edgeweir-node probe --server URL --ca-sha256 HEX [flags]
   edgeweir-node probe [--state-dir DIR]
+  edgeweir-node set-server --server URL [--server-name N] [--probe] [--state-dir DIR]
   edgeweir-node healthcheck [--control-socket PATH]
   edgeweir-node bans [--control-socket PATH] [--list]
   edgeweir-node security [--control-socket PATH]
