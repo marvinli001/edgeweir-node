@@ -516,8 +516,15 @@ local function access()
     return true
   end
   -- The site's body limit (a config rule's for this request) by
-  -- Content-Length; chunked bodies are bounded by client_max_body_size.
-  if _M.body_too_large(pctx and pctx.body_limit, site.body_limit, var.http_content_length) then
+  -- Content-Length. A body without one (chunked, or HTTP/2 and HTTP/3
+  -- without Content-Length) is read here, up to client_max_body_size (the
+  -- largest limit of the sites; nginx answers 413 past it), and checked by
+  -- the size read: the CRS and the origin layer get the body read.
+  local rule_limit = pctx and pctx.body_limit
+  if _M.body_too_large(rule_limit, site.body_limit, var.http_content_length) then
+    return deny(413, "body-too-large", "request body too large")
+  end
+  if _M.unsized_body_too_large(rule_limit, site.body_limit) then
     return deny(413, "body-too-large", "request body too large")
   end
   var.edgeweir_origin_layer = _M.origin_layer(site)
@@ -647,6 +654,23 @@ function _M.body_too_large(rule_limit, site_limit, content_length)
   limit = tonumber(limit)
   local length = tonumber(content_length)
   return limit ~= nil and limit > 0 and length ~= nil and length > limit
+end
+
+-- unsized_body_too_large reads the body of a request without
+-- Content-Length that may have one (HTTP/1.x with Transfer-Encoding,
+-- HTTP/2 and HTTP/3) when a limit applies, and reports whether it exceeds
+-- it. nginx reads chunked, HTTP/2 and HTTP/3 bodies up to
+-- client_max_body_size and then sets $content_length to the size read.
+function _M.unsized_body_too_large(rule_limit, site_limit)
+  local limit = rule_limit
+  if limit == nil then limit = site_limit end
+  limit = tonumber(limit)
+  if not limit or limit <= 0 then return false end
+  local var = ngx.var
+  if var.http_content_length ~= nil then return false end
+  if ngx.req.http_version() < 2 and var.http_transfer_encoding == nil then return false end
+  ngx.req.read_body()
+  return _M.body_too_large(rule_limit, site_limit, var.content_length)
 end
 
 -- origin_layer returns the edge layer's upstream of the origin layer for a

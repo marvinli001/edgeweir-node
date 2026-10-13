@@ -164,7 +164,7 @@ end)
 test("body limit: the rule's, else the site's, by Content-Length", function()
   eq(router.body_too_large(nil, 100, "101"), true)
   eq(router.body_too_large(nil, 100, "100"), false)
-  eq(router.body_too_large(nil, 100, nil), false, "chunked bodies: nginx's limit only")
+  eq(router.body_too_large(nil, 100, nil), false, "without Content-Length: unsized_body_too_large")
   eq(router.body_too_large(nil, 0, "999999999999"), false, "0: no limit")
   eq(router.body_too_large(1000, 100, "500"), false, "a rule raises the limit")
   eq(router.body_too_large(10, 100, "50"), true, "a rule lowers it")
@@ -175,6 +175,43 @@ test("body limit: the rule's, else the site's, by Content-Length", function()
   eq(ctx.body_limit, 2048)
   local s = site({ body_limit = 104857600 })
   eq(s.body_limit, 104857600)
+end)
+
+test("body limit: bodies without Content-Length are read and checked by their size", function()
+  local runtime = ngx
+  local function check(rule_limit, site_limit, req)
+    local reads = 0
+    local var = { http_content_length = req.length, http_transfer_encoding = req.te, content_length = nil }
+    _G.ngx = setmetatable({
+      var = var,
+      req = {
+        http_version = function() return req.version or 1.1 end,
+        -- nginx sets $content_length to the size read (chunked, HTTP/2, HTTP/3).
+        read_body = function() reads = reads + 1; var.content_length = req.received end,
+      },
+    }, { __index = runtime })
+    local ok, over = pcall(router.unsized_body_too_large, rule_limit, site_limit)
+    _G.ngx = runtime
+    assert(ok, over)
+    return over, reads
+  end
+  local over, reads = check(nil, 1024, { te = "chunked", received = "2000" })
+  eq(over, true, "chunked over the site's limit"); eq(reads, 1)
+  eq((check(nil, 1024, { te = "chunked", received = "1024" })), false, "chunked at the limit")
+  eq((check(nil, 1024, { version = 2, received = "2000" })), true, "HTTP/2 without Content-Length")
+  eq((check(nil, 1024, { version = 3, received = "2000" })), true, "HTTP/3 without Content-Length")
+  eq((check(4096, 1024, { te = "chunked", received = "2000" })), false, "a rule raises the limit")
+  eq((check(100, 1024, { te = "chunked", received = "200" })), true, "a rule lowers it")
+  over, reads = check(0, 1024, { te = "chunked", received = "2000" })
+  eq(over, false, "a rule lifts it"); eq(reads, 0, "nothing read without a limit")
+  over, reads = check(nil, 0, { version = 2, received = "2000" })
+  eq(over, false, "0: no limit"); eq(reads, 0)
+  over, reads = check(nil, 1024, { length = "2000", received = "2000" })
+  eq(over, false, "Content-Length: checked by body_too_large"); eq(reads, 0)
+  over, reads = check(nil, 1024, { received = nil })
+  eq(over, false, "HTTP/1.1 without Content-Length and Transfer-Encoding has no body"); eq(reads, 0)
+  over, reads = check(nil, 1024, { version = 2, received = "0" })
+  eq(over, false, "HTTP/2 without a body"); eq(reads, 1)
 end)
 
 test("maintenance: allowed addresses and paths, the page and Retry-After", function()

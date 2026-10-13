@@ -25,8 +25,9 @@ http {
     tcp_nopush on;
     keepalive_timeout 65s;
     # The largest request body limit of the sites and their rules (0: a site
-    # has none); each site checks its own by Content-Length
-    # (edgeweir.router). Chunked bodies are bounded by this alone.
+    # has none); each site checks its own (edgeweir.router): by
+    # Content-Length, or by the size read up to this for bodies without one
+    # (chunked, HTTP/2 and HTTP/3).
     client_max_body_size 100m;
 
     client_body_temp_path /var/lib/edgeweir-node/nginx/tmp/client_body;
@@ -61,7 +62,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "f00d5aeeb109d40f",
+            conf_id = "2c540c74bd6d7ac2",
             -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
             geoip_socket = "",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
@@ -1370,7 +1371,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "f00d5aeeb109d40f",
+            conf_id = "2c540c74bd6d7ac2",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }

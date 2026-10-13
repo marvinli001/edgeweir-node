@@ -39,8 +39,9 @@ http {
     tcp_nopush on;
     keepalive_timeout 65s;
     # The largest request body limit of the sites and their rules (0: a site
-    # has none); each site checks its own by Content-Length
-    # (edgeweir.router). Chunked bodies are bounded by this alone.
+    # has none); each site checks its own (edgeweir.router): by
+    # Content-Length, or by the size read up to this for bodies without one
+    # (chunked, HTTP/2 and HTTP/3).
     client_max_body_size {{ .ClientMaxBodySize }};
 
     client_body_temp_path {{ .Prefix }}/tmp/client_body;
