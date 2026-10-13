@@ -385,8 +385,9 @@ local function access()
   -- Access authentication: the rule, and a signed URL's signature removed
   -- before anything reads the path (edgeweir.auth); checked after the
   -- platform lists (edgeweir.policy). The identity headers the visitor sent
-  -- are gone from headers too: the rules never read them.
-  if site._auth then
+  -- are gone from headers too: the rules never read them. Sites without
+  -- rules still remove those of their disabled and former rules.
+  if site._auth or site._auth_identity then
     auth.select(site, acme, headers)
   end
   -- From here on the path carries no signature (edgeweir.accesslogs.path).

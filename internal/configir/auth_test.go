@@ -302,3 +302,54 @@ func TestAuthRulesRejectConfiguration(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// TestAuthIdentityHeaders checks Site.auth_identity_headers (proto v1.1.0):
+// built into the site table without rules too, sorted and unique in the
+// canonical form, and what a forward answer could never set is refused.
+func TestAuthIdentityHeaders(t *testing.T) {
+	if !slices.Contains(SupportedFeatures, FeatureAuthIdentityHeaders) {
+		t.Fatalf("SupportedFeatures lacks %s", FeatureAuthIdentityHeaders)
+	}
+	cfg, _ := v0270Vector(t)
+	Canonicalize(cfg)
+	s := vectorSite(cfg, "b")
+	s.AuthIdentityHeaders = []string{"x-user", "x-auth-user", "x-user"}
+	Canonicalize(cfg)
+	if got := strings.Join(s.GetAuthIdentityHeaders(), ","); got != "x-auth-user,x-user" {
+		t.Fatalf("canonical %q", got)
+	}
+	plan, err := Build(cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, site := range plan.Sites {
+		if site.ID != s.GetId() {
+			continue
+		}
+		found = true
+		if len(site.AuthRules) != 0 || strings.Join(site.AuthIdentityHeaders, ",") != "x-auth-user,x-user" {
+			t.Fatalf("site table %v %v", site.AuthRules, site.AuthIdentityHeaders)
+		}
+		raw, _ := json.Marshal(site)
+		if !strings.Contains(string(raw), `"auth_identity_headers":["x-auth-user","x-user"]`) {
+			t.Fatalf("json %s", raw)
+		}
+	}
+	if !found {
+		t.Fatalf("site %s not built", s.GetId())
+	}
+	for _, bad := range [][]string{{"X-User"}, {"cookie"}, {"authorization"}, {"host"}, {"x user"}, {""}} {
+		s.AuthIdentityHeaders = bad
+		if _, err := Build(cfg, Options{}); !errors.Is(err, ErrRejected) {
+			t.Errorf("%q: err %v", bad, err)
+		}
+	}
+	s.AuthIdentityHeaders = make([]string, maxAuthIdentityHeaders+1)
+	for i := range s.AuthIdentityHeaders {
+		s.AuthIdentityHeaders[i] = "x-h" + strconv.Itoa(i)
+	}
+	if _, err := Build(cfg, Options{}); !errors.Is(err, ErrRejected) {
+		t.Errorf("too many: err %v", err)
+	}
+}

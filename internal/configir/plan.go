@@ -258,6 +258,10 @@ type Site struct {
 	// AuthRules is the site's access authentication in order (feature
 	// access-auth-v1, ADR-0038).
 	AuthRules []AuthRule `json:"auth_rules,omitempty"`
+	// AuthIdentityHeaders are the request headers removed from every
+	// request of the site (feature auth-identity-headers-v1); edgeweir.auth
+	// adds those of AuthRules.
+	AuthIdentityHeaders []string `json:"auth_identity_headers,omitempty"`
 	// AccessControl is the site's access control (nil: none; feature
 	// access-control-v1, ADR-0039).
 	AccessControl *AccessControl `json:"access_control,omitempty"`
@@ -358,7 +362,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -736,6 +740,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		if _, err = buildAuthRules(s, AddressPolicy{}); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
+		if _, err = buildAuthIdentityHeaders(s); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if access[id], err = buildAccessControl(s, ipLists, opts.ExtraFeatures); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
@@ -890,6 +897,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.ClientCertificate = clientCerts[id]
 		site.Ports = ports[id]
 		if site.AuthRules, err = buildAuthRules(s, policy); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if site.AuthIdentityHeaders, err = buildAuthIdentityHeaders(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		site.AccessControl = access[id]

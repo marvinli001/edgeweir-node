@@ -196,6 +196,8 @@ local function install(revision)
     sites = {
       site("ac", { { name = "ac.test" }, { name = "ac.test", wildcard = true } }, { access_control = full() }),
       site("other", { { name = "other.test" } }),
+      -- No access authentication rules left, identity headers of former ones.
+      site("ident", { { name = "ident.test" } }, { auth_identity_headers = { "x-auth-user", "x-groups" } }),
       site("redir", { { name = "redir.test" } }, { access_control = { hotlink = { redirect_url = "/hotlink.png?v=1" } } }),
       site("pto", { { name = "pto.test" } }, { access_control = { cors = { allowed_origins = { "*" }, allowed_methods = { "GET" },
         preflight_to_origin = true, keep_origin_headers = true, echo_request_headers = true }, user_agents = { rules = { { pattern = "*curl*" } } } } }),
@@ -260,6 +262,7 @@ local function request(req)
   out.err = not ok and err ~= "exit" and err or nil
   out.status = rawget(fake, "status") or out.redirect or out.exit
   out.code = raw["x-edgeweir-error"]
+  out.request_headers = headers
   out.ctx = ctx
   out.body = table.concat(out.body)
   return out
@@ -305,6 +308,13 @@ test("site allow lists do not skip platform block lists and platform bans", func
   denied({ addr = "192.0.2.60" }, 403, "ip-banned", "platform ban of a site-allowed client")
   passes({ addr = "192.0.2.51", host = "other.test" }, "site ban of another site")
   assert(bans.replace({ sequence = "2", bans = {} }))
+end)
+
+test("the identity headers of former access authentication rules are removed on a site without rules", function()
+  local out = passes({ host = "ident.test", headers = { ["x-auth-user"] = "mallory", ["x-groups"] = "admins", ["x-other"] = "kept" } })
+  eq(out.request_headers["x-auth-user"], nil)
+  eq(out.request_headers["x-groups"], nil)
+  eq(out.request_headers["x-other"], "kept")
 end)
 
 test("geo: 403 geo-denied in scope, a failing lookup 503 policy-unavailable, none outside the scope", function()

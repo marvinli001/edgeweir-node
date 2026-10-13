@@ -20,6 +20,12 @@ import (
 // enabled rule.
 const FeatureAccessAuth = "access-auth-v1"
 
+// FeatureAuthIdentityHeaders (proto v1.1.0): Site.auth_identity_headers,
+// the identity headers the edge removes from every request of the site,
+// whether or not a rule checks it. Not required: older nodes remove those
+// of the enabled rules only.
+const FeatureAuthIdentityHeaders = "auth-identity-headers-v1"
+
 // Kinds of access authentication rules, as the site table names them.
 const (
 	AuthBasic   = "basic"
@@ -52,6 +58,7 @@ const (
 	maxURLAuthSkew            = 600
 	maxForwardCacheSeconds    = 300
 	maxBasicUsers             = 100
+	maxAuthIdentityHeaders    = 256
 	// Basic hashes: PBKDF2-HMAC-SHA256 iterations the node computes.
 	minBasicIterations = 1000
 	maxBasicIterations = 200000
@@ -171,6 +178,29 @@ func buildAuthRules(s *nodev1.Site, policy AddressPolicy) ([]AuthRule, error) {
 		}
 		seen[rule.ID] = true
 		out = append(out, rule)
+	}
+	return out, nil
+}
+
+// buildAuthIdentityHeaders validates a site's identity headers
+// (auth_identity_headers): lowercase tokens a forward authentication answer
+// could set, at most 256; any invalid one rejects the configuration.
+// Duplicates are dropped.
+func buildAuthIdentityHeaders(s *nodev1.Site) ([]string, error) {
+	names := s.GetAuthIdentityHeaders()
+	if len(names) > maxAuthIdentityHeaders {
+		return nil, fmt.Errorf("%w: more than %d identity headers", ErrRejected, maxAuthIdentityHeaders)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range names {
+		if !lowerTokenRE.MatchString(h) || forwardProtected[h] {
+			return nil, fmt.Errorf("%w: header %q cannot be an identity header", ErrRejected, h)
+		}
+		if !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
 	}
 	return out, nil
 }

@@ -5,8 +5,10 @@
 --
 -- select(site, acme, headers) runs in the edge layer's access phase after
 -- bans and the PURGE method, before maintenance, CC and the rules: it
--- removes the identity headers rules set from the request and from headers
--- (the request headers the rules read), picks the first enabled rule whose
+-- removes the identity headers rules set, and the site's
+-- auth_identity_headers (proto v1.1.0, feature auth-identity-headers-v1:
+-- those of disabled and former rules), from the request and from headers
+-- (the request headers the rules read), even on sites without rules; picks the first enabled rule whose
 -- scope the request matches (domains, path prefixes, extensions, excluded
 -- prefixes) and, for signed URLs, parses the signature and removes it at
 -- once (kinds A and D: their query parameters; B and C: the two leading
@@ -139,11 +141,32 @@ local function set_of(list)
 end
 
 -- prepare compiles a site's rules (site._auth; nil without rules).
+-- identity_headers returns the request headers rules set for the origin
+-- (X-Auth-User, copied service headers) and the site's
+-- auth_identity_headers (those of disabled rules and of rules the site had
+-- before), lowercase and unique; nil when there are none.
+local function identity_headers(site, rules)
+  local identity, seen = {}, {}
+  local function add(n)
+    n = lower(n)
+    if not seen[n] then seen[n] = true; identity[#identity + 1] = n end
+  end
+  for _, r in ipairs(rules) do
+    local names = r.forward and r.forward.response_headers or {}
+    if r.kind == "basic" and r.basic and r.basic.user_header then names = { "x-auth-user" } end
+    for _, n in ipairs(names) do add(n) end
+  end
+  for _, n in ipairs(type(site.auth_identity_headers) == "table" and site.auth_identity_headers or {}) do add(n) end
+  return #identity > 0 and identity or nil
+end
+
 function _M.prepare(site)
   local rules = site.auth_rules
   if type(rules) ~= "table" or #rules == 0 then
     site._auth = nil
     site._auth_signed_path = nil
+    -- Without rules the headers are still removed from every request.
+    site._auth_identity = identity_headers(site, {})
     return
   end
   local out = {}
@@ -174,18 +197,9 @@ function _M.prepare(site)
     out[i] = c
   end
   site._auth = out
-  -- The request headers rules set for the origin (X-Auth-User, copied
-  -- service headers): removed from requests no rule checks.
-  local identity, seen = {}, {}
-  for _, r in ipairs(rules) do
-    local names = r.forward and r.forward.response_headers or {}
-    if r.kind == "basic" and r.basic and r.basic.user_header then names = { "x-auth-user" } end
-    for _, n in ipairs(names) do
-      n = lower(n)
-      if not seen[n] then seen[n] = true; identity[#identity + 1] = n end
-    end
-  end
-  site._auth_identity = identity
+  -- Removed from every request of the site; a rule that checks one sets
+  -- its own again.
+  site._auth_identity = identity_headers(site, rules)
   -- Rules whose signature is in the path (url_b, url_c): requests refused
   -- before it is removed have no path to log (edgeweir.accesslogs).
   local signed_path = false
@@ -282,6 +296,7 @@ end
 -- headers (lower-case names, as ngx.req.get_headers returns them).
 local function clear_identity(site, headers)
   local names = site._auth_identity
+  if not names then return end
   for i = 1, #names do
     ngx.req.clear_header(names[i])
     if headers then headers[names[i]] = nil end
@@ -292,12 +307,11 @@ end
 -- (see the module comment). acme: an HTTP-01 request; headers: the
 -- request headers the rules read (edgeweir.router).
 function _M.select(site, acme, headers)
-  local rules = site._auth
-  if not rules then return end
   -- Only the node sets these: removed from every request (and from what the
   -- rules read), set again by the rule that checks it.
   clear_identity(site, headers)
-  if acme then return end
+  local rules = site._auth
+  if not rules or acme then return end
   local var = ngx.var
   local uri = var.uri
   if sub(uri, 1, 11) == "/.edgeweir/" then return end

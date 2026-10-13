@@ -402,6 +402,24 @@ test("identity headers rules set are removed from requests no rule checks", func
   end
 end)
 
+test("auth_identity_headers: removed from every request, on sites without rules too", function()
+  -- The console sends the names of disabled and former rules.
+  local s = site({ rule("basic", { id = "admin", path_prefixes = { "/admin/" } }) },
+    { auth_identity_headers = { "x-auth-user", "x-former" } })
+  eq(table.concat(s._auth_identity, ","), "x-auth-user,x-former")
+  local _, state = with_request({ uri = "/public", headers = { ["x-auth-user"] = "mallory", ["x-former"] = "root", ["x-other"] = "kept" } },
+    function() auth.select(s, false) end)
+  eq(state.headers["x-auth-user"], nil); eq(state.headers["x-former"], nil); eq(state.headers["x-other"], "kept")
+  -- Every rule deleted or disabled: the headers are still removed, from
+  -- what the rules read as well.
+  local none = site({}, { auth_identity_headers = { "x-auth-user" } })
+  eq(none._auth, nil)
+  local snapshot = { ["x-auth-user"] = "mallory" }
+  _, state = with_request({ uri = "/admin/x", headers = { ["x-auth-user"] = "mallory" } }, function() auth.select(none, false, snapshot) end)
+  eq(state.headers["x-auth-user"], nil, "no rules"); eq(snapshot["x-auth-user"], nil, "snapshot")
+  eq(site({})._auth_identity, nil, "nothing to remove")
+end)
+
 test("scope of B and C uses the path without the signature", function()
   local now = ngx.time()
   local s = site({ rule("url_c", { path_prefixes = { "/video/" } }) })
