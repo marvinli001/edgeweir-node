@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -378,4 +379,51 @@ func TestMainEnrollmentRetries(t *testing.T) {
 	if !controlplane.IsAuthError(err) {
 		t.Fatalf("rejected token: %v", err)
 	}
+}
+
+// TestMainFollowsTheConsolesAddress: a standalone probe reports
+// channel-follow-v1 and its address in every round, and moves to the
+// address the console gives out once that address answers.
+func TestMainFollowsTheConsolesAddress(t *testing.T) {
+	c, err := fakeconsole.New(fakeconsole.Options{ProbeID: "probe-follow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := c.StartTLS(t)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	enrolledAt, second := "https://127.0.0.1:"+port, "https://localhost:"+port
+	dir := filepath.Join(t.TempDir(), "edgeweir-probe")
+	c.SetProbeTargets(&nodev1.GetProbeTargetsResponse{IntervalSeconds: 5})
+	c.AddProbeToken("follow")
+	c.SetChannel(&nodev1.ChannelAddress{Url: second})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- probe.Main(ctx, probe.Options{ServerURL: enrolledAt, Token: "follow", CASHA256: c.CA.Pin(), StateDir: dir, Log: testLogger(), Timeout: 5 * time.Second})
+	}()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Main: %v", err)
+		}
+	}()
+	store := identity.Store{Dir: dir, Probe: true}
+	eventually(t, "probe switched to the console's address", func() bool {
+		id, err := store.ReadIdentity()
+		return err == nil && id.ServerURL == second && id.FallbackServerURL == enrolledAt && id.ServerSource == identity.ServerSourceConsole
+	})
+	calls := c.ProbeTargetCalls()
+	first := calls[0]
+	if !slices.Contains(first.Info.GetSupportedFeatures(), "channel-follow-v1") || first.Channel.GetCurrent().GetUrl() != enrolledAt {
+		t.Fatalf("first round: info %v channel %v", first.Info, first.Channel)
+	}
+	if checks := c.ChannelChecks(); len(checks) == 0 || checks[0] != "probe-follow" {
+		t.Fatalf("checks = %v", checks)
+	}
+	// The next round reports the new address.
+	n := len(calls)
+	eventually(t, "round on the new address", func() bool {
+		calls := c.ProbeTargetCalls()
+		return len(calls) > n && calls[len(calls)-1].Channel.GetCurrent().GetUrl() == second
+	})
 }

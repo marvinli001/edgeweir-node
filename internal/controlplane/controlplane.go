@@ -127,16 +127,20 @@ func webSocketDialer(u *url.URL, cfg *tls.Config) func(ctx context.Context, netw
 	return func(ctx context.Context, _, _ string) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(ctx, webSocketDialTimeout)
 		defer cancel()
-		ws, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+		ws, resp, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
 			HTTPClient:   handshake,
 			Subprotocols: []string{WebSocketProtocol},
 		})
 		if err != nil {
+			if resp != nil {
+				// The server answered over HTTP, but not with the entry.
+				return nil, &WebSocketRefusedError{Endpoint: endpoint, Status: resp.StatusCode, Err: err}
+			}
 			return nil, fmt.Errorf("node channel WebSocket %s: %w", endpoint, err)
 		}
 		if ws.Subprotocol() != WebSocketProtocol {
 			_ = ws.CloseNow()
-			return nil, fmt.Errorf("node channel WebSocket %s: the server is not the console's node channel entry", endpoint)
+			return nil, &WebSocketRefusedError{Endpoint: endpoint, Err: errors.New("the server is not the console's node channel entry")}
 		}
 		// The connection outlives the dial: only Close ends it.
 		conn := tls.Client(websocket.NetConn(context.Background(), ws, websocket.MessageBinary), inner)
@@ -147,6 +151,26 @@ func webSocketDialer(u *url.URL, cfg *tls.Config) func(ctx context.Context, netw
 		return conn, nil
 	}
 }
+
+// WebSocketRefusedError: the server at a wss:// or ws:// URL answered, but
+// not as the console's node channel entry (e.g. 404 while the entry is
+// closed, or another service).
+type WebSocketRefusedError struct {
+	Endpoint string
+	// HTTP status of the answer; 0 when the handshake succeeded with another
+	// subprotocol.
+	Status int
+	Err    error
+}
+
+func (e *WebSocketRefusedError) Error() string {
+	if e.Status != 0 {
+		return fmt.Sprintf("node channel WebSocket %s: answered %d: %v", e.Endpoint, e.Status, e.Err)
+	}
+	return fmt.Sprintf("node channel WebSocket %s: %v", e.Endpoint, e.Err)
+}
+
+func (e *WebSocketRefusedError) Unwrap() error { return e.Err }
 
 func clientOptions() []connect.ClientOption {
 	return []connect.ClientOption{connect.WithReadMaxBytes(MaxMessageBytes)}
@@ -185,13 +209,16 @@ func pinnedHTTPClient(serverURL, serverName, pin string) (*http.Client, string, 
 }
 
 // Channel is the authenticated (mTLS) node channel. Credentials can be
-// reloaded after certificate renewal without restarting the agent.
+// reloaded after certificate renewal without restarting the agent, and the
+// console address changed (Use, Reload).
 type Channel struct {
 	store identity.Store
 
 	mu        sync.RWMutex
 	id        *identity.Loaded
 	cert      *tls.Certificate
+	addr      Address
+	fallback  bool
 	transport *http.Transport
 	client    nodev1connect.NodeServiceClient
 	probe     nodev1connect.ProbeServiceClient
@@ -208,31 +235,50 @@ func NewChannel(store identity.Store) (*Channel, error) {
 }
 
 // Reload re-reads the identity from disk and replaces the transport, so
-// that new connections present the current certificate. Streams opened on
-// the old transport keep running until they end; watchers should restart
-// when Changed fires.
+// that new connections present the current certificate and go to the
+// identity's console address (leaving the fallback Use switched to).
+// Streams opened on the old transport keep running until they end;
+// watchers should restart when Changed fires.
 func (c *Channel) Reload() error {
 	id, err := c.store.Load()
 	if err != nil {
 		return err
 	}
-	u, err := ParseServerURL(id.ServerURL)
+	return c.install(id, CurrentAddress(id.Identity), false)
+}
+
+// Use connects to addr (the identity's fallback address) with the loaded
+// credentials until the next Reload, without changing the identity file.
+func (c *Channel) Use(addr Address) error {
+	return c.install(c.Identity(), addr, true)
+}
+
+// InUse returns the address new connections go to, and whether it is the
+// fallback Use switched to.
+func (c *Channel) InUse() (Address, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.addr, c.fallback
+}
+
+func (c *Channel) install(id *identity.Loaded, addr Address, fallback bool) error {
+	u, err := ParseServerURL(addr.URL)
 	if err != nil {
 		return err
 	}
-	serverName := id.ServerName
-	if serverName == "" {
-		serverName = u.Hostname()
+	if id.CAPool == nil {
+		// Never fall back to the system roots.
+		return errors.New("no pinned CA loaded")
 	}
 	cert := id.TLS
-	tr := NewTransport(u, pki.MTLSConfig(id.CAPool, serverName, c.currentCert))
+	tr := NewTransport(u, pki.MTLSConfig(id.CAPool, nameOf(addr, u), c.currentCert))
 	hc := &http.Client{Transport: tr}
 	client := nodev1connect.NewNodeServiceClient(hc, baseURL(u), clientOptions()...)
 	probe := nodev1connect.NewProbeServiceClient(hc, baseURL(u), clientOptions()...)
 
 	c.mu.Lock()
 	old := c.transport
-	c.id, c.cert, c.transport, c.client, c.probe = id, &cert, tr, client, probe
+	c.id, c.cert, c.addr, c.fallback, c.transport, c.client, c.probe = id, &cert, addr, fallback, tr, client, probe
 	oldChanged := c.changed
 	c.changed = make(chan struct{})
 	c.mu.Unlock()
@@ -242,6 +288,14 @@ func (c *Channel) Reload() error {
 		old.CloseIdleConnections()
 	}
 	return nil
+}
+
+// nameOf is the server name verified at addr: its own, or the URL's host.
+func nameOf(addr Address, u *url.URL) string {
+	if addr.ServerName != "" {
+		return addr.ServerName
+	}
+	return u.Hostname()
 }
 
 func (c *Channel) currentCert() *tls.Certificate {

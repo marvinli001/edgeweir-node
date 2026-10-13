@@ -6,9 +6,9 @@ import (
 	"math"
 	"net"
 	"net/netip"
-	"net/url"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/bans"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
+	"github.com/marvinli001/edgeweir-node/internal/controlplane"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
@@ -536,44 +537,77 @@ func (a *Agent) protectedPrefixes(ctx context.Context) []netip.Prefix {
 	return out
 }
 
-// consoleAddrs resolves the host of the console URL the agent connects to
-// (cached for protectedRefresh; the last answer is kept when a lookup
-// fails).
+// consoleHosts are the hosts the agent may connect to as the console: the
+// persisted and fallback addresses of identity.json, and, once connected,
+// the address in use and one being checked (controlplane.Follower).
+func (a *Agent) consoleHosts() []string {
+	if f := a.follow.Load(); f != nil {
+		return f.Hosts()
+	}
+	id, err := a.ids.ReadIdentity()
+	if err != nil || id == nil {
+		return nil
+	}
+	var hosts []string
+	for _, addr := range []controlplane.Address{controlplane.CurrentAddress(*id), controlplane.FallbackAddress(*id)} {
+		if h := addr.Host(); h != "" && !slices.Contains(hosts, h) {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
+}
+
+// consoleAddrs resolves the console hosts (consoleHosts), cached for
+// protectedRefresh while they stay the same; a host whose lookup fails
+// keeps its last answer.
 func (a *Agent) consoleAddrs(ctx context.Context) []netip.Prefix {
+	hosts := a.consoleHosts()
+	key := strings.Join(hosts, ",")
 	a.addrMu.Lock()
 	defer a.addrMu.Unlock()
-	if time.Since(a.consoleAddrsAt) < protectedRefresh && a.consoleAddrsCache != nil {
+	if key == a.consoleHostsKey && time.Since(a.consoleAddrsAt) < protectedRefresh && a.consoleAddrsCache != nil {
 		return a.consoleAddrsCache
 	}
-	server := ""
-	if id, err := a.ids.ReadIdentity(); err == nil && id != nil {
-		server = id.ServerURL
-	}
-	u, err := url.Parse(server)
-	if server == "" || err != nil || u.Hostname() == "" {
+	if len(hosts) == 0 {
 		return a.consoleAddrsCache
 	}
-	host := u.Hostname()
+	resolved := make(map[string][]netip.Prefix, len(hosts))
+	var out []netip.Prefix
+	for _, host := range hosts {
+		prefixes, ok := a.resolveConsoleHost(ctx, host)
+		if !ok {
+			prefixes = a.consoleHostAddrs[host]
+		}
+		resolved[host] = prefixes
+		out = append(out, prefixes...)
+	}
+	a.consoleHostAddrs, a.consoleHostsKey = resolved, key
+	a.consoleAddrsCache, a.consoleAddrsAt = out, time.Now()
+	return out
+}
+
+// resolveConsoleHost returns the addresses of a console host (false when
+// the lookup failed).
+func (a *Agent) resolveConsoleHost(ctx context.Context, host string) ([]netip.Prefix, bool) {
 	var addrs []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
 		addrs = []netip.Addr{ip}
 	} else {
 		lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		addrs, err = net.DefaultResolver.LookupNetIP(lctx, "ip", host)
+		found, err := net.DefaultResolver.LookupNetIP(lctx, "ip", host)
 		cancel()
-		if err != nil || len(addrs) == 0 {
+		if err != nil || len(found) == 0 {
 			a.log.Warn("cannot resolve the console host for the nftables allow list; keeping the previous addresses", "host", host, "err", err)
-			a.consoleAddrsAt = time.Now()
-			return a.consoleAddrsCache
+			return nil, false
 		}
+		addrs = found
 	}
 	out := make([]netip.Prefix, 0, len(addrs))
 	for _, ip := range addrs {
 		ip = ip.Unmap().WithZone("")
 		out = append(out, netip.PrefixFrom(ip, ip.BitLen()))
 	}
-	a.consoleAddrsCache, a.consoleAddrsAt = out, time.Now()
-	return out
+	return out, true
 }
 
 // autoBansLoop drains the node's own bans from the data plane every

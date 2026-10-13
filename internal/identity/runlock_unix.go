@@ -30,3 +30,23 @@ func (s Store) LockRun() (release func(), err error) {
 	}
 	return func() { _ = f.Close() }, nil
 }
+
+// lockIdentity takes the identity lock (IdentityLockFile, flock), waiting
+// for another process that changes the console address. The file is opened
+// read-only (flock needs no write access) and created 0644, so the agent's
+// service user and `sudo edgeweir-node set-server` share it whoever
+// created it.
+func (s Store) lockIdentity() (release func(), err error) {
+	if err := s.EnsureDir(); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(s.Path(IdentityLockFile), os.O_CREATE|os.O_RDONLY, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open identity lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("identity lock: %w", err)
+	}
+	return func() { _ = f.Close() }, nil
+}

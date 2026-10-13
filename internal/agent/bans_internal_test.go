@@ -59,16 +59,27 @@ func TestProtectedPrefixes(t *testing.T) {
 	if !slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) {
 		t.Fatalf("console address missing: %v", got)
 	}
-	// Cached until the refresh; then resolved again (a host name here).
-	write("https://localhost:8443")
-	if got := a.protectedPrefixes(context.Background()); !slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) {
+	// Cached while the console hosts stay the same, until the refresh.
+	sentinel := netip.MustParsePrefix("198.18.0.1/32")
+	a.consoleAddrsCache = []netip.Prefix{sentinel}
+	if got := a.protectedPrefixes(context.Background()); !slices.Contains(got, sentinel) {
 		t.Fatalf("console address not cached: %v", got)
 	}
 	a.consoleAddrsAt = a.consoleAddrsAt.Add(-protectedRefresh)
+	if got := a.protectedPrefixes(context.Background()); slices.Contains(got, sentinel) ||
+		!slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) {
+		t.Fatalf("console address not resolved again after the refresh: %v", got)
+	}
+	// Other console hosts (a new address, a fallback) count at once: the
+	// agent connects to a new address right after it changed.
+	raw := `{"node_id":"node-1","cluster_id":"cl-1","server_url":"https://localhost:8443","fallback_server_url":"https://192.0.2.45:8443"}`
+	if err := os.WriteFile(filepath.Join(dir, identity.IdentityFile), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	got = a.protectedPrefixes(context.Background())
-	if slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) ||
+	if slices.Contains(got, netip.MustParsePrefix("192.0.2.44/32")) || !slices.Contains(got, netip.MustParsePrefix("192.0.2.45/32")) ||
 		!slices.ContainsFunc(got, func(p netip.Prefix) bool { return p.Addr().IsLoopback() && p.IsSingleIP() }) {
-		t.Fatalf("console host name not resolved again: %v", got)
+		t.Fatalf("changed console hosts not resolved at once: %v", got)
 	}
 }
 

@@ -123,6 +123,14 @@ type Config struct {
 	// this often; a new one (re-enrolled) stops the agent so that it starts
 	// again with it (default 10s).
 	IdentityInterval time.Duration
+	// Following the console's node channel address (controlplane.Follower;
+	// zero values take its defaults): how long the address in use may fail
+	// before the fallback is tried, how often the persisted address is
+	// tried again from the fallback, and the waits between checks of an
+	// address that failed one. Tests shorten them.
+	ChannelFailoverAfter time.Duration
+	ChannelRetryPrimary  time.Duration
+	ChannelBackoff       []time.Duration
 
 	// PurgeMarkersPerSite bounds a site's URL and prefix purge markers,
 	// PurgeTagsPerSite its tag markers; beyond either the site's markers
@@ -254,7 +262,9 @@ type Agent struct {
 	channel        *controlplane.Channel
 	// connectedCh is channel for loops that start before enrollment.
 	connectedCh atomic.Pointer[controlplane.Channel]
-	nodeID      string // guarded by mu; empty until the identity is known
+	// follow moves the channel to the console's address (set with channel).
+	follow atomic.Pointer[controlplane.Follower]
+	nodeID string // guarded by mu; empty until the identity is known
 	// cacheUsage is the last measurement of the cache zones (mu).
 	cacheUsage    []*nodev1.CacheZoneUsage
 	connectedOnce sync.Once
@@ -316,6 +326,8 @@ type Agent struct {
 	addrMu            sync.Mutex
 	consoleAddrsCache []netip.Prefix
 	consoleAddrsAt    time.Time
+	consoleHostsKey   string
+	consoleHostAddrs  map[string][]netip.Prefix
 
 	// Challenges (challenge.go): keys by id (challengeMu), the captcha
 	// pool pushed last (challengePushMu, which also serializes pushes).
@@ -510,13 +522,30 @@ func (a *Agent) Run(parent context.Context) error {
 	a.nodeID = id.NodeID
 	a.mu.Unlock()
 	a.log.Info("node identity loaded", "node_id", id.NodeID, "cluster_id", id.ClusterID,
-		"node_name", id.NodeName, "server", id.ServerURL,
+		"node_name", id.NodeName, "server", id.ServerURL, "fallback_server", id.FallbackServerURL,
 		"certificate_not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339))
+	a.follow.Store(&controlplane.Follower{
+		Channel: ch,
+		Store:   a.ids,
+		Log:     a.log.With("component", "channel"),
+		// The host joins the nftables allow list before the check connects.
+		BeforeCheck: func(ctx context.Context) {
+			a.addrMu.Lock()
+			a.consoleAddrsAt = time.Time{}
+			a.addrMu.Unlock()
+			a.syncKernel(ctx)
+		},
+		Switched:      a.triggerReport,
+		FailoverAfter: a.cfg.ChannelFailoverAfter,
+		RetryPrimary:  a.cfg.ChannelRetryPrimary,
+		Backoff:       a.cfg.ChannelBackoff,
+	})
 	// The console's addresses join the nftables allow list before the
 	// first RPC.
 	a.syncKernel(ctx)
 
 	spawn("identity", func(ctx context.Context) { a.identityLoop(ctx, stop) })
+	spawn("channel", a.follow.Load().Run)
 	spawn("sync", a.syncLoop)
 	spawn("watch", a.watchLoop)
 	spawn("poll", a.pollLoop)
@@ -594,15 +623,14 @@ func (a *Agent) identityLoop(ctx context.Context, stop context.CancelCauseFunc) 
 
 // identityChanged reports whether identity.json is readable and names
 // another identity than the channel's (an unreadable one is being written,
-// or damaged: the channel reports that on its own).
+// or damaged: the channel reports that on its own). A changed console
+// address is the follower's business (controlplane.Follower).
 func (a *Agent) identityChanged() bool {
 	cur, err := a.ids.ReadIdentity()
 	if err != nil {
 		return false
 	}
-	used := a.channel.Identity().Identity
-	return cur.NodeID != used.NodeID || cur.ClusterID != used.ClusterID || cur.ServerURL != used.ServerURL ||
-		cur.ServerName != used.ServerName || cur.CASHA256 != used.CASHA256 || !cur.EnrolledAt.Equal(used.EnrolledAt)
+	return !identity.SameIdentity(*cur, a.channel.Identity().Identity)
 }
 
 // openChannel loads the identity, retrying while it is unreadable (e.g.

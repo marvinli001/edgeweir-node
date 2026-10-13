@@ -65,6 +65,10 @@ type Runner struct {
 	NeedsRenewal func() bool
 	Prober       *Prober
 	Log          *slog.Logger
+	// Follow moves a standalone probe to the console's node channel address
+	// (rounds carry its status and take the address); nil for a node,
+	// which follows through its heartbeats.
+	Follow *controlplane.Follower
 	// RPCTimeout bounds each call (default 30s); BackoffMin and BackoffMax
 	// bound the wait after a failed round (default 1s and 60s).
 	RPCTimeout time.Duration
@@ -128,13 +132,24 @@ func (r *Runner) rpcContext(ctx context.Context) (context.Context, context.Cance
 
 // Round runs one round and returns the interval until the next one.
 func (r *Runner) Round(ctx context.Context) (time.Duration, error) {
+	req := &nodev1.GetProbeTargetsRequest{Info: r.Info}
+	if r.Follow != nil {
+		req.Channel = r.Follow.Status()
+	}
 	cctx, cancel := r.rpcContext(ctx)
-	resp, err := r.Client().GetProbeTargets(cctx, connect.NewRequest(&nodev1.GetProbeTargetsRequest{Info: r.Info}))
+	resp, err := r.Client().GetProbeTargets(cctx, connect.NewRequest(req))
 	cancel()
 	if err != nil {
+		if r.Follow != nil {
+			r.Follow.NoteFailure(err)
+		}
 		return 0, fmt.Errorf("GetProbeTargets: %w", err)
 	}
 	msg := resp.Msg
+	if r.Follow != nil {
+		r.Follow.NoteOK()
+		r.Follow.SetDesired(msg.GetChannel())
+	}
 	if r.Renew != nil {
 		switch {
 		case msg.GetRenewCertificate():

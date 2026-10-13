@@ -6,6 +6,7 @@
 //	ca.crt         internal CA certificate (verified against the pin)
 //	identity.json  node id, cluster id, name and console address
 //	run.lock       held (flock) by `edgeweir-node run` while it runs
+//	identity.lock  held (flock) while the console address is changed
 //
 // identity.json is written last and is the "enrolled" marker; the other
 // files are always complete when it exists. Every file is replaced
@@ -43,6 +44,9 @@ const (
 	ConfigDir = "config"
 	// RunLockFile is locked by a running agent (LockRun).
 	RunLockFile = "run.lock"
+	// IdentityLockFile is locked while the console address in the identity
+	// file is changed (UpdateServer).
+	IdentityLockFile = "identity.lock"
 
 	// The probe layout (Store.Probe).
 	ProbeKeyFile      = "probe.key"
@@ -74,6 +78,32 @@ type Identity struct {
 	ServerName string    `json:"server_name"`
 	CASHA256   string    `json:"ca_sha256"`
 	EnrolledAt time.Time `json:"enrolled_at"`
+	// The console address used before the last change of ServerURL (the
+	// agent tries it while ServerURL fails), how ServerURL was set
+	// (ServerSource*) and when. Empty until the address first changes.
+	FallbackServerURL  string    `json:"fallback_server_url,omitempty"`
+	FallbackServerName string    `json:"fallback_server_name,omitempty"`
+	ServerSource       string    `json:"server_source,omitempty"`
+	ServerChangedAt    time.Time `json:"server_changed_at,omitzero"`
+}
+
+// How Identity.ServerURL was set; empty means the enrollment.
+const (
+	ServerSourceConsole = "console"
+	ServerSourceCommand = "command"
+)
+
+// SameIdentity reports whether a and b name the same enrollment (the
+// console address aside).
+func SameIdentity(a, b Identity) bool {
+	return a.NodeID == b.NodeID && a.ClusterID == b.ClusterID && a.ProbeID == b.ProbeID &&
+		a.CASHA256 == b.CASHA256 && a.EnrolledAt.Equal(b.EnrolledAt)
+}
+
+// SameServer reports whether a and b carry the same console addresses.
+func SameServer(a, b Identity) bool {
+	return a.ServerURL == b.ServerURL && a.ServerName == b.ServerName &&
+		a.FallbackServerURL == b.FallbackServerURL && a.FallbackServerName == b.FallbackServerName
 }
 
 // Loaded is a fully parsed identity ready to build TLS configurations.
@@ -171,6 +201,44 @@ func (s Store) Remove() error {
 		return err
 	}
 	return fsutil.SyncDir(s.Dir)
+}
+
+// ErrIdentityReplaced is returned by UpdateServer when the identity file
+// names another enrollment than the one expected.
+var ErrIdentityReplaced = errors.New("the identity was replaced meanwhile (enrolled again)")
+
+// UpdateServer changes the console addresses of the identity file under
+// the identity lock: update gets the identity as stored, and the file is
+// replaced atomically with what it leaves. The other fields (and the keys)
+// stay as they are; expect is the enrollment the caller loaded.
+func (s Store) UpdateServer(expect Identity, update func(*Identity)) (*Identity, error) {
+	release, err := s.lockIdentity()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	cur, err := s.ReadIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if !SameIdentity(*cur, expect) {
+		return nil, ErrIdentityReplaced
+	}
+	next := *cur
+	update(&next)
+	if !SameIdentity(next, *cur) {
+		return nil, errors.New("UpdateServer changes only the console addresses")
+	}
+	meta, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	meta = append(meta, '\n')
+	name := s.IdentityFile()
+	if err := fsutil.WriteFileAtomic(s.Path(name), meta, 0o644); err != nil {
+		return nil, err
+	}
+	return &next, matchDirOwner(s.Dir, name)
 }
 
 // ReadIdentity reads only identity.json (probe.json) without keys or

@@ -195,6 +195,10 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	if id := a.channel.Identity(); id != nil {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
 	}
+	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, controlplane.FollowFeature)
+	if f := a.follow.Load(); f != nil {
+		req.Channel = f.Status()
+	}
 	return req
 }
 
@@ -218,8 +222,12 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "kernel-ban-v1")
 	}
 	resp, err := a.channel.Client().ReportStatus(cctx, connect.NewRequest(req))
+	follow := a.follow.Load()
 	if err != nil {
 		if ctx.Err() == nil {
+			if follow != nil {
+				follow.NoteFailure(err)
+			}
 			a.logRPCError("ReportStatus failed", err)
 			// The console refuses a disabled node's heartbeats but still
 			// renews its certificate, so the node can come back once enabled.
@@ -232,6 +240,10 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		return interval
 	}
 	a.markConnected()
+	if follow != nil {
+		follow.NoteOK()
+		follow.SetDesired(resp.Msg.GetChannel())
+	}
 	a.log.Debug("status reported", "applied_revision", req.GetAppliedRevision(), "state", req.GetState().String())
 	if s := resp.Msg.GetReportIntervalSeconds(); s > 0 {
 		interval = min(max(time.Duration(s)*time.Second, time.Second), 5*time.Minute)

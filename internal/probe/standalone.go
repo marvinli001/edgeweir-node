@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/marvinli001/edgeweir-node/internal/controlplane"
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
@@ -45,6 +46,11 @@ type Options struct {
 	Prober     *Prober
 	BackoffMin time.Duration
 	BackoffMax time.Duration
+	// Following the console's address (controlplane.Follower; zero values
+	// take its defaults).
+	FailoverAfter time.Duration
+	RetryPrimary  time.Duration
+	FollowBackoff []time.Duration
 }
 
 // Info describes this process in GetProbeTargets and EnrollProbe.
@@ -79,15 +85,21 @@ func Main(ctx context.Context, o Options) error {
 	defer ch.Close()
 	id := ch.Identity()
 	if o.ServerURL != "" && o.ServerURL != id.ServerURL {
-		log.Warn("--server differs from the console this probe enrolled with; using the enrolled one", "server", id.ServerURL)
+		log.Warn("--server differs from the console address of this probe; using the probe's (edgeweir-node set-server --probe changes it)", "server", id.ServerURL)
 	}
 	log.Info("starting edgeweir-node probe", "version", version.Version, "probe_id", id.ProbeID, "probe_name", id.ProbeName,
-		"region_id", id.RegionID, "server", id.ServerURL, "state_dir", store.Dir,
+		"region_id", id.RegionID, "server", id.ServerURL, "fallback_server", id.FallbackServerURL, "state_dir", store.Dir,
 		"certificate_not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339))
+	follow := &controlplane.Follower{
+		Channel: ch, Store: store, Log: log.With("component", "channel"),
+		FailoverAfter: o.FailoverAfter, RetryPrimary: o.RetryPrimary, Backoff: o.FollowBackoff,
+	}
 	rn := &renewer{ch: ch, store: store, log: log, timeout: o.Timeout}
+	roundInfo := proto.CloneOf(info)
+	roundInfo.SupportedFeatures = append(roundInfo.SupportedFeatures, controlplane.FollowFeature)
 	r := &Runner{
 		Client:       ch.ProbeClient,
-		Info:         info,
+		Info:         roundInfo,
 		Renew:        rn.renew,
 		NeedsRenewal: func() bool { return pki.NeedsRenewal(ch.Identity().Certificate, time.Now()) },
 		Prober:       o.Prober,
@@ -95,8 +107,17 @@ func Main(ctx context.Context, o Options) error {
 		RPCTimeout:   o.Timeout,
 		BackoffMin:   o.BackoffMin,
 		BackoffMax:   o.BackoffMax,
+		Follow:       follow,
 	}
+	fctx, stopFollow := context.WithCancel(ctx)
+	followed := make(chan struct{})
+	go func() {
+		defer close(followed)
+		follow.Run(fctx)
+	}()
 	r.Run(ctx)
+	stopFollow()
+	<-followed
 	log.Info("probe stopped")
 	return nil
 }

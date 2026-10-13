@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -201,5 +202,115 @@ func TestProbeLayout(t *testing.T) {
 	}
 	if _, err := os.Stat(s.Path(KeyFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("renewal wrote node.key into the probe directory")
+	}
+}
+
+// TestUpdateServer: only the console addresses change, atomically, and
+// only for the enrollment the caller loaded.
+func TestUpdateServer(t *testing.T) {
+	s, _ := newStore(t)
+	before, err := s.ReadIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, _ := os.ReadFile(s.Path(KeyFile))
+	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	got, err := s.UpdateServer(*before, func(next *Identity) {
+		next.FallbackServerURL, next.FallbackServerName = next.ServerURL, next.ServerName
+		next.ServerURL, next.ServerName = "wss://console.example.com", ""
+		next.ServerSource, next.ServerChangedAt = ServerSourceConsole, at
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.ReadIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *read != *got || read.ServerURL != "wss://console.example.com" || read.FallbackServerURL != "https://console:8443" ||
+		read.ServerSource != ServerSourceConsole || !read.ServerChangedAt.Equal(at) || !SameIdentity(*read, *before) {
+		t.Fatalf("identity = %+v", read)
+	}
+	if keyAfter, _ := os.ReadFile(s.Path(KeyFile)); string(keyAfter) != string(keyBefore) {
+		t.Fatal("the key changed")
+	}
+	if _, err := s.Load(); err != nil {
+		t.Fatalf("load after the update: %v", err)
+	}
+
+	// Another enrollment meanwhile: nothing is written.
+	other := *before
+	other.EnrolledAt = before.EnrolledAt.Add(time.Second)
+	if _, err := s.UpdateServer(other, func(next *Identity) { next.ServerURL = "https://elsewhere:8443" }); !errors.Is(err, ErrIdentityReplaced) {
+		t.Fatalf("replaced identity: %v", err)
+	}
+	// The update may not touch the identity itself.
+	if _, err := s.UpdateServer(*read, func(next *Identity) { next.NodeID = "node-2" }); err == nil {
+		t.Fatal("the node id changed through UpdateServer")
+	}
+	if cur, _ := s.ReadIdentity(); cur.ServerURL != "wss://console.example.com" || cur.NodeID != "node-1" {
+		t.Fatalf("identity after refused updates = %+v", cur)
+	}
+}
+
+// TestIdentityFileReadByOlderAgents: an agent before channel-follow-v1
+// (which knows only the enrollment fields) reads the changed address from
+// the same file, so a downgrade keeps the address the node switched to.
+func TestIdentityFileReadByOlderAgents(t *testing.T) {
+	s, _ := newStore(t)
+	before, _ := s.ReadIdentity()
+	if _, err := s.UpdateServer(*before, func(next *Identity) {
+		next.FallbackServerURL, next.ServerURL, next.ServerSource = next.ServerURL, "https://new.example.com:8443", ServerSourceCommand
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(s.Path(IdentityFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older struct {
+		NodeID     string    `json:"node_id,omitempty"`
+		ClusterID  string    `json:"cluster_id,omitempty"`
+		NodeName   string    `json:"node_name,omitempty"`
+		ServerURL  string    `json:"server_url"`
+		ServerName string    `json:"server_name"`
+		CASHA256   string    `json:"ca_sha256"`
+		EnrolledAt time.Time `json:"enrolled_at"`
+	}
+	if err := json.Unmarshal(raw, &older); err != nil {
+		t.Fatal(err)
+	}
+	if older.ServerURL != "https://new.example.com:8443" || older.NodeID != "node-1" {
+		t.Fatalf("older agent reads %+v", older)
+	}
+	// An identity that never changed address carries none of the new fields.
+	s2, _ := newStore(t)
+	raw, _ = os.ReadFile(s2.Path(IdentityFile))
+	for _, field := range []string{"fallback_server_url", "server_source", "server_changed_at"} {
+		if strings.Contains(string(raw), field) {
+			t.Errorf("%s written for an unchanged identity:\n%s", field, raw)
+		}
+	}
+}
+
+// TestUpdateServerWithAnotherUsersLock: the identity lock is opened
+// read-only, so a lock file another user created (root running
+// set-server, the service user running the agent) does not block it.
+func TestUpdateServerWithAnotherUsersLock(t *testing.T) {
+	s, _ := newStore(t)
+	if err := os.WriteFile(s.Path(IdentityLockFile), nil, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.ReadIdentity()
+	if _, err := s.UpdateServer(*before, func(next *Identity) { next.ServerURL = "https://other.example.com:8443" }); err != nil {
+		t.Fatalf("update with a read-only lock file: %v", err)
+	}
+	s2, _ := newStore(t)
+	before2, _ := s2.ReadIdentity()
+	if _, err := s2.UpdateServer(*before2, func(next *Identity) { next.ServerURL = "https://other.example.com:8443" }); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(s2.Path(IdentityLockFile)); err != nil || st.Mode().Perm() != 0o644 {
+		t.Fatalf("identity.lock: %v %v", st, err)
 	}
 }
