@@ -298,9 +298,17 @@ func TestConvert(t *testing.T) {
 		{PNG, pngData, WebP, Info{60, 40, 1}, image.Pt(60, 40)},
 		{PNG, pngData, AVIF, Info{60, 40, 1}, image.Pt(60, 40)},
 	} {
-		out, err := Convert(c.data, c.kind, c.format, 70, c.info)
+		out, err := Convert(c.data, c.kind, c.format, 70, c.info, maxSize)
 		if err != nil {
 			t.Fatalf("%s -> %s: %v", c.kind, c.format, err)
+		}
+		// The bound is the largest output allowed: one byte less is
+		// ErrUnsupported.
+		if exact, err := Convert(c.data, c.kind, c.format, 70, c.info, int64(len(out))); err != nil || !bytes.Equal(exact, out) {
+			t.Fatalf("%s -> %s within a bound of its size (%d): %v", c.kind, c.format, len(out), err)
+		}
+		if short, err := Convert(c.data, c.kind, c.format, 70, c.info, int64(len(out))-1); !errors.Is(err, ErrUnsupported) || short != nil {
+			t.Fatalf("%s -> %s over its bound: %d bytes, %v, want ErrUnsupported", c.kind, c.format, len(short), err)
 		}
 		var cfg image.Config
 		if c.format == WebP {
@@ -321,11 +329,78 @@ func TestConvert(t *testing.T) {
 			t.Fatalf("%s -> %s carries EXIF", c.kind, c.format)
 		}
 	}
-	if _, err := Convert(jpg, JPEG, WebP, 70, Info{10, 10, 1}); !errors.Is(err, ErrUnsupported) {
+	if _, err := Convert(jpg, JPEG, WebP, 70, Info{10, 10, 1}, maxSize); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("dimensions that differ from the headers: %v", err)
 	}
-	if _, err := Convert([]byte("garbage"), PNG, WebP, 70, Info{1, 1, 1}); !errors.Is(err, ErrUnsupported) {
+	if _, err := Convert([]byte("garbage"), PNG, WebP, 70, Info{1, 1, 1}, maxSize); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("undecodable input: %v", err)
+	}
+}
+
+// TestCheckVariant: the encoders' output passes, anything else of the
+// wrong container, brand or length does not.
+func TestCheckVariant(t *testing.T) {
+	jpg := encodeJPEG(t, testImage(120, 80, false))
+	pngData := encodePNG(t, testImage(60, 40, true))
+	real := map[Format][][]byte{}
+	for _, format := range []Format{WebP, AVIF} {
+		for _, c := range []struct {
+			kind Kind
+			data []byte
+			info Info
+		}{{JPEG, jpg, Info{120, 80, 1}}, {PNG, pngData, Info{60, 40, 1}}} {
+			out, err := Convert(c.data, c.kind, format, 70, c.info, maxSize)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := checkVariant(format, out); err != nil {
+				t.Fatalf("%s -> %s: %v", c.kind, format, err)
+			}
+			real[format] = append(real[format], out)
+		}
+	}
+	// libavif's still images: major brand avif, then avif, mif1 and miaf
+	// among the compatible brands.
+	avifOut := real[AVIF][0]
+	ftyp := avifOut[:binary.BigEndian.Uint32(avifOut)]
+	t.Logf("AVIF ftyp: major %q, compatible %q", ftyp[8:12], ftyp[16:])
+	for _, brand := range []string{"avif", "mif1", "miaf"} {
+		if !bytes.Contains(ftyp[16:], []byte(brand)) {
+			t.Errorf("AVIF output without the compatible brand %s: %q", brand, ftyp)
+		}
+	}
+	webpOut := real[WebP][0]
+	withBrand := func(major, compatible string) []byte {
+		b := append([]byte{}, avifOut...)
+		copy(b[8:12], major)
+		copy(b[16:20], compatible)
+		return b
+	}
+	bad := map[string]struct {
+		format Format
+		out    []byte
+	}{
+		"empty":                  {WebP, nil},
+		"AVIF for WebP":          {WebP, avifOut},
+		"WebP for AVIF":          {AVIF, webpOut},
+		"text":                   {WebP, []byte("<html><script>alert(1)</script></html>")},
+		"WebP form type WEBX":    {WebP, append(append([]byte{}, webpOut[:8]...), append([]byte("WEBX"), webpOut[12:]...)...)},
+		"WebP cut short":         {WebP, webpOut[:len(webpOut)-1]},
+		"WebP with a trailer":    {WebP, append(append([]byte{}, webpOut...), 0)},
+		"WebP header only":       {WebP, webpOut[:12]},
+		"AVIF sequence (avis)":   {AVIF, withBrand("avis", "avis")},
+		"avif only compatible":   {AVIF, withBrand("mif1", "avif")},
+		"AVIF cut short":         {AVIF, avifOut[:len(avifOut)-1]},
+		"AVIF with a trailer":    {AVIF, append(append([]byte{}, avifOut...), 0, 0, 0)},
+		"AVIF with a size-0 box": {AVIF, append(append([]byte{}, avifOut...), "\x00\x00\x00\x00free"...)},
+		"AVIF short ftyp":        {AVIF, append([]byte{0, 0, 0, 12}, avifOut[4:]...)},
+		"AVIF ftyp past the end": {AVIF, append([]byte{0, 0, 0xff, 0xf0}, avifOut[4:]...)},
+		"AVIF header only":       {AVIF, avifOut[:16]},
+	}
+	for name, c := range bad {
+		if err := checkVariant(c.format, c.out); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
 

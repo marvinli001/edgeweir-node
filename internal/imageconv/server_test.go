@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -264,24 +265,102 @@ func TestServerKeepsOriginals(t *testing.T) {
 
 func TestServerFailuresKeepOriginals(t *testing.T) {
 	jpg := encodeJPEG(t, testImage(160, 120, false))
+	avifHeader := strings.Replace(header, "webp", "avif", 1)
 	for name, c := range map[string]struct {
-		cfg Config
-		ttl string
+		cfg   Config
+		ttl   string
+		value string
 	}{
-		"child fails":         {Config{Command: shCommand("cat >/dev/null; exit 1")}, "120"},
-		"variant not smaller": {Config{Command: shCommand("cat; cat /dev/zero | head -c 100")}, "120"},
-		"timeout":             {Config{Command: shCommand("cat >/dev/null; sleep 5"), Timeout: 200 * time.Millisecond}, "120"},
+		"child fails":         {Config{Command: shCommand("cat >/dev/null; exit 1")}, "120", header},
+		"variant not smaller": {Config{Command: shCommand("cat; cat /dev/zero | head -c 100")}, "120", header},
+		"timeout":             {Config{Command: shCommand("cat >/dev/null; sleep 5"), Timeout: 200 * time.Millisecond}, "120", header},
+		// More than the original, then a pause: the child is killed at the
+		// bound, not waited for.
+		"output over the bound": {Config{Command: shCommand("cat >/dev/null; head -c 1000000 /dev/zero; exec sleep 5"), Timeout: time.Minute}, "120", header},
+		// Small outputs that are not the format asked for.
+		"not a WebP":         {Config{Command: shCommand("cat >/dev/null; printf GIF89a")}, "120", header},
+		"WebP cut short":     {Config{Command: shCommand(`cat >/dev/null; printf 'RIFF\144\000\000\000WEBPVP8 '`)}, "120", header},
+		"WebP for AVIF":      {Config{Command: shCommand(`cat >/dev/null; printf 'RIFF\004\000\000\000WEBP'`)}, "120", avifHeader},
+		"AVIF sequence":      {Config{Command: shCommand(`cat >/dev/null; printf '\000\000\000\020ftypavis\000\000\000\000'`)}, "120", avifHeader},
+		"avif not the major": {Config{Command: shCommand(`cat >/dev/null; printf '\000\000\000\024ftypmif1\000\000\000\000avif'`)}, "120", avifHeader},
 	} {
 		o := newOriginLayer(t, serveImage(jpg, "image/jpeg", map[string]string{"X-Accel-Expires": "120"}))
 		_, do := converter(t, o, c.cfg)
 		start := time.Now()
-		resp := do(variantRequest(t, "GET", "/a.jpg", header))
-		if got := body(t, resp); !bytes.Equal(got, jpg) || resp.Header.Get("Content-Type") != "image/jpeg" || resp.Header.Get("X-Accel-Expires") != c.ttl {
+		resp := do(variantRequest(t, "GET", "/a.jpg", c.value))
+		if got := body(t, resp); !bytes.Equal(got, jpg) || resp.Header.Get("Content-Type") != "image/jpeg" || resp.Header.Get("X-Accel-Expires") != c.ttl ||
+			resp.Header.Get(SavedHeader) != "" {
 			t.Errorf("%s: %d bytes, %v", name, len(got), resp.Header)
 		}
 		if time.Since(start) > 3*time.Second {
 			t.Errorf("%s took %v", name, time.Since(start))
 		}
+	}
+}
+
+// TestStderrBufferThroughExec: the child's stderr is kept to 2 KiB however
+// much it writes (os/exec copies with io.Copy, which would use a ReadFrom).
+func TestStderrBufferThroughExec(t *testing.T) {
+	stderr := &limitedBuffer{max: 2048}
+	cmd := exec.Command("/bin/sh", "-c", "head -c 1000000 /dev/zero >&2")
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(stderr.String()); n != 2048 {
+		t.Fatalf("kept %d bytes of stderr, want 2048", n)
+	}
+}
+
+// TestBoundedBuffer: writes up to the bound go in; the first past it writes
+// nothing, fails and calls over, once; through os/exec as well.
+func TestBoundedBuffer(t *testing.T) {
+	calls := 0
+	b := &boundedBuffer{max: 10, over: func() { calls++ }}
+	if n, err := b.Write([]byte("0123456")); n != 7 || err != nil {
+		t.Fatalf("within the bound: %d %v", n, err)
+	}
+	if n, err := b.Write([]byte("789")); n != 3 || err != nil || b.exceeded {
+		t.Fatalf("up to the bound: %d %v", n, err)
+	}
+	for range 2 {
+		if n, err := b.Write([]byte("x")); n != 0 || !errors.Is(err, errOutputBound) {
+			t.Fatalf("past the bound: %d %v", n, err)
+		}
+	}
+	if string(b.Bytes()) != "0123456789" || !b.exceeded || calls != 1 {
+		t.Fatalf("after the bound: %q, exceeded %v, over called %d times", b.Bytes(), b.exceeded, calls)
+	}
+	calls = 0
+	stdout := &boundedBuffer{max: 4096, over: func() { calls++ }}
+	cmd := exec.Command("/bin/sh", "-c", "exec head -c 1000000 /dev/zero")
+	cmd.Stdout = stdout
+	if err := cmd.Run(); err == nil {
+		t.Fatal("a child past the bound succeeded")
+	}
+	if len(stdout.Bytes()) > 4096 || !stdout.exceeded || calls != 1 {
+		t.Fatalf("through os/exec: %d bytes, exceeded %v, over called %d times", len(stdout.Bytes()), stdout.exceeded, calls)
+	}
+}
+
+// TestRunKillsAtTheBound: a child that writes more than the original is
+// killed as soon as the bound is passed, long before its timeout, and
+// nothing of it is returned.
+func TestRunKillsAtTheBound(t *testing.T) {
+	s := New(Config{Workers: 1, Memory: DefaultMemory, Timeout: time.Minute,
+		Command: shCommand("cat >/dev/null; head -c 4000000 /dev/zero; exec sleep 30")})
+	p, err := ParseHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := make([]byte, 10000)
+	start := time.Now()
+	variant, err := s.run(context.Background(), s.cfg.Log, JPEG, p, Info{Width: 1, Height: 1, Orientation: 1}, original, 1<<20)
+	if err == nil || variant != nil {
+		t.Fatalf("over the bound: %d bytes, %v", len(variant), err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("killed after %v", d)
 	}
 }
 
@@ -465,8 +544,17 @@ func TestRunChild(t *testing.T) {
 		return code, out.Bytes()
 	}
 	ok := []string{"--kind", "jpeg", "--format", "webp", "--quality", "80", "--width", "32", "--height", "24", "--memory", "1000000000"}
-	if code, out := run(jpg, ok...); code != exitOK || string(out[8:12]) != "WEBP" {
+	code, webpOut := run(jpg, ok...)
+	if code != exitOK || string(webpOut[8:12]) != "WEBP" {
 		t.Fatalf("convert: %d", code)
+	}
+	// An output over --max-output is not convertible, and nothing is
+	// written.
+	if code, out := run(jpg, append(ok, "--max-output", strconv.Itoa(len(webpOut)))...); code != exitOK || !bytes.Equal(out, webpOut) {
+		t.Fatalf("at max-output: %d, %d bytes", code, len(out))
+	}
+	if code, out := run(jpg, append(ok, "--max-output", strconv.Itoa(len(webpOut)-1))...); code != exitUnsupported || len(out) != 0 {
+		t.Fatalf("over max-output: %d, %d bytes written", code, len(out))
 	}
 	if code, _ := run([]byte("garbage"), ok...); code != exitUnsupported {
 		t.Fatalf("garbage: %d", code)
@@ -474,14 +562,15 @@ func TestRunChild(t *testing.T) {
 	if code, _ := run(jpg, append(ok, "--max-input", "10")...); code != exitUnsupported {
 		t.Fatalf("over max-input: %d", code)
 	}
-	for _, bad := range [][]string{{"--kind", "gif"}, {"--quality", "0"}, {"--width", "0"}, {"--memory", "0"}, {"--nope"}} {
+	for _, bad := range [][]string{{"--kind", "gif"}, {"--quality", "0"}, {"--width", "0"}, {"--memory", "0"}, {"--nope"},
+		{"--max-output", "0"}, {"--max-output", strconv.Itoa(maxSize + 1)}} {
 		args := append(append([]string{}, ok...), bad...)
 		if code, _ := run(jpg, args...); code != exitUsage {
 			t.Errorf("%v: %d", bad, code)
 		}
 	}
-	if args := childArgs(PNG, AVIF, 50, Info{3, 4, 6}, 99, 100); strings.Join(args, " ") !=
-		"imgconv --kind png --format avif --quality 50 --width 3 --height 4 --orientation 6 --memory 99 --max-input 100" {
+	if args := childArgs(PNG, AVIF, 50, Info{3, 4, 6}, 99, 100, 42); strings.Join(args, " ") !=
+		"imgconv --kind png --format avif --quality 50 --width 3 --height 4 --orientation 6 --memory 99 --max-input 100 --max-output 42" {
 		t.Fatalf("childArgs: %v", args)
 	}
 }

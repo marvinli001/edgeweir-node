@@ -22,8 +22,10 @@ const dataHeadroom = 256 << 20
 // which Linux counts for anonymous mappings; RLIMIT_AS would also count the
 // address space the Go runtime reserves without using it) to what it already
 // has plus memory plus headroom, no file it could write, at most 16
-// descriptors, and no capabilities (the agent may hold CAP_NET_BIND_SERVICE
-// as an ambient capability).
+// descriptors, no_new_privs, and no capabilities (the agent may hold
+// CAP_NET_BIND_SERVICE as an ambient capability). A limit the child
+// inherited lower stays as it is: raising a hard limit needs
+// CAP_SYS_RESOURCE.
 func limitSelf(memory int64) error {
 	limits := []struct {
 		resource int
@@ -35,11 +37,41 @@ func limitSelf(memory int64) error {
 		{unix.RLIMIT_CORE, 0},
 	}
 	for _, l := range limits {
-		if err := unix.Setrlimit(l.resource, &unix.Rlimit{Cur: l.value, Max: l.value}); err != nil {
+		var inherited unix.Rlimit
+		if err := unix.Getrlimit(l.resource, &inherited); err != nil {
+			return err
+		}
+		v := min(l.value, inherited.Max)
+		if err := unix.Setrlimit(l.resource, &unix.Rlimit{Cur: v, Max: v}); err != nil {
 			return err
 		}
 	}
+	if err := noNewPrivs(); err != nil {
+		return err
+	}
 	return dropCapabilities()
+}
+
+// noNewPrivs sets no_new_privs (prctl(2), PR_SET_NO_NEW_PRIVS): no execve
+// from here on gains privileges from set-user-ID or set-group-ID bits or
+// file capabilities. The attribute is per thread, inherited by new threads
+// and children, and cannot be unset. SysProcAttr has no field for it, so
+// the child sets it on itself; like dropCapabilities, on every thread or
+// on the calling goroutine's locked thread. The agent leaves its own unset:
+// the image's nft gets CAP_NET_ADMIN from a file capability.
+func noNewPrivs() error {
+	call := [3]uintptr{syscall.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1}
+	if errno, ok := allThreads(call); ok {
+		if errno != 0 {
+			return errno
+		}
+		return nil
+	}
+	runtime.LockOSThread()
+	if _, _, errno := syscall.RawSyscall(call[0], call[1], call[2], 0); errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 // dataInUse is the process's data size now (VmData, what RLIMIT_DATA

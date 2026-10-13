@@ -24,18 +24,20 @@ const (
 const ChildCommand = "imgconv"
 
 // childArgs returns the child's arguments for one conversion.
-func childArgs(kind Kind, format Format, quality int, info Info, memory, maxInput int64) []string {
+func childArgs(kind Kind, format Format, quality int, info Info, memory, maxInput, maxOutput int64) []string {
 	return []string{ChildCommand,
 		"--kind", string(kind), "--format", string(format), "--quality", strconv.Itoa(quality),
 		"--width", strconv.Itoa(info.Width), "--height", strconv.Itoa(info.Height),
 		"--orientation", strconv.Itoa(info.Orientation),
-		"--memory", strconv.FormatInt(memory, 10), "--max-input", strconv.FormatInt(maxInput, 10)}
+		"--memory", strconv.FormatInt(memory, 10), "--max-input", strconv.FormatInt(maxInput, 10),
+		"--max-output", strconv.FormatInt(maxOutput, 10)}
 }
 
 // RunChild is the child process: it limits itself (address space for
-// memory plus headroom, no files, a few descriptors, no capabilities),
-// reads the image from stdin and writes the converted image to stdout.
-// Exit status 3 means the image is not convertible.
+// memory plus headroom, no files, a few descriptors, no capabilities,
+// no_new_privs), reads the image from stdin and writes the converted image
+// to stdout. Exit status 3 means the image is not convertible, which
+// includes an output over --max-output bytes (nothing is written then).
 func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(ChildCommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -47,12 +49,14 @@ func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	orientation := fs.Int("orientation", 1, "EXIF orientation 1-8")
 	memory := fs.Int64("memory", 0, "memory this conversion may use, in bytes")
 	maxInput := fs.Int64("max-input", maxSize, "largest input in bytes")
+	maxOutput := fs.Int64("max-output", maxSize, "largest output in bytes")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	k, f := Kind(*kind), Format(*format)
 	if (k != JPEG && k != PNG) || (f != WebP && f != AVIF) || *quality < 1 || *quality > 100 ||
-		*width < 1 || *height < 1 || *memory < 1 || *maxInput < 1 || *maxInput > maxSize {
+		*width < 1 || *height < 1 || *memory < 1 || *maxInput < 1 || *maxInput > maxSize ||
+		*maxOutput < 1 || *maxOutput > maxSize {
 		fmt.Fprintln(stderr, "imgconv: invalid arguments")
 		return exitUsage
 	}
@@ -69,7 +73,7 @@ func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "imgconv: input too large")
 		return exitUnsupported
 	}
-	out, err := Convert(data, k, f, *quality, Info{Width: *width, Height: *height, Orientation: *orientation})
+	out, err := Convert(data, k, f, *quality, Info{Width: *width, Height: *height, Orientation: *orientation}, *maxOutput)
 	if err != nil {
 		fmt.Fprintln(stderr, "imgconv:", err)
 		if errors.Is(err, ErrUnsupported) {

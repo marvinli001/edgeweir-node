@@ -2,6 +2,8 @@ package imageconv
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
@@ -22,9 +24,10 @@ const (
 
 // Convert decodes a JPEG or PNG image, turns it upright by its EXIF
 // orientation and encodes it as format at quality. The output carries no
-// metadata. Images that do not decode, or whose size differs from what
-// inspection read, are ErrUnsupported.
-func Convert(data []byte, kind Kind, format Format, quality int, info Info) ([]byte, error) {
+// metadata. Images that do not decode, whose size differs from what
+// inspection read, or whose output would exceed maxOutput bytes are
+// ErrUnsupported.
+func Convert(data []byte, kind Kind, format Format, quality int, info Info, maxOutput int64) ([]byte, error) {
 	var img image.Image
 	var err error
 	switch kind {
@@ -42,20 +45,97 @@ func Convert(data []byte, kind Kind, format Format, quality int, info Info) ([]b
 		return nil, unsupported("dimensions differ from the headers")
 	}
 	img = Orient(img, info.Orientation)
-	var out bytes.Buffer
+	// The encoders hand over their whole output in one write, which fails
+	// past the bound.
+	out := &boundedBuffer{max: maxOutput}
 	switch format {
 	case WebP:
-		err = webp.Encode(&out, img, webp.Options{Quality: quality, Method: webpMethod})
+		err = webp.Encode(out, img, webp.Options{Quality: quality, Method: webpMethod})
 	case AVIF:
-		err = avif.Encode(&out, img, avif.Options{Quality: quality, QualityAlpha: alphaQuality, Speed: avifSpeed,
+		err = avif.Encode(out, img, avif.Options{Quality: quality, QualityAlpha: alphaQuality, Speed: avifSpeed,
 			ChromaSubsampling: image.YCbCrSubsampleRatio420})
 	default:
 		return nil, fmt.Errorf("unknown format %q", format)
+	}
+	if errors.Is(err, errOutputBound) {
+		return nil, unsupported(fmt.Sprintf("%s output over %d bytes", format, maxOutput))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("encode %s: %w", format, err)
 	}
 	return out.Bytes(), nil
+}
+
+// errOutputBound fails a write past a boundedBuffer's bound.
+var errOutputBound = errors.New("output over the bound")
+
+// boundedBuffer holds at most max bytes. A write that would go past max
+// writes nothing, fails with errOutputBound and calls over (once; the
+// parent kills the child with it). It has no ReadFrom, unlike an embedded
+// bytes.Buffer: io.Copy, and so os/exec, must go through Write.
+type boundedBuffer struct {
+	buf      bytes.Buffer
+	max      int64
+	over     func()
+	exceeded bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if int64(b.buf.Len())+int64(len(p)) > b.max {
+		if !b.exceeded && b.over != nil {
+			b.over()
+		}
+		b.exceeded = true
+		return 0, errOutputBound
+	}
+	return b.buf.Write(p)
+}
+
+// Bytes returns what was written.
+func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
+
+// checkVariant reports whether out is a whole file of format by its
+// container: a WebP file is one RIFF chunk of form type WEBP whose size is
+// the file's; an AVIF file starts with an ftyp box of major brand avif
+// (still images; avis would be a sequence) and is top-level boxes of
+// explicit sizes up to its last byte, as libavif writes them. A child's
+// output is cached only when it passes.
+func checkVariant(format Format, out []byte) error {
+	switch format {
+	case WebP:
+		if len(out) < 12 || string(out[0:4]) != "RIFF" || string(out[8:12]) != "WEBP" ||
+			int64(binary.LittleEndian.Uint32(out[4:8])) != int64(len(out))-8 {
+			return errors.New("not a WebP file")
+		}
+		return nil
+	case AVIF:
+		if len(out) < 16 || string(out[4:8]) != "ftyp" || string(out[8:12]) != "avif" {
+			return errors.New("not an AVIF file")
+		}
+		if n := binary.BigEndian.Uint32(out[0:4]); n < 16 || n%4 != 0 {
+			return errors.New("AVIF file with a malformed ftyp box")
+		}
+		// Box sizes: 32 bits, or 1 for a 64-bit size after the type (0, to
+		// the end of the file, is refused: it would let anything trail).
+		for rest := out; len(rest) > 0; {
+			if len(rest) < 8 {
+				return errors.New("AVIF file with a truncated box")
+			}
+			size, header := uint64(binary.BigEndian.Uint32(rest[0:4])), uint64(8)
+			if size == 1 {
+				if len(rest) < 16 {
+					return errors.New("AVIF file with a truncated box")
+				}
+				size, header = binary.BigEndian.Uint64(rest[8:16]), 16
+			}
+			if size < header || size > uint64(len(rest)) {
+				return errors.New("AVIF file with a truncated box")
+			}
+			rest = rest[size:]
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown format %q", format)
 }
 
 // Orient returns img turned upright for an EXIF orientation (2-8: mirror

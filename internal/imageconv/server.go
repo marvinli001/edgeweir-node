@@ -56,7 +56,8 @@ type Config struct {
 	Memory  int64
 	Timeout time.Duration
 	// Command returns the child process for args (the agent's own binary
-	// with ChildCommand); tests run their own.
+	// with ChildCommand) bound to ctx (exec.CommandContext: cancelling ctx
+	// kills it); tests run their own.
 	Command func(ctx context.Context, args []string) *exec.Cmd
 	Log     *slog.Logger
 }
@@ -345,15 +346,20 @@ func transientTTLValue(v string) string {
 	return strconv.Itoa(TransientTTL)
 }
 
-// run converts body in a child process within the timeout.
+// run converts body in a child process within the timeout. Only a variant
+// smaller than body is of use: the child gets len(body)-1 bytes as its
+// bound, and one that writes more is killed at once and its output dropped.
+// The variant must pass checkVariant.
 func (s *Server) run(ctx context.Context, log *slog.Logger, kind Kind, p Params, info Info, body []byte, estimate int64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
-	cmd := s.cfg.Command(ctx, childArgs(kind, p.Format, p.Quality, info, estimate, p.MaxSize))
+	maxOutput := int64(len(body)) - 1
+	cmd := s.cfg.Command(ctx, childArgs(kind, p.Format, p.Quality, info, estimate, p.MaxSize, maxOutput))
 	cmd.Stdin = bytes.NewReader(body)
-	var stdout bytes.Buffer
+	// Cancelling the context kills the child (cmd.Cancel).
+	stdout := &boundedBuffer{max: maxOutput, over: cancel}
 	stderr := &limitedBuffer{max: 2048}
-	cmd.Stdout, cmd.Stderr = &stdout, stderr
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = time.Second
 	start := time.Now()
 	err := cmd.Run()
@@ -363,9 +369,20 @@ func (s *Server) run(ctx context.Context, log *slog.Logger, kind Kind, p Params,
 		cpu = st.UserTime() + st.SystemTime()
 	}
 	attrs := []any{"kind", string(kind), "in", len(body), "pixels", info.Pixels(), "ms", wall.Milliseconds(), "cpu_ms", cpu.Milliseconds()}
+	if err == nil && stdout.exceeded {
+		// os/exec reports the failed write already; a cut-off variant must
+		// never be taken for a whole one.
+		err = errOutputBound
+	}
+	if err == nil {
+		err = checkVariant(p.Format, stdout.Bytes())
+	}
 	if err != nil {
 		var exit *exec.ExitError
 		switch {
+		case stdout.exceeded:
+			log.Warn("image conversion failed", append(attrs, "err", "output over the original's size", "stderr", strings.TrimSpace(stderr.String()))...)
+			return nil, errOutputBound
 		case ctx.Err() != nil:
 			log.Warn("image conversion timed out", append(attrs, "timeout", s.cfg.Timeout.String())...)
 		case errors.As(err, &exit) && exit.ExitCode() == exitUnsupported:
@@ -375,7 +392,7 @@ func (s *Server) run(ctx context.Context, log *slog.Logger, kind Kind, p Params,
 		}
 		return nil, err
 	}
-	log.Info("image converted", append(attrs, "out", stdout.Len())...)
+	log.Info("image converted", append(attrs, "out", len(stdout.Bytes()))...)
 	return stdout.Bytes(), nil
 }
 
@@ -428,18 +445,23 @@ func (f flushWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// limitedBuffer keeps the first max bytes written to it.
+// limitedBuffer keeps the first max bytes written to it and drops the
+// rest. It has no ReadFrom, unlike an embedded bytes.Buffer: io.Copy, and
+// so os/exec, would read everything through it.
 type limitedBuffer struct {
-	bytes.Buffer
+	buf bytes.Buffer
 	max int
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if room := b.max - b.Len(); room > 0 {
-		b.Buffer.Write(p[:min(room, len(p))])
+	if room := b.max - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(room, len(p))])
 	}
 	return len(p), nil
 }
+
+// String returns what was kept.
+func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // limiter admits conversions while fewer than workers run and their
 // memory estimates fit.
