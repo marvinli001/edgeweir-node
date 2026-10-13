@@ -202,7 +202,10 @@ func (a *Agent) ocspLoop(ctx context.Context) {
 				if current == plan {
 					copyPlan := *plan
 					copyPlan.Sites = slices.Clone(plan.Sites)
-					if a.attachCertificates(&copyPlan) == nil {
+					a.mu.Lock()
+					failures := a.certUse.failures
+					a.mu.Unlock()
+					if _, err := a.attachCertificates(&copyPlan, failures); err == nil {
 						table := a.siteTable(&copyPlan)
 						if a.pushWithRetry(ctx, table) == nil {
 							a.mu.Lock()

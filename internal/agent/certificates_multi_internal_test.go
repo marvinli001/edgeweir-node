@@ -81,7 +81,7 @@ func TestAttachMultipleCertificates(t *testing.T) {
 	}
 	// b.test and *.wild.test only through the third certificate.
 	p := plan(configir.Domain{Name: "a.test"}, configir.Domain{Name: "x.a.test"}, configir.Domain{Name: "b.test"}, configir.Domain{Name: "wild.test", Wildcard: true})
-	if err := a.attachCertificates(p); err != nil {
+	if _, err := a.attachCertificates(p, nil); err != nil {
 		t.Fatal(err)
 	}
 	multi := p.Sites[0]
@@ -112,7 +112,7 @@ func TestAttachMultipleCertificates(t *testing.T) {
 
 	// A domain none of them covers, an uncovered wildcard.
 	for _, d := range []configir.Domain{{Name: "c.test"}, {Name: "b.test", Wildcard: true}} {
-		err := a.attachCertificates(plan(configir.Domain{Name: "a.test"}, d))
+		_, err := a.attachCertificates(plan(configir.Domain{Name: "a.test"}, d), nil)
 		if err == nil || !strings.Contains(err.Error(), "does not cover") {
 			t.Errorf("%+v: err = %v", d, err)
 		}
@@ -120,7 +120,7 @@ func TestAttachMultipleCertificates(t *testing.T) {
 	// A missing additional certificate.
 	p = plan(configir.Domain{Name: "a.test"})
 	delete(p.Certificates, "other")
-	if err := a.attachCertificates(p); err == nil {
+	if _, err := a.attachCertificates(p, nil); err == nil {
 		t.Fatal("missing additional certificate attached")
 	}
 }
@@ -144,7 +144,7 @@ func TestSessionContext(t *testing.T) {
 	contextOf := func(site configir.Site) string {
 		t.Helper()
 		p := &configir.Plan{Certificates: refs, Sites: []configir.Site{site}}
-		if err := a.attachCertificates(p); err != nil {
+		if _, err := a.attachCertificates(p, nil); err != nil {
 			t.Fatal(err)
 		}
 		return p.Sites[0].TLSSessionContext

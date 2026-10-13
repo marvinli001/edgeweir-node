@@ -212,6 +212,26 @@ test("session context: the site's for its names, the health context for the heal
   tls.set_session_context = real
 end)
 
+test("certificate-isolation-v1: a site whose certificate did not load refuses handshakes, never with the default site's", function()
+  -- The agent left the certificate out (certificate_id stays); unknown
+  -- hosts are handed to b with its certificate.
+  assert(store.replace({ revision = "iso", content_hash = "iso",
+    health_certificate = { chain_pem = "HEALTH-CHAIN", private_key_pem = "HEALTH-KEY", fingerprint = "fh" },
+    unknown_hosts = { unknown_host = "site", default_site_id = "b", default_certificate = true },
+    sites = {
+      site("b", { "b.test" }, { certificate_id = "b", certificate = cert("b", "ec", "P-256", { "b.test", "*.test" }),
+        tls_session_context = CTX_B }),
+      site("failed", { "failed.test" }, { certificate_id = "lost", tls = { force_https = true } }),
+    } }))
+  conn_ctx = {}
+  eq(tls_phase(tls.client_hello, "failed.test"), true, "ClientHello")
+  eq(tls_phase(tls.certificate, "failed.test"), true, "certificate")
+  eq(tls_state.cert, nil, "no certificate set")
+  -- A name no site serves still gets the default site's.
+  eq(tls_phase(tls.certificate, "other.test"), false)
+  eq(tls_state.cert, "cert:b-CHAIN")
+end)
+
 test("certificate: ECDSA or RSA by the ClientHello, its OCSP response, client certificates asked for", function()
   site_table("2")
   -- A default client: TLS 1.3 and ecdsa_secp256r1_sha256.

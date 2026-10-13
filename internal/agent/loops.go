@@ -183,6 +183,7 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	if !a.appliedAt.IsZero() {
 		req.AppliedAt = timestamppb.New(a.appliedAt)
 	}
+	req.CertificateFailures = a.certUse.report()
 	a.mu.Unlock()
 	req.RevisionReceipt = a.receiptFor(req.AppliedRevision, req.AppliedContentHash)
 	req.Info = hostinfo.Collect(a.engineVersion)

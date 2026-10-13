@@ -76,6 +76,10 @@ type L4App struct {
 	CertificateID     string       `json:"certificate_id,omitempty"`
 	TLSMinimumVersion string       `json:"tls_minimum_version,omitempty"`
 	Certificate       *Certificate `json:"certificate,omitempty"`
+	// CertificateUnavailable: the node could not load the certificate and
+	// holds no earlier material for it (feature certificate-isolation-v1);
+	// the application's TLS handshakes are refused (edgeweir.l4).
+	CertificateUnavailable bool `json:"certificate_unavailable,omitempty"`
 	// CertificateNames are the DNS names of the certificate (lowercase):
 	// the SNI of a handshake must be one of them.
 	CertificateNames []string `json:"certificate_names,omitempty"`

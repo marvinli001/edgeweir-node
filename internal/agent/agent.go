@@ -269,8 +269,11 @@ type Agent struct {
 	desiredL4    *dataplane.L4Table
 	creds        map[string]configir.Credential
 	certificates map[string]configir.Certificate
-	purge        *purgeState
-	lastPrune    time.Time
+	// certUse: the applied plan's certificates that did not load and the
+	// material it serves (certificate-isolation-v1).
+	certUse   certificateUse
+	purge     *purgeState
+	lastPrune time.Time
 	// purgeRetryAt: after installing the site-level fallback of the marker
 	// set, the full set is tried again from then on.
 	purgeRetryAt time.Time
@@ -672,11 +675,12 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 	switch {
 	case err == nil:
 		plan, perr := configir.Build(cfg, a.buildOptions())
+		var certs certificateUse
 		if perr == nil {
 			// No console yet: S3 origins use the stored credentials.
 			a.attachCredentials(plan)
 			a.attachSessionTicketKeys(plan)
-			perr = a.attachCertificates(plan)
+			certs, perr = a.attachCertificates(plan, a.loadCertificateFailures(cfg))
 			if perr == nil {
 				perr = a.applyPlan(ctx, plan)
 			}
@@ -686,6 +690,10 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 			a.applied, a.appliedAt = cfg, time.Now()
 			a.state = nodev1.ApplyState_APPLY_STATE_APPLIED
 			a.message = fmt.Sprintf("restored last-known-good revision %d", cfg.GetRevision())
+			if w := certs.warnings(); len(w) > 0 {
+				a.message = truncate(a.message + "; " + strings.Join(w, "; "))
+			}
+			a.certUse = certs
 			a.mu.Unlock()
 			a.log.Info("serving last-known-good configuration", "revision", cfg.GetRevision(),
 				"content_hash", cfg.GetContentHash(), "file", file, "sites", len(plan.Sites))

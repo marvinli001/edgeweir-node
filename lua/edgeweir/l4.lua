@@ -152,13 +152,19 @@ function _M.prepare(doc)
     end
     if a.certificate_id ~= nil and a.certificate_id ~= cjson.null and a.certificate_id ~= "" then
       local c = a.certificate
-      if a.protocol ~= "tcp" or type(c) ~= "table" or type(c.chain_pem) ~= "string" or type(c.private_key_pem) ~= "string"
-          or type(c.fingerprint) ~= "string" or (a.tls_minimum_version ~= "1.2" and a.tls_minimum_version ~= "1.3") then
+      -- The node could not load the certificate (certificate-isolation-v1):
+      -- no material, so every handshake is refused (tls_app).
+      local unavailable = a.certificate_unavailable == true
+      if a.protocol ~= "tcp" or (a.tls_minimum_version ~= "1.2" and a.tls_minimum_version ~= "1.3")
+          or (unavailable and c ~= nil and c ~= cjson.null) or (not unavailable and (type(c) ~= "table"
+          or type(c.chain_pem) ~= "string" or type(c.private_key_pem) ~= "string" or type(c.fingerprint) ~= "string")) then
         return nil, "application " .. a.id .. ": invalid TLS settings"
       end
-      a._names = {}
-      for _, name in ipairs(type(a.certificate_names) == "table" and a.certificate_names or {}) do
-        if type(name) == "string" then a._names[lower(name)] = true end
+      if not unavailable then
+        a._names = {}
+        for _, name in ipairs(type(a.certificate_names) == "table" and a.certificate_names or {}) do
+          if type(name) == "string" then a._names[lower(name)] = true end
+        end
       end
     end
     if not whole(a.max_fails, 1, 100) or not whole(a.fail_timeout, 1, 3600) or not whole(a.connect_timeout_ms, 1, 60000)

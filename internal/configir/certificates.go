@@ -19,6 +19,11 @@ import (
 const (
 	FeatureMultiCertificate = "multi-certificate-v1"
 	FeatureClientCert       = "client-cert-v1"
+	// FeatureCertificateIsolation (proto v1.1.0): a certificate the node
+	// cannot load is left out of the revision, which applies otherwise, and
+	// reported (ReportStatusRequest.certificate_failures). Not required:
+	// older nodes fail the whole revision.
+	FeatureCertificateIsolation = "certificate-isolation-v1"
 )
 
 // MaxAdditionalCertificates is how many certificates a site has after

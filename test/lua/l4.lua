@@ -397,6 +397,12 @@ test("l4-v2 ranges: lookup by port, single ports first, overlaps refused", funct
     ["single port in a range"] = function(d) d.apps[2] = app({ id = "s1", port = 9150 }) end,
     ["TLS for UDP"] = function(d) d.apps[1].protocol, d.apps[1].certificate_id, d.apps[1].tls_minimum_version, d.apps[1].certificate = "udp", "c", "1.2", cert end,
     ["TLS without material"] = function(d) d.apps[1].certificate_id, d.apps[1].tls_minimum_version = "c", "1.2" end,
+    ["unavailable certificate with material"] = function(d)
+      d.apps[1].certificate_id, d.apps[1].tls_minimum_version, d.apps[1].certificate, d.apps[1].certificate_unavailable = "c", "1.2", cert, true
+    end,
+    ["unavailable certificate for UDP"] = function(d)
+      d.apps[1].protocol, d.apps[1].certificate_id, d.apps[1].tls_minimum_version, d.apps[1].certificate_unavailable = "udp", "c", "1.2", true
+    end,
     ["TLS version"] = function(d) d.apps[1].certificate_id, d.apps[1].tls_minimum_version, d.apps[1].certificate = "c", "1.1", cert end,
   }) do
     local d = { revision = "1", apps = { app({ id = "r1", port = 9100, port_end = 9199 }) } }
@@ -406,6 +412,16 @@ test("l4-v2 ranges: lookup by port, single ports first, overlaps refused", funct
       error(name .. ": accepted")
     end
   end
+end)
+
+test("certificate-isolation-v1: a TLS application whose certificate the node could not load refuses every handshake", function()
+  local doc = assert(l4.prepare({ revision = "1", apps = {
+    app({ id = "t1", port = 10443, certificate_id = "c1", tls_minimum_version = "1.2", certificate_unavailable = true }),
+  } }))
+  local a = l4.lookup(doc, "tcp", 10443)
+  eq(a.id, "t1")
+  eq(a.certificate, nil)
+  eq(a._names, nil, "no names: tls_app finds no application, the handshake is aborted")
 end)
 
 test("l4-v2 peers: origins with port 0 take the arriving port", function()

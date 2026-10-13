@@ -13,7 +13,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -24,6 +26,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
@@ -45,6 +49,23 @@ func (a *Agent) loadCertificates() {
 	}
 }
 
+// Reasons a certificate of a revision does not load
+// (CertificateFailure.reason).
+const (
+	certInvalidMaterial     = "invalid_material"
+	certFingerprintMismatch = "fingerprint_mismatch"
+	certUnavailable         = "unavailable"
+)
+
+// maxCertificateFailures is how many failed certificates a status report
+// names; maxCertificateMessage bounds each one's message (bytes).
+const (
+	maxCertificateFailures = 100
+	maxCertificateMessage  = 256
+)
+
+var errFingerprintMismatch = errors.New("certificate fingerprint mismatch")
+
 func validMaterial(cert configir.Certificate) error {
 	pair, err := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
 	if err != nil {
@@ -55,14 +76,44 @@ func validMaterial(cert configir.Certificate) error {
 	}
 	sum := sha256.Sum256(pair.Certificate[0])
 	if hex.EncodeToString(sum[:]) != cert.Fingerprint {
-		return fmt.Errorf("certificate fingerprint mismatch")
+		return errFingerprintMismatch
 	}
 	return nil
 }
 
-func (a *Agent) ensureCertificates(ctx context.Context, plan *configir.Plan) error {
+// loadable checks material as the data plane gets it and returns its leaf.
+func loadable(cert configir.Certificate) (*x509.Certificate, error) {
+	if err := validMaterial(cert); err != nil {
+		return nil, err
+	}
+	pair, _ := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
+	return x509.ParseCertificate(pair.Certificate[0])
+}
+
+// certificateFailure describes a certificate that did not load; the
+// message is the error's text (never key material), at most
+// maxCertificateMessage bytes.
+func certificateFailure(id, fingerprint string, err error) *nodev1.CertificateFailure {
+	reason := certInvalidMaterial
+	if errors.Is(err, errFingerprintMismatch) {
+		reason = certFingerprintMismatch
+	}
+	msg := err.Error()
+	if len(msg) > maxCertificateMessage {
+		msg = strings.ToValidUTF8(msg[:maxCertificateMessage], "")
+	}
+	return &nodev1.CertificateFailure{CertificateId: id, Sha256Fingerprint: fingerprint, Reason: reason, Message: msg}
+}
+
+// ensureCertificates fetches the revision's certificates the node does not
+// hold yet. One that does not load is left out and returned among the
+// failures (feature certificate-isolation-v1): the rest of the revision
+// applies. An error (the console unreachable, a certificate changed during
+// the fetch) fails the apply; it is retried.
+func (a *Agent) ensureCertificates(ctx context.Context, plan *configir.Plan) (map[string]*nodev1.CertificateFailure, error) {
+	failures := map[string]*nodev1.CertificateFailure{}
 	if len(plan.Certificates) == 0 {
-		return nil
+		return failures, nil
 	}
 	var missing []string
 	a.mu.Lock()
@@ -76,25 +127,35 @@ func (a *Agent) ensureCertificates(ctx context.Context, plan *configir.Plan) err
 	for len(missing) > 0 {
 		n := min(len(missing), 100)
 		if a.channel == nil {
-			return fmt.Errorf("certificate material unavailable")
+			return nil, fmt.Errorf("certificate material unavailable")
 		}
 		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
 		res, err := a.channel.Client().GetCertificates(cctx, connect.NewRequest(&nodev1.GetCertificatesRequest{Ids: missing[:n]}))
 		cancel()
 		if err != nil {
-			return fmt.Errorf("fetch certificates: %w", err)
+			return nil, fmt.Errorf("fetch certificates: %w", err)
 		}
+		returned := map[string]bool{}
 		for _, c := range res.Msg.GetCertificates() {
 			if plan.Certificates[c.GetId()] != c.GetSha256Fingerprint() {
-				return fmt.Errorf("certificate changed during configuration fetch; retry")
+				return nil, fmt.Errorf("certificate changed during configuration fetch; retry")
 			}
+			returned[c.GetId()] = true
 			cert := configir.Certificate{ChainPEM: c.GetChainPem(), PrivateKeyPEM: c.GetPrivateKeyPem(), Fingerprint: c.GetSha256Fingerprint()}
 			if err := validMaterial(cert); err != nil {
-				return err
+				failures[c.GetId()] = certificateFailure(c.GetId(), cert.Fingerprint, err)
+				a.log.Warn("certificate not loaded; the rest of the revision applies", "certificate_id", c.GetId(), "err", err)
+				continue
 			}
 			a.mu.Lock()
 			a.certificates[c.GetId()+"/"+cert.Fingerprint] = cert
 			a.mu.Unlock()
+		}
+		for _, id := range missing[:n] {
+			if !returned[id] {
+				failures[id] = &nodev1.CertificateFailure{CertificateId: id, Sha256Fingerprint: plan.Certificates[id],
+					Reason: certUnavailable, Message: "the console returned no material"}
+			}
 		}
 		missing = missing[n:]
 	}
@@ -102,15 +163,101 @@ func (a *Agent) ensureCertificates(ctx context.Context, plan *configir.Plan) err
 	defer a.mu.Unlock()
 	data, err := json.Marshal(a.certificates)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Keep the previous fingerprint until the new LKG is durably committed.
-	return fsutil.WriteFileAtomic(filepath.Join(a.cfg.StateDir, "certificates.json"), data, 0o600)
+	return failures, fsutil.WriteFileAtomic(filepath.Join(a.cfg.StateDir, "certificates.json"), data, 0o600)
 }
 
-func (a *Agent) attachCertificates(plan *configir.Plan) error {
+// certificateUse is what attaching a revision's certificates found: the
+// certificates that did not load (by id; serving_fingerprint set where
+// earlier material stands in) and the keys of a.certificates the plan
+// serves.
+type certificateUse struct {
+	failures map[string]*nodev1.CertificateFailure
+	serving  map[string]bool
+}
+
+// warnings returns one plan warning per failed certificate.
+func (u certificateUse) warnings() []string {
+	ids := slices.Sorted(maps.Keys(u.failures))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		f := u.failures[id]
+		if f.GetServingFingerprint() != "" {
+			out = append(out, fmt.Sprintf("certificate %s not loaded (%s): its earlier material is served", id, f.GetReason()))
+		} else {
+			out = append(out, fmt.Sprintf("certificate %s not loaded (%s): TLS handshakes it served are refused", id, f.GetReason()))
+		}
+	}
+	return out
+}
+
+// report returns the failures as ReportStatusRequest.certificate_failures:
+// sorted by id, at most maxCertificateFailures.
+func (u certificateUse) report() []*nodev1.CertificateFailure {
+	ids := slices.Sorted(maps.Keys(u.failures))
+	out := make([]*nodev1.CertificateFailure, 0, min(len(ids), maxCertificateFailures))
+	for _, id := range ids[:min(len(ids), maxCertificateFailures)] {
+		out = append(out, proto.Clone(u.failures[id]).(*nodev1.CertificateFailure))
+	}
+	return out
+}
+
+// attachCertificates gives the plan's sites and layer-4 applications their
+// certificates' material. failures are those ensureCertificates found (nil:
+// none known, as when serving the LKG); material the node does not hold,
+// or that does not load, fails too. A failed certificate gets the earlier
+// material the node still holds for its id (the latest notAfter that
+// loads), else none: a site left without certificates, or whose remaining
+// ones no longer cover its domains, has none at all and an application
+// none either (CertificateUnavailable), so their handshakes are refused,
+// never answered with another certificate. A certificate the revision does
+// not list, or a site whose own certificates do not cover it, is an error.
+func (a *Agent) attachCertificates(plan *configir.Plan, failures map[string]*nodev1.CertificateFailure) (certificateUse, error) {
+	use := certificateUse{failures: map[string]*nodev1.CertificateFailure{}, serving: map[string]bool{}}
+	for id, f := range failures {
+		use.failures[id] = proto.Clone(f).(*nodev1.CertificateFailure)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// standIns: the earlier material (key) found for a failed certificate,
+	// served only where a site or application keeps it (kept).
+	standIns, kept := map[string]string{}, map[string]bool{}
+	// material returns the material id gets and its leaf; ok is false when
+	// there is none.
+	material := func(id string) (configir.Certificate, *x509.Certificate, bool) {
+		key := id + "/" + plan.Certificates[id]
+		if use.failures[id] == nil {
+			cert, held := a.certificates[key]
+			if !held {
+				use.failures[id] = &nodev1.CertificateFailure{CertificateId: id, Sha256Fingerprint: plan.Certificates[id],
+					Reason: certUnavailable, Message: "material not held by the node"}
+			} else if leaf, err := loadable(cert); err != nil {
+				use.failures[id] = certificateFailure(id, plan.Certificates[id], err)
+			} else {
+				use.serving[key] = true
+				return cert, leaf, true
+			}
+		}
+		var best configir.Certificate
+		var bestLeaf *x509.Certificate
+		bestKey := ""
+		for k, cert := range a.certificates {
+			if k == key || !strings.HasPrefix(k, id+"/") {
+				continue
+			}
+			leaf, err := loadable(cert)
+			if err == nil && (bestLeaf == nil || leaf.NotAfter.After(bestLeaf.NotAfter) || (leaf.NotAfter.Equal(bestLeaf.NotAfter) && k < bestKey)) {
+				best, bestLeaf, bestKey = cert, leaf, k
+			}
+		}
+		if bestLeaf == nil {
+			return configir.Certificate{}, nil, false
+		}
+		standIns[id] = bestKey
+		return best, bestLeaf, true
+	}
 	// Unknown names handed to the default site with its certificate
 	// (unknown-host-v1): edgeweir.policy redirects them to HTTPS only where
 	// the certificate names them.
@@ -126,26 +273,38 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 		}
 		certs := make([]configir.Certificate, 0, len(ids))
 		leaves := make([]*x509.Certificate, 0, len(ids))
+		used := make([]string, 0, len(ids))
+		lost := false
 		for _, id := range ids {
-			cert, ok := a.certificates[id+"/"+plan.Certificates[id]]
+			if plan.Certificates[id] == "" {
+				return use, fmt.Errorf("missing certificate for site %s", site.ID)
+			}
+			cert, leaf, ok := material(id)
+			if use.failures[id] != nil {
+				lost = true
+			}
 			if !ok {
-				return fmt.Errorf("missing certificate for site %s", site.ID)
-			}
-			if err := validMaterial(cert); err != nil {
-				return err
-			}
-			pair, _ := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
-			leaf, err := x509.ParseCertificate(pair.Certificate[0])
-			if err != nil {
-				return err
+				continue
 			}
 			cert.KeyType, cert.Curve = keyType(leaf)
 			certs = append(certs, cert)
 			leaves = append(leaves, leaf)
+			used = append(used, id)
 		}
-		matches, err := checkCoverage(site, leaves)
-		if err != nil {
-			return err
+		matches := false
+		if len(certs) > 0 {
+			var err error
+			if matches, err = checkCoverage(site, leaves); err != nil {
+				if !lost {
+					return use, err
+				}
+				certs = nil
+			}
+		}
+		if len(certs) == 0 {
+			// No certificate: edgeweir.tls refuses the site's handshakes.
+			site.Certificate, site.Certificates, site.TLSSessionContext = nil, nil, ""
+			continue
 		}
 		// The names of the leaves: for hosts of suffix and pattern domains,
 		// the default site's handed names and, with more than one
@@ -157,6 +316,9 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 					certs[j].DNSNames = append(certs[j].DNSNames, strings.ToLower(name))
 				}
 			}
+		}
+		for _, id := range used {
+			kept[id] = true
 		}
 		site.Certificate = &certs[0]
 		site.Certificates = nil
@@ -172,25 +334,30 @@ func (a *Agent) attachCertificates(plan *configir.Plan) error {
 		if !app.TLS() {
 			continue
 		}
-		cert, ok := a.certificates[app.CertificateID+"/"+plan.Certificates[app.CertificateID]]
-		if !ok {
-			return fmt.Errorf("missing certificate for layer-4 application %s", app.ID)
+		if plan.Certificates[app.CertificateID] == "" {
+			return use, fmt.Errorf("missing certificate for layer-4 application %s", app.ID)
 		}
-		if err := validMaterial(cert); err != nil {
-			return err
-		}
-		pair, _ := tls.X509KeyPair([]byte(cert.ChainPEM), []byte(cert.PrivateKeyPEM))
-		leaf, err := x509.ParseCertificate(pair.Certificate[0])
-		if err != nil {
-			return err
-		}
-		app.Certificate = &cert
+		cert, leaf, ok := material(app.CertificateID)
 		app.CertificateNames = nil
+		if !ok {
+			app.Certificate, app.CertificateUnavailable = nil, true
+			continue
+		}
+		app.Certificate, app.CertificateUnavailable = &cert, false
+		kept[app.CertificateID] = true
 		for _, name := range leaf.DNSNames {
 			app.CertificateNames = append(app.CertificateNames, strings.ToLower(name))
 		}
 	}
-	return nil
+	// Earlier material counts as served (kept on disk, reported) only
+	// where something uses it.
+	for id, key := range standIns {
+		if kept[id] {
+			use.serving[key] = true
+			use.failures[id].ServingFingerprint = a.certificates[key].Fingerprint
+		}
+	}
+	return use, nil
 }
 
 // checkCoverage checks that the site's certificates together cover each of
@@ -305,7 +472,9 @@ func (a *Agent) pruneSecrets(current, previous *nodev1.NodeConfig) {
 	defer a.mu.Unlock()
 	changedCerts, changedCredentials := false, false
 	for key := range a.certificates {
-		if !certs[key] {
+		// Earlier material standing in for a certificate that did not load
+		// stays while the applied plan serves it.
+		if !certs[key] && !a.certUse.serving[key] {
 			delete(a.certificates, key)
 			changedCerts = true
 		}
@@ -363,4 +532,57 @@ func (a *Agent) ensureBootstrapCertificate() error {
 		return err
 	}
 	return fsutil.WriteFileAtomic(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+}
+
+// certificateFailuresFile keeps the applied revision's certificate failures
+// for the LKG served before the console is reachable (their reasons).
+const certificateFailuresFile = "certificate-failures.json"
+
+type storedCertificateFailures struct {
+	ContentHash string `json:"content_hash"`
+	Failures    []struct {
+		ID          string `json:"id"`
+		Fingerprint string `json:"fingerprint"`
+		Reason      string `json:"reason"`
+		Message     string `json:"message"`
+	} `json:"failures"`
+}
+
+// saveCertificateFailures stores the failures of the revision just applied
+// (best effort: without the file the LKG's report says "unavailable").
+func (a *Agent) saveCertificateFailures(cfg *nodev1.NodeConfig, use certificateUse) {
+	stored := storedCertificateFailures{ContentHash: cfg.GetContentHash()}
+	for _, f := range use.report() {
+		stored.Failures = append(stored.Failures, struct {
+			ID          string `json:"id"`
+			Fingerprint string `json:"fingerprint"`
+			Reason      string `json:"reason"`
+			Message     string `json:"message"`
+		}{f.GetCertificateId(), f.GetSha256Fingerprint(), f.GetReason(), f.GetMessage()})
+	}
+	data, err := json.Marshal(stored)
+	if err == nil {
+		err = fsutil.WriteFileAtomic(filepath.Join(a.cfg.StateDir, certificateFailuresFile), data, 0o600)
+	}
+	if err != nil {
+		a.log.Warn("cannot store the certificate failures", "err", err)
+	}
+}
+
+// loadCertificateFailures returns the stored failures of cfg (nil when the
+// file holds another revision's).
+func (a *Agent) loadCertificateFailures(cfg *nodev1.NodeConfig) map[string]*nodev1.CertificateFailure {
+	data, err := os.ReadFile(filepath.Join(a.cfg.StateDir, certificateFailuresFile))
+	if err != nil {
+		return nil
+	}
+	var stored storedCertificateFailures
+	if json.Unmarshal(data, &stored) != nil || stored.ContentHash != cfg.GetContentHash() {
+		return nil
+	}
+	out := map[string]*nodev1.CertificateFailure{}
+	for _, f := range stored.Failures {
+		out[f.ID] = &nodev1.CertificateFailure{CertificateId: f.ID, Sha256Fingerprint: f.Fingerprint, Reason: f.Reason, Message: f.Message}
+	}
+	return out
 }

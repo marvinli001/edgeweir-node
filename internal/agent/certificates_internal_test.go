@@ -53,14 +53,14 @@ func TestAttachCertificatesSkipsDomainsWaitingForIt(t *testing.T) {
 		}
 	}
 	waiting := plan(true)
-	if err := a.attachCertificates(waiting); err != nil {
+	if _, err := a.attachCertificates(waiting, nil); err != nil {
 		t.Fatal(err)
 	}
 	if waiting.Sites[0].Certificate == nil {
 		t.Fatal("the certificate was not attached")
 	}
 	// Without the flag the certificate must cover every domain.
-	if err := a.attachCertificates(plan(false)); err == nil || !strings.Contains(err.Error(), "does not cover") {
+	if _, err := a.attachCertificates(plan(false), nil); err == nil || !strings.Contains(err.Error(), "does not cover") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -79,7 +79,7 @@ func TestAttachCertificatesNamesForMatchDomains(t *testing.T) {
 			{ID: "b", CertificateID: "cert-a", Domains: []configir.Domain{{Name: "a.test"}}},
 		},
 	}
-	if err := a.attachCertificates(plan); err != nil {
+	if _, err := a.attachCertificates(plan, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := plan.Sites[0].Certificate.DNSNames; strings.Join(got, ",") != "a.test,*.deep.test" {
@@ -92,7 +92,7 @@ func TestAttachCertificatesNamesForMatchDomains(t *testing.T) {
 	// The default site that gets unknown names with its certificate carries them too.
 	plan.Sites[1].Certificate = nil
 	plan.UnknownHosts = &configir.UnknownHosts{UnknownHost: configir.UnknownHostSite, IPAccess: "page", DefaultSiteID: "b", DefaultCertificate: true}
-	if err := a.attachCertificates(plan); err != nil {
+	if _, err := a.attachCertificates(plan, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := plan.Sites[1].Certificate.DNSNames; strings.Join(got, ",") != "a.test,*.deep.test" {

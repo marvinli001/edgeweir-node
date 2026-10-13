@@ -591,16 +591,20 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		return
 	}
 	a.attachSessionTicketKeys(plan)
-	if err := a.ensureCertificates(ctx, plan); err != nil {
+	// A certificate that does not load is left out (certificate-isolation-v1).
+	fetched, err := a.ensureCertificates(ctx, plan)
+	if err != nil {
 		a.fail(cfg, key, err)
 		return
 	}
 	// OCSP responses the node holds are stapled; ocspLoop fetches the
 	// missing and stale ones after the apply.
-	if err := a.attachCertificates(plan); err != nil {
+	certs, err := a.attachCertificates(plan, fetched)
+	if err != nil {
 		a.fail(cfg, key, err)
 		return
 	}
+	plan.Warnings = append(plan.Warnings, certs.warnings()...)
 	for _, w := range plan.Warnings {
 		a.log.Warn("configuration warning", "revision", cfg.GetRevision(), "warning", w)
 	}
@@ -629,7 +633,9 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.state = nodev1.ApplyState_APPLY_STATE_APPLIED
 	a.message = summarizeWarnings(plan.Warnings)
 	a.rejectedKey = ""
+	a.certUse = certs
 	a.mu.Unlock()
+	a.saveCertificateFailures(cfg, certs)
 	a.pruneSecrets(cfg, previousConfig)
 	a.pruneChallengeKeys(cfg, previousConfig)
 	a.pruneSessionTicketKeys(cfg, previousConfig)
