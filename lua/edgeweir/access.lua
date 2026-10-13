@@ -377,8 +377,18 @@ function _M.compile_hotlink(h)
   c.everything = c.extensions == nil and #c.prefixes == 0
   if type(h.redirect_url) == "string" and h.redirect_url ~= "" then
     c.redirect = h.redirect_url
-    -- Requests for the target itself are not checked (no loop).
-    if sub(c.redirect, 1, 1) == "/" then c.redirect_path = match(c.redirect, "^[^?#]*") end
+    -- Requests for the target itself are not checked (no loop). A target
+    -- whose path no request could be exempt for (a raw path with "//" or
+    -- ambiguous, or an escape nginx decodes in $uri) would loop: such a
+    -- site answers 403 instead (consoles refuse these targets).
+    if sub(c.redirect, 1, 1) == "/" then
+      local target = match(c.redirect, "^[^?#]*")
+      if uripath.no_exemption(target) or find(target, "%", 1, true) then
+        c.redirect = nil
+      else
+        c.redirect_path = target
+      end
+    end
   end
   return c
 end

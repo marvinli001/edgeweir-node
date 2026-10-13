@@ -116,6 +116,18 @@ test("hotlink: an ambiguous path is in scope, under no exclusion and never the r
   eq(access.hotlink_decision(c, "/a.png", "png", nil, nil, site_host, false, true), "skip", "//, another extension")
 end)
 
+test("hotlink: a target no request could be exempt for answers 403 instead of looping", function()
+  for _, target in ipairs({ "/a//hotlink.png", "/a/./hotlink.png", "/a/hot%6Cink.png", "/a;x/hotlink.png", "/a/hotlink.png" }) do
+    local c = access.compile_hotlink({ allow_empty = false, extensions = { "png" }, redirect_url = target .. "?v=1" })
+    if target == "/a/hotlink.png" then
+      eq(c.redirect, target .. "?v=1", target); eq(c.redirect_path, target, target)
+    else
+      eq(c.redirect, nil, target); eq(c.redirect_path, nil, target)
+    end
+  end
+  eq(access.compile_hotlink({ redirect_url = "https://img.site.com/a//b.png" }).redirect, "https://img.site.com/a//b.png", "URLs")
+end)
+
 test("vectors: geo", function()
   for _, v in ipairs(vectors.geo) do
     local c = v.cfg
