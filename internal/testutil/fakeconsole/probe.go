@@ -34,8 +34,9 @@ type probeState struct {
 // ProbeTargetsCall is one GetProbeTargets call: who made it (the probe or
 // node id) and the ProbeInfo it sent.
 type ProbeTargetsCall struct {
-	Caller string
-	Info   *nodev1.ProbeInfo
+	Caller  string
+	Info    *nodev1.ProbeInfo
+	Channel *nodev1.ChannelStatus
 }
 
 // ProbeReport is one ReportProbeResults call.
@@ -202,7 +203,8 @@ func (c *Console) RenewProbeCertificate(_ context.Context, req *connect.Request[
 func (c *Console) GetProbeTargets(ctx context.Context, req *connect.Request[nodev1.GetProbeTargetsRequest]) (*connect.Response[nodev1.GetProbeTargetsResponse], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.probe.calls = append(c.probe.calls, ProbeTargetsCall{Caller: caller(ctx), Info: proto.CloneOf(req.Msg.GetInfo())})
+	c.probe.calls = append(c.probe.calls, ProbeTargetsCall{Caller: caller(ctx), Info: proto.CloneOf(req.Msg.GetInfo()),
+		Channel: proto.CloneOf(req.Msg.GetChannel())})
 	if c.probe.failTargets > 0 {
 		c.probe.failTargets--
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("injected GetProbeTargets failure"))
@@ -214,6 +216,7 @@ func (c *Console) GetProbeTargets(ctx context.Context, req *connect.Request[node
 	if caller(ctx) == c.opts.ProbeID {
 		resp.RenewCertificate = c.probe.renewNext
 		c.probe.renewNext = false
+		resp.Channel = proto.CloneOf(c.channel)
 	}
 	return connect.NewResponse(resp), nil
 }

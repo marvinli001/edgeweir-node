@@ -113,6 +113,13 @@ type Console struct {
 
 	probe probeState
 
+	// The node channel address handed out (ReportStatusResponse.channel,
+	// GetProbeTargetsResponse.channel, CheckChannel) and the checks made.
+	channel       *nodev1.ChannelAddress
+	channelChecks []string
+	noCheck       bool
+	rejectNode    bool
+
 	// PURGE requests (SubmitPurge) and the error to answer them with.
 	purges   []*nodev1.SubmitPurgeRequest
 	purgeErr error
@@ -220,6 +227,13 @@ func (c *Console) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		cn := r.TLS.PeerCertificates[0].Subject.CommonName
+		c.mu.Lock()
+		rejected := c.rejectNode
+		c.mu.Unlock()
+		if rejected {
+			_ = errWriter.Write(w, r, connect.NewError(connect.CodeUnauthenticated, errors.New("unknown node")))
+			return
+		}
 		if cn != c.opts.NodeID || isProbeCertificate(r.TLS.PeerCertificates[0]) {
 			_ = errWriter.Write(w, r, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("unknown node %q", cn)))
 			return
@@ -537,6 +551,7 @@ func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.Re
 		ReportIntervalSeconds: c.opts.ReportInterval,
 		TasksPending:          len(c.pendingTasks) > 0,
 		Probe:                 c.probe.nodeProbe,
+		Channel:               proto.CloneOf(c.channel),
 	}), nil
 }
 

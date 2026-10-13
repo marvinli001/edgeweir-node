@@ -80,20 +80,113 @@ func (ProbeMethod) EnumDescriptor() ([]byte, []int) {
 	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{0}
 }
 
-// ProbeInfo describes the probe process.
-type ProbeInfo struct {
+// CheckProbeChannelRequest is empty: the client certificate names the probe.
+type CheckProbeChannelRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hostname      string                 `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`
-	AgentVersion  string                 `protobuf:"bytes,2,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
-	Os            string                 `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`
-	Arch          string                 `protobuf:"bytes,4,opt,name=arch,proto3" json:"arch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *CheckProbeChannelRequest) Reset() {
+	*x = CheckProbeChannelRequest{}
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckProbeChannelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckProbeChannelRequest) ProtoMessage() {}
+
+func (x *CheckProbeChannelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckProbeChannelRequest.ProtoReflect.Descriptor instead.
+func (*CheckProbeChannelRequest) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{0}
+}
+
+// CheckProbeChannelResponse names the probe the console authenticated and
+// the address the console gives out now.
+type CheckProbeChannelResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProbeId       string                 `protobuf:"bytes,1,opt,name=probe_id,json=probeId,proto3" json:"probe_id,omitempty"`
+	Channel       *ChannelAddress        `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckProbeChannelResponse) Reset() {
+	*x = CheckProbeChannelResponse{}
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckProbeChannelResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckProbeChannelResponse) ProtoMessage() {}
+
+func (x *CheckProbeChannelResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckProbeChannelResponse.ProtoReflect.Descriptor instead.
+func (*CheckProbeChannelResponse) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *CheckProbeChannelResponse) GetProbeId() string {
+	if x != nil {
+		return x.ProbeId
+	}
+	return ""
+}
+
+func (x *CheckProbeChannelResponse) GetChannel() *ChannelAddress {
+	if x != nil {
+		return x.Channel
+	}
+	return nil
+}
+
+// ProbeInfo describes the probe process.
+type ProbeInfo struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Hostname     string                 `protobuf:"bytes,1,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	AgentVersion string                 `protobuf:"bytes,2,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
+	Os           string                 `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`
+	Arch         string                 `protobuf:"bytes,4,opt,name=arch,proto3" json:"arch,omitempty"`
+	// Capabilities of the probe process, e.g. channel-follow-v1.
+	SupportedFeatures []string `protobuf:"bytes,5,rep,name=supported_features,json=supportedFeatures,proto3" json:"supported_features,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
 func (x *ProbeInfo) Reset() {
 	*x = ProbeInfo{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[0]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -105,7 +198,7 @@ func (x *ProbeInfo) String() string {
 func (*ProbeInfo) ProtoMessage() {}
 
 func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[0]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -118,7 +211,7 @@ func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeInfo.ProtoReflect.Descriptor instead.
 func (*ProbeInfo) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{0}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ProbeInfo) GetHostname() string {
@@ -149,6 +242,13 @@ func (x *ProbeInfo) GetArch() string {
 	return ""
 }
 
+func (x *ProbeInfo) GetSupportedFeatures() []string {
+	if x != nil {
+		return x.SupportedFeatures
+	}
+	return nil
+}
+
 // EnrollProbeRequest carries the token, the probe's CSR (its private key
 // never leaves the probe) and a description of the probe.
 type EnrollProbeRequest struct {
@@ -162,7 +262,7 @@ type EnrollProbeRequest struct {
 
 func (x *EnrollProbeRequest) Reset() {
 	*x = EnrollProbeRequest{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[1]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +274,7 @@ func (x *EnrollProbeRequest) String() string {
 func (*EnrollProbeRequest) ProtoMessage() {}
 
 func (x *EnrollProbeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[1]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +287,7 @@ func (x *EnrollProbeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollProbeRequest.ProtoReflect.Descriptor instead.
 func (*EnrollProbeRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{1}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *EnrollProbeRequest) GetToken() string {
@@ -226,7 +326,7 @@ type EnrollProbeResponse struct {
 
 func (x *EnrollProbeResponse) Reset() {
 	*x = EnrollProbeResponse{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[2]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -238,7 +338,7 @@ func (x *EnrollProbeResponse) String() string {
 func (*EnrollProbeResponse) ProtoMessage() {}
 
 func (x *EnrollProbeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[2]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -251,7 +351,7 @@ func (x *EnrollProbeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollProbeResponse.ProtoReflect.Descriptor instead.
 func (*EnrollProbeResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{2}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *EnrollProbeResponse) GetProbeId() string {
@@ -306,7 +406,7 @@ type RenewProbeCertificateRequest struct {
 
 func (x *RenewProbeCertificateRequest) Reset() {
 	*x = RenewProbeCertificateRequest{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[3]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -318,7 +418,7 @@ func (x *RenewProbeCertificateRequest) String() string {
 func (*RenewProbeCertificateRequest) ProtoMessage() {}
 
 func (x *RenewProbeCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[3]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -331,7 +431,7 @@ func (x *RenewProbeCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewProbeCertificateRequest.ProtoReflect.Descriptor instead.
 func (*RenewProbeCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{3}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RenewProbeCertificateRequest) GetCsrPem() string {
@@ -353,7 +453,7 @@ type RenewProbeCertificateResponse struct {
 
 func (x *RenewProbeCertificateResponse) Reset() {
 	*x = RenewProbeCertificateResponse{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[4]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -365,7 +465,7 @@ func (x *RenewProbeCertificateResponse) String() string {
 func (*RenewProbeCertificateResponse) ProtoMessage() {}
 
 func (x *RenewProbeCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[4]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -378,7 +478,7 @@ func (x *RenewProbeCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewProbeCertificateResponse.ProtoReflect.Descriptor instead.
 func (*RenewProbeCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{4}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RenewProbeCertificateResponse) GetCertificatePem() string {
@@ -405,15 +505,18 @@ func (x *RenewProbeCertificateResponse) GetNotAfter() *timestamppb.Timestamp {
 // GetProbeTargetsRequest identifies the probe process (the certificate
 // identifies the probe).
 type GetProbeTargetsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Info          *ProbeInfo             `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Info  *ProbeInfo             `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	// The node channel address in use and how following the console's
+	// address went (feature channel-follow-v1).
+	Channel       *ChannelStatus `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetProbeTargetsRequest) Reset() {
 	*x = GetProbeTargetsRequest{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[5]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -425,7 +528,7 @@ func (x *GetProbeTargetsRequest) String() string {
 func (*GetProbeTargetsRequest) ProtoMessage() {}
 
 func (x *GetProbeTargetsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[5]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -438,12 +541,19 @@ func (x *GetProbeTargetsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProbeTargetsRequest.ProtoReflect.Descriptor instead.
 func (*GetProbeTargetsRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{5}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetProbeTargetsRequest) GetInfo() *ProbeInfo {
 	if x != nil {
 		return x.Info
+	}
+	return nil
+}
+
+func (x *GetProbeTargetsRequest) GetChannel() *ChannelStatus {
+	if x != nil {
+		return x.Channel
 	}
 	return nil
 }
@@ -464,7 +574,7 @@ type ProbeTarget struct {
 
 func (x *ProbeTarget) Reset() {
 	*x = ProbeTarget{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[6]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -476,7 +586,7 @@ func (x *ProbeTarget) String() string {
 func (*ProbeTarget) ProtoMessage() {}
 
 func (x *ProbeTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[6]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -489,7 +599,7 @@ func (x *ProbeTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeTarget.ProtoReflect.Descriptor instead.
 func (*ProbeTarget) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{6}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ProbeTarget) GetNodeId() string {
@@ -540,13 +650,16 @@ type GetProbeTargetsResponse struct {
 	Attempts uint32 `protobuf:"varint,4,opt,name=attempts,proto3" json:"attempts,omitempty"`
 	// The probe certificate should be renewed (RenewProbeCertificate).
 	RenewCertificate bool `protobuf:"varint,5,opt,name=renew_certificate,json=renewCertificate,proto3" json:"renew_certificate,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The node channel address the console gives out, set for probes with
+	// channel-follow-v1 (ReportStatusResponse.channel).
+	Channel       *ChannelAddress `protobuf:"bytes,6,opt,name=channel,proto3" json:"channel,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetProbeTargetsResponse) Reset() {
 	*x = GetProbeTargetsResponse{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[7]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -558,7 +671,7 @@ func (x *GetProbeTargetsResponse) String() string {
 func (*GetProbeTargetsResponse) ProtoMessage() {}
 
 func (x *GetProbeTargetsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[7]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -571,7 +684,7 @@ func (x *GetProbeTargetsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProbeTargetsResponse.ProtoReflect.Descriptor instead.
 func (*GetProbeTargetsResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{7}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetProbeTargetsResponse) GetTargets() []*ProbeTarget {
@@ -609,6 +722,13 @@ func (x *GetProbeTargetsResponse) GetRenewCertificate() bool {
 	return false
 }
 
+func (x *GetProbeTargetsResponse) GetChannel() *ChannelAddress {
+	if x != nil {
+		return x.Channel
+	}
+	return nil
+}
+
 // ProbeResult is one target's outcome in a round.
 type ProbeResult struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
@@ -632,7 +752,7 @@ type ProbeResult struct {
 
 func (x *ProbeResult) Reset() {
 	*x = ProbeResult{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[8]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -644,7 +764,7 @@ func (x *ProbeResult) String() string {
 func (*ProbeResult) ProtoMessage() {}
 
 func (x *ProbeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[8]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -657,7 +777,7 @@ func (x *ProbeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeResult.ProtoReflect.Descriptor instead.
 func (*ProbeResult) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{8}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ProbeResult) GetNodeId() string {
@@ -727,7 +847,7 @@ type ReportProbeResultsRequest struct {
 
 func (x *ReportProbeResultsRequest) Reset() {
 	*x = ReportProbeResultsRequest{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[9]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -739,7 +859,7 @@ func (x *ReportProbeResultsRequest) String() string {
 func (*ReportProbeResultsRequest) ProtoMessage() {}
 
 func (x *ReportProbeResultsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[9]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -752,7 +872,7 @@ func (x *ReportProbeResultsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportProbeResultsRequest.ProtoReflect.Descriptor instead.
 func (*ReportProbeResultsRequest) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{9}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReportProbeResultsRequest) GetStartedAt() *timestamppb.Timestamp {
@@ -779,7 +899,7 @@ type ReportProbeResultsResponse struct {
 
 func (x *ReportProbeResultsResponse) Reset() {
 	*x = ReportProbeResultsResponse{}
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[10]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +911,7 @@ func (x *ReportProbeResultsResponse) String() string {
 func (*ReportProbeResultsResponse) ProtoMessage() {}
 
 func (x *ReportProbeResultsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[10]
+	mi := &file_edgeweir_node_v1_probe_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +924,7 @@ func (x *ReportProbeResultsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportProbeResultsResponse.ProtoReflect.Descriptor instead.
 func (*ReportProbeResultsResponse) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{10}
+	return file_edgeweir_node_v1_probe_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReportProbeResultsResponse) GetAccepted() uint32 {
@@ -818,12 +938,17 @@ var File_edgeweir_node_v1_probe_proto protoreflect.FileDescriptor
 
 const file_edgeweir_node_v1_probe_proto_rawDesc = "" +
 	"\n" +
-	"\x1cedgeweir/node/v1/probe.proto\x12\x10edgeweir.node.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"p\n" +
+	"\x1cedgeweir/node/v1/probe.proto\x12\x10edgeweir.node.v1\x1a\x1eedgeweir/node/v1/channel.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x1a\n" +
+	"\x18CheckProbeChannelRequest\"r\n" +
+	"\x19CheckProbeChannelResponse\x12\x19\n" +
+	"\bprobe_id\x18\x01 \x01(\tR\aprobeId\x12:\n" +
+	"\achannel\x18\x02 \x01(\v2 .edgeweir.node.v1.ChannelAddressR\achannel\"\x9f\x01\n" +
 	"\tProbeInfo\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12#\n" +
 	"\ragent_version\x18\x02 \x01(\tR\fagentVersion\x12\x0e\n" +
 	"\x02os\x18\x03 \x01(\tR\x02os\x12\x12\n" +
-	"\x04arch\x18\x04 \x01(\tR\x04arch\"t\n" +
+	"\x04arch\x18\x04 \x01(\tR\x04arch\x12-\n" +
+	"\x12supported_features\x18\x05 \x03(\tR\x11supportedFeatures\"t\n" +
 	"\x12EnrollProbeRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\tR\x06csrPem\x12/\n" +
@@ -841,22 +966,24 @@ const file_edgeweir_node_v1_probe_proto_rawDesc = "" +
 	"\x1dRenewProbeCertificateResponse\x12'\n" +
 	"\x0fcertificate_pem\x18\x01 \x01(\tR\x0ecertificatePem\x12,\n" +
 	"\x12ca_certificate_pem\x18\x02 \x01(\tR\x10caCertificatePem\x127\n" +
-	"\tnot_after\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"I\n" +
+	"\tnot_after\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"\x84\x01\n" +
 	"\x16GetProbeTargetsRequest\x12/\n" +
-	"\x04info\x18\x01 \x01(\v2\x1b.edgeweir.node.v1.ProbeInfoR\x04info\"\xb2\x01\n" +
+	"\x04info\x18\x01 \x01(\v2\x1b.edgeweir.node.v1.ProbeInfoR\x04info\x129\n" +
+	"\achannel\x18\x02 \x01(\v2\x1f.edgeweir.node.v1.ChannelStatusR\achannel\"\xb2\x01\n" +
 	"\vProbeTarget\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x12\n" +
 	"\x04port\x18\x03 \x01(\rR\x04port\x125\n" +
 	"\x06method\x18\x04 \x01(\x0e2\x1d.edgeweir.node.v1.ProbeMethodR\x06method\x12%\n" +
-	"\x0eproxy_protocol\x18\x05 \x01(\bR\rproxyProtocol\"\xe5\x01\n" +
+	"\x0eproxy_protocol\x18\x05 \x01(\bR\rproxyProtocol\"\xa1\x02\n" +
 	"\x17GetProbeTargetsResponse\x127\n" +
 	"\atargets\x18\x01 \x03(\v2\x1d.edgeweir.node.v1.ProbeTargetR\atargets\x12)\n" +
 	"\x10interval_seconds\x18\x02 \x01(\rR\x0fintervalSeconds\x12\x1d\n" +
 	"\n" +
 	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\x12\x1a\n" +
 	"\battempts\x18\x04 \x01(\rR\battempts\x12+\n" +
-	"\x11renew_certificate\x18\x05 \x01(\bR\x10renewCertificate\"\xe0\x01\n" +
+	"\x11renew_certificate\x18\x05 \x01(\bR\x10renewCertificate\x12:\n" +
+	"\achannel\x18\x06 \x01(\v2 .edgeweir.node.v1.ChannelAddressR\achannel\"\xe0\x01\n" +
 	"\vProbeResult\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x12\n" +
@@ -876,12 +1003,13 @@ const file_edgeweir_node_v1_probe_proto_rawDesc = "" +
 	"\x18PROBE_METHOD_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10PROBE_METHOD_TCP\x10\x01\x12\x15\n" +
 	"\x11PROBE_METHOD_HTTP\x10\x02\x12\x16\n" +
-	"\x12PROBE_METHOD_HTTPS\x10\x032\xbd\x03\n" +
+	"\x12PROBE_METHOD_HTTPS\x10\x032\xab\x04\n" +
 	"\fProbeService\x12Z\n" +
 	"\vEnrollProbe\x12$.edgeweir.node.v1.EnrollProbeRequest\x1a%.edgeweir.node.v1.EnrollProbeResponse\x12x\n" +
 	"\x15RenewProbeCertificate\x12..edgeweir.node.v1.RenewProbeCertificateRequest\x1a/.edgeweir.node.v1.RenewProbeCertificateResponse\x12f\n" +
 	"\x0fGetProbeTargets\x12(.edgeweir.node.v1.GetProbeTargetsRequest\x1a).edgeweir.node.v1.GetProbeTargetsResponse\x12o\n" +
-	"\x12ReportProbeResults\x12+.edgeweir.node.v1.ReportProbeResultsRequest\x1a,.edgeweir.node.v1.ReportProbeResultsResponseB\xcf\x01\n" +
+	"\x12ReportProbeResults\x12+.edgeweir.node.v1.ReportProbeResultsRequest\x1a,.edgeweir.node.v1.ReportProbeResultsResponse\x12l\n" +
+	"\x11CheckProbeChannel\x12*.edgeweir.node.v1.CheckProbeChannelRequest\x1a+.edgeweir.node.v1.CheckProbeChannelResponseB\xcf\x01\n" +
 	"\x14com.edgeweir.node.v1B\n" +
 	"ProbeProtoP\x01ZIgithub.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1;nodev1\xa2\x02\x03ENX\xaa\x02\x10Edgeweir.Node.V1\xca\x02\x10Edgeweir\\Node\\V1\xe2\x02\x1cEdgeweir\\Node\\V1\\GPBMetadata\xea\x02\x12Edgeweir::Node::V1b\x06proto3"
 
@@ -898,45 +1026,54 @@ func file_edgeweir_node_v1_probe_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_probe_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_edgeweir_node_v1_probe_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_edgeweir_node_v1_probe_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_edgeweir_node_v1_probe_proto_goTypes = []any{
 	(ProbeMethod)(0),                      // 0: edgeweir.node.v1.ProbeMethod
-	(*ProbeInfo)(nil),                     // 1: edgeweir.node.v1.ProbeInfo
-	(*EnrollProbeRequest)(nil),            // 2: edgeweir.node.v1.EnrollProbeRequest
-	(*EnrollProbeResponse)(nil),           // 3: edgeweir.node.v1.EnrollProbeResponse
-	(*RenewProbeCertificateRequest)(nil),  // 4: edgeweir.node.v1.RenewProbeCertificateRequest
-	(*RenewProbeCertificateResponse)(nil), // 5: edgeweir.node.v1.RenewProbeCertificateResponse
-	(*GetProbeTargetsRequest)(nil),        // 6: edgeweir.node.v1.GetProbeTargetsRequest
-	(*ProbeTarget)(nil),                   // 7: edgeweir.node.v1.ProbeTarget
-	(*GetProbeTargetsResponse)(nil),       // 8: edgeweir.node.v1.GetProbeTargetsResponse
-	(*ProbeResult)(nil),                   // 9: edgeweir.node.v1.ProbeResult
-	(*ReportProbeResultsRequest)(nil),     // 10: edgeweir.node.v1.ReportProbeResultsRequest
-	(*ReportProbeResultsResponse)(nil),    // 11: edgeweir.node.v1.ReportProbeResultsResponse
-	(*timestamppb.Timestamp)(nil),         // 12: google.protobuf.Timestamp
+	(*CheckProbeChannelRequest)(nil),      // 1: edgeweir.node.v1.CheckProbeChannelRequest
+	(*CheckProbeChannelResponse)(nil),     // 2: edgeweir.node.v1.CheckProbeChannelResponse
+	(*ProbeInfo)(nil),                     // 3: edgeweir.node.v1.ProbeInfo
+	(*EnrollProbeRequest)(nil),            // 4: edgeweir.node.v1.EnrollProbeRequest
+	(*EnrollProbeResponse)(nil),           // 5: edgeweir.node.v1.EnrollProbeResponse
+	(*RenewProbeCertificateRequest)(nil),  // 6: edgeweir.node.v1.RenewProbeCertificateRequest
+	(*RenewProbeCertificateResponse)(nil), // 7: edgeweir.node.v1.RenewProbeCertificateResponse
+	(*GetProbeTargetsRequest)(nil),        // 8: edgeweir.node.v1.GetProbeTargetsRequest
+	(*ProbeTarget)(nil),                   // 9: edgeweir.node.v1.ProbeTarget
+	(*GetProbeTargetsResponse)(nil),       // 10: edgeweir.node.v1.GetProbeTargetsResponse
+	(*ProbeResult)(nil),                   // 11: edgeweir.node.v1.ProbeResult
+	(*ReportProbeResultsRequest)(nil),     // 12: edgeweir.node.v1.ReportProbeResultsRequest
+	(*ReportProbeResultsResponse)(nil),    // 13: edgeweir.node.v1.ReportProbeResultsResponse
+	(*ChannelAddress)(nil),                // 14: edgeweir.node.v1.ChannelAddress
+	(*timestamppb.Timestamp)(nil),         // 15: google.protobuf.Timestamp
+	(*ChannelStatus)(nil),                 // 16: edgeweir.node.v1.ChannelStatus
 }
 var file_edgeweir_node_v1_probe_proto_depIdxs = []int32{
-	1,  // 0: edgeweir.node.v1.EnrollProbeRequest.info:type_name -> edgeweir.node.v1.ProbeInfo
-	12, // 1: edgeweir.node.v1.EnrollProbeResponse.not_after:type_name -> google.protobuf.Timestamp
-	12, // 2: edgeweir.node.v1.RenewProbeCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
-	1,  // 3: edgeweir.node.v1.GetProbeTargetsRequest.info:type_name -> edgeweir.node.v1.ProbeInfo
-	0,  // 4: edgeweir.node.v1.ProbeTarget.method:type_name -> edgeweir.node.v1.ProbeMethod
-	7,  // 5: edgeweir.node.v1.GetProbeTargetsResponse.targets:type_name -> edgeweir.node.v1.ProbeTarget
-	0,  // 6: edgeweir.node.v1.ProbeResult.method:type_name -> edgeweir.node.v1.ProbeMethod
-	12, // 7: edgeweir.node.v1.ReportProbeResultsRequest.started_at:type_name -> google.protobuf.Timestamp
-	9,  // 8: edgeweir.node.v1.ReportProbeResultsRequest.results:type_name -> edgeweir.node.v1.ProbeResult
-	2,  // 9: edgeweir.node.v1.ProbeService.EnrollProbe:input_type -> edgeweir.node.v1.EnrollProbeRequest
-	4,  // 10: edgeweir.node.v1.ProbeService.RenewProbeCertificate:input_type -> edgeweir.node.v1.RenewProbeCertificateRequest
-	6,  // 11: edgeweir.node.v1.ProbeService.GetProbeTargets:input_type -> edgeweir.node.v1.GetProbeTargetsRequest
-	10, // 12: edgeweir.node.v1.ProbeService.ReportProbeResults:input_type -> edgeweir.node.v1.ReportProbeResultsRequest
-	3,  // 13: edgeweir.node.v1.ProbeService.EnrollProbe:output_type -> edgeweir.node.v1.EnrollProbeResponse
-	5,  // 14: edgeweir.node.v1.ProbeService.RenewProbeCertificate:output_type -> edgeweir.node.v1.RenewProbeCertificateResponse
-	8,  // 15: edgeweir.node.v1.ProbeService.GetProbeTargets:output_type -> edgeweir.node.v1.GetProbeTargetsResponse
-	11, // 16: edgeweir.node.v1.ProbeService.ReportProbeResults:output_type -> edgeweir.node.v1.ReportProbeResultsResponse
-	13, // [13:17] is the sub-list for method output_type
-	9,  // [9:13] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	14, // 0: edgeweir.node.v1.CheckProbeChannelResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
+	3,  // 1: edgeweir.node.v1.EnrollProbeRequest.info:type_name -> edgeweir.node.v1.ProbeInfo
+	15, // 2: edgeweir.node.v1.EnrollProbeResponse.not_after:type_name -> google.protobuf.Timestamp
+	15, // 3: edgeweir.node.v1.RenewProbeCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	3,  // 4: edgeweir.node.v1.GetProbeTargetsRequest.info:type_name -> edgeweir.node.v1.ProbeInfo
+	16, // 5: edgeweir.node.v1.GetProbeTargetsRequest.channel:type_name -> edgeweir.node.v1.ChannelStatus
+	0,  // 6: edgeweir.node.v1.ProbeTarget.method:type_name -> edgeweir.node.v1.ProbeMethod
+	9,  // 7: edgeweir.node.v1.GetProbeTargetsResponse.targets:type_name -> edgeweir.node.v1.ProbeTarget
+	14, // 8: edgeweir.node.v1.GetProbeTargetsResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
+	0,  // 9: edgeweir.node.v1.ProbeResult.method:type_name -> edgeweir.node.v1.ProbeMethod
+	15, // 10: edgeweir.node.v1.ReportProbeResultsRequest.started_at:type_name -> google.protobuf.Timestamp
+	11, // 11: edgeweir.node.v1.ReportProbeResultsRequest.results:type_name -> edgeweir.node.v1.ProbeResult
+	4,  // 12: edgeweir.node.v1.ProbeService.EnrollProbe:input_type -> edgeweir.node.v1.EnrollProbeRequest
+	6,  // 13: edgeweir.node.v1.ProbeService.RenewProbeCertificate:input_type -> edgeweir.node.v1.RenewProbeCertificateRequest
+	8,  // 14: edgeweir.node.v1.ProbeService.GetProbeTargets:input_type -> edgeweir.node.v1.GetProbeTargetsRequest
+	12, // 15: edgeweir.node.v1.ProbeService.ReportProbeResults:input_type -> edgeweir.node.v1.ReportProbeResultsRequest
+	1,  // 16: edgeweir.node.v1.ProbeService.CheckProbeChannel:input_type -> edgeweir.node.v1.CheckProbeChannelRequest
+	5,  // 17: edgeweir.node.v1.ProbeService.EnrollProbe:output_type -> edgeweir.node.v1.EnrollProbeResponse
+	7,  // 18: edgeweir.node.v1.ProbeService.RenewProbeCertificate:output_type -> edgeweir.node.v1.RenewProbeCertificateResponse
+	10, // 19: edgeweir.node.v1.ProbeService.GetProbeTargets:output_type -> edgeweir.node.v1.GetProbeTargetsResponse
+	13, // 20: edgeweir.node.v1.ProbeService.ReportProbeResults:output_type -> edgeweir.node.v1.ReportProbeResultsResponse
+	2,  // 21: edgeweir.node.v1.ProbeService.CheckProbeChannel:output_type -> edgeweir.node.v1.CheckProbeChannelResponse
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_probe_proto_init() }
@@ -944,13 +1081,14 @@ func file_edgeweir_node_v1_probe_proto_init() {
 	if File_edgeweir_node_v1_probe_proto != nil {
 		return
 	}
+	file_edgeweir_node_v1_channel_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_probe_proto_rawDesc), len(file_edgeweir_node_v1_probe_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

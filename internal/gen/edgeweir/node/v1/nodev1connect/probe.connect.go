@@ -45,6 +45,9 @@ const (
 	// ProbeServiceReportProbeResultsProcedure is the fully-qualified name of the ProbeService's
 	// ReportProbeResults RPC.
 	ProbeServiceReportProbeResultsProcedure = "/edgeweir.node.v1.ProbeService/ReportProbeResults"
+	// ProbeServiceCheckProbeChannelProcedure is the fully-qualified name of the ProbeService's
+	// CheckProbeChannel RPC.
+	ProbeServiceCheckProbeChannelProcedure = "/edgeweir.node.v1.ProbeService/CheckProbeChannel"
 )
 
 // ProbeServiceClient is a client for the edgeweir.node.v1.ProbeService service.
@@ -58,6 +61,10 @@ type ProbeServiceClient interface {
 	GetProbeTargets(context.Context, *connect.Request[v1.GetProbeTargetsRequest]) (*connect.Response[v1.GetProbeTargetsResponse], error)
 	// ReportProbeResults stores one round of results.
 	ReportProbeResults(context.Context, *connect.Request[v1.ReportProbeResultsRequest]) (*connect.Response[v1.ReportProbeResultsResponse], error)
+	// CheckProbeChannel answers an enrolled probe without side effects: a
+	// probe calls it at an address before it switches to it (feature
+	// channel-follow-v1).
+	CheckProbeChannel(context.Context, *connect.Request[v1.CheckProbeChannelRequest]) (*connect.Response[v1.CheckProbeChannelResponse], error)
 }
 
 // NewProbeServiceClient constructs a client for the edgeweir.node.v1.ProbeService service. By
@@ -95,6 +102,12 @@ func NewProbeServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(probeServiceMethods.ByName("ReportProbeResults")),
 			connect.WithClientOptions(opts...),
 		),
+		checkProbeChannel: connect.NewClient[v1.CheckProbeChannelRequest, v1.CheckProbeChannelResponse](
+			httpClient,
+			baseURL+ProbeServiceCheckProbeChannelProcedure,
+			connect.WithSchema(probeServiceMethods.ByName("CheckProbeChannel")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -104,6 +117,7 @@ type probeServiceClient struct {
 	renewProbeCertificate *connect.Client[v1.RenewProbeCertificateRequest, v1.RenewProbeCertificateResponse]
 	getProbeTargets       *connect.Client[v1.GetProbeTargetsRequest, v1.GetProbeTargetsResponse]
 	reportProbeResults    *connect.Client[v1.ReportProbeResultsRequest, v1.ReportProbeResultsResponse]
+	checkProbeChannel     *connect.Client[v1.CheckProbeChannelRequest, v1.CheckProbeChannelResponse]
 }
 
 // EnrollProbe calls edgeweir.node.v1.ProbeService.EnrollProbe.
@@ -126,6 +140,11 @@ func (c *probeServiceClient) ReportProbeResults(ctx context.Context, req *connec
 	return c.reportProbeResults.CallUnary(ctx, req)
 }
 
+// CheckProbeChannel calls edgeweir.node.v1.ProbeService.CheckProbeChannel.
+func (c *probeServiceClient) CheckProbeChannel(ctx context.Context, req *connect.Request[v1.CheckProbeChannelRequest]) (*connect.Response[v1.CheckProbeChannelResponse], error) {
+	return c.checkProbeChannel.CallUnary(ctx, req)
+}
+
 // ProbeServiceHandler is an implementation of the edgeweir.node.v1.ProbeService service.
 type ProbeServiceHandler interface {
 	// EnrollProbe exchanges a one-time probe token and a CSR for a probe
@@ -137,6 +156,10 @@ type ProbeServiceHandler interface {
 	GetProbeTargets(context.Context, *connect.Request[v1.GetProbeTargetsRequest]) (*connect.Response[v1.GetProbeTargetsResponse], error)
 	// ReportProbeResults stores one round of results.
 	ReportProbeResults(context.Context, *connect.Request[v1.ReportProbeResultsRequest]) (*connect.Response[v1.ReportProbeResultsResponse], error)
+	// CheckProbeChannel answers an enrolled probe without side effects: a
+	// probe calls it at an address before it switches to it (feature
+	// channel-follow-v1).
+	CheckProbeChannel(context.Context, *connect.Request[v1.CheckProbeChannelRequest]) (*connect.Response[v1.CheckProbeChannelResponse], error)
 }
 
 // NewProbeServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -170,6 +193,12 @@ func NewProbeServiceHandler(svc ProbeServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(probeServiceMethods.ByName("ReportProbeResults")),
 		connect.WithHandlerOptions(opts...),
 	)
+	probeServiceCheckProbeChannelHandler := connect.NewUnaryHandler(
+		ProbeServiceCheckProbeChannelProcedure,
+		svc.CheckProbeChannel,
+		connect.WithSchema(probeServiceMethods.ByName("CheckProbeChannel")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.ProbeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ProbeServiceEnrollProbeProcedure:
@@ -180,6 +209,8 @@ func NewProbeServiceHandler(svc ProbeServiceHandler, opts ...connect.HandlerOpti
 			probeServiceGetProbeTargetsHandler.ServeHTTP(w, r)
 		case ProbeServiceReportProbeResultsProcedure:
 			probeServiceReportProbeResultsHandler.ServeHTTP(w, r)
+		case ProbeServiceCheckProbeChannelProcedure:
+			probeServiceCheckProbeChannelHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -203,4 +234,8 @@ func (UnimplementedProbeServiceHandler) GetProbeTargets(context.Context, *connec
 
 func (UnimplementedProbeServiceHandler) ReportProbeResults(context.Context, *connect.Request[v1.ReportProbeResultsRequest]) (*connect.Response[v1.ReportProbeResultsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.ProbeService.ReportProbeResults is not implemented"))
+}
+
+func (UnimplementedProbeServiceHandler) CheckProbeChannel(context.Context, *connect.Request[v1.CheckProbeChannelRequest]) (*connect.Response[v1.CheckProbeChannelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.ProbeService.CheckProbeChannel is not implemented"))
 }

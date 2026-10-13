@@ -78,6 +78,9 @@ const (
 	// NodeServiceGetSessionTicketKeysProcedure is the fully-qualified name of the NodeService's
 	// GetSessionTicketKeys RPC.
 	NodeServiceGetSessionTicketKeysProcedure = "/edgeweir.node.v1.NodeService/GetSessionTicketKeys"
+	// NodeServiceCheckChannelProcedure is the fully-qualified name of the NodeService's CheckChannel
+	// RPC.
+	NodeServiceCheckChannelProcedure = "/edgeweir.node.v1.NodeService/CheckChannel"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -137,6 +140,10 @@ type NodeServiceClient interface {
 	// GetSessionTicketKeys returns the TLS session ticket keys named by
 	// NodeConfig.session_ticket_keys. Added in v0.26.0.
 	GetSessionTicketKeys(context.Context, *connect.Request[v1.GetSessionTicketKeysRequest]) (*connect.Response[v1.GetSessionTicketKeysResponse], error)
+	// CheckChannel answers an enrolled node, disabled ones included, without
+	// side effects: an agent calls it at an address before it switches to it
+	// (feature channel-follow-v1).
+	CheckChannel(context.Context, *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -258,6 +265,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("GetSessionTicketKeys")),
 			connect.WithClientOptions(opts...),
 		),
+		checkChannel: connect.NewClient[v1.CheckChannelRequest, v1.CheckChannelResponse](
+			httpClient,
+			baseURL+NodeServiceCheckChannelProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("CheckChannel")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -281,6 +294,7 @@ type nodeServiceClient struct {
 	reportSecurityEvents *connect.Client[v1.ReportSecurityEventsRequest, v1.ReportSecurityEventsResponse]
 	submitPurge          *connect.Client[v1.SubmitPurgeRequest, v1.SubmitPurgeResponse]
 	getSessionTicketKeys *connect.Client[v1.GetSessionTicketKeysRequest, v1.GetSessionTicketKeysResponse]
+	checkChannel         *connect.Client[v1.CheckChannelRequest, v1.CheckChannelResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -373,6 +387,11 @@ func (c *nodeServiceClient) GetSessionTicketKeys(ctx context.Context, req *conne
 	return c.getSessionTicketKeys.CallUnary(ctx, req)
 }
 
+// CheckChannel calls edgeweir.node.v1.NodeService.CheckChannel.
+func (c *nodeServiceClient) CheckChannel(ctx context.Context, req *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error) {
+	return c.checkChannel.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -430,6 +449,10 @@ type NodeServiceHandler interface {
 	// GetSessionTicketKeys returns the TLS session ticket keys named by
 	// NodeConfig.session_ticket_keys. Added in v0.26.0.
 	GetSessionTicketKeys(context.Context, *connect.Request[v1.GetSessionTicketKeysRequest]) (*connect.Response[v1.GetSessionTicketKeysResponse], error)
+	// CheckChannel answers an enrolled node, disabled ones included, without
+	// side effects: an agent calls it at an address before it switches to it
+	// (feature channel-follow-v1).
+	CheckChannel(context.Context, *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -547,6 +570,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("GetSessionTicketKeys")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceCheckChannelHandler := connect.NewUnaryHandler(
+		NodeServiceCheckChannelProcedure,
+		svc.CheckChannel,
+		connect.WithSchema(nodeServiceMethods.ByName("CheckChannel")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -585,6 +614,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceSubmitPurgeHandler.ServeHTTP(w, r)
 		case NodeServiceGetSessionTicketKeysProcedure:
 			nodeServiceGetSessionTicketKeysHandler.ServeHTTP(w, r)
+		case NodeServiceCheckChannelProcedure:
+			nodeServiceCheckChannelHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -664,4 +695,8 @@ func (UnimplementedNodeServiceHandler) SubmitPurge(context.Context, *connect.Req
 
 func (UnimplementedNodeServiceHandler) GetSessionTicketKeys(context.Context, *connect.Request[v1.GetSessionTicketKeysRequest]) (*connect.Response[v1.GetSessionTicketKeysResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetSessionTicketKeys is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) CheckChannel(context.Context, *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.CheckChannel is not implemented"))
 }
