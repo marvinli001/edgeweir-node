@@ -165,6 +165,19 @@ When the console is only reachable over HTTPS (for example on Render), nodes rea
 | Proxy | The WebSocket handshake follows `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` |
 | Version | 0.2.0 and later |
 
+### Console URL
+
+Nodes and probes reach the console at the URL in `identity.json` (`probe.json`) and follow the node channel URL the console gives out (capability `channel-follow-v1`, from 1.2.0):
+
+| Item | Details |
+| --- | --- |
+| Handout | Every heartbeat answer (for probes, every round of targets) carries the console's current URL; only the latest counts, and it only arrives over the authenticated mTLS channel |
+| Check | When it differs from the URL in use, the agent first calls `CheckChannel` (probes `CheckProbeChannel`) there with the pinned CA and its own client certificate and checks that the console recognizes it; once that passes it rewrites `identity.json` atomically, keeping the previous URL as its fallback, without a restart or a new enrollment |
+| Failure | The agent stays on its URL, reports why in its heartbeats (`unreachable`, `websocket_refused`, `tls_untrusted`, `rejected`, `wrong_identity`, `invalid_address`) and tries again after 1, 5, 15 and 60 minutes |
+| Fallback | When no call succeeds on the URL in use for 3 minutes, the agent checks its fallback and uses it for the time being, trying its URL again every 5 minutes; the fallback is never written to the file, and a restart connects to `server_url` first |
+| Limits | Only `https://`, `wss://` and `ws://`, without credentials, a path or a query; the agent always trusts the CA pinned at enrollment, the URL only decides which host it connects to and which name it verifies; a new host joins the nftables allow list before the agent connects to it |
+| Recovery | `edgeweir-node set-server`, see [Command line](#command-line) |
+
 ## Versions
 
 | Item | Rule |
@@ -188,6 +201,7 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
 edgeweir-node supervise --manage-nginx ...            # same flags as run; systemd unit and image entry point
 EDGEWEIR_TOKEN=TOKEN edgeweir-node probe --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR]
 edgeweir-node probe [--state-dir DIR]                 # an enrolled probe
+edgeweir-node set-server --server URL [--server-name NAME] [--probe] [--state-dir DIR]   # change the console URL after a check
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # ban status (JSON); --list adds up to 1000 bans
 edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool, per-site CC levels (JSON)
@@ -199,6 +213,7 @@ edgeweir-node version
 - `run` polls the state directory every 2 s until enrolled and may start before `enroll`.
 - `supervise` adds signed upgrades, trials and rollback on top of `run`, and runs OpenResty itself: an upgrade or a restart of the agent process does not restart OpenResty. Upgrade tasks cannot install an older version than the running one (`--upgrade-allow-downgrade` allows it).
 - `probe` runs a regional probe: the first run enrolls with a one-time probe token (retrying while the console is unreachable), an enrolled probe ignores the token; missing enrollment settings exit with status 2.
+- `set-server` changes the node channel URL of an enrolled node (`--probe`: a probe), for a node that lost the console because the old address went down first: it makes one mTLS call to the new URL with the node's own identity (pinned CA and client certificate) and only then rewrites `identity.json` (`probe.json`) atomically, keeping the previous URL as the fallback; the identity and certificate stay. A failed check exits with status 1 and changes no file. A running agent moves to the new URL within seconds. Otherwise nodes follow the URL the console gives out on their own (see [Console URL](#console-url)).
 - `accesslog` reads the data plane's live view every 250 ms (control socket, the same permissions as `bans` and `security`; `--socket` is short for `--control-socket`), one request per line: time (UTC, milliseconds), client IP, method, Host, path (spaces as `%20`), status, bytes sent, duration, cache status (`-` without one) and `blocked=<reason>` when the node refused or challenged it; `--json` prints JSON Lines (with User-Agent, Referer, protocol, country, ASN, origin, blocking rule and the other fields). Sample rates do not apply, and the data plane records only while someone watches (it stops 5 s after the last call); without `--site` requests of unknown hosts are shown too. Requests missed (expired, or over the rate of 2000 per second and node; those count for the whole node, also with `--site`) are counted on stderr. Query strings, request headers and peer addresses go only into the sampled logs of sites that record them, never here.
 
 | `enroll` flag | Default | Description |
@@ -225,6 +240,14 @@ edgeweir-node version
 | `--timeout` | `30s` | Timeout of each console RPC |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
+
+| `set-server` flag | Default | Description |
+| --- | --- | --- |
+| `--server` | Required | The new console node-channel URL, same format as for `enroll`, without a path |
+| `--server-name` | Host of `--server` | TLS server name to verify |
+| `--probe` | Off | Change a probe's URL |
+| `--state-dir` | `/var/lib/edgeweir-node` (`--probe`: `/var/lib/edgeweir-probe`) | State directory of the identity |
+| `--timeout` | `30s` | Timeout of the check |
 
 | `run` flag | Default | Description |
 | --- | --- | --- |

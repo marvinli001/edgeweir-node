@@ -165,6 +165,19 @@ sudo systemctl enable --now edgeweir-probe
 | 代理 | WebSocket 握手遵循 `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` |
 | 版本 | 0.2.0 起 |
 
+### 控制台地址
+
+节点与探针按 `identity.json`（`probe.json`）中的地址连接控制台，并跟随控制台给出的节点通道地址（能力 `channel-follow-v1`，1.2.0 起）：
+
+| 项目 | 说明 |
+| --- | --- |
+| 下发 | 每次心跳（探针每轮获取目标）的应答带控制台当前的地址，只认最新的一个；只经已认证的 mTLS 通道下发 |
+| 检查 | 地址与在用的不同时，先用固定的 CA 与自己的客户端证书调用 `CheckChannel`（探针 `CheckProbeChannel`），核对控制台认出的是本节点；通过后原子改写 `identity.json`，原地址留作备用地址，不重启、不重新注册 |
+| 失败 | 留在原地址，心跳上报原因（`unreachable`、`websocket_refused`、`tls_untrusted`、`rejected`、`wrong_identity`、`invalid_address`），1、5、15、60 分钟后重试 |
+| 回退 | 在用地址连续 3 分钟没有成功的调用时检查备用地址，通过后暂时改用，每 5 分钟试回；备用地址不写入文件，重启后先连 `server_url` |
+| 限制 | 只接受 `https://`、`wss://`、`ws://`，不带账号、路径或查询；信任的始终是注册时固定的 CA，地址只决定连哪台主机、校验哪个名称；连接新主机前先把它加入 nftables 放行名单 |
+| 失联恢复 | `edgeweir-node set-server`，见 [命令行](#命令行) |
+
 ## 版本
 
 | 项目 | 规则 |
@@ -188,6 +201,7 @@ edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-
 edgeweir-node supervise --manage-nginx ...            # 参数同 run；systemd unit 与容器镜像入口
 EDGEWEIR_TOKEN=TOKEN edgeweir-node probe --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR]
 edgeweir-node probe [--state-dir DIR]                 # 已注册的探针
+edgeweir-node set-server --server URL [--server-name NAME] [--probe] [--state-dir DIR]   # 检查后更换控制台地址
 edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # 封禁状态（JSON）；--list 列出最多 1000 条
 edgeweir-node security [--control-socket PATH]        # 挑战密钥、验证码池、各站点 CC 级别（JSON）
@@ -199,6 +213,7 @@ edgeweir-node version
 - `run` 在注册完成前每 2 秒检查状态目录，可先于 `enroll` 启动。
 - `supervise` 在 `run` 之上提供签名升级、试运行与回滚，并由它运行 OpenResty：升级或重启 agent 进程不重启 OpenResty。升级任务不能安装比当前更旧的版本（`--upgrade-allow-downgrade` 放行）。
 - `probe` 运行区域探针：首次运行用一次性探针 token 注册（控制台不可达时退避重试），已注册后忽略 token；缺少注册参数时退出码 2。
+- `set-server` 更换已注册节点（`--probe`：探针）的控制台节点通道地址，用于旧地址先下线、节点失联的情况：先用节点自己的身份（固定的 CA 与客户端证书）向新地址做一次 mTLS 调用，通过后才原子改写 `identity.json`（`probe.json`），原地址留作备用地址，身份与证书不变；检查失败时退出码 1，不改任何文件。运行中的 agent 几秒内改用新地址。平时节点自动跟随控制台给出的地址，不需要它（见 [控制台地址](#控制台地址)）。
 - `accesslog` 每 250 毫秒读取数据面的实时查看（控制 socket，权限同 `bans`、`security`；`--socket` 是 `--control-socket` 的简写），每行一个请求：时间（UTC，毫秒）、客户端 IP、方法、Host、路径（空格写作 `%20`）、状态码、发送字节、耗时、缓存状态（没有时为 `-`），有拦截原因时追加 `blocked=<原因>`；`--json` 输出 JSON Lines（含 UA、Referer、协议、国家、ASN、回源、拦截规则等字段）。不受采样率限制，只在有人查看时采集（停止查看 5 秒后数据面不再记录）；不带 `--site` 时也包括未知域名的请求。过期或超出速率（每节点每秒 2000 条；这部分按整个节点计，带 `--site` 时也是）而缺失的请求在标准错误输出计数。查询串、请求头与对端地址只进入开启了它们的网站的采样日志，不在这里显示。
 
 | `enroll` 参数 | 默认值 | 说明 |
@@ -225,6 +240,14 @@ edgeweir-node version
 | `--timeout` | `30s` | 每个控制台 RPC 的超时 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
+
+| `set-server` 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--server` | 必填 | 新的控制台节点通道地址，格式同 `enroll`，不带路径 |
+| `--server-name` | `--server` 的主机名 | 校验的 TLS 服务器名 |
+| `--probe` | 关 | 更换探针的地址 |
+| `--state-dir` | `/var/lib/edgeweir-node`（`--probe`：`/var/lib/edgeweir-probe`） | 身份所在的状态目录 |
+| `--timeout` | `30s` | 检查的超时 |
 
 | `run` 参数 | 默认值 | 说明 |
 | --- | --- | --- |

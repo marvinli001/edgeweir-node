@@ -48,9 +48,9 @@
 
 | 包 | 职责 |
 | --- | --- |
-| `cmd/edgeweir-node` | CLI：`enroll`、`run`、`supervise`、`probe`、`healthcheck`、`bans`、`security`、`version`；参数可由 `EDGEWEIR_*` 环境变量提供 |
+| `cmd/edgeweir-node` | CLI：`enroll`、`run`、`supervise`、`probe`、`set-server`、`healthcheck`、`bans`、`security`、`version`；参数可由 `EDGEWEIR_*` 环境变量提供 |
 | `internal/pki` | ECDSA P-256 密钥、CSR、PEM、CA pin 校验、mTLS 配置、续期判断 |
-| `internal/identity` | 状态目录里的身份文件（节点布局与探针布局），原子写入，续期时的密钥对原子替换与崩溃恢复 |
+| `internal/identity` | 状态目录里的身份文件（节点布局与探针布局），原子写入，续期时的密钥对原子替换与崩溃恢复，在 `identity.lock` 下改写控制台地址（`UpdateServer`） |
 | `internal/enroll` | 注册流程（节点 `Enroll`、探针 `EnrollProbe`） |
 | `internal/controlplane` | Connect 客户端：pin 通道（注册）和 mTLS 通道（可热替换证书，NodeService 与 ProbeService 共用连接） |
 | `internal/configir` | 规范排序、content_hash、diff 应用、校验并生成与引擎无关的 `Plan`（含四层应用，`l4.go`）；源站地址策略（`address.go`） |
@@ -121,7 +121,8 @@ run 启动
         logs   : 每 10s 从 Lua 取出采样访问日志，ReportLogs 上报
         tasks  : 流通知、心跳 tasks_pending 或约每 30s（抖动）PullTasks
         purges : 同样的时机，只拉取清缓存任务（purge_only）并立即执行
-        identity: 每 10s 比较 identity.json 与正在使用的身份，不同（已重新注册）时退出，由监督进程或 systemd 重启
+        identity: 每 10s 比较 identity.json 与正在使用的身份，不同（已重新注册）时退出，由监督进程或 systemd 重启（只是控制台地址变了不算，见 channel）
+        channel: 每 5s 及心跳后：检查并切换到控制台给出的节点通道地址、在用地址失败时改用备用地址并试回、identity.json 中的地址被 set-server 改了时重载通道（§2.2）
         dataplane: 每 5s 及 nginx (重)启动时检查 GET /v1/status 与 GET /v1/bans，不一致则重推（注册前已运行）
         activehealth: 主动健康检查的判定变化、每次应用、至少每 30s 及 nginx 重启后 PUT /v1/origins/active（注册前已运行，§2.10）
         ocsp   : 每次应用后与每 5 分钟刷新 1 小时内到期的 OCSP 响应，有变化时重推站点表（注册前已运行；应用本身不等 OCSP）
@@ -152,6 +153,9 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - `GetClientCertificate` 每次握手读取当前证书；续期后重建 transport 并重连 watch 流。
 - HTTP/2（ALPN），开启 HTTP/2 ping 检测死连接；支持 `HTTPS_PROXY` 等代理环境变量。
 - 控制台返回 `unauthenticated` / `permission_denied`（节点被删除、证书吊销或过期）时，节点记录明确的错误日志，继续按 LKG 服务。证书过期后无法续期，需要重新注册。
+- 跟随控制台地址（能力 `channel-follow-v1`，`controlplane.Follower`）：心跳响应的 `channel` 是控制台当前的节点通道地址（URL + 服务器名），只认最新的一个。它与 `identity.json` 的地址不同（比较时忽略默认端口与主机名大小写）时，先把新主机加入 nftables 放行名单，再用临时 transport（`RootCAs` 仍只有 `ca.crt`，没有加载 CA 时直接拒绝）和当前客户端证书调用 `CheckChannel`，要求返回的 `node_id` 是本节点；控制台没有该 RPC（`unimplemented`）时改用 `GetCertificates`（空列表，`permission_denied` 也算通过）。通过后在 `identity.lock`（flock）下读改写 `identity.json`：`server_url` / `server_name` 改为新地址，原来在用的地址写入 `fallback_server_url` / `fallback_server_name`，`server_source=console`、`server_changed_at`，其余字段不变（身份不同则放弃），原子替换后 `Channel.Reload`，watch 流随之重连。检查失败时不改文件，`ReportStatus.channel`（`ChannelStatus`）带失败的地址、原因码（`unreachable`、`websocket_refused`、`tls_untrusted`、`rejected`、`wrong_identity`、`invalid_address`）与说明，1、5、15、60 分钟后重试，地址变了立即检查；不合法的地址（非 https/wss/ws、带账号路径查询、服务器名不是 DNS 名或 IP）只上报 `invalid_address`，从不连接。
+- 回退：只保留一个备用地址。连续 3 分钟没有成功的心跳且有备用地址时检查它，通过后 `Channel.Use` 只在内存中改用（`on_fallback`），每 5 分钟检查一次 `server_url`，通过即 `Reload` 回去；重启后先连 `server_url`。
+- `identity.json` 中的控制台地址被别的进程改了（`set-server`）而身份不变时，channel 循环重载通道，不重启 agent。旧版本 agent 忽略新增字段，照用新的 `server_url`。
 
 ### 2.3 获取与应用配置
 
@@ -294,7 +298,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 
 控制台按区域探测各节点的调度地址（`ProbeService`，proto v0.14.0），用延迟与丢包驱动 DNS 调度。探测由两种进程完成，共用 `internal/probe` 的探测轮次：
 
-- **探针模式**（`edgeweir-node probe`）：不启动 OpenResty，不监听端口。状态目录与节点分开（默认 `/var/lib/edgeweir-probe`，探针布局：`probe.key` 0600、`probe.crt`、`ca.crt`、`probe.json`）。首次运行时没有身份，需要 `--server`、`--ca-sha256` 与一次性探针 token（`EDGEWEIR_TOKEN`、`--token-file` 或 `--token`）：本地生成 ECDSA P-256 私钥与 CSR，以与节点注册相同的 pin 通道调用 `EnrollProbe`（先校验 CA pin 再发送 token；响应的 CA 必须等于 pin，证书须由它签发、用于 ClientAuth、与本地私钥匹配），原子写入身份。控制台不可达或繁忙（`unavailable`、`deadline_exceeded`、`resource_exhausted`、`aborted`）时以 1s → 30s 退避重试同一个 token；token 被拒、pin 不符等其他错误直接退出（状态码 1），缺少注册参数时退出码 2。已有身份时忽略 token，之后全程 mTLS（证书 `CN=<探针 id>`、`O=Edgeweir Probe`，控制台不允许它调用 NodeService）。控制台在 `GetProbeTargets` 中要求续期（`renew_certificate`）或剩余有效期不足 1/3 时，以新密钥调用 `RenewProbeCertificate`（每分钟最多一次），按与节点相同的方式替换 `probe.key` / `probe.crt` 并重建通道。重新注册：删除 `probe.json`（或整个状态目录）后用新 token 启动。
+- **探针模式**（`edgeweir-node probe`）：不启动 OpenResty，不监听端口。状态目录与节点分开（默认 `/var/lib/edgeweir-probe`，探针布局：`probe.key` 0600、`probe.crt`、`ca.crt`、`probe.json`）。首次运行时没有身份，需要 `--server`、`--ca-sha256` 与一次性探针 token（`EDGEWEIR_TOKEN`、`--token-file` 或 `--token`）：本地生成 ECDSA P-256 私钥与 CSR，以与节点注册相同的 pin 通道调用 `EnrollProbe`（先校验 CA pin 再发送 token；响应的 CA 必须等于 pin，证书须由它签发、用于 ClientAuth、与本地私钥匹配），原子写入身份。控制台不可达或繁忙（`unavailable`、`deadline_exceeded`、`resource_exhausted`、`aborted`）时以 1s → 30s 退避重试同一个 token；token 被拒、pin 不符等其他错误直接退出（状态码 1），缺少注册参数时退出码 2。已有身份时忽略 token，之后全程 mTLS（证书 `CN=<探针 id>`、`O=Edgeweir Probe`，控制台不允许它调用 NodeService）。控制台在 `GetProbeTargets` 中要求续期（`renew_certificate`）或剩余有效期不足 1/3 时，以新密钥调用 `RenewProbeCertificate`（每分钟最多一次），按与节点相同的方式替换 `probe.key` / `probe.crt` 并重建通道。重新注册：删除 `probe.json`（或整个状态目录）后用新 token 启动。探针同样跟随控制台地址（§2.2）：每轮 `GetProbeTargets` 带 `ProbeInfo.supported_features=[channel-follow-v1]` 与 `ChannelStatus`，响应的 `channel` 经 `CheckProbeChannel`（核对 `probe_id`）检查后写入 `probe.json`；`set-server --probe` 用于失联的探针。
 - **节点兼任探针**：`ReportStatus` 响应的 `probe` 为 true 时，agent 以节点自己的 mTLS 身份运行同样的探测轮次，变为 false 时停止（心跳失败时保持现状），agent 退出时一并停止。节点证书照常经 NodeService 续期，`GetProbeTargets` 的 `renew_certificate` 对节点忽略。`node_id` 等于本节点的目标不探测。
 
 **一轮**：`GetProbeTargets`（带 `ProbeInfo`：主机名、版本、os、arch）→ 探测 → `ReportProbeResults`（`started_at` 为开始探测的时间，结果与目标同序；没有目标时也上报空的一轮）。下一轮在本轮开始 `interval_seconds` 之后开始，本轮更久时立即开始。`interval_seconds`、`timeout_ms`、`attempts` 为 0 时取默认值 10 秒、3000 毫秒、3 次，否则限制在 5–60 秒、500–10000 毫秒、1–10 次。RPC 失败（含上报失败，这一轮的结果丢弃）以 1s → 60s 抖动退避重试；凭据被拒时记录错误日志并按最大退避继续。地址不是 IP 字面量（不做 DNS 解析）、端口为 0 或方法未知的目标不探测，记录告警。
