@@ -1941,9 +1941,19 @@ type Site struct {
 	// WebP / AVIF conversion of cached JPEG and PNG responses by the request's
 	// Accept (ADR-0043); unset means off. Added in v0.31.0 (feature
 	// image-convert-v1).
-	ImageConvert  *ImageConvert `protobuf:"bytes,36,opt,name=image_convert,json=imageConvert,proto3" json:"image_convert,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ImageConvert *ImageConvert `protobuf:"bytes,36,opt,name=image_convert,json=imageConvert,proto3" json:"image_convert,omitempty"`
+	// Request headers the edge removes from every request of the site before
+	// anything reads them and before the origin sees them: the identity
+	// headers of all the site's access authentication rules, disabled ones
+	// included (x-auth-user of Basic rules with user_header, the response
+	// headers forward rules copy), and those of rules the site had before.
+	// Lowercase, sorted and unique, at most 256. A rule that checks a request
+	// sets its own again. Added in v1.1.0; nodes without feature
+	// auth-identity-headers-v1 remove only those of the enabled rules (no
+	// feature required).
+	AuthIdentityHeaders []string `protobuf:"bytes,37,rep,name=auth_identity_headers,json=authIdentityHeaders,proto3" json:"auth_identity_headers,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *Site) Reset() {
@@ -2224,6 +2234,13 @@ func (x *Site) GetLogPeer() bool {
 func (x *Site) GetImageConvert() *ImageConvert {
 	if x != nil {
 		return x.ImageConvert
+	}
+	return nil
+}
+
+func (x *Site) GetAuthIdentityHeaders() []string {
+	if x != nil {
+		return x.AuthIdentityHeaders
 	}
 	return nil
 }
@@ -7211,7 +7228,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1e\n" +
 	"\vmax_size_mb\x18\x02 \x01(\x04R\tmaxSizeMb\x12 \n" +
 	"\fkeys_zone_mb\x18\x03 \x01(\rR\n" +
-	"keysZoneMb\"\xc9\r\n" +
+	"keysZoneMb\"\xfd\r\n" +
 	"\x04Site\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -7260,7 +7277,8 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\vlog_headers\x18\" \x03(\tR\n" +
 	"logHeaders\x12\x19\n" +
 	"\blog_peer\x18# \x01(\bR\alogPeer\x12C\n" +
-	"\rimage_convert\x18$ \x01(\v2\x1e.edgeweir.node.v1.ImageConvertR\fimageConvertB\x15\n" +
+	"\rimage_convert\x18$ \x01(\v2\x1e.edgeweir.node.v1.ImageConvertR\fimageConvert\x122\n" +
+	"\x15auth_identity_headers\x18% \x03(\tR\x13authIdentityHeadersB\x15\n" +
 	"\x13_request_body_limit\"\xf7\x01\n" +
 	"\fImageConvert\x12\x12\n" +
 	"\x04webp\x18\x01 \x01(\bR\x04webp\x12\x12\n" +
