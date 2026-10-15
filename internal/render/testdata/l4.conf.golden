@@ -18,6 +18,13 @@ events {
 }
 
 http {
+    # The variables of nginx, its modules and the long $edgeweir_* names:
+    # nginx's default buckets (64 bytes) hold about one such name each, no
+    # hash of up to 1024 of them fits, and nginx warns on every start and
+    # reload. A 128-byte bucket holds three; every rendered nginx.conf fits
+    # fewer than 256 buckets.
+    variables_hash_max_size 1024;
+    variables_hash_bucket_size 128;
     default_type application/octet-stream;
     server_tokens off;
     access_log off;
@@ -62,7 +69,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "f9a7132f6e9dbc6a",
+            conf_id = "5a3bf3ea49024379",
             -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
             geoip_socket = "",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
@@ -1467,7 +1474,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "f9a7132f6e9dbc6a",
+            conf_id = "5a3bf3ea49024379",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }

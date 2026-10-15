@@ -589,13 +589,28 @@ func siteServer(s edgeServer, site configir.Site, l configir.Listener, names []s
 	custom.HTTP3 = l.TLS && site.TLS.HTTP3
 	custom.Gzip, custom.GzipMinLength = site.TLS.Gzip, max(site.TLS.GzipMinLength, 1)
 	custom.GzipLevel = site.TLS.GzipLevel
-	custom.GzipTypes = strings.Join(site.TLS.GzipTypes, " ")
+	custom.GzipTypes = compressionTypes(site.TLS.GzipTypes)
 	custom.Brotli, custom.BrotliLevel = site.TLS.Brotli, site.TLS.BrotliLevel
-	custom.BrotliMinLength, custom.BrotliTypes = max(site.TLS.BrotliMinLength, 1), strings.Join(site.TLS.BrotliTypes, " ")
+	custom.BrotliMinLength, custom.BrotliTypes = max(site.TLS.BrotliMinLength, 1), compressionTypes(site.TLS.BrotliTypes)
 	custom.Zstd, custom.ZstdLevel = site.TLS.Zstd, site.TLS.ZstdLevel
-	custom.ZstdMinLength, custom.ZstdTypes = max(site.TLS.ZstdMinLength, 1), strings.Join(site.TLS.ZstdTypes, " ")
+	custom.ZstdMinLength, custom.ZstdTypes = max(site.TLS.ZstdMinLength, 1), compressionTypes(site.TLS.ZstdTypes)
 	custom.CipherProfile = site.TLS.CipherProfile
 	return custom
+}
+
+// compressionTypes is the argument list of gzip_types, brotli_types or
+// zstd_types for types. All three always compress text/html (it is their
+// default), and nginx warns about a type listed twice ("duplicate MIME
+// type") on every start and reload: text/html and repeats are left out.
+// "" when nothing is left (the directive keeps its default).
+func compressionTypes(types []string) string {
+	out := make([]string, 0, len(types))
+	for _, mime := range types {
+		if mime != "text/html" && !slices.Contains(out, mime) {
+			out = append(out, mime)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // withoutDefault drops default_server from listen arguments (and reuseport

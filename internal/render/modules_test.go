@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -63,6 +64,49 @@ func TestRenderCompressionGolden(t *testing.T) {
 	other, _ := Render(params(), plan)
 	if bytes.Equal(got, other) {
 		t.Fatal("a Zstandard level change did not change nginx.conf")
+	}
+}
+
+// gzip, Brotli and Zstandard always compress text/html; listing it (or any
+// type twice) makes nginx warn about a duplicate MIME type on every start
+// and reload.
+func TestRenderCompressionTypesLeaveOutDuplicates(t *testing.T) {
+	plan := compressionPlan()
+	tls := plan.Sites[0].TLS
+	tls.GzipTypes = []string{"text/html", "application/json", "text/css", "text/css"}
+	tls.BrotliTypes = []string{"application/json", "text/html", "text/css"}
+	tls.ZstdTypes = []string{"text/css", "text/html"}
+	plan.Sites[1].TLS.BrotliTypes = []string{"text/html"}
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	for _, want := range []string{
+		"gzip_types application/json text/css;",
+		"brotli_types application/json text/css;",
+		"zstd_types text/css;",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("nginx.conf lacks %q", want)
+		}
+	}
+	lines := regexp.MustCompile(`(?m)^\s*(gzip|brotli|zstd)_types (.*);$`).FindAllStringSubmatch(conf, -1)
+	if len(lines) == 0 {
+		t.Fatal("no *_types directives")
+	}
+	for _, m := range lines {
+		types := strings.Fields(m[2])
+		for i, mime := range types {
+			if mime == "text/html" || slices.Contains(types[:i], mime) {
+				t.Errorf("%s_types repeats %s: %q", m[1], mime, m[0])
+			}
+		}
+	}
+	// Only text/html: the directive keeps its default.
+	block := regexp.MustCompile(`(?s)server \{[^{}]*server_name br\.test;.*?\n    \}`).FindString(conf)
+	if block == "" || strings.Contains(block, "brotli_types") {
+		t.Errorf("Brotli-only server block:\n%s", block)
 	}
 }
 
