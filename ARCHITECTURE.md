@@ -119,6 +119,7 @@ run 启动
         renew  : 控制台要求或剩余有效期 < 1/3 时续期证书
         stats  : 每 60s 从 Lua 取出已结束分钟的统计（有四层应用时含 stream 子系统的），ReportStatsV2 上报
         logs   : 每 10s 从 Lua 取出采样访问日志，ReportLogs 上报
+        nodelogs: 每 1s 取出本进程与监督进程的节点日志，每 5s 或满 200 条封批，ReportNodeLogs 上报（§2.12）
         tasks  : 流通知、心跳 tasks_pending 或约每 30s（抖动）PullTasks
         purges : 同样的时机，只拉取清缓存任务（purge_only）并立即执行
         identity: 每 10s 比较 identity.json 与正在使用的身份，不同（已重新注册）时退出，由监督进程或 systemd 重启（只是控制台地址变了不算，见 channel）
@@ -323,6 +324,18 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 | `tls` | TLS 握手失败（超时除外），如节点不认识健康 SNI 而中止握手 |
 | `status` | 状态码不是 200，或响应不是 HTTP |
 | `unreachable` | 其他连接错误（网络或主机不可达等） |
+
+### 2.12 节点日志（`node-logs-v1`）
+
+`internal/nodelog` 收集节点自己的警告、错误与关键事件，经 `ReportNodeLogs` 交给控制台（节点详情的「日志」页签）。
+
+- 来源：agent 与监督进程的 slog 记录经 `nodelog.Handler` 复制一份（本地输出不变，`--log-level` 只管本地输出）：warn 及以上，以及带 `event` 属性的 info 事件（`agent_started`、`config_applied`、`last_known_good`、`engine_started`、`certificate_renewed`、`channel_switched`、`upgrade_applied`、`engine_logs_unavailable`）。
+- OpenResty 的 error log 写到 stderr（`error_log stderr`，没有文件，也就没有轮转）。运行它的进程（`supervise` 时为监督进程，单独 `run --manage-nginx` 时为 agent）在 `lineLogger` 里按消息解析：同一次写入中不以时间戳开头的行接在上一条后面（Lua 栈回溯）；收 warn 及以上，crit、alert、emerg 记为 error，原级别在字段 `severity`；`[lua]` 开头或提到 Lua 的消息来源记为 lua；`, client: ...` 之后的请求上下文拆成 `client`、`server`、`request`、`subrequest`、`upstream`、`host`、`referrer` 字段，其余放 `context`。ModSecurity 拒绝请求的行照旧只做每分钟汇总。上传自身的消息带 `nodelog.Skip`，不进收集器。
+- 脱敏与上限：入缓冲前去掉 PEM 块、URL userinfo、URL 与路径的查询串（整段）、凭据请求头、`Bearer` 令牌、凭据类键的值、控制台令牌（`ew[kpstw]_`）与 JWT；凭据类字段名整值替换（向量 `internal/nodelog/testdata/redaction_vectors.json`，控制台用同一份）。消息 ≤ 2048 字节、≤ 16 个字段、键 ≤ 64 字节、值 ≤ 512 字节，超出截断并标记。
+- 限速与折叠：进程自身 5 条/秒（突发 50），OpenResty 与 Lua 10 条/秒（突发 100）；同一签名（来源、级别、组件、事件、去掉数字与 UUID 的消息）每个窗口保留 3 条，其余在窗口结束时合成一条带 `repeated` 的条目，连续有折叠时窗口依次为 1、5、15、60 分钟。缓冲区 2000 条，满时丢最旧的；限速与积压丢弃的条数随下一批上报。
+- 监督进程：自己的条目与 OpenResty 的条目留在监督进程的缓冲区（编号带实例 ID），`/capabilities` 报告 `logs`；agent 经 `GET /logs?instance=&after=` 读取，写入 `nodelogs-spool.json` 后 `POST /logs/ack`（带丢弃计数的 mark），监督进程再删除。agent 重启、升级试运行失败或崩溃时这些条目不丢。自升级后旧监督进程没有 `logs` 时，agent 记事件 `engine_logs_unavailable`，重启节点服务后恢复。
+- 上报：`nodelogs-spool.json` 复用访问日志的 spool（最多 5000 条 / 4 MiB，超出时丢最旧的批次并计入丢弃数）；先以序号 0 查控制台游标，批次按序号上报，同序号重发。控制台答 Unimplemented（早于 `node-logs-v1`）时保留 spool，10 分钟后再试。
+- Lua：源站被标记为不可用时（`health.failure` 达到 `max_fails`，每次下线一条）写一条 warn，含原因（如域名解析失败）与请求上下文。
 
 ## 3. 数据面
 
@@ -952,7 +965,7 @@ proto v0.31.0（ADR-0043）。`Site.image_convert` 经 `configir.buildImageConve
 | `/var/lib/edgeweir-node/challenge-keys.json` | 当前与上一份同集群配置引用的挑战凭证密钥（0600） |
 | `/var/lib/edgeweir-node/session-ticket-keys.json` | 当前与上一份同集群配置引用的 TLS 会话票据密钥（每把 80 字节，0600，§3.27） |
 | `/var/lib/edgeweir-node/health.crt`、`health.key` | 健康证书与私钥（0600，§3.22） |
-| `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json` | 控制台尚未确认的统计批次与采样访问日志批次（0600） |
+| `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json`、`nodelogs-spool.json` | 控制台尚未确认的统计批次、采样访问日志批次与节点日志批次（0600） |
 | `/var/lib/edgeweir-node/run.lock` | `run` 运行期间持有的锁（flock），`enroll --force` 据此拒绝替换正在使用的身份 |
 | `/var/lib/edgeweir-node/upgrade.sock`、`upgrades/` | `supervise` 监督进程的本机 socket（0600）；升级状态 `upgrades/state.json` 与各版本目录 `upgrades/releases/<任务 id>/`（0700） |
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`；配置带会话票据密钥时还有 `conf/tls-tickets/<id>.key`（80 字节，0600，目录 0700，只保留 `nginx.conf` 列出的）；有站点运行 OWASP CRS 时还有 `conf/modsecurity-<哈希>.conf`）、`logs/nginx.pid`、`tmp/` |
