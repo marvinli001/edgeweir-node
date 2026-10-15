@@ -154,7 +154,10 @@ type Checker struct {
 	mu     sync.Mutex
 	checks map[Key]*check
 	policy configir.AddressPolicy
-	closed bool
+	// originCA is the plan's Origin CA (nil: none): the probes of pools
+	// that trust it read it when they run, so a revocation applies at once.
+	originCA *configir.OriginCA
+	closed   bool
 }
 
 // spec is everything a probe of an origin depends on: a check with a
@@ -168,6 +171,14 @@ type spec struct {
 	sni      string
 	insecure bool // the pool skips certificate verification
 	http2    bool // the pool sends its requests over HTTP/2
+	// originCA: the pool verifies against the Origin CA alone and refuses
+	// the certificates its CRL lists (origin-ca-v1).
+	originCA bool
+	// certPath and keyPath are the client certificate the pool presents
+	// (origin-mtls-v1; empty: none), and ref names it.
+	certRef  string
+	certPath string
+	keyPath  string
 }
 
 type check struct {
@@ -213,7 +224,12 @@ func specs(plan *configir.Plan) map[Key]spec {
 			if o.S3 != nil || o.Forbidden {
 				continue
 			}
-			sp := spec{check: *s.ActiveHealthCheck, scheme: o.Scheme, address: o.Address, port: o.Port, insecure: !s.TLSVerify, http2: s.OriginHTTP2}
+			sp := spec{check: *s.ActiveHealthCheck, scheme: o.Scheme, address: o.Address, port: o.Port, insecure: !s.TLSVerify, http2: s.OriginHTTP2,
+				originCA: s.TLSVerify && s.OriginTrust == configir.TrustOriginCA}
+			// Like the data plane: HTTPS origins only, never S3 ones (skipped above).
+			if c := s.OriginClientCert; c != nil && o.Scheme == configir.SchemeHTTPS {
+				sp.certRef, sp.certPath, sp.keyPath = c.Ref, c.CertPath, c.KeyPath
+			}
 			sp.host = cmp.Or(sp.check.Host, o.HostHeader, hostOf(o.Address, o.Port, o.Scheme))
 			sp.sni = cmp.Or(o.SNI, hostname(o.HostHeader), o.Address)
 			out[Key{SiteID: s.ID, OriginID: o.ID}] = sp
@@ -269,6 +285,11 @@ func (c *Checker) Update(plan *configir.Plan) {
 		return
 	}
 	c.policy = policy
+	if plan != nil {
+		c.originCA = plan.OriginCA
+	} else {
+		c.originCA = nil
+	}
 	changed := false
 	for k, ch := range c.checks {
 		if sp, ok := want[k]; ok && sp == ch.spec {
@@ -492,12 +513,11 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 		alpn = "h2"
 	}
 	if sp.scheme == configir.SchemeHTTPS {
-		tc := tls.Client(conn, &tls.Config{
-			ServerName:         sp.sni,
-			RootCAs:            c.opts.RootCAs,
-			InsecureSkipVerify: sp.insecure, //nolint:gosec // the pool's skip_tls_verify
-			NextProtos:         []string{alpn},
-		})
+		config, fail := c.tlsConfig(sp, alpn)
+		if fail != nil {
+			return *fail
+		}
+		tc := tls.Client(conn, config)
 		if err := tc.HandshakeContext(ctx); err != nil {
 			if timedOut(ctx, err) {
 				return timeout
@@ -530,6 +550,45 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 		return failure(CodeUpstreamStatus, map[string]string{"status": strconv.Itoa(resp.StatusCode)}, "HTTP %d", resp.StatusCode)
 	}
 	return result{ok: true}
+}
+
+// tlsConfig is the TLS client configuration of a probe, as the data plane
+// connects to the origin: the node's trust store, or the Origin CA alone
+// and its CRL, and the pool's client certificate.
+func (c *Checker) tlsConfig(sp spec, alpn string) (*tls.Config, *result) {
+	config := &tls.Config{
+		ServerName:         sp.sni,
+		RootCAs:            c.opts.RootCAs,
+		InsecureSkipVerify: sp.insecure, //nolint:gosec // the pool's skip_tls_verify
+		NextProtos:         []string{alpn},
+	}
+	if sp.originCA {
+		c.mu.Lock()
+		ca := c.originCA
+		c.mu.Unlock()
+		if ca == nil || ca.Certificate == nil {
+			r := failure(CodeTLSFailed, nil, "the Origin CA is missing")
+			return nil, &r
+		}
+		roots := x509.NewCertPool()
+		roots.AddCert(ca.Certificate)
+		config.RootCAs = roots
+		config.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) > 0 && ca.IsRevoked(cs.PeerCertificates[0]) {
+				return errors.New("the origin's certificate is revoked")
+			}
+			return nil
+		}
+	}
+	if sp.certPath != "" {
+		pair, err := tls.LoadX509KeyPair(sp.certPath, sp.keyPath)
+		if err != nil {
+			r := failure(CodeTLSFailed, nil, "client certificate: %v", err)
+			return nil, &r
+		}
+		config.Certificates = []tls.Certificate{pair}
+	}
+	return config, nil
 }
 
 // userAgent is the User-Agent of the probes.

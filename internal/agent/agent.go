@@ -290,6 +290,9 @@ type Agent struct {
 	desiredL4    *dataplane.L4Table
 	creds        map[string]configir.Credential
 	certificates map[string]configir.Certificate
+	// originClientCerts is the origin client certificates' material by
+	// "<id>/<fingerprint>" (origin-client-certificates.json).
+	originClientCerts map[string]configir.Certificate
 	// certUse: the applied plan's certificates that did not load and the
 	// material it serves (certificate-isolation-v1).
 	certUse   certificateUse
@@ -381,20 +384,21 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		log = slog.Default()
 	}
 	a := &Agent{
-		cfg:          cfg,
-		log:          log,
-		engine:       eng,
-		dp:           dp,
-		ids:          identity.Store{Dir: cfg.StateDir},
-		lkg:          configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
-		message:      "waiting for the first configuration",
-		creds:        map[string]configir.Credential{},
-		certificates: map[string]configir.Certificate{},
-		purge:        newPurgeState(),
-		syncCh:       make(chan struct{}, 1),
-		reportCh:     make(chan struct{}, 1),
-		taskCh:       make(chan struct{}, 1),
-		purgeCh:      make(chan struct{}, 1),
+		cfg:               cfg,
+		log:               log,
+		engine:            eng,
+		dp:                dp,
+		ids:               identity.Store{Dir: cfg.StateDir},
+		lkg:               configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
+		message:           "waiting for the first configuration",
+		creds:             map[string]configir.Credential{},
+		certificates:      map[string]configir.Certificate{},
+		originClientCerts: map[string]configir.Certificate{},
+		purge:             newPurgeState(),
+		syncCh:            make(chan struct{}, 1),
+		reportCh:          make(chan struct{}, 1),
+		taskCh:            make(chan struct{}, 1),
+		purgeCh:           make(chan struct{}, 1),
 
 		bans:           bans.New(),
 		banDroppedSeen: map[string]time.Time{},
@@ -496,6 +500,7 @@ func (a *Agent) Run(parent context.Context) error {
 	})
 	a.loadCredentials()
 	a.loadCertificates()
+	a.loadOriginClientCertificates()
 	a.loadPurge()
 	a.loadChallengeKeys()
 	a.loadSessionTicketKeys()
@@ -721,6 +726,7 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 			a.attachCredentials(plan)
 			a.attachSessionTicketKeys(plan)
 			certs, perr = a.attachCertificates(plan, a.loadCertificateFailures(cfg))
+			a.attachOriginClientCertificates(plan)
 			if perr == nil {
 				perr = a.applyPlan(ctx, plan)
 			}

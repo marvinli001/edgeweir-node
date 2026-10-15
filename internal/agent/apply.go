@@ -75,6 +75,11 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	if err := a.writeTicketKeyFiles(plan); err != nil {
 		return err
 	}
+	// The Origin CA (named in nginx.conf) and the sites' origin client
+	// certificates, before `openresty -t` and the site table.
+	if err := a.writeOriginTLSFiles(plan); err != nil {
+		return err
+	}
 	modsecConf, err := a.installModSecurityConf(plan)
 	if err != nil {
 		return err
@@ -190,6 +195,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.plan = plan
 	a.mu.Unlock()
 	a.removeStaleTicketKeyFiles(plan)
+	a.removeStaleOriginTLSFiles(plan)
 	// Checks of the plan start (or stop); the marks' lifetime follows
 	// their intervals.
 	a.health.Update(plan)
@@ -606,6 +612,13 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		return
 	}
 	plan.Warnings = append(plan.Warnings, certs.warnings()...)
+	// The client certificates sites present to origins: one that does not
+	// load fails the apply (the last-known-good configuration stays).
+	if err := a.ensureOriginClientCertificates(ctx, plan); err != nil {
+		a.fail(cfg, key, err)
+		return
+	}
+	a.attachOriginClientCertificates(plan)
 	for _, w := range plan.Warnings {
 		a.log.Warn("configuration warning", "revision", cfg.GetRevision(), "warning", w)
 	}
@@ -640,6 +653,7 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.pruneSecrets(cfg, previousConfig)
 	a.pruneChallengeKeys(cfg, previousConfig)
 	a.pruneSessionTicketKeys(cfg, previousConfig)
+	a.pruneOriginClientCertificates(cfg, previousConfig)
 	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings),
 		nodelog.EventKey, nodelog.EventConfigApplied)
 	a.triggerKernel() // platform allow lists may have changed
