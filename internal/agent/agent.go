@@ -38,6 +38,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/identity"
 	"github.com/marvinli001/edgeweir-node/internal/metrics"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 )
@@ -90,6 +91,16 @@ type Config struct {
 	// StateDir holds the identity and the LKG configuration.
 	StateDir         string
 	SupervisorSocket string
+	// NodeLogs holds the process's warnings, errors and events (its
+	// logger's nodelog.Handler and the engine's LogSink); the agent
+	// uploads them (feature node-logs-v1). nil: no node logs.
+	NodeLogs *nodelog.Collector
+	// NodeLogsUnsupportedRetry: a console without ReportNodeLogs is asked
+	// again this often (default 10m).
+	NodeLogsUnsupportedRetry time.Duration
+	// NodeLogsSealAfter: entries wait at most this long before they are
+	// sealed into a batch (default 5s).
+	NodeLogsSealAfter time.Duration
 	// ConfPath is where nginx.conf is written (inside the nginx prefix).
 	ConfPath string
 	// Render holds the node-local nginx.conf settings.
@@ -556,6 +567,7 @@ func (a *Agent) Run(parent context.Context) error {
 		a.statsLoop(ctx)
 	})
 	spawn("logs", a.logsLoop)
+	spawn("nodelogs", a.nodeLogsLoop)
 	spawn("tasks", a.taskLoop)
 	spawn("purges", a.purgeLoop)
 	spawn("supervisor", a.supervisorHealthLoop)
@@ -724,7 +736,8 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 			a.certUse = certs
 			a.mu.Unlock()
 			a.log.Info("serving last-known-good configuration", "revision", cfg.GetRevision(),
-				"content_hash", cfg.GetContentHash(), "file", file, "sites", len(plan.Sites))
+				"content_hash", cfg.GetContentHash(), "file", file, "sites", len(plan.Sites),
+				nodelog.EventKey, nodelog.EventLastKnownGood)
 			return
 		}
 		a.log.Error("cannot serve last-known-good configuration; falling back to bootstrap", "revision", cfg.GetRevision(), "err", perr)

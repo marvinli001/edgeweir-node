@@ -18,6 +18,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 )
 
 type Result struct {
@@ -60,6 +61,9 @@ type Options struct {
 	// the active one (refused otherwise: an older signed release may have
 	// known flaws).
 	AllowDowngrade bool
+	// Logs holds the supervisor's own warnings and events and OpenResty's
+	// error log (Engine.LogSink) for its children (GET /logs); nil: none.
+	Logs *nodelog.Collector
 	// Test seams remain package-private and cannot be configured by the console.
 	prepare func(context.Context, Trust, Task) (Bundle, error)
 }
@@ -77,6 +81,13 @@ type Supervisor struct {
 	startedAt    time.Time
 	restartDelay time.Duration
 	engine       supervisedEngine
+	// logInstance names this supervisor's log buffer: entry numbers start
+	// over with a new supervisor.
+	logInstance string
+	// logsAcked are the drop counters (rate limited, overflow) a child
+	// acknowledged.
+	logsMu    sync.Mutex
+	logsAcked [2]uint64
 }
 
 // ErrUsage stops the supervisor when the node exits with status 2: its
@@ -185,7 +196,7 @@ func Run(ctx context.Context, opts Options) error {
 		return errors.New("another node supervisor owns this state directory")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	s := &Supervisor{opts: opts}
+	s := &Supervisor{opts: opts, logInstance: newLogInstance()}
 	if err := s.load(); err != nil {
 		return err
 	}
@@ -336,7 +347,8 @@ func Run(ctx context.Context, opts Options) error {
 						return err
 					}
 					s.cleanup()
-					opts.Log.Info("node upgrade committed", "version", p.Candidate.Version, "task_id", p.Candidate.TaskID)
+					opts.Log.Info("node upgrade committed", "version", p.Candidate.Version, "task_id", p.Candidate.TaskID,
+						nodelog.EventKey, nodelog.EventUpgradeApplied)
 				}
 			} else {
 				select {
@@ -505,7 +517,7 @@ func body(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.serveEngine(w, r) {
+	if s.serveEngine(w, r) || s.serveLogs(w, r) {
 		return
 	}
 	switch {
@@ -516,7 +528,7 @@ func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err := exec.LookPath(bin)
 		enabled := err == nil && (s.opts.Trust.PublicKey == "" || fsutil.Exists(s.opts.Trust.PublicKey))
-		reply(w, 200, map[string]bool{"enabled": enabled, "engine": s.opts.Engine != nil})
+		reply(w, 200, map[string]bool{"enabled": enabled, "engine": s.opts.Engine != nil, "logs": s.opts.Logs != nil})
 	case r.Method == http.MethodPost && r.URL.Path == "/health":
 		var h struct {
 			PID     int    `json:"pid"`

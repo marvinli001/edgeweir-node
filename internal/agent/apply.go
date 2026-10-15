@@ -15,6 +15,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 	"github.com/marvinli001/edgeweir-node/internal/retry"
 )
@@ -639,7 +640,8 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 	a.pruneSecrets(cfg, previousConfig)
 	a.pruneChallengeKeys(cfg, previousConfig)
 	a.pruneSessionTicketKeys(cfg, previousConfig)
-	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings))
+	a.log.Info("configuration applied", "revision", cfg.GetRevision(), "sites", len(plan.Sites), "warnings", len(plan.Warnings),
+		nodelog.EventKey, nodelog.EventConfigApplied)
 	a.triggerKernel() // platform allow lists may have changed
 	a.triggerOCSP()
 	a.triggerReport()

@@ -58,6 +58,13 @@ type Console struct {
 	logsAckFailures int
 	logsSequences   []uint64
 	logs            []*nodev1.AccessLog
+	// Node logs (ReportNodeLogs).
+	nodeLogsSequence    uint64
+	nodeLogsSequences   []uint64
+	nodeLogs            []*nodev1.NodeLogEntry
+	nodeLogsDropped     [2]uint64
+	nodeLogsAckFailures int
+	nodeLogsUnsupported bool
 	nodev1connect.UnimplementedNodeServiceHandler
 
 	CA   *pkitest.CA
@@ -771,6 +778,62 @@ func (c *Console) ReportLogs(_ context.Context, req *connect.Request[nodev1.Repo
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test acknowledgement lost after commit"))
 	}
 	return connect.NewResponse(&nodev1.ReportLogsResponse{Accepted: accepted, BatchSequence: req.Msg.BatchSequence}), nil
+}
+
+// ReportNodeLogs implements NodeService.
+func (c *Console) ReportNodeLogs(_ context.Context, req *connect.Request[nodev1.ReportNodeLogsRequest]) (*connect.Response[nodev1.ReportNodeLogsResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.nodeLogsUnsupported {
+		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("edgeweir.node.v1.NodeService.ReportNodeLogs is not implemented"))
+	}
+	if req.Msg.BatchSequence == 0 && len(req.Msg.Entries) == 0 {
+		return connect.NewResponse(&nodev1.ReportNodeLogsResponse{BatchSequence: c.nodeLogsSequence}), nil
+	}
+	accepted := uint32(0)
+	c.nodeLogsSequences = append(c.nodeLogsSequences, req.Msg.BatchSequence)
+	if req.Msg.BatchSequence > c.nodeLogsSequence {
+		for _, e := range req.Msg.Entries {
+			c.nodeLogs = append(c.nodeLogs, proto.CloneOf(e))
+		}
+		c.nodeLogsDropped[0] += uint64(req.Msg.DroppedRateLimited)
+		c.nodeLogsDropped[1] += uint64(req.Msg.DroppedOverflow)
+		accepted = uint32(len(req.Msg.Entries))
+		c.nodeLogsSequence = req.Msg.BatchSequence
+	}
+	if c.nodeLogsAckFailures > 0 {
+		c.nodeLogsAckFailures--
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test acknowledgement lost after commit"))
+	}
+	return connect.NewResponse(&nodev1.ReportNodeLogsResponse{Accepted: accepted, BatchSequence: req.Msg.BatchSequence}), nil
+}
+
+// FailNodeLogsAcknowledgements loses the next n acknowledgements of node
+// log batches (after storing them).
+func (c *Console) FailNodeLogsAcknowledgements(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nodeLogsAckFailures = n
+}
+
+// SetNodeLogsUnsupported answers ReportNodeLogs with Unimplemented (a
+// console older than node-logs-v1).
+func (c *Console) SetNodeLogsUnsupported(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nodeLogsUnsupported = v
+}
+
+// NodeLogs returns the node log entries stored, the batch sequences
+// received and the drops reported (rate limited, overflow).
+func (c *Console) NodeLogs() ([]*nodev1.NodeLogEntry, []uint64, [2]uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*nodev1.NodeLogEntry, 0, len(c.nodeLogs))
+	for _, e := range c.nodeLogs {
+		out = append(out, proto.CloneOf(e))
+	}
+	return out, slices.Clone(c.nodeLogsSequences), c.nodeLogsDropped
 }
 
 func (c *Console) FailLogsAcknowledgements(n int) {

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"sort"
@@ -19,24 +20,28 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/healthcheck"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/pki"
 	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 )
 
-func (a *Agent) logRPCError(msg string, err error) {
+func (a *Agent) logRPCError(msg string, err error) { a.logRPCErrorTo(a.log, msg, err) }
+
+// logRPCErrorTo is logRPCError with another logger.
+func (a *Agent) logRPCErrorTo(log *slog.Logger, msg string, err error) {
 	if controlplane.IsAuthError(err) {
 		if notAfter, expired := identityExpired(a.connectedCh.Load(), time.Now()); expired {
-			a.log.Error(msg+": this node's client certificate expired at "+notAfter.UTC().Format(time.RFC3339)+
+			log.Error(msg+": this node's client certificate expired at "+notAfter.UTC().Format(time.RFC3339)+
 				" and the console refuses it; still serving the last-known-good configuration; "+
 				"stop the agent, re-enroll with a new token (`edgeweir-node enroll --force`) and start it again",
 				"err", err, "not_after", notAfter)
 			return
 		}
-		a.log.Error(msg+": the console rejected this node's credentials (node deleted or certificate revoked/expired?); "+
+		log.Error(msg+": the console rejected this node's credentials (node deleted or certificate revoked/expired?); "+
 			"still serving the last-known-good configuration; if needed, stop the agent, re-enroll with `edgeweir-node enroll --force` and start it again", "err", err)
 		return
 	}
-	a.log.Warn(msg, "err", err)
+	log.Warn(msg, "err", err)
 }
 
 // identityExpired reports whether the client certificate of the channel's
@@ -196,6 +201,9 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
 	}
 	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, controlplane.FollowFeature)
+	if a.cfg.NodeLogs != nil {
+		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, nodelog.Feature)
+	}
 	if f := a.follow.Load(); f != nil {
 		req.Channel = f.Status()
 	}
@@ -285,7 +293,7 @@ func (a *Agent) renew(ctx context.Context, reason string) {
 	}
 	id := a.channel.Identity()
 	a.log.Info("node certificate renewed", "reason", reason,
-		"not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339))
+		"not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339), nodelog.EventKey, nodelog.EventCertificateRenewed)
 	a.triggerReport()
 }
 

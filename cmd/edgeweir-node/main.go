@@ -41,6 +41,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
 	"github.com/marvinli001/edgeweir-node/internal/imageconv"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 	"github.com/marvinli001/edgeweir-node/internal/upgrade"
@@ -490,6 +491,16 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	// Warnings, errors and events of this process (and of the OpenResty
+	// it runs) for the console's node logs: the agent uploads its own and
+	// the supervisor's.
+	nodeLogs := nodelog.NewCollector(nodelog.Options{})
+	source := nodelog.SourceAgent
+	if supervised {
+		source = nodelog.SourceSupervisor
+	}
+	log = slog.New(nodelog.NewHandler(log.Handler(), nodeLogs.Add, source))
+	slog.SetDefault(log)
 	if *defaultPort == 0 || *defaultPort > 65535 {
 		fmt.Fprintln(stderr, "run: --default-port must be 1-65535")
 		return 2
@@ -670,8 +681,9 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		// OpenResty runs under the supervisor: replacing the node process
 		// (an upgrade, a restart) does not restart it.
 		engineConfig := engineConfig(*nginxBin, prefix, conf, params, log)
+		engineConfig.LogSink = nodeLogs.Add
 		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr,
-			Engine: &engineConfig, AllowDowngrade: *downgrade})
+			Engine: &engineConfig, AllowDowngrade: *downgrade, Logs: nodeLogs})
 		if errors.Is(err, upgrade.ErrUsage) {
 			log.Error("supervisor stopped", "err", err)
 			return 2
@@ -695,10 +707,12 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 
 	log.Info("starting edgeweir-node", "version", version.Version, "commit", version.Commit,
 		"state_dir", state, "manage_nginx", *manage, "nginx_bin", *nginxBin, "nginx_prefix", prefix,
-		"control_socket", params.ControlSocket, "resolvers", strings.Join(rs, " "))
+		"control_socket", params.ControlSocket, "resolvers", strings.Join(rs, " "),
+		nodelog.EventKey, nodelog.EventAgentStarted)
 
 	engineConfig := engineConfig(*nginxBin, prefix, conf, params, log)
 	engineConfig.Managed = *manage
+	engineConfig.LogSink = nodeLogs.Add
 	local := engine.New(engineConfig)
 	var eng agent.Engine = local
 	if sock := os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"); sock != "" && *manage {
@@ -732,6 +746,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
 		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
+		NodeLogs:            nodeLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

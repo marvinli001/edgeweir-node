@@ -13,6 +13,7 @@ import (
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 )
 
 // Follow timing defaults (Follower).
@@ -275,7 +276,8 @@ func (f *Follower) reloadIfChanged() {
 	f.mu.Lock()
 	f.failed, f.lastOK, f.lastErr, f.nextFailover = nil, f.now(), nil, time.Time{}
 	f.mu.Unlock()
-	f.log().Info("node channel address changed on disk; reconnecting", "server", disk.ServerURL, "fallback_server", disk.FallbackServerURL)
+	f.log().Info("node channel address changed on disk; reconnecting", "server", disk.ServerURL, "fallback_server", disk.FallbackServerURL,
+		nodelog.EventKey, nodelog.EventChannelSwitched)
 	f.switched()
 }
 
@@ -356,7 +358,8 @@ func (f *Follower) follow(ctx context.Context, id *identity.Loaded, desired, cur
 	f.mu.Lock()
 	f.failed, f.attempts, f.lastOK, f.lastErr = nil, 0, now, nil
 	f.mu.Unlock()
-	f.log().Info("switched to the node channel address the console gives out", "address", desired.String(), "fallback", keep.String())
+	f.log().Info("switched to the node channel address the console gives out", "address", desired.String(), "fallback", keep.String(),
+		nodelog.EventKey, nodelog.EventChannelSwitched)
 	f.switched()
 }
 

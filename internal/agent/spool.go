@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"time"
@@ -89,6 +90,29 @@ type spool[B spoolBatch[B]] struct {
 	maxBytes   int64
 	maxPending int
 	batchSize  int
+	// log overrides the agent's logger (the node logs spool's messages
+	// stay local); onDrop hears of records dropped for the limits.
+	log    *slog.Logger
+	onDrop func(n int)
+}
+
+func (s *spool[B]) logger() *slog.Logger {
+	if s.log != nil {
+		return s.log
+	}
+	return s.a.log
+}
+
+func (s *spool[B]) drop(f *spoolFile[B], reason string) bool {
+	n, ok := f.dropOldest()
+	if !ok {
+		return false
+	}
+	if s.onDrop != nil {
+		s.onDrop(n)
+	}
+	s.logger().Warn("dropping oldest unsent "+s.what+" batch: "+reason, s.dropped(f, n)...)
+	return true
 }
 
 // load reads the spool of node nodeID; a missing, oversized or unreadable
@@ -104,7 +128,7 @@ func (s *spool[B]) load(nodeID string) (*spoolFile[B], error) {
 		return nil, err
 	}
 	if info.Size() > s.maxBytes {
-		s.a.log.Warn("discarding an oversized " + s.what + " spool")
+		s.logger().Warn("discarding an oversized " + s.what + " spool")
 		return f, nil
 	}
 	raw, err := os.ReadFile(s.path)
@@ -112,7 +136,7 @@ func (s *spool[B]) load(nodeID string) (*spoolFile[B], error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(raw, f); err != nil || f.NodeID != nodeID {
-		s.a.log.Warn("discarding unreadable or previous-identity " + s.what + " spool")
+		s.logger().Warn("discarding unreadable or previous-identity " + s.what + " spool")
 		return &spoolFile[B]{NodeID: nodeID}, nil
 	}
 	return f, nil
@@ -153,7 +177,7 @@ func (s *spool[B]) add(f *spoolFile[B], synced bool, pack func(last uint64) ([]B
 	if synced {
 		batches, ok := pack(f.Last)
 		if !ok {
-			s.a.log.Error(s.what + " sequence exhausted")
+			s.logger().Error(s.what + " sequence exhausted")
 			return false
 		}
 		if len(batches) > 0 {
@@ -165,9 +189,7 @@ func (s *spool[B]) add(f *spoolFile[B], synced bool, pack func(last uint64) ([]B
 			f.Loose = append(f.Loose, b.numbered(0))
 		}
 	}
-	for f.pending() > s.maxPending {
-		n, _ := f.dropOldest()
-		s.a.log.Warn("dropping oldest unsent "+s.what+" batch: bucket limit", s.dropped(f, n)...)
+	for f.pending() > s.maxPending && s.drop(f, "bucket limit") {
 	}
 	return true
 }
@@ -180,11 +202,9 @@ func (s *spool[B]) save(f *spoolFile[B]) error {
 		return err
 	}
 	for int64(len(raw)) > s.maxBytes {
-		n, ok := f.dropOldest()
-		if !ok {
+		if !s.drop(f, "spool size limit") {
 			break
 		}
-		s.a.log.Warn("dropping oldest unsent "+s.what+" batch: spool size limit", s.dropped(f, n)...)
 		if raw, err = json.Marshal(f); err != nil {
 			return err
 		}
@@ -209,18 +229,18 @@ func (s *spool[B]) upload(ctx context.Context, f *spoolFile[B], send func(contex
 		acked, err := send(ctx, b)
 		if err != nil {
 			if ctx.Err() == nil {
-				s.a.logRPCError(s.rpc+" failed; will retry the same batch", err)
+				s.a.logRPCErrorTo(s.logger(), s.rpc+" failed; will retry the same batch", err)
 			}
 			break
 		}
 		if acked != b.sequence() {
-			s.a.log.Warn(s.what + " acknowledgement sequence mismatch")
+			s.logger().Warn(s.what + " acknowledgement sequence mismatch")
 			break
 		}
 		next := *f
 		next.Batches = f.Batches[1:]
 		if err := s.save(&next); err != nil {
-			s.a.log.Error("cannot persist "+s.what+" acknowledgement; batch will be retried", "err", err)
+			s.logger().Error("cannot persist "+s.what+" acknowledgement; batch will be retried", "err", err)
 			break
 		}
 		f = &next

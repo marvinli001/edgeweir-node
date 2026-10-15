@@ -22,6 +22,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 )
 
 // Config configures an Nginx engine.
@@ -40,6 +42,9 @@ type Config struct {
 	// StopTimeout bounds graceful shutdown before SIGKILL (default 8s).
 	StopTimeout time.Duration
 	Logger      *slog.Logger
+	// LogSink receives OpenResty's error log messages of level warn and
+	// above as node log entries (nodelog.ParseNginx); nil: none.
+	LogSink func(nodelog.Entry)
 }
 
 // Nginx implements the engine for OpenResty.
@@ -189,7 +194,9 @@ func (n *Nginx) runOnce(ctx context.Context) error {
 			n.log.Warn("cannot remove stale socket", "path", s, "err", err)
 		}
 	}
-	lw := &lineLogger{log: n.log}
+	// The lines become node log entries through the sink, not through
+	// the logger.
+	lw := &lineLogger{log: n.log.With(nodelog.Skip), sink: n.cfg.LogSink}
 	cmd := exec.Command(n.cfg.Bin, n.args(n.cfg.Conf, "-g", "daemon off;")...)
 	cmd.Stdout = lw
 	cmd.Stderr = lw
@@ -200,7 +207,7 @@ func (n *Nginx) runOnce(ctx context.Context) error {
 	n.mu.Lock()
 	n.proc = cmd.Process
 	n.mu.Unlock()
-	n.log.Info("nginx started", "pid", cmd.Process.Pid, "conf", n.cfg.Conf)
+	n.log.Info("nginx started", "pid", cmd.Process.Pid, "conf", n.cfg.Conf, nodelog.EventKey, nodelog.EventEngineStarted)
 	select {
 	case n.started <- struct{}{}:
 	default:
@@ -246,6 +253,12 @@ type lineLogger struct {
 	mu  sync.Mutex
 	buf []byte
 
+	// sink receives warnings and errors as node log entries. A message
+	// is one write of nginx: lines of one Write call that do not start a
+	// message (a Lua stack traceback) continue the one before.
+	sink    func(nodelog.Entry)
+	message []string
+
 	now          func() time.Time // for tests; nil = time.Now
 	denied       int
 	deniedSince  time.Time
@@ -271,7 +284,24 @@ func (l *lineLogger) Write(p []byte) (int, error) {
 		l.emit(string(l.buf))
 		l.buf = nil
 	}
+	l.flushMessage()
 	return len(p), nil
+}
+
+// flushMessage hands the message read so far to the sink.
+func (l *lineLogger) flushMessage() {
+	if len(l.message) == 0 {
+		return
+	}
+	text := strings.Join(l.message, "\n")
+	l.message = l.message[:0]
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	if e, ok := nodelog.ParseNginx(text, now); ok {
+		l.sink(e)
+	}
 }
 
 func (l *lineLogger) flush() {
@@ -281,6 +311,7 @@ func (l *lineLogger) flush() {
 		l.emit(string(l.buf))
 		l.buf = nil
 	}
+	l.flushMessage()
 	l.summarizeDenied(true)
 }
 
@@ -306,6 +337,14 @@ func (l *lineLogger) emit(line string) {
 	line = strings.TrimRight(line, "\r")
 	if line == "" {
 		return
+	}
+	if l.sink != nil {
+		if nodelog.IsNginxLine(line) {
+			l.flushMessage()
+			l.message = append(l.message, line)
+		} else if len(l.message) > 0 && len(l.message) < 64 {
+			l.message = append(l.message, line)
+		}
 	}
 	if strings.Contains(line, modsecDenied) {
 		if l.denied == 0 {

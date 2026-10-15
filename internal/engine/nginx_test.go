@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"io"
 	"log/slog"
 	"os"
@@ -197,5 +198,36 @@ func TestLineLoggerLevels(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("log output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestLineLoggerSinkTakesWholeMessages(t *testing.T) {
+	var out strings.Builder
+	base := slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug})
+	var captured, sunk []nodelog.Entry
+	// The agent's logger adds warnings as entries; the line logger's own
+	// records must not become entries a second time.
+	log := slog.New(nodelog.NewHandler(base, func(e nodelog.Entry) { captured = append(captured, e) }, nodelog.SourceAgent))
+	now := time.Unix(100, 0)
+	l := &lineLogger{log: log.With(nodelog.Skip), sink: func(e nodelog.Entry) { sunk = append(sunk, e) }, now: func() time.Time { return now }}
+	_, _ = l.Write([]byte("2026/10/15 10:00:00 [error] 7#7: *1 lua entry thread aborted: runtime error: boom\nstack traceback:\n\t[C]: in function 'error'\n" +
+		"2026/10/15 10:00:00 [notice] 7#7: signal process started\n2026/10/15 10:00:00 [warn] 7#7: *2 upstream response is buffered"))
+	// The second warning ends in the next write.
+	_, _ = l.Write([]byte(" to a temporary file, client: 192.0.2.1, server: a.test\n"))
+	l.flush()
+	if len(captured) != 0 {
+		t.Fatalf("captured through the logger: %+v", captured)
+	}
+	if len(sunk) != 2 {
+		t.Fatalf("%d entries: %+v", len(sunk), sunk)
+	}
+	if sunk[0].Source != nodelog.SourceLua || !strings.HasSuffix(sunk[0].Message, "in function 'error'") || !sunk[0].Time.Equal(now) {
+		t.Fatalf("first %+v", sunk[0])
+	}
+	if sunk[1].Level != nodelog.LevelWarn || sunk[1].Message != "upstream response is buffered to a temporary file" || sunk[1].Fields["server"] != "a.test" {
+		t.Fatalf("second %+v", sunk[1])
+	}
+	if !strings.Contains(out.String(), "signal process started") || strings.Contains(out.String(), "nodelog.skip") {
+		t.Fatalf("local output %q", out.String())
 	}
 }

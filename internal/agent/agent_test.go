@@ -20,6 +20,7 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1/nodev1connect"
 	"github.com/marvinli001/edgeweir-node/internal/identity"
+	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/render"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
@@ -233,7 +234,11 @@ func startAgent(t *testing.T, cfg agent.Config, eng agent.Engine, dp agent.DataP
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := agent.New(cfg, eng, dp, testLogger(t))
+	log := testLogger(t)
+	if cfg.NodeLogs != nil {
+		log = slog.New(nodelog.NewHandler(log.Handler(), cfg.NodeLogs.Add, nodelog.SourceAgent))
+	}
+	a := agent.New(cfg, eng, dp, log)
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 	var once sync.Once
