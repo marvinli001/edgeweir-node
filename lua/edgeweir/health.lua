@@ -150,7 +150,14 @@ function _M.failure(site_id, origin_id, err, max_fails, recovery, now, code, par
     dict:delete("q|" .. k)
   end
   if n >= (max_fails or 3) then
+    local held = dict:get("d|" .. k)
     dict:set("d|" .. k, now + (recovery or 30), TTL)
+    -- Once per time it goes down: a node log entry for the console
+    -- (node-logs-v1), with the request context nginx appends.
+    if not held or held <= now then
+      ngx.log(ngx.WARN, "edgeweir: origin ", origin_id, " of site ", site_id, " marked down for ",
+        recovery or 30, "s after ", n, " failures: ", sub(err or "", 1, 200))
+    end
     return true
   end
   return false

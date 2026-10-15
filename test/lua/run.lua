@@ -303,6 +303,30 @@ test("lb consistent hash is stable and moves only a down origin's keys", functio
   eq(#lb.order(s, "/x", 1000), lb.MAX_TRIES, "at most MAX_TRIES candidates")
 end)
 
+test("health logs an origin once each time it goes down", function()
+  local logged = {}
+  local log = ngx.log
+  ngx.log = function(level, ...)
+    logged[#logged + 1] = { level = level, text = table.concat({ ... }) }
+  end
+  local ok, err = pcall(function()
+    health.failure("hl", "o", "no-such.test could not be resolved (3: Host not found)", 2, 10, 3000)
+    eq(#logged, 0, "before max_fails")
+    health.failure("hl", "o", "no-such.test could not be resolved (3: Host not found)", 2, 10, 3001)
+    eq(#logged, 1, "when it goes down")
+    eq(logged[1].level, ngx.WARN)
+    eq(logged[1].text, "edgeweir: origin o of site hl marked down for 10s after 2 failures: "
+      .. "no-such.test could not be resolved (3: Host not found)")
+    health.failure("hl", "o", "again", 2, 10, 3002)
+    eq(#logged, 1, "not again while it is held down")
+    health.failure("hl", "o", "again", 2, 10, 3020)
+    eq(#logged, 2, "again after the recovery time")
+  end)
+  ngx.log = log
+  health.success("hl", "o")
+  assert(ok, err)
+end)
+
 test("health counts consecutive failures and reports them", function()
   eq(health.failure("hs2", "x", "connection failed", 3, 10, 2000), false)
   eq(health.failure("hs2", "x", "connection failed", 3, 10, 2001), false)
