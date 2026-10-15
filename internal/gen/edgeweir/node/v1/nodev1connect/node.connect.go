@@ -81,6 +81,9 @@ const (
 	// NodeServiceCheckChannelProcedure is the fully-qualified name of the NodeService's CheckChannel
 	// RPC.
 	NodeServiceCheckChannelProcedure = "/edgeweir.node.v1.NodeService/CheckChannel"
+	// NodeServiceReportNodeLogsProcedure is the fully-qualified name of the NodeService's
+	// ReportNodeLogs RPC.
+	NodeServiceReportNodeLogsProcedure = "/edgeweir.node.v1.NodeService/ReportNodeLogs"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -144,6 +147,10 @@ type NodeServiceClient interface {
 	// side effects: an agent calls it at an address before it switches to it
 	// (feature channel-follow-v1).
 	CheckChannel(context.Context, *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error)
+	// ReportNodeLogs uploads the node's warnings, errors and events (agent,
+	// supervisor, OpenResty) in sequenced batches; an empty sequence-zero
+	// request reads the cursor (feature node-logs-v1).
+	ReportNodeLogs(context.Context, *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -271,6 +278,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("CheckChannel")),
 			connect.WithClientOptions(opts...),
 		),
+		reportNodeLogs: connect.NewClient[v1.ReportNodeLogsRequest, v1.ReportNodeLogsResponse](
+			httpClient,
+			baseURL+NodeServiceReportNodeLogsProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("ReportNodeLogs")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -295,6 +308,7 @@ type nodeServiceClient struct {
 	submitPurge          *connect.Client[v1.SubmitPurgeRequest, v1.SubmitPurgeResponse]
 	getSessionTicketKeys *connect.Client[v1.GetSessionTicketKeysRequest, v1.GetSessionTicketKeysResponse]
 	checkChannel         *connect.Client[v1.CheckChannelRequest, v1.CheckChannelResponse]
+	reportNodeLogs       *connect.Client[v1.ReportNodeLogsRequest, v1.ReportNodeLogsResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -392,6 +406,11 @@ func (c *nodeServiceClient) CheckChannel(ctx context.Context, req *connect.Reque
 	return c.checkChannel.CallUnary(ctx, req)
 }
 
+// ReportNodeLogs calls edgeweir.node.v1.NodeService.ReportNodeLogs.
+func (c *nodeServiceClient) ReportNodeLogs(ctx context.Context, req *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error) {
+	return c.reportNodeLogs.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -453,6 +472,10 @@ type NodeServiceHandler interface {
 	// side effects: an agent calls it at an address before it switches to it
 	// (feature channel-follow-v1).
 	CheckChannel(context.Context, *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error)
+	// ReportNodeLogs uploads the node's warnings, errors and events (agent,
+	// supervisor, OpenResty) in sequenced batches; an empty sequence-zero
+	// request reads the cursor (feature node-logs-v1).
+	ReportNodeLogs(context.Context, *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -576,6 +599,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("CheckChannel")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceReportNodeLogsHandler := connect.NewUnaryHandler(
+		NodeServiceReportNodeLogsProcedure,
+		svc.ReportNodeLogs,
+		connect.WithSchema(nodeServiceMethods.ByName("ReportNodeLogs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -616,6 +645,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceGetSessionTicketKeysHandler.ServeHTTP(w, r)
 		case NodeServiceCheckChannelProcedure:
 			nodeServiceCheckChannelHandler.ServeHTTP(w, r)
+		case NodeServiceReportNodeLogsProcedure:
+			nodeServiceReportNodeLogsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -699,4 +730,8 @@ func (UnimplementedNodeServiceHandler) GetSessionTicketKeys(context.Context, *co
 
 func (UnimplementedNodeServiceHandler) CheckChannel(context.Context, *connect.Request[v1.CheckChannelRequest]) (*connect.Response[v1.CheckChannelResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.CheckChannel is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) ReportNodeLogs(context.Context, *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportNodeLogs is not implemented"))
 }

@@ -5548,7 +5548,7 @@ var File_edgeweir_node_v1_node_proto protoreflect.FileDescriptor
 
 const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\n" +
-	"\x1bedgeweir/node/v1/node.proto\x12\x10edgeweir.node.v1\x1a\x1eedgeweir/node/v1/channel.proto\x1a\x1dedgeweir/node/v1/config.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x15\n" +
+	"\x1bedgeweir/node/v1/node.proto\x12\x10edgeweir.node.v1\x1a\x1eedgeweir/node/v1/channel.proto\x1a\x1dedgeweir/node/v1/config.proto\x1a\x1fedgeweir/node/v1/node_log.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x15\n" +
 	"\x13CheckChannelRequest\"k\n" +
 	"\x14CheckChannelResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12:\n" +
@@ -6016,7 +6016,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x1fSECURITY_EVENT_KIND_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSECURITY_EVENT_KIND_SITE_LEVEL\x10\x01\x12\"\n" +
 	"\x1eSECURITY_EVENT_KIND_PATH_LEVEL\x10\x02\x12!\n" +
-	"\x1dSECURITY_EVENT_KIND_IP_BANNED\x10\x032\xcc\x0e\n" +
+	"\x1dSECURITY_EVENT_KIND_IP_BANNED\x10\x032\xb1\x0f\n" +
 	"\vNodeService\x12K\n" +
 	"\x06Enroll\x12\x1f.edgeweir.node.v1.EnrollRequest\x1a .edgeweir.node.v1.EnrollResponse\x12i\n" +
 	"\x10RenewCertificate\x12).edgeweir.node.v1.RenewCertificateRequest\x1a*.edgeweir.node.v1.RenewCertificateResponse\x12\\\n" +
@@ -6038,7 +6038,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x14ReportSecurityEvents\x12-.edgeweir.node.v1.ReportSecurityEventsRequest\x1a..edgeweir.node.v1.ReportSecurityEventsResponse\x12Z\n" +
 	"\vSubmitPurge\x12$.edgeweir.node.v1.SubmitPurgeRequest\x1a%.edgeweir.node.v1.SubmitPurgeResponse\x12u\n" +
 	"\x14GetSessionTicketKeys\x12-.edgeweir.node.v1.GetSessionTicketKeysRequest\x1a..edgeweir.node.v1.GetSessionTicketKeysResponse\x12]\n" +
-	"\fCheckChannel\x12%.edgeweir.node.v1.CheckChannelRequest\x1a&.edgeweir.node.v1.CheckChannelResponseB\xce\x01\n" +
+	"\fCheckChannel\x12%.edgeweir.node.v1.CheckChannelRequest\x1a&.edgeweir.node.v1.CheckChannelResponse\x12c\n" +
+	"\x0eReportNodeLogs\x12'.edgeweir.node.v1.ReportNodeLogsRequest\x1a(.edgeweir.node.v1.ReportNodeLogsResponseB\xce\x01\n" +
 	"\x14com.edgeweir.node.v1B\tNodeProtoP\x01ZIgithub.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1;nodev1\xa2\x02\x03ENX\xaa\x02\x10Edgeweir.Node.V1\xca\x02\x10Edgeweir\\Node\\V1\xe2\x02\x1cEdgeweir\\Node\\V1\\GPBMetadata\xea\x02\x12Edgeweir::Node::V1b\x06proto3"
 
 var (
@@ -6145,6 +6146,8 @@ var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(*NodeConfig)(nil),                   // 86: edgeweir.node.v1.NodeConfig
 	(*NodeConfigDiff)(nil),               // 87: edgeweir.node.v1.NodeConfigDiff
 	(*ChannelStatus)(nil),                // 88: edgeweir.node.v1.ChannelStatus
+	(*ReportNodeLogsRequest)(nil),        // 89: edgeweir.node.v1.ReportNodeLogsRequest
+	(*ReportNodeLogsResponse)(nil),       // 90: edgeweir.node.v1.ReportNodeLogsResponse
 }
 var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
 	84,  // 0: edgeweir.node.v1.CheckChannelResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
@@ -6247,27 +6250,29 @@ var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
 	11,  // 97: edgeweir.node.v1.NodeService.SubmitPurge:input_type -> edgeweir.node.v1.SubmitPurgeRequest
 	68,  // 98: edgeweir.node.v1.NodeService.GetSessionTicketKeys:input_type -> edgeweir.node.v1.GetSessionTicketKeysRequest
 	9,   // 99: edgeweir.node.v1.NodeService.CheckChannel:input_type -> edgeweir.node.v1.CheckChannelRequest
-	18,  // 100: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
-	20,  // 101: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
-	22,  // 102: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
-	24,  // 103: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
-	32,  // 104: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
-	38,  // 105: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
-	41,  // 106: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
-	57,  // 107: edgeweir.node.v1.NodeService.ReportLogs:output_type -> edgeweir.node.v1.ReportLogsResponse
-	44,  // 108: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
-	16,  // 109: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
-	46,  // 110: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
-	54,  // 111: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
-	61,  // 112: edgeweir.node.v1.NodeService.GetBans:output_type -> edgeweir.node.v1.GetBansResponse
-	64,  // 113: edgeweir.node.v1.NodeService.ReportBans:output_type -> edgeweir.node.v1.ReportBansResponse
-	67,  // 114: edgeweir.node.v1.NodeService.GetChallengeKeys:output_type -> edgeweir.node.v1.GetChallengeKeysResponse
-	73,  // 115: edgeweir.node.v1.NodeService.ReportSecurityEvents:output_type -> edgeweir.node.v1.ReportSecurityEventsResponse
-	12,  // 116: edgeweir.node.v1.NodeService.SubmitPurge:output_type -> edgeweir.node.v1.SubmitPurgeResponse
-	70,  // 117: edgeweir.node.v1.NodeService.GetSessionTicketKeys:output_type -> edgeweir.node.v1.GetSessionTicketKeysResponse
-	10,  // 118: edgeweir.node.v1.NodeService.CheckChannel:output_type -> edgeweir.node.v1.CheckChannelResponse
-	100, // [100:119] is the sub-list for method output_type
-	81,  // [81:100] is the sub-list for method input_type
+	89,  // 100: edgeweir.node.v1.NodeService.ReportNodeLogs:input_type -> edgeweir.node.v1.ReportNodeLogsRequest
+	18,  // 101: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
+	20,  // 102: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
+	22,  // 103: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
+	24,  // 104: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
+	32,  // 105: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
+	38,  // 106: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
+	41,  // 107: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
+	57,  // 108: edgeweir.node.v1.NodeService.ReportLogs:output_type -> edgeweir.node.v1.ReportLogsResponse
+	44,  // 109: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
+	16,  // 110: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
+	46,  // 111: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
+	54,  // 112: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
+	61,  // 113: edgeweir.node.v1.NodeService.GetBans:output_type -> edgeweir.node.v1.GetBansResponse
+	64,  // 114: edgeweir.node.v1.NodeService.ReportBans:output_type -> edgeweir.node.v1.ReportBansResponse
+	67,  // 115: edgeweir.node.v1.NodeService.GetChallengeKeys:output_type -> edgeweir.node.v1.GetChallengeKeysResponse
+	73,  // 116: edgeweir.node.v1.NodeService.ReportSecurityEvents:output_type -> edgeweir.node.v1.ReportSecurityEventsResponse
+	12,  // 117: edgeweir.node.v1.NodeService.SubmitPurge:output_type -> edgeweir.node.v1.SubmitPurgeResponse
+	70,  // 118: edgeweir.node.v1.NodeService.GetSessionTicketKeys:output_type -> edgeweir.node.v1.GetSessionTicketKeysResponse
+	10,  // 119: edgeweir.node.v1.NodeService.CheckChannel:output_type -> edgeweir.node.v1.CheckChannelResponse
+	90,  // 120: edgeweir.node.v1.NodeService.ReportNodeLogs:output_type -> edgeweir.node.v1.ReportNodeLogsResponse
+	101, // [101:121] is the sub-list for method output_type
+	81,  // [81:101] is the sub-list for method input_type
 	81,  // [81:81] is the sub-list for extension type_name
 	81,  // [81:81] is the sub-list for extension extendee
 	0,   // [0:81] is the sub-list for field type_name
@@ -6280,6 +6285,7 @@ func file_edgeweir_node_v1_node_proto_init() {
 	}
 	file_edgeweir_node_v1_channel_proto_init()
 	file_edgeweir_node_v1_config_proto_init()
+	file_edgeweir_node_v1_node_log_proto_init()
 	file_edgeweir_node_v1_node_proto_msgTypes[15].OneofWrappers = []any{
 		(*GetConfigResponse_Snapshot)(nil),
 		(*GetConfigResponse_Diff)(nil),
