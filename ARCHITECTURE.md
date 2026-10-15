@@ -497,7 +497,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 ### 3.6 回源 HTTPS
 
 - 结论（nginx 与 lua-nginx-module 的文档和源码，并在 `openresty/openresty:1.31.1.1-bookworm-fat`（nginx 1.31.1）里实测）：`proxy_ssl_name` 默认是 `$proxy_host`，对本节点的 balancer upstream 就是 `edgeweir_balancer`。`balancer.set_current_peer(host, port, sni)` 在没有配置 `proxy_ssl_name` 时把 `u->ssl_name` 设为 sni，nginx 把它作为 SNI 发送并用它校验证书名；不传第三个参数时所有源站都按 `edgeweir_balancer` 校验而失败。另外，nginx 1.29.7 起 upstream keepalive 默认开启（`keepalive 32 local`），缓存的连接只按对端地址匹配：为 origin.test 校验过的 TLS 连接会被复用给必须校验 wrong.test 的请求，不握手也不校验（实测返回 200）。
-- 做法：`upstream edgeweir_balancer` 设置 `keepalive 0`（官方文档："The zero value disables keepalive connections to upstream servers"），连接池只由 `balancer.enable_keepalive` 提供，它按地址、端口和 SNI 区分连接；回源层设置 `proxy_ssl_name $edgeweir_ssl_name` 与 `proxy_ssl_server_name on`，balancer 每次尝试把 `$edgeweir_ssl_name` 设为传给 `set_current_peer` 的同一个 SNI。
+- 做法：`upstream edgeweir_balancer` 设置 `keepalive 0`（官方文档："The zero value disables keepalive connections to upstream servers"），连接池只由 `balancer.enable_keepalive` 提供，它按地址、端口和传给 `set_current_peer` 的 host 区分连接，host 是 SNI，有源站保护时再加信任方式与客户端证书（§3.33）；回源层设置 `proxy_ssl_name $edgeweir_ssl_name` 与 `proxy_ssl_server_name on`，balancer 每次尝试把 `$edgeweir_ssl_name` 设为传给 `set_current_peer` 的同一个 SNI。
 - SNI / 校验名取源站的 `sni`，其次 `host_header`（去掉端口），最后是地址本身。以 IP 配置的 HTTPS 源站需要设置证书覆盖的 SNI 或 Host（nginx 不对 IP 发送 SNI，也不按 IP 校验名称）。
 - 校验层（`origin.sock`）用 `--trusted-ca` 或系统 CA bundle 校验（`proxy_ssl_verify on`）；找不到 CA bundle 时需要校验的源站直接失败（fail closed）。站点关闭校验时走 `origin-noverify.sock`，这类连接不进入连接池。
 
@@ -950,6 +950,15 @@ proto v0.31.0（ADR-0043）。`Site.image_convert` 经 `configir.buildImageConve
 - **子进程**（`edgeweir-node imgconv`，`/proc/self/exe`）：环境只有 `GOMAXPROCS=1`，`Pdeathsig=SIGKILL`、自己的进程组；启动后设 `RLIMIT_DATA` = 当时的数据段（`VmData`）+ 估算 + 256 MiB（`RLIMIT_AS` 会算上 Go 运行时保留而未用的地址空间；race 检测构建启动即有 TB 级影子内存）、`RLIMIT_FSIZE` 0、`RLIMIT_NOFILE` 16、`RLIMIT_CORE` 0，清空环境能力集与全部线程的能力，并对全部线程设 `PR_SET_NO_NEW_PRIVS`（`AllThreadsSyscall`；运行时链接 cgo 时它返回 `ENOTSUP`，改为锁定当前线程、只设这个线程并在其上转换；Go 的 `SysProcAttr` 没有在 fork 与 exec 之间设置它的字段，systemd 单元另有 `NoNewPrivileges=yes`，容器镜像没有）；各上限不超过继承的硬上限。输出以 `--max-output`（原图字节数 − 1：变体不比原图小就不用）为界，子进程超过时停止编码并以 3 退出，agent 读到超过时立即结束子进程；写入缓存前校验文件头（WebP：`RIFF` + 长度与文件一致 + `WEBP`；AVIF：`ftyp` 主品牌 `avif`，顶层 box 恰好覆盖文件），不符时返回原图。解码用标准库，按 EXIF 方向转正像素，编码用 gen2brain/webp v0.6.4（libwebp 1.6.0，method 4）与 gen2brain/avif v0.6.0（libavif 1.4.2、aom 3.14.1，speed 8，4:2:0），透明度质量 100，输出不带元数据。退出码 3 表示不可转换。发布构建带 `-tags nodynamic,wasm2go`（不经 purego 加载系统库，AVIF 不用 wazero 运行时），第三方许可证见包内 `/usr/share/doc/edgeweir-node/NOTICE`（`scripts/notice.sh` 生成）。每次转换一行日志 `image converted`（原图与变体字节、像素、耗时、CPU 时间）。
 - **统计**：log 阶段对完整的 200 GET 响应把 `$upstream_http_x_edgeweir_image_saved`（缓存命中时来自缓存的头）累加到分钟指标 `is`，`drain` 报为 `image_bytes_saved`（`MinuteStats` 25）。
 
+### 3.33 源站保护：回源客户端证书与 Origin CA（`origin-mtls-v1`、`origin-ca-v1`）
+
+proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origin_client_certificates`（id、64 位小写十六进制指纹，不重复），`buildOriginCA` 校验 `NodeConfig.origin_ca`：恰好一张 CA 证书、PEM 标签为 `X509 CRL` 的 CRL（nginx 只认这个标签）且由该 CA 签名、未过期；`buildOriginTLS` 要求信任 Origin CA 的池开启校验、没有 S3 源站、配置带 Origin CA，客户端证书 id 在列表中。不合格时整份配置被拒绝（停用的站点也检查）。
+
+- **客户端证书**：agent 经 `GetCertificates` 取得材料（校验密钥对、指纹与 clientAuth），存入 `origin-client-certificates.json`（0600，保留当前与上一份配置引用的）；取不到或无法加载时整份配置失败、保留 LKG（与网站证书的隔离不同：不出示证书的请求会被源站拒绝）。`openresty -t` 之前写 `<prefix>/conf/origin-client/<id>-<指纹前 16 位>.crt`（0644）与 `.key`（0600；以 root 运行并带 `--nginx-user` 时属主改为 worker 用户，目录 0700），应用成功后删除不再引用的文件。站点表字段 `origin_client_cert`（`ref`、`crt`、`key`）。
+- **回源层**：九个回源层都渲染 `*_ssl_certificate $edgeweir_origin_cert`、`*_ssl_certificate_key $edgeweir_origin_key` 与 `*_ssl_certificate_cache max=1000 inactive=10m valid=1m`（nginx 1.21.0 起证书路径可用变量，1.27.4 起有缓存；变量为空时不出示证书）。`edgeweir.origin.balance` 按所选源站设置两个变量（HTTP 与 S3 源站为空）；传给 `set_current_peer` 的 host 由 `pool_key` 给出：没有源站保护时就是 SNI（与以前相同），否则为 `SNI|信任|证书 id/指纹`。SNI 与证书名称校验仍取自 `proxy_ssl_name`，它覆盖 `u->ssl_name`，所以 host 只用于区分连接池。lua 的 balancer 不复用 TLS 会话，每条新连接都完整校验。
+- **Origin CA**：配置带 `origin_ca` 时多渲染三个回源层 `origin-oca[-h2|-grpc].sock`（`edgeweir_origin_oca[_h2|_grpc]`），`*_ssl_verify on`、`*_ssl_verify_depth 1`、`*_ssl_trusted_certificate` 与 `*_ssl_crl` 指向 `<prefix>/conf/origin-ca/<内容哈希>.pem` / `.crl`（agent 在 `openresty -t` 之前写入；文件名随内容变化，所以吊销改变 `nginx.conf` 并 reload）。nginx 的 CRL 检查覆盖整条链（`CRL_CHECK_ALL`），系统 CA 的链没有 CRL 会失败，所以 Origin CA 只单独作为信任。`edgeweir.router.origin_layer` 对 `tls_trust` 为 `origin_ca` 的站点选这些回源层。OpenResty 的 `proxy_ssl_certificate_by_lua` / `proxy_ssl_verify_by_lua` 只挂在 proxy 模块上，gRPC（`grpc_pass`）用不到，所以三种协议统一用 nginx 原生指令。
+- **主动健康检查**：探测出示同一张客户端证书（读取上述文件），信任 Origin CA 的池只以它为根并在 `VerifyConnection` 中拒绝 CRL 列出的序列号；吊销随 `Update` 立即生效。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -961,6 +970,7 @@ proto v0.31.0（ADR-0043）。`Site.image_convert` 经 `configir.buildImageConve
 | `/var/lib/edgeweir-node/credentials.json` | 当前配置引用的 S3 源站凭据（access key 与 secret key 明文）、PURGE 密钥与访问鉴权规则的密钥（Basic 用户哈希、URL 鉴权密钥），0600；控制台不可达时重启仍能服务 |
 | `/var/lib/edgeweir-node/purge.json` | 清缓存标记与任务时间（0600） |
 | `/var/lib/edgeweir-node/certificates.json` | 当前与上一份 LKG 引用的网站证书链、私钥与 OCSP 响应（0600） |
+| `/var/lib/edgeweir-node/origin-client-certificates.json` | 当前与上一份配置引用的回源客户端证书链与私钥（0600） |
 | `/var/lib/edgeweir-node/bans.json` | 已应用的控制台动态封禁、序号与集群 id（0600） |
 | `/var/lib/edgeweir-node/challenge-keys.json` | 当前与上一份同集群配置引用的挑战凭证密钥（0600） |
 | `/var/lib/edgeweir-node/session-ticket-keys.json` | 当前与上一份同集群配置引用的 TLS 会话票据密钥（每把 80 字节，0600，§3.27） |
