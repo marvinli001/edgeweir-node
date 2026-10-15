@@ -61,6 +61,11 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 		OfflineHosts:       cloneAll(d.GetOfflineHosts()),
 		L4Apps:             cloneAll(d.GetL4Apps()),
 		SessionTicketKeys:  cloneAll(d.GetSessionTicketKeys()),
+		// Always sent in full (proto v1.3.0).
+		OriginClientCertificates: cloneAll(d.GetOriginClientCertificates()),
+	}
+	if ca := d.GetOriginCa(); ca != nil {
+		out.OriginCa = proto.CloneOf(ca)
 	}
 	if p := d.GetPlatformProtection(); p != nil {
 		out.PlatformProtection = proto.CloneOf(p)
@@ -113,22 +118,26 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 // documents the exact semantics ApplyDiff expects.
 func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 	d := &nodev1.NodeConfigDiff{
-		BaseRevision:       base.GetRevision(),
-		Revision:           target.GetRevision(),
-		ContentHash:        target.GetContentHash(),
-		ClusterId:          target.GetClusterId(),
-		Listeners:          cloneAll(target.GetListeners()),
-		CacheZones:         cloneAll(target.GetCacheZones()),
-		Certificates:       cloneAll(target.GetCertificates()),
-		OriginAllowedCidrs: slices.Clone(target.GetOriginAllowedCidrs()),
-		RequiredFeatures:   slices.Clone(target.GetRequiredFeatures()),
-		HttpChallenges:     cloneAll(target.GetHttpChallenges()),
-		IpLists:            cloneAll(target.GetIpLists()),
-		PlatformRules:      cloneAll(target.GetPlatformRules()),
-		ChallengeKeys:      cloneAll(target.GetChallengeKeys()),
-		OfflineHosts:       cloneAll(target.GetOfflineHosts()),
-		L4Apps:             cloneAll(target.GetL4Apps()),
-		SessionTicketKeys:  cloneAll(target.GetSessionTicketKeys()),
+		BaseRevision:             base.GetRevision(),
+		Revision:                 target.GetRevision(),
+		ContentHash:              target.GetContentHash(),
+		ClusterId:                target.GetClusterId(),
+		Listeners:                cloneAll(target.GetListeners()),
+		CacheZones:               cloneAll(target.GetCacheZones()),
+		Certificates:             cloneAll(target.GetCertificates()),
+		OriginAllowedCidrs:       slices.Clone(target.GetOriginAllowedCidrs()),
+		RequiredFeatures:         slices.Clone(target.GetRequiredFeatures()),
+		HttpChallenges:           cloneAll(target.GetHttpChallenges()),
+		IpLists:                  cloneAll(target.GetIpLists()),
+		PlatformRules:            cloneAll(target.GetPlatformRules()),
+		ChallengeKeys:            cloneAll(target.GetChallengeKeys()),
+		OfflineHosts:             cloneAll(target.GetOfflineHosts()),
+		L4Apps:                   cloneAll(target.GetL4Apps()),
+		SessionTicketKeys:        cloneAll(target.GetSessionTicketKeys()),
+		OriginClientCertificates: cloneAll(target.GetOriginClientCertificates()),
+	}
+	if ca := target.GetOriginCa(); ca != nil {
+		d.OriginCa = proto.CloneOf(ca)
 	}
 	if p := target.GetPlatformProtection(); p != nil {
 		d.PlatformProtection = proto.CloneOf(p)

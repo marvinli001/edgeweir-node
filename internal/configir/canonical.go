@@ -97,6 +97,9 @@ func Canonicalize(c *nodev1.NodeConfig) {
 	slices.SortStableFunc(c.Certificates, func(a, b *nodev1.CertificateRef) int {
 		return cmp.Compare(a.GetId(), b.GetId())
 	})
+	slices.SortStableFunc(c.OriginClientCertificates, func(a, b *nodev1.CertificateRef) int {
+		return cmp.Compare(a.GetId(), b.GetId())
+	})
 	slices.SortStableFunc(c.Sites, func(a, b *nodev1.Site) int {
 		return cmp.Compare(a.GetId(), b.GetId())
 	})

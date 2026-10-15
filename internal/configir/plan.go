@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
@@ -155,6 +156,14 @@ type Plan struct {
 	// nginx's order (current first): the agent fills it in and writes their
 	// files before rendering (render.TicketKeyPath).
 	TicketKeys []string
+	// OriginClientCertificates are the fingerprints of the origin client
+	// certificates the sites present, by id (feature origin-mtls-v1); the
+	// material comes from GetCertificates.
+	OriginClientCertificates map[string]string
+	// OriginCA is the console's Origin CA when a site trusts it (feature
+	// origin-ca-v1): the agent writes its certificate and CRL before
+	// rendering (render.OriginCAPath, render.OriginCRLPath).
+	OriginCA *OriginCA
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -187,6 +196,15 @@ type Site struct {
 	CacheRules      []CacheRule `json:"cache_rules,omitempty"`
 	// TLSVerify verifies HTTPS origin certificates (default true).
 	TLSVerify bool `json:"tls_verify"`
+	// OriginTrust is TrustOriginCA when the pool verifies its HTTPS origins
+	// against the Origin CA alone (feature origin-ca-v1), "" for the node's
+	// trust store.
+	OriginTrust string `json:"tls_trust,omitempty"`
+	// OriginClientCertID names the origin client certificate the pool
+	// presents (feature origin-mtls-v1); OriginClientCert is its files
+	// (the agent fills it in).
+	OriginClientCertID string            `json:"-"`
+	OriginClientCert   *OriginClientCert `json:"origin_client_cert,omitempty"`
 	// Health is the passive health check of the origin pool.
 	Health HealthCheck `json:"health"`
 	// Conn holds upstream connection settings.
@@ -362,7 +380,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA}
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -684,6 +702,12 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if p.SessionTicketKeys, err = buildSessionTicketKeys(c.GetSessionTicketKeys()); err != nil {
 		return nil, err
 	}
+	if p.OriginClientCertificates, err = buildOriginClientCertificates(c); err != nil {
+		return nil, err
+	}
+	if p.OriginCA, err = buildOriginCA(c, time.Now()); err != nil {
+		return nil, err
+	}
 	// Every site's protection, CRS setting, error pages, active health
 	// check, session affinity and origin protocol are checked, disabled
 	// sites included: an unknown challenge type, CRS mode or error page
@@ -703,6 +727,8 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	bodyLimits := map[string]uint32{}
 	logHeaders := map[string][]string{}
 	images := map[string]*ImageConvert{}
+	trusts := map[string]string{}
+	originClientCerts := map[string]string{}
 	ipLists := map[string]bool{}
 	for _, l := range c.GetIpLists() {
 		ipLists[l.GetId()] = true
@@ -753,6 +779,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if images[id], err = buildImageConvert(s, opts.ExtraFeatures); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if trusts[id], originClientCerts[id], err = buildOriginTLS(s, p.OriginClientCertificates, p.OriginCA); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if ports[id], err = buildSitePorts(s, listenerTLS); err != nil {
@@ -885,6 +914,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.ActiveHealth = site.ActiveHealthCheck != nil
 		site.Affinity = affinities[id]
 		site.OriginHTTP2, site.GRPC = protocols[id].http2, protocols[id].grpc
+		site.OriginTrust, site.OriginClientCertID = trusts[id], originClientCerts[id]
 		contents[id].apply(&site)
 		// Affinity cookies are signed with the cluster's challenge keys.
 		if site.Affinity != nil && len(p.ChallengeKeys) == 0 {
