@@ -57,6 +57,31 @@ func TestRenderBootstrapGolden(t *testing.T) {
 	golden(t, "bootstrap.conf.golden", got)
 }
 
+// TestRenderOriginCAGolden: with an Origin CA the three layers that verify
+// against it alone are rendered, with its certificate and CRL; the file
+// names follow their content.
+func TestRenderOriginCAGolden(t *testing.T) {
+	plan := originCAPlan()
+	got, err := Render(params(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "origin-ca.conf.golden", got)
+	revoked := originCAPlan()
+	revoked.OriginCA.CRLPEM = "crl with a revoked serial"
+	if OriginCRLPath("/p", revoked.OriginCA) == OriginCRLPath("/p", plan.OriginCA) {
+		t.Fatal("a new CRL keeps its file name: nginx would not reload it")
+	}
+	// Without one they are not rendered.
+	bare, err := Render(params(), configir.Bootstrap(80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bare), "origin-oca") || strings.Contains(string(bare), "_ssl_crl") {
+		t.Fatal("Origin CA layers rendered without an Origin CA")
+	}
+}
+
 func TestRenderFullGolden(t *testing.T) {
 	p := params()
 	p.Resolvers = []string{"10.0.0.2", "[2001:db8::53]"}
@@ -275,10 +300,19 @@ func TestRenderOriginLayersAndTrustStore(t *testing.T) {
 // nginx's default upstream connection cache (nginx >= 1.29.7, matched on
 // the address only) is off so a connection verified for one name is never
 // reused for another.
+// originCAPlan is the bootstrap plan with an Origin CA, so that every
+// origin layer is rendered.
+func originCAPlan() *configir.Plan {
+	plan := configir.Bootstrap(80)
+	plan.OriginCA = &configir.OriginCA{CertificatePEM: "ca", CRLPEM: "crl"}
+	return plan
+}
+
 func TestRenderOriginTLSName(t *testing.T) {
 	p := params()
 	p.TrustedCA = "/etc/edgeweir/origin-ca.pem"
-	got, err := Render(p, configir.Bootstrap(80))
+	plan := originCAPlan()
+	got, err := Render(p, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,14 +333,38 @@ func TestRenderOriginTLSName(t *testing.T) {
 			`set $edgeweir_ssl_name "";`,
 			module + "_ssl_name $edgeweir_ssl_name;",
 			module + "_ssl_server_name on;",
+			// Every layer presents the site's origin client certificate.
+			`set $edgeweir_origin_cert "";`,
+			`set $edgeweir_origin_key "";`,
+			module + "_ssl_certificate $edgeweir_origin_cert;",
+			module + "_ssl_certificate_key $edgeweir_origin_key;",
+			module + "_ssl_certificate_cache max=1000 inactive=10m valid=1m;",
 		} {
 			if !strings.Contains(layer, want) {
 				t.Errorf("origin layer %s lacks %q", l.Name, want)
 			}
 		}
 		wants := []string{module + "_ssl_verify off;"}
-		if l.Verify {
+		var unwanted []string
+		switch {
+		case l.OriginCA:
+			// The Origin CA alone, never the node's trust store, and its CRL.
+			wants = []string{
+				module + "_ssl_verify on;",
+				module + "_ssl_verify_depth 1;",
+				module + "_ssl_trusted_certificate " + OriginCAPath(p.Prefix, plan.OriginCA) + ";",
+				module + "_ssl_crl " + OriginCRLPath(p.Prefix, plan.OriginCA) + ";",
+				`set $edgeweir_trust_store "ok";`,
+			}
+			unwanted = []string{"/etc/edgeweir/origin-ca.pem"}
+		case l.Verify:
 			wants = []string{module + "_ssl_verify on;", module + "_ssl_trusted_certificate /etc/edgeweir/origin-ca.pem;"}
+			unwanted = []string{"_ssl_crl"}
+		}
+		for _, bad := range unwanted {
+			if strings.Contains(layer, bad) {
+				t.Errorf("origin layer %s has %q", l.Name, bad)
+			}
 		}
 		for _, want := range wants {
 			if !strings.Contains(layer, want) {
@@ -316,15 +374,17 @@ func TestRenderOriginTLSName(t *testing.T) {
 	}
 }
 
-// TestOriginLayerSocketDefaults: the HTTP/2 and gRPC origin layers listen
-// next to the origin socket unless set; OriginLayerSockets lists all six
-// (the agent removes stale ones before nginx starts).
+// TestOriginLayerSocketDefaults: the HTTP/2, gRPC and Origin CA origin
+// layers listen next to the origin socket unless set; OriginLayerSockets
+// lists all nine (the agent removes stale ones before nginx starts).
 func TestOriginLayerSocketDefaults(t *testing.T) {
 	p := params()
 	want := []string{
 		"/run/edgeweir-node/origin.sock", "/run/edgeweir-node/origin-noverify.sock",
 		"/run/edgeweir-node/origin-h2.sock", "/run/edgeweir-node/origin-noverify-h2.sock",
 		"/run/edgeweir-node/origin-grpc.sock", "/run/edgeweir-node/origin-noverify-grpc.sock",
+		"/run/edgeweir-node/origin-oca.sock", "/run/edgeweir-node/origin-oca-h2.sock",
+		"/run/edgeweir-node/origin-oca-grpc.sock",
 	}
 	if got := p.OriginLayerSockets(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("origin layer sockets = %v, want %v", got, want)
@@ -343,7 +403,7 @@ func TestOriginLayerSocketDefaults(t *testing.T) {
 // (grpcs for HTTPS origins) through edgeweir_balancer_grpc.
 func TestRenderOriginLayerProtocols(t *testing.T) {
 	p := params()
-	got, err := Render(p, configir.Bootstrap(80))
+	got, err := Render(p, originCAPlan())
 	if err != nil {
 		t.Fatal(err)
 	}

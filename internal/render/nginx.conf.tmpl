@@ -257,7 +257,7 @@ http {
         }
     }
 {{ range .OriginLayers }}
-    # Origin layer{{ if not .Verify }} without TLS verification{{ end }}: reachable only through its
+    # Origin layer{{ if .OriginCA }} verifying against the Origin CA alone{{ else if not .Verify }} without TLS verification{{ end }}: reachable only through its
     # unix socket from the edge layer below; internal X-Edgeweir-* request
     # headers never reach the origin.
 {{- if eq .Protocol "http2" }}
@@ -698,8 +698,10 @@ stream {
             set $edgeweir_authorization "";
             set $edgeweir_amz_date "";
             set $edgeweir_amz_content_sha256 "";
-            set $edgeweir_trust_store "{{ if .Root.TrustedCA }}ok{{ else }}missing{{ end }}";
+            set $edgeweir_trust_store "{{ if or .Layer.OriginCA .Root.TrustedCA }}ok{{ else }}missing{{ end }}";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 {{ if eq .Layer.Protocol "grpc" }}
             # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
@@ -739,7 +741,19 @@ stream {
             # be the name of the balancer upstream).
             {{ .P }}_ssl_name $edgeweir_ssl_name;
             {{ .P }}_ssl_server_name on;
-{{- if .Layer.Verify }}
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            {{ .P }}_ssl_certificate $edgeweir_origin_cert;
+            {{ .P }}_ssl_certificate_key $edgeweir_origin_key;
+            {{ .P }}_ssl_certificate_cache max=1000 inactive=10m valid=1m;
+{{- if .Layer.OriginCA }}
+            # The Origin CA alone, and the certificates it revoked.
+            {{ .P }}_ssl_verify on;
+            {{ .P }}_ssl_verify_depth 1;
+            {{ .P }}_ssl_trusted_certificate {{ .Root.OriginCAFile }};
+            {{ .P }}_ssl_crl {{ .Root.OriginCRLFile }};
+{{- else if .Layer.Verify }}
 {{- if .Root.TrustedCA }}
             {{ .P }}_ssl_verify on;
             {{ .P }}_ssl_verify_depth 5;

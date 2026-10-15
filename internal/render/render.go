@@ -86,6 +86,14 @@ type Params struct {
 	// origin-grpc.sock and origin-noverify-grpc.sock next to OriginSocket).
 	OriginSocketGRPC         string
 	OriginSocketNoVerifyGRPC string
+	// OriginSocketOriginCA, OriginSocketOriginCAH2 and
+	// OriginSocketOriginCAGRPC are the origin layers of sites that verify
+	// their origins against the Origin CA alone (feature origin-ca-v1;
+	// default: origin-oca.sock, origin-oca-h2.sock and origin-oca-grpc.sock
+	// next to OriginSocket), rendered while a site trusts it.
+	OriginSocketOriginCA     string
+	OriginSocketOriginCAH2   string
+	OriginSocketOriginCAGRPC string
 	// TrustedCA is the CA bundle used to verify HTTPS origins. Empty means
 	// none was found: origins that must be verified then fail closed.
 	TrustedCA string
@@ -256,6 +264,9 @@ func (p Params) WithDefaults() Params {
 			{&p.OriginSocketNoVerifyH2, "origin-noverify-h2.sock"},
 			{&p.OriginSocketGRPC, "origin-grpc.sock"},
 			{&p.OriginSocketNoVerifyGRPC, "origin-noverify-grpc.sock"},
+			{&p.OriginSocketOriginCA, "origin-oca.sock"},
+			{&p.OriginSocketOriginCAH2, "origin-oca-h2.sock"},
+			{&p.OriginSocketOriginCAGRPC, "origin-oca-grpc.sock"},
 		} {
 			if *s.path == "" {
 				*s.path = filepath.Join(dir, s.name)
@@ -285,6 +296,9 @@ func (p Params) Validate() error {
 		"HTTP/2 origin socket without verification": p.OriginSocketNoVerifyH2,
 		"gRPC origin socket":                        p.OriginSocketGRPC,
 		"gRPC origin socket without verification":   p.OriginSocketNoVerifyGRPC,
+		"Origin CA origin socket":                   p.OriginSocketOriginCA,
+		"HTTP/2 Origin CA origin socket":            p.OriginSocketOriginCAH2,
+		"gRPC Origin CA origin socket":              p.OriginSocketOriginCAGRPC,
 		"edge socket":                               p.EdgeSocket,
 		"TLS edge socket":                           p.EdgeTLSSocket,
 		"GeoIP socket":                              p.GeoIPSocket,
@@ -302,7 +316,7 @@ func (p Params) Validate() error {
 	seen := map[string]bool{}
 	for _, l := range originLayers(p) {
 		if seen[l.Socket] {
-			return errors.New("the origin layer sockets (with and without TLS verification, HTTP/1.1, HTTP/2 and gRPC) must differ")
+			return errors.New("the origin layer sockets (with and without TLS verification, with the Origin CA, HTTP/1.1, HTTP/2 and gRPC) must differ")
 		}
 		seen[l.Socket] = true
 	}
@@ -370,6 +384,10 @@ type data struct {
 	// ClientMaxBodySize is client_max_body_size of the http block
 	// (configir.Plan.MaxRequestBody).
 	ClientMaxBodySize string
+	// OriginCAFile and OriginCRLFile are the Origin CA's certificate and
+	// CRL the Origin CA layers verify with (rendered while a site trusts it).
+	OriginCAFile  string
+	OriginCRLFile string
 	// TLSSessions: an HTTPS listener exists, the http block caches TLS
 	// sessions; TicketKeyFiles are the session ticket key files in nginx's
 	// order (none: no tickets).
@@ -383,6 +401,41 @@ const TicketKeyDir = "conf/tls-tickets"
 
 func TicketKeyPath(prefix, id string) string {
 	return prefix + "/" + TicketKeyDir + "/" + id + ".key"
+}
+
+// OriginCADir is the directory of the Origin CA's certificate and CRL
+// under the nginx prefix (the agent writes them before rendering). nginx
+// reads them when it loads a configuration: the file names follow their
+// content, so a revocation changes nginx.conf and reloads.
+const OriginCADir = "conf/origin-ca"
+
+// OriginCAPath and OriginCRLPath are the files of the Origin CA's
+// certificate and CRL.
+func OriginCAPath(prefix string, ca *configir.OriginCA) string {
+	return prefix + "/" + OriginCADir + "/" + originCAName(ca) + ".pem"
+}
+
+func OriginCRLPath(prefix string, ca *configir.OriginCA) string {
+	return prefix + "/" + OriginCADir + "/" + originCAName(ca) + ".crl"
+}
+
+func originCAName(ca *configir.OriginCA) string {
+	sum := sha256.Sum256([]byte(ca.CertificatePEM + "\x00" + ca.CRLPEM))
+	return hex.EncodeToString(sum[:8])
+}
+
+// OriginClientDir is the directory of the origin client certificates'
+// files under the nginx prefix; OriginClientCertPath and
+// OriginClientKeyPath the files of one (the agent writes them; workers read
+// them for new connections, proxy_ssl_certificate with variables).
+const OriginClientDir = "conf/origin-client"
+
+func OriginClientCertPath(prefix, id, fingerprint string) string {
+	return prefix + "/" + OriginClientDir + "/" + id + "-" + fingerprint[:16] + ".crt"
+}
+
+func OriginClientKeyPath(prefix, id, fingerprint string) string {
+	return prefix + "/" + OriginClientDir + "/" + id + "-" + fingerprint[:16] + ".key"
 }
 
 // originProxy is the data of one origin layer location (template
@@ -884,9 +937,12 @@ const (
 // Protocol how it talks to the origins (and, for gRPC, how the edge
 // reaches it).
 type originLayer struct {
-	Name     string
-	Socket   string
-	Verify   bool
+	Name   string
+	Socket string
+	Verify bool
+	// OriginCA verifies against the Origin CA alone and its CRL; rendered
+	// while a site trusts it.
+	OriginCA bool
 	Protocol string
 	// Balancer is the upstream (balancer_by_lua) of its requests to the
 	// origins: one per protocol.
@@ -894,7 +950,8 @@ type originLayer struct {
 }
 
 // originLayers are the origin layer servers: with and without TLS
-// verification, for HTTP/1.1, HTTP/2 and gRPC towards the origins.
+// verification, and verifying against the Origin CA, for HTTP/1.1, HTTP/2
+// and gRPC towards the origins.
 func originLayers(p Params) []originLayer {
 	return []originLayer{
 		{Name: "edgeweir_origin_verify", Socket: p.OriginSocket, Verify: true, Protocol: protocolHTTP1, Balancer: balancers[0]},
@@ -903,7 +960,22 @@ func originLayers(p Params) []originLayer {
 		{Name: "edgeweir_origin_noverify_h2", Socket: p.OriginSocketNoVerifyH2, Protocol: protocolHTTP2, Balancer: balancers[1]},
 		{Name: "edgeweir_origin_verify_grpc", Socket: p.OriginSocketGRPC, Verify: true, Protocol: protocolGRPC, Balancer: balancers[2]},
 		{Name: "edgeweir_origin_noverify_grpc", Socket: p.OriginSocketNoVerifyGRPC, Protocol: protocolGRPC, Balancer: balancers[2]},
+		{Name: "edgeweir_origin_oca", Socket: p.OriginSocketOriginCA, Verify: true, OriginCA: true, Protocol: protocolHTTP1, Balancer: balancers[0]},
+		{Name: "edgeweir_origin_oca_h2", Socket: p.OriginSocketOriginCAH2, Verify: true, OriginCA: true, Protocol: protocolHTTP2, Balancer: balancers[1]},
+		{Name: "edgeweir_origin_oca_grpc", Socket: p.OriginSocketOriginCAGRPC, Verify: true, OriginCA: true, Protocol: protocolGRPC, Balancer: balancers[2]},
 	}
+}
+
+// renderedLayers are the origin layers plan needs: the Origin CA's only
+// while a site trusts it.
+func renderedLayers(p Params, plan *configir.Plan) []originLayer {
+	var out []originLayer
+	for _, l := range originLayers(p) {
+		if !l.OriginCA || plan.OriginCA != nil {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // balancers are the upstreams of the origin layers' requests to the
@@ -970,7 +1042,8 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		return nil, err
 	}
 	edge := edgeServers(p, plan)
-	p.WorkerConnections += listeningSockets(p, edge, l4)
+	layers := renderedLayers(p, plan)
+	p.WorkerConnections += listeningSockets(p, len(layers), edge, l4)
 	d := data{
 		Params:    p,
 		L4Servers: l4,
@@ -983,7 +1056,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		ForwardedMap:       forwardedFor == forwardedForChain,
 		CacheZones:         plan.CacheZones,
 		DefaultZone:        plan.CacheZones[0].Name,
-		OriginLayers:       originLayers(p),
+		OriginLayers:       layers,
 		Balancers:          balancers,
 		ModSecurityConf:    modsecConf,
 		WAFHeader:          WAFHeader,
@@ -992,6 +1065,10 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	}
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()
+	}
+	if plan.OriginCA != nil {
+		d.OriginCAFile = OriginCAPath(p.Prefix, plan.OriginCA)
+		d.OriginCRLFile = OriginCRLPath(p.Prefix, plan.OriginCA)
 	}
 	for _, l := range plan.Listeners {
 		d.TLSSessions = d.TLSSessions || l.TLS
@@ -1080,14 +1157,14 @@ func realIPHeader(name string) string {
 
 // listeningSockets counts the listening sockets of the rendered file the
 // way nginx does: every reuseport socket once per worker.
-func listeningSockets(p Params, edge []edgeServer, l4 []l4Server) int {
+func listeningSockets(p Params, originLayers int, edge []edgeServer, l4 []l4Server) int {
 	workers := p.CPUs
 	if n, err := strconv.Atoi(p.WorkerProcesses); err == nil {
 		workers = n
 	}
 	workers = max(workers, 1)
 	n := 3 // control socket, layer-4 relay socket, the GeoIP socket's margin
-	n += len(originLayers(p))
+	n += originLayers
 	for _, s := range edge {
 		n += len(s.Listen)
 		for _, q := range s.QUICListen {

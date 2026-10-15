@@ -675,12 +675,16 @@ end
 
 -- origin_layer returns the edge layer's upstream of the origin layer for a
 -- request of site (the value of $edgeweir_origin_layer, nginx.conf): with
--- or without TLS verification, and by the protocol towards the origins.
+-- or without TLS verification or verifying against the Origin CA alone
+-- (tls_trust "origin_ca"), and by the protocol towards the origins.
 -- kind is "websocket" for WebSocket upgrades, which nginx proxies over
 -- HTTP/1.1 only, "grpc" for the gRPC requests of sites that proxy gRPC,
 -- nil for every other request.
 function _M.origin_layer(site, kind)
-  local layer = site.tls_verify and "edgeweir_origin_verify" or "edgeweir_origin_noverify"
+  local layer = "edgeweir_origin_noverify"
+  if site.tls_verify then
+    layer = site.tls_trust == "origin_ca" and "edgeweir_origin_oca" or "edgeweir_origin_verify"
+  end
   if kind == "grpc" then
     return layer .. "_grpc"
   end

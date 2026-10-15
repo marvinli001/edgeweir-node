@@ -360,6 +360,27 @@ function _M.access()
   end
 end
 
+-- client_cert returns the files of the client certificate an attempt to
+-- origin o of site presents (origin mutual TLS), nil for none: HTTPS
+-- origins only, never S3 ones.
+function _M.client_cert(site, o)
+  if o.scheme ~= "https" or o.s3 then return nil end
+  return site.origin_client_cert
+end
+
+-- pool_key returns the host argument of set_current_peer for an attempt to
+-- origin o of site with SNI sni (nil for plain HTTP): with the address and
+-- port it keys the keep-alive pool. A connection is reused only by requests
+-- that verify the origin the same way and present the same client
+-- certificate; nginx takes the SNI and the name it verifies from
+-- proxy_ssl_name ($edgeweir_ssl_name), not from this key.
+function _M.pool_key(site, o, sni)
+  if not sni then return nil end
+  local cert = _M.client_cert(site, o)
+  if not site.tls_trust and not cert then return sni end
+  return sni .. "|" .. (site.tls_trust or "system") .. "|" .. (cert and cert.ref or "")
+end
+
 local function same_request(a, b)
   return a.origin.host_header == b.origin.host_header and a.origin.s3 == nil and b.origin.s3 == nil
 end
@@ -398,13 +419,17 @@ function _M.balance()
     end
   end
   -- The name nginx sends as SNI and verifies the certificate against
-  -- (proxy_ssl_name) is set for every attempt: a retry may go to an origin
-  -- with another SNI even when the request itself is unchanged. It equals
-  -- the SNI passed to set_current_peer, which also keys the keep-alive
-  -- pool.
+  -- (proxy_ssl_name) and the client certificate it presents are set for
+  -- every attempt: a retry may go to an origin with another SNI, or to an
+  -- S3 origin, even when the request itself is unchanged. The keep-alive
+  -- pool is keyed by the SNI, the trust and the client certificate
+  -- (pool_key).
   local sni = o.scheme == "https" and o.sni_name or nil
   ngx.var.edgeweir_ssl_name = sni or ""
-  local ok, err = ngx_balancer.set_current_peer(c.ip, o.port, sni)
+  local cert = _M.client_cert(ctx.site, o)
+  ngx.var.edgeweir_origin_cert = cert and cert.crt or ""
+  ngx.var.edgeweir_origin_key = cert and cert.key or ""
+  local ok, err = ngx_balancer.set_current_peer(c.ip, o.port, _M.pool_key(ctx.site, o, sni))
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: set_current_peer ", c.ip, ":", o.port, ": ", err)
     return ngx.exit(ngx.ERROR)

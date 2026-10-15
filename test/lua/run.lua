@@ -1003,6 +1003,61 @@ test("router origin layer by protocol and request kind", function()
   eq(store.prepare(site("l5", { { name = "l5.test" } }, { grpc = true })).grpc, false, "gRPC needs HTTP/2")
 end)
 
+test("router origin layer of the Origin CA", function()
+  local oca = store.prepare(site("m1", { { name = "m1.test" } }, { tls_trust = "origin_ca" }))
+  eq(oca.tls_trust, "origin_ca")
+  eq(router.origin_layer(oca), "edgeweir_origin_oca")
+  eq(router.origin_layer(oca, "websocket"), "edgeweir_origin_oca")
+  local h2 = store.prepare(site("m2", { { name = "m2.test" } }, { tls_trust = "origin_ca", origin_http2 = true, grpc = true }))
+  eq(router.origin_layer(h2), "edgeweir_origin_oca_h2")
+  eq(router.origin_layer(h2, "websocket"), "edgeweir_origin_oca", "WebSocket upgrades stay on HTTP/1.1")
+  eq(router.origin_layer(h2, "grpc"), "edgeweir_origin_oca_grpc")
+  -- Without verification there is no trust to choose.
+  local off = store.prepare(site("m3", { { name = "m3.test" } }, { tls_trust = "origin_ca", tls_verify = false }))
+  eq(off.tls_trust, nil)
+  eq(router.origin_layer(off), "edgeweir_origin_noverify")
+  eq(store.prepare(site("m4", { { name = "m4.test" } }, { tls_trust = "public" })).tls_trust, nil, "unknown trust")
+end)
+
+test("origin client certificates and keep-alive pool keys", function()
+  local files = { crt = "/p/conf/origin-client/c-1.crt", key = "/p/conf/origin-client/c-1.key", ref = "c/1" }
+  local plain = store.prepare(site("n1", { { name = "n1.test" } }))
+  local mtls = store.prepare(site("n2", { { name = "n2.test" } }, { origin_client_cert = files }))
+  local oca = store.prepare(site("n3", { { name = "n3.test" } }, { tls_trust = "origin_ca" }))
+  local both = store.prepare(site("n4", { { name = "n4.test" } }, { tls_trust = "origin_ca", origin_client_cert = files }))
+  local other = store.prepare(site("n5", { { name = "n5.test" } },
+    { origin_client_cert = { crt = "/x.crt", key = "/x.key", ref = "c/2" } }))
+  local https = { scheme = "https" }
+  local http = { scheme = "http" }
+  local s3 = { scheme = "https", s3 = { bucket = "b" } }
+  eq(origin.client_cert(plain, https), nil)
+  eq(origin.client_cert(mtls, https), mtls.origin_client_cert)
+  eq(origin.client_cert(mtls, http), nil, "plain HTTP presents nothing")
+  eq(origin.client_cert(mtls, s3), nil, "S3 origins are not asked")
+  eq(origin.pool_key(mtls, http, nil), nil, "plain HTTP has no SNI")
+  -- Unchanged for sites without origin protection.
+  eq(origin.pool_key(plain, https, "o.test"), "o.test")
+  local keys = {
+    origin.pool_key(plain, https, "o.test"),
+    origin.pool_key(mtls, https, "o.test"),
+    origin.pool_key(oca, https, "o.test"),
+    origin.pool_key(both, https, "o.test"),
+    origin.pool_key(other, https, "o.test"),
+  }
+  for i = 1, #keys do
+    for j = i + 1, #keys do
+      assert(keys[i] ~= keys[j], "pools " .. i .. " and " .. j .. " share connections: " .. keys[i])
+    end
+  end
+  eq(keys[2], "o.test|system|c/1")
+  eq(keys[3], "o.test|origin_ca|")
+  eq(origin.pool_key(mtls, s3, "o.test"), "o.test", "an S3 origin shares the plain pool")
+  -- Incomplete certificate entries are dropped.
+  for _, bad in ipairs({ "x", { crt = "/a" }, { crt = "", key = "/k", ref = "r" }, { crt = "/a", key = "/k" } }) do
+    eq(store.prepare(site("n6", { { name = "n6.test" } }, { origin_client_cert = bad })).origin_client_cert, nil)
+  end
+end)
+
 test("router gRPC content types", function()
   for _, ct in ipairs({ "application/grpc", "application/grpc+proto", "application/GRPC+json",
     "application/grpc; charset=utf-8", "application/grpc ;x=1" }) do

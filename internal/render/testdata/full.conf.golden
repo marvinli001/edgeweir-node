@@ -61,7 +61,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "17d5a02038a56d24",
+            conf_id = "85fcfa74ca4d6e85",
             -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
             geoip_socket = "/run/edgeweir-node/control.sock.geo",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
@@ -257,6 +257,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
@@ -279,6 +281,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify on;
             proxy_ssl_verify_depth 5;
             proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
@@ -311,6 +319,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
@@ -333,6 +343,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify on;
             proxy_ssl_verify_depth 5;
             proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
@@ -381,6 +397,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
@@ -403,6 +421,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify off;
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
@@ -433,6 +457,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             proxy_pass $edgeweir_upstream_scheme://edgeweir_balancer$edgeweir_upstream_uri;
@@ -455,6 +481,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify off;
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
@@ -502,6 +534,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
@@ -525,6 +559,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify on;
             proxy_ssl_verify_depth 5;
             proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
@@ -557,6 +597,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
@@ -580,6 +622,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify on;
             proxy_ssl_verify_depth 5;
             proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
@@ -629,6 +677,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
@@ -652,6 +702,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify off;
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
@@ -682,6 +738,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 to the origin: TLS with ALPN h2 for HTTPS origins, prior
@@ -705,6 +763,12 @@ http {
             # be the name of the balancer upstream).
             proxy_ssl_name $edgeweir_ssl_name;
             proxy_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            proxy_ssl_certificate $edgeweir_origin_cert;
+            proxy_ssl_certificate_key $edgeweir_origin_key;
+            proxy_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             proxy_ssl_verify off;
             proxy_connect_timeout 10s;
             proxy_send_timeout 60s;
@@ -757,6 +821,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
@@ -778,6 +844,12 @@ http {
             # be the name of the balancer upstream).
             grpc_ssl_name $edgeweir_ssl_name;
             grpc_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            grpc_ssl_certificate $edgeweir_origin_cert;
+            grpc_ssl_certificate_key $edgeweir_origin_key;
+            grpc_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             grpc_ssl_verify on;
             grpc_ssl_verify_depth 5;
             grpc_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
@@ -810,6 +882,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
@@ -831,6 +905,12 @@ http {
             # be the name of the balancer upstream).
             grpc_ssl_name $edgeweir_ssl_name;
             grpc_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            grpc_ssl_certificate $edgeweir_origin_cert;
+            grpc_ssl_certificate_key $edgeweir_origin_key;
+            grpc_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             grpc_ssl_verify on;
             grpc_ssl_verify_depth 5;
             grpc_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
@@ -885,6 +965,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
@@ -906,6 +988,12 @@ http {
             # be the name of the balancer upstream).
             grpc_ssl_name $edgeweir_ssl_name;
             grpc_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            grpc_ssl_certificate $edgeweir_origin_cert;
+            grpc_ssl_certificate_key $edgeweir_origin_key;
+            grpc_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             grpc_ssl_verify off;
             grpc_connect_timeout 10s;
             grpc_send_timeout 60s;
@@ -936,6 +1024,8 @@ http {
             set $edgeweir_amz_content_sha256 "";
             set $edgeweir_trust_store "ok";
             set $edgeweir_ssl_name "";
+            set $edgeweir_origin_cert "";
+            set $edgeweir_origin_key "";
             access_by_lua_block { require("edgeweir.origin").access() }
 
             # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
@@ -957,6 +1047,12 @@ http {
             # be the name of the balancer upstream).
             grpc_ssl_name $edgeweir_ssl_name;
             grpc_ssl_server_name on;
+            # The site's origin client certificate (origin mutual TLS, set in
+            # balancer_by_lua; empty: none), read when a new connection asks
+            # for one. Pools are keyed by it too (edgeweir.origin.pool_key).
+            grpc_ssl_certificate $edgeweir_origin_cert;
+            grpc_ssl_certificate_key $edgeweir_origin_key;
+            grpc_ssl_certificate_cache max=1000 inactive=10m valid=1m;
             grpc_ssl_verify off;
             grpc_connect_timeout 10s;
             grpc_send_timeout 60s;

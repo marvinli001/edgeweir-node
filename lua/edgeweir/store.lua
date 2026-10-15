@@ -373,6 +373,14 @@ function _M.prepare(s, cfg)
     or (s.protection ~= nil and (s.protection.under_attack == true or s._cc ~= nil)) or false
   s.cache_generation = tostring(s.cache_generation or "0")
   s.tls_verify = s.tls_verify ~= false
+  -- Origin protection: the Origin CA as the only trust (with verification
+  -- only) and the files of the client certificate presented to origins.
+  s.tls_trust = (s.tls_verify and s.tls_trust == "origin_ca") and "origin_ca" or nil
+  local occ = s.origin_client_cert
+  if type(occ) ~= "table" or type(occ.crt) ~= "string" or type(occ.key) ~= "string"
+    or type(occ.ref) ~= "string" or occ.crt == "" or occ.key == "" then
+    s.origin_client_cert = nil
+  end
   s.websocket = s.websocket ~= false
   -- HTTP/2 towards the origins, gRPC proxied end to end (only with it).
   s.origin_http2 = s.origin_http2 == true
