@@ -111,7 +111,9 @@ type NodeServiceClient interface {
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
 	GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error)
-	// Certificate material is returned only to nodes serving the referencing site.
+	// Certificate material is returned only to nodes serving the referencing site,
+	// or, for origin client certificates (NodeConfig.origin_client_certificates),
+	// to nodes whose cluster configuration references them.
 	GetCertificates(context.Context, *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error)
 	// PullTasks hands out pending typed tasks (cache purge, prefetch). Tasks
 	// are idempotent: a task is handed out again when no result arrives.
@@ -436,7 +438,9 @@ type NodeServiceHandler interface {
 	// referenced by the node's cluster configuration. Secrets only travel over
 	// this mutually authenticated channel and never inside NodeConfig.
 	GetOriginCredentials(context.Context, *connect.Request[v1.GetOriginCredentialsRequest]) (*connect.Response[v1.GetOriginCredentialsResponse], error)
-	// Certificate material is returned only to nodes serving the referencing site.
+	// Certificate material is returned only to nodes serving the referencing site,
+	// or, for origin client certificates (NodeConfig.origin_client_certificates),
+	// to nodes whose cluster configuration references them.
 	GetCertificates(context.Context, *connect.Request[v1.GetCertificatesRequest]) (*connect.Response[v1.GetCertificatesResponse], error)
 	// PullTasks hands out pending typed tasks (cache purge, prefetch). Tasks
 	// are idempotent: a task is handed out again when no result arrives.
