@@ -47,8 +47,9 @@ http {
     keepalive_timeout 65s;
     # The largest request body limit of the sites and their rules (0: a site
     # has none); each site checks its own (edgeweir.router): by
-    # Content-Length, or by the size read up to this for bodies without one
-    # (chunked, HTTP/2 and HTTP/3).
+    # Content-Length, or, for bodies without one (chunked, HTTP/2 and
+    # HTTP/3), by the size read in the edge location of its limit
+    # (@edgeweir_body_<limit>), where nginx stops reading at that limit.
     client_max_body_size {{ .ClientMaxBodySize }};
 
     client_body_temp_path {{ .Prefix }}/tmp/client_body;
@@ -87,6 +88,11 @@ http {
             -- the control API forwards /v1/l4 requests to it.
             l4_socket = "unix:{{ .L4Socket }}",
 {{- end }}
+            -- The body limits of the edge layer's locations
+            -- (@edgeweir_body_<limit>) and client_max_body_size of the
+            -- http block (0: none), edgeweir.router.
+            body_max = {{ .BodyMax }},
+            body_tiers = { {{- range $i, $l := .BodyTiers }}{{ if $i }}, {{ end }}{{ $l }}{{ end -}} },
 {{- if .ModSecurityConf }}
             -- Request body limits of the edge layer's CRS locations
             -- (@edgeweir_waf_<limit>, edgeweir.waf).
@@ -497,6 +503,22 @@ http {
             # Sends the error page of CRS blocks (header_filter).
             body_filter_by_lua_block { require("edgeweir.router").body_filter() }
             log_by_lua_block { require("edgeweir.stats").log(true) }
+        }
+{{- end }}
+{{- range $.BodyTiers }}
+
+        # Requests without Content-Length (HTTP/1.1 chunked, HTTP/2, HTTP/3)
+        # whose body limit is {{ . }} bytes: edgeweir.router hands them here
+        # in its access phase, before it reads the body, so that nginx stops
+        # reading at that limit (413) instead of at the largest limit of all
+        # sites. The access phase goes on here where it left off, and the
+        # location repeats the edge layer's proxy and cache settings.
+        location @edgeweir_body_{{ . }} {
+            client_max_body_size {{ . }};
+            access_by_lua_block { require("edgeweir.router").body_access() }
+{{ template "edge_proxy" $ }}
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
         }
 {{- end }}
 

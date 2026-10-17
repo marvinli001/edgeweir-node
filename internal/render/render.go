@@ -382,8 +382,12 @@ type data struct {
 	ForwardedFor string
 	ForwardedMap bool
 	// ClientMaxBodySize is client_max_body_size of the http block
-	// (configir.Plan.MaxRequestBody).
+	// (configir.Plan.MaxRequestBody; BodyMax in bytes, 0: none); BodyTiers
+	// are the body limits below it that have an edge location of their own
+	// (configir.Plan.BodyLimitTiers).
 	ClientMaxBodySize string
+	BodyMax           uint64
+	BodyTiers         []uint64
 	// OriginCAFile and OriginCRLFile are the Origin CA's certificate and
 	// CRL the Origin CA layers verify with (rendered while a site trusts it).
 	OriginCAFile  string
@@ -1077,6 +1081,8 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		WAFHeader:          WAFHeader,
 		WAFExclusionHeader: WAFExclusionHeader,
 		ClientMaxBodySize:  clientMaxBodySize(plan.MaxRequestBody()),
+		BodyMax:            plan.MaxRequestBody(),
+		BodyTiers:          plan.BodyLimitTiers(),
 	}
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()
