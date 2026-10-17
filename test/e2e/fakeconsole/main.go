@@ -789,6 +789,7 @@ func main() {
 	ca := originCA(*caOut)
 	go serveTLSOrigin(*tlsOrigin, ca)
 	serveH2Origins(ca)
+	serveH2COnly()
 	go serveTestOrigin(":8082")
 	go serveTestOrigin(":8083")
 	go serveAuthService(":8086")

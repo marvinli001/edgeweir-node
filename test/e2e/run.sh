@@ -1046,6 +1046,25 @@ if curl -fsS "$HELPER/h2-probes" | grep -q '^HTTP/1.1 '; then fail "an HTTP/2 po
 WAIT_SECS=30 wait_for "h2bad.test's origin reported failing" origin_health_has "^site-h2bad o1 connect_failed "
 pass "HTTP/2 to origins: h2c and h2 over TLS, cached, request bodies, WebSocket over HTTP/1.1, no fallback, health probes over HTTP/2"
 
+# An origin that only speaks h2c answers an HTTP/1.1 request with an HTTP/2
+# frame, which is no HTTP/1.x response: nginx would take the bytes for an
+# HTTP/0.9 body, and the edge would pass them on after keepalive_timeout
+# (65 s) without closing the connection. The edge answers 502 at once,
+# whether the origin closes the connection (h2only.test) or keeps it open
+# (h2idle.test), and the origin counts as failing.
+for host in h2only.test h2idle.test; do
+  start=$SECONDS
+  curl -s --max-time 30 -o "$TMPDIR_E2E/h2c-only.body" -D "$TMPDIR_E2E/h2c-only.hdr" -H "Host: $host" "$NODE/proto" || true
+  took=$((SECONDS - start))
+  r=$(tr -d '\r' <"$TMPDIR_E2E/h2c-only.hdr")
+  [ "$(status_of <<<"$r")" = 502 ] || fail "$host (origin that only speaks h2c): $(head -n1 <<<"$r"), want 502"
+  [ "$(header_of x-edgeweir-error <<<"$r")" = origin-unreachable ] || fail "$host: X-Edgeweir-Error '$(header_of x-edgeweir-error <<<"$r")', want origin-unreachable"
+  [ "$took" -le 10 ] || fail "$host: the 502 took $took s, want at once"
+  if grep -q -a -P '\x00' "$TMPDIR_E2E/h2c-only.body"; then fail "$host: the origin's HTTP/2 bytes reached the client"; fi
+  WAIT_SECS=30 wait_for "$host's origin reported failing" origin_health_has "^site-${host%.test} o1 - no valid HTTP/1.x response"
+done
+pass "an origin that only speaks h2c: 502 at once (closing or holding the connection), none of its bytes passed on, the origin reported failing"
+
 # gRPC end to end over h2c on the plain listener: unary, bidirectional
 # streaming (each message waits for the echo of the one before), error
 # trailers and a trailers-only response, to HTTP and TLS origins; the CRS

@@ -9,6 +9,11 @@ package main
 //	h2tls.test    origin https://console:8445 (ALPN h2 and http/1.1), SNI
 //	              origin.test, HTTP/2
 //	h2bad.test    origin console:8091 (HTTP/1.1 only), HTTP/2 (502)
+//	h2only.test   origin console:8092 (HTTP/2 with prior knowledge only: it
+//	              answers an HTTP/1.1 request with an HTTP/2 SETTINGS frame
+//	              and closes), HTTP/1.1 (502)
+//	h2idle.test   origin console:8093 (the same SETTINGS frame, the
+//	              connection stays open), HTTP/1.1 (502)
 //	grpc.test     origin console:8090, HTTP/2 with gRPC, the OWASP CRS
 //	              blocking
 //	grpctls.test  origin https://console:8445, SNI origin.test, HTTP/2 with
@@ -202,6 +207,44 @@ func serveH2Origins(ca *pkitest.CA) {
 	log.Print("HTTP/2 origins on :8090 (h2c), :8445 (h2 over TLS), :8091 (HTTP/1.1 only)")
 }
 
+// serveH2COnly serves origins that speak HTTP/2 with prior knowledge and
+// nothing else: an HTTP/1.1 request gets the server's HTTP/2 SETTINGS frame
+// (an empty one, RFC 9113 section 6.5), which is no HTTP/1.x response.
+// :8092 closes the connection after the request's header, like the HTTP/2
+// servers of Go and Node.js do for a bad preface, :8093 keeps it open.
+func serveH2COnly() {
+	settings := []byte{0, 0, 0, 4, 0, 0, 0, 0, 0}
+	for addr, closes := range map[string]bool{":8092": true, ":8093": false} {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					log.Fatal(err)
+				}
+				go func() {
+					defer c.Close()
+					_, _ = c.Write(settings)
+					buf := make([]byte, 4096)
+					if closes {
+						_, _ = c.Read(buf)
+						return
+					}
+					for {
+						if _, err := c.Read(buf); err != nil {
+							return
+						}
+					}
+				}()
+			}
+		}()
+	}
+	log.Print("h2c-only origins on :8092 (closes), :8093 (stays open)")
+}
+
 // h2Site sends its requests to origin:port over HTTP/2.
 func h2Site(id, domain string, port uint32) *nodev1.Site {
 	s := site(id, domain, "console", port)
@@ -241,6 +284,8 @@ func h2Sites() []*nodev1.Site {
 		healthChecked(h2Site("site-h2", "h2.test", 8090)),
 		h2TLSSite("site-h2tls", "h2tls.test"),
 		h2Site("site-h2bad", "h2bad.test", 8091),
+		site("site-h2only", "h2only.test", "console", 8092),
+		site("site-h2idle", "h2idle.test", "console", 8093),
 		crs,
 		grpcSite(h2TLSSite("site-grpctls", "grpctls.test")),
 	}
