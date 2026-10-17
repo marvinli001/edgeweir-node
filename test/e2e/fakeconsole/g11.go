@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
@@ -28,7 +30,8 @@ import (
 // sites, generated at start (ECDSA P-256 and RSA 2048, self-signed):
 //
 //	site-g11a  a.g11.test with an ECDSA and an RSA certificate, b.g11.test
-//	           with a third (ECDSA) certificate
+//	           with a third (ECDSA) certificate; request bodies up to 2048
+//	           bytes
 //	site-g11c  c.g11.test and c2.g11.test, one certificate for both
 //	site-g11m  m.g11.test, client certificates required (the e2e client
 //	           CA, depth 2) and forwarded to the origin
@@ -167,6 +170,8 @@ func g11Config(origin, clientCA string, rotated bool) *nodev1.NodeConfig {
 	a := site("site-g11a", "a.g11.test", origin, 80)
 	a.Domains = append(a.Domains, &nodev1.Domain{Name: "b.g11.test"})
 	a.CertificateId, a.AdditionalCertificateIds, a.Tls = "g11-ec", []string{"g11-rsa", "g11-b"}, tls()
+	// Bodies without Content-Length (HTTP/2) are read up to this and no more.
+	a.RequestBodyLimit = proto.Uint64(2048)
 	cs := site("site-g11c", "c.g11.test", origin, 80)
 	cs.Domains = append(cs.Domains, &nodev1.Domain{Name: "c2.g11.test"})
 	cs.CertificateId, cs.Tls = "g11-c", tls()

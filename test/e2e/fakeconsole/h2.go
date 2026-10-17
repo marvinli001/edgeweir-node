@@ -35,6 +35,10 @@ package main
 //	              <grpc-message>", "unknown <status> <grpc-status>" (a
 //	              trailers-only response: the status in the headers), or
 //	              "<call> error <error>"
+//	GET /h2-body?host=&size=&target=node:8443&path=/form  POSTs size bytes
+//	              without Content-Length over HTTP/2 (TLS, SNI and Host
+//	              host): "<status> <protocol> sent <bytes the node took>
+//	              <X-Edgeweir-Error>" ("-" for none), or "error <error>"
 //	GET /h2-probes  "<protocol> <count>" per protocol of the /health
 //	              requests the HTTP/2 origins received
 //	GET /ws?host=&target=node:80&origin=  a WebSocket echo of "hello"
@@ -54,6 +58,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -394,6 +399,60 @@ func wsCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = w.Write(msg)
 	_ = c.Close(websocket.StatusNormalClosure, "")
+}
+
+// zeros is a reader of n zero bytes that counts what was read.
+type zeros struct {
+	left int64
+	read atomic.Int64
+}
+
+func (z *zeros) Read(p []byte) (int, error) {
+	if z.left <= 0 {
+		return 0, io.EOF
+	}
+	n := int(min(int64(len(p)), z.left))
+	clear(p[:n])
+	z.left -= int64(n)
+	z.read.Add(int64(n))
+	return n, nil
+}
+
+// h2Body POSTs a body of size bytes without Content-Length over HTTP/2.
+func h2Body(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	host, target, path := q.Get("host"), cmpOr(q.Get("target"), "node:8443"), cmpOr(q.Get("path"), "/form")
+	size, err := strconv.ParseInt(q.Get("size"), 10, 64)
+	if err != nil || host == "" || size < 0 {
+		http.Error(w, "host and size are required", http.StatusBadRequest)
+		return
+	}
+	t := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{ServerName: host, InsecureSkipVerify: true},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, target)
+		},
+	}
+	defer t.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	body := &zeros{left: size}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+host+path, body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.ContentLength = -1 // unknown: no Content-Length over HTTP/2
+	resp, err := t.RoundTrip(req)
+	if err != nil {
+		fmt.Fprintf(w, "error %v\n", err)
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	fmt.Fprintf(w, "%d %s sent %d %s\n", resp.StatusCode, resp.Proto, body.read.Load(), cmpOr(resp.Header.Get("X-Edgeweir-Error"), "-"))
 }
 
 // h2ProbeCounts writes "<protocol> <count>" per protocol of /health requests.

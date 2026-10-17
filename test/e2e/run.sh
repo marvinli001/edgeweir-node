@@ -968,6 +968,23 @@ r=$(curl -s -D - -H 'Host: content.test' -H 'Accept-Language: en' --data-binary 
 [ "$(header_of x-edgeweir-error <<<"$r")" = body-too-large ] && grep -q '<p>c4 413</p>' <<<"$r" || fail "413 page (4xx class): $r"
 grep -q '^received 500 bytes$' <<<"$(curl -s -H 'Host: content.test' --data-binary "${big:0:500}" "$NODE/form")" || fail "a body within the limit"
 grep -q '^received 2000 bytes$' <<<"$(curl -s -H 'Host: content.test' --data-binary "$big" "$NODE/upload/x")" || fail "the config rule lifts the limit under /upload/"
+# Bodies without Content-Length (chunked here, HTTP/2 under G11) are read up to
+# the site's own limit (the rule's under /upload/), not up to the largest limit
+# of all sites (unlimited here: /upload/ has none): nginx answers 413 as soon as
+# the limit is passed, and the client has sent a fraction of the body.
+chunked() { head -c "$1" /dev/zero | curl -s -m 60 -X POST -T - -o "$TMPDIR_E2E/chunked.body" -w '%{http_code} %{size_upload}' \
+  -H 'Transfer-Encoding: chunked' "${@:2}"; }
+grep -q '^received 1024 bytes$' <<<"$(head -c 1024 /dev/zero | curl -s -H 'Host: content.test' -H 'Transfer-Encoding: chunked' --data-binary @- "$NODE/form")" || fail "a chunked body at the limit"
+read -r code sent <<<"$(chunked 1025 -H 'Host: content.test' "$NODE/form")"
+[ "$code" = 413 ] && grep -q '<p>c4 413</p>' "$TMPDIR_E2E/chunked.body" || fail "a chunked body over the limit: $code, $(cat "$TMPDIR_E2E/chunked.body")"
+read -r code sent <<<"$(chunked 52428800 -H 'Host: content.test' "$NODE/form")"
+[ "$code" = 413 ] && [ "$sent" -lt 16777216 ] || fail "a 50 MiB chunked body was read up to the largest limit of all sites: $code, $sent bytes sent"
+grep -q '<p>c4 413</p>' "$TMPDIR_E2E/chunked.body" || fail "413 page of a chunked body over the limit"
+read -r code sent <<<"$(chunked 20971520 -H 'Host: content.test' "$NODE/upload/x")"
+[ "$code" = 200 ] && [ "$sent" -ge 20971520 ] || fail "a 20 MiB chunked body under /upload/ (the rule lifts the limit): $code, $sent bytes sent"
+read -r code sent <<<"$(chunked 5242880 -H 'Host: demo.test' "$NODE/anything")"
+[ "$code" = 200 ] || fail "a 5 MiB chunked body to a site with the default limit: $code"
+pass "bodies without Content-Length: read up to the site's own limit (413 at once past it), a rule's limit, none, the default"
 compose exec -T node grep -q 'gzip_comp_level 9;' /var/lib/edgeweir-node/nginx/conf/nginx.conf || fail "gzip_comp_level 9 not rendered"
 [ "$(hv content.test /text/1500 -H 'Accept-Encoding: gzip' | header_of content-encoding)" = gzip ] || fail "1500 bytes not compressed"
 [ -z "$(hv content.test /text/5000 -H 'Accept-Encoding: gzip' | header_of content-encoding)" ] || fail "5000 bytes compressed over the largest length"
@@ -1253,6 +1270,17 @@ r=$(cert_of a.g11.test -tls1_3 -sigalgs rsa_pss_rsae_sha256)
 r=$(cert_of a.g11.test -tls1_2 -cipher ECDHE-ECDSA-AES128-GCM-SHA256)
 [ "$r" = "a.g11.test id-ecPublicKey" ] || fail "an ECDSA TLS 1.2 client did not get the ECDSA certificate: $r"
 pass "G11: two certificates of different names, ECDSA or RSA by the client's ClientHello"
+
+# Request bodies over HTTP/2 have no Content-Length either: a.g11.test's limit
+# (2048 bytes) stops the read, a 64 MiB body is mostly never sent.
+r=$(curl -fsS "$HELPER/h2-body?host=a.g11.test&size=2048")
+[ "${r%% *}" = 200 ] && grep -q ' HTTP/2.0 sent 2048 ' <<<"$r" || fail "an HTTP/2 body at the limit: $r"
+r=$(curl -fsS "$HELPER/h2-body?host=a.g11.test&size=2049")
+[ "${r%% *}" = 413 ] && grep -q ' HTTP/2.0 .* body-too-large$' <<<"$r" || fail "an HTTP/2 body over the limit: $r"
+r=$(curl -fsS "$HELPER/h2-body?host=a.g11.test&size=67108864")
+read -r code _ _ sent _ <<<"$r"
+[ "$code" = 413 ] && [ "$sent" -lt 16777216 ] || fail "a 64 MiB HTTP/2 body was read up to the largest limit of all sites: $r"
+pass "G11: HTTP/2 bodies without Content-Length are read up to the site's own limit (413 at once past it)"
 
 # https_req SNI HOST PATH [s_client options]: the response to one request
 # over TLS (with the visitor's own X-Client-* headers). -brief sends the

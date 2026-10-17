@@ -834,6 +834,7 @@ func main() {
 	mux.HandleFunc("GET /grpc", grpcCheck)
 	mux.HandleFunc("GET /h2-probes", h2ProbeCounts)
 	mux.HandleFunc("GET /ws", wsCheck)
+	mux.HandleFunc("GET /h2-body", h2Body)
 	mux.HandleFunc("GET /origin-health", func(w http.ResponseWriter, _ *http.Request) {
 		for _, h := range c.LastStatus().GetOriginHealth() {
 			code := h.GetLastErrorCode()
