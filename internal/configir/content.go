@@ -189,37 +189,80 @@ func nodeZoneSize(z *nodev1.CacheZone, nodeID string) (uint64, uint32, bool, err
 // MaxRequestBody is the data plane's client_max_body_size in bytes (0: no
 // limit): the largest body limit of a published site or of a config rule
 // (site or platform), so that nginx admits every request some site
-// accepts; the sites check their own limits by Content-Length. Without
-// sites it is DefaultRequestBodyLimit.
+// accepts; the sites check their own limits by Content-Length, and
+// BodyLimitTiers lowers the limit nginx reads a body without one up to.
+// Without sites it is DefaultRequestBodyLimit.
 func (p *Plan) MaxRequestBody() uint64 {
 	if len(p.Sites) == 0 {
 		return DefaultRequestBodyLimit
 	}
-	var largest uint64
-	consider := func(limit uint64) bool {
-		if limit == 0 {
-			return true
-		}
-		largest = max(largest, limit)
-		return false
-	}
-	ruleLimits := func(rules []*nodev1.EdgeRule) bool {
-		for _, r := range rules {
-			if a := r.GetAction(); a.GetKind() == "config" && a.RequestBodyLimit != nil && consider(a.GetRequestBodyLimit()) {
-				return true
-			}
-		}
-		return false
-	}
-	if ruleLimits(p.PlatformRules) {
+	limits, unlimited := p.bodyLimits()
+	if unlimited {
 		return 0
 	}
-	for _, s := range p.Sites {
-		if consider(s.BodyLimit) || ruleLimits(s.Rules) {
-			return 0
+	return limits[len(limits)-1]
+}
+
+// bodyLimits returns the distinct non-zero body limits of the plan's sites
+// and config rules (site and platform) in ascending order, and whether
+// any of them is 0 (no limit).
+func (p *Plan) bodyLimits() (limits []uint64, unlimited bool) {
+	consider := func(limit uint64) {
+		if limit == 0 {
+			unlimited = true
+		} else {
+			limits = append(limits, limit)
 		}
 	}
-	return largest
+	ruleLimits := func(rules []*nodev1.EdgeRule) {
+		for _, r := range rules {
+			if a := r.GetAction(); a.GetKind() == "config" && a.RequestBodyLimit != nil {
+				consider(a.GetRequestBodyLimit())
+			}
+		}
+	}
+	ruleLimits(p.PlatformRules)
+	for _, s := range p.Sites {
+		consider(s.BodyLimit)
+		ruleLimits(s.Rules)
+	}
+	slices.Sort(limits)
+	return slices.Compact(limits), unlimited
+}
+
+// MaxBodyLimitTiers bounds the body limit tiers of an edge server.
+const MaxBodyLimitTiers = 16
+
+// BodyLimitTiers returns the body limits in bytes below MaxRequestBody
+// (all of them while it is 0) in ascending order: the edge layer has one
+// location per limit (@edgeweir_body_<limit>), in which nginx reads the
+// body of a request without Content-Length (HTTP/1.1 chunked, HTTP/2 and
+// HTTP/3) up to that limit alone, not up to MaxRequestBody. A request
+// whose limit is MaxRequestBody needs none, and limit 0 (no limit) only
+// occurs together with MaxRequestBody 0. Beyond MaxBodyLimitTiers limits
+// the tiers are spread over them, always including the largest: a request
+// is read up to the smallest tier that is not below its limit, and judged
+// by its own limit afterwards.
+func (p *Plan) BodyLimitTiers() []uint64 {
+	if len(p.Sites) == 0 {
+		return nil
+	}
+	limits, unlimited := p.bodyLimits()
+	if !unlimited {
+		// The largest limit is MaxRequestBody.
+		limits = limits[:len(limits)-1]
+	}
+	if len(limits) > MaxBodyLimitTiers {
+		kept := make([]uint64, MaxBodyLimitTiers)
+		for i := range kept {
+			kept[i] = limits[(i+1)*len(limits)/MaxBodyLimitTiers-1]
+		}
+		limits = kept
+	}
+	if len(limits) == 0 {
+		return nil
+	}
+	return limits
 }
 
 // errorRedirectRE matches an error page's redirect URL before its

@@ -284,6 +284,74 @@ func TestMaxRequestBody(t *testing.T) {
 	}
 }
 
+func TestBodyLimitTiers(t *testing.T) {
+	limitRule := func(limit uint64) *nodev1.EdgeRule {
+		return &nodev1.EdgeRule{Id: "r", Phase: "config", Action: &nodev1.RuleAction{Kind: "config", RequestBodyLimit: proto.Uint64(limit)}}
+	}
+	sites := func(limits ...uint64) []Site {
+		out := make([]Site, len(limits))
+		for i, l := range limits {
+			out[i].BodyLimit = l
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		plan Plan
+		max  uint64
+		want []uint64
+	}{
+		{"no sites", Plan{}, DefaultRequestBodyLimit, nil},
+		{"one site", Plan{Sites: sites(1 << 20)}, 1 << 20, nil},
+		{"sites with the same limit", Plan{Sites: sites(1<<20, 1<<20)}, 1 << 20, nil},
+		{"smaller sites", Plan{Sites: sites(1<<30, 1<<20, 4096, 1<<20)}, 1 << 30, []uint64{4096, 1 << 20}},
+		{"site rule above every site", Plan{Sites: sites(1<<20, 4096)}, 1 << 20, []uint64{4096}},
+		{"a site without a limit", Plan{Sites: sites(1<<20, 0, 4096)}, 0, []uint64{4096, 1 << 20}},
+		{"only sites without a limit", Plan{Sites: sites(0, 0)}, 0, nil},
+		{"platform rule without a limit", Plan{Sites: sites(1<<20, 4096), PlatformRules: []*nodev1.EdgeRule{limitRule(0)}}, 0, []uint64{4096, 1 << 20}},
+		{"platform rule", Plan{Sites: sites(1<<20, 4096), PlatformRules: []*nodev1.EdgeRule{limitRule(1 << 30)}}, 1 << 30, []uint64{4096, 1 << 20}},
+	} {
+		if got := tc.plan.MaxRequestBody(); got != tc.max {
+			t.Errorf("%s: MaxRequestBody %d, want %d", tc.name, got, tc.max)
+		}
+		if got := tc.plan.BodyLimitTiers(); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: tiers %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// A config rule's limit counts, below or above the sites'.
+	plan := Plan{Sites: sites(1 << 20)}
+	plan.Sites[0].Rules = []*nodev1.EdgeRule{limitRule(8192), limitRule(1 << 30), {Id: "other", Phase: "config", Action: &nodev1.RuleAction{Kind: "config", Gzip: proto.Bool(false)}}}
+	if got := plan.BodyLimitTiers(); !slices.Equal(got, []uint64{8192, 1 << 20}) || plan.MaxRequestBody() != 1<<30 {
+		t.Errorf("rule limits: tiers %v, max %d", got, plan.MaxRequestBody())
+	}
+	plan.Sites[0].Rules = []*nodev1.EdgeRule{limitRule(0)}
+	if got := plan.BodyLimitTiers(); !slices.Equal(got, []uint64{1 << 20}) || plan.MaxRequestBody() != 0 {
+		t.Errorf("a rule without a limit: tiers %v, max %d", got, plan.MaxRequestBody())
+	}
+
+	// Many distinct limits: at most MaxBodyLimitTiers, spread, the largest below
+	// the maximum kept, and every limit has a tier that is not below it.
+	many := make([]uint64, 100)
+	for i := range many {
+		many[i] = uint64(i+1) << 12
+	}
+	plan = Plan{Sites: sites(append(many, 1<<40)...)}
+	tiers := plan.BodyLimitTiers()
+	if len(tiers) != MaxBodyLimitTiers || !slices.IsSorted(tiers) || tiers[len(tiers)-1] != many[len(many)-1] {
+		t.Fatalf("tiers of 101 limits: %v", tiers)
+	}
+	for _, l := range many {
+		if i := slices.IndexFunc(tiers, func(t uint64) bool { return t >= l }); i < 0 {
+			t.Errorf("limit %d has no tier", l)
+		}
+	}
+	plan = Plan{Sites: sites(many[:MaxBodyLimitTiers+1]...)}
+	if got := plan.BodyLimitTiers(); !slices.Equal(got, many[:MaxBodyLimitTiers]) {
+		t.Errorf("17 limits: tiers %v", got)
+	}
+}
+
 func TestConfigRuleBodyLimit(t *testing.T) {
 	expr := &nodev1.RuleExpression{Op: "eq", Field: "http.host", ValueType: "string", Value: "a.test"}
 	for _, tc := range []struct {
