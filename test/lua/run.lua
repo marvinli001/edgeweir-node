@@ -575,6 +575,16 @@ test("origin.defer_to_stale yields 5xx answers to an expired edge copy, the node
   eq(origin.defer_to_stale(502, "EXPIRED", nil, false), false, "the edge does not cache the request")
 end)
 
+test("origin.not_http1 spots the request version nginx sets for an answer that is no HTTP/1.x response", function()
+  -- ngx.req.http_version() is 0.9 after "upstream sent no valid HTTP/1.0
+  -- header": the edge only sends HTTP/1.1.
+  eq(origin.not_http1(0.9), true)
+  for _, version in ipairs({ 1.0, 1.1, 2.0, 3.0 }) do
+    eq(origin.not_http1(version), false, "version " .. version)
+  end
+  eq(origin.not_http1(nil), false, "no version")
+end)
+
 test("cachekey keeps the Phase 0 key by default", function()
   local s = store.prepare(site("k", { { name = "k.test" } }, { cache_generation = "7" }))
   local req = { scheme = "http", host = "k.test", path = "/a/b.js", args = "v=1&x=2" }

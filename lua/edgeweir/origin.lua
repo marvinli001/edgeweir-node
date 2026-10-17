@@ -11,9 +11,11 @@
 --                  retries, timeouts and the keep-alive pool, and rebuilds
 --                  the request when a retry goes to an origin with another
 --                  Host or S3 signature.
--- header_filter(): hands origin failures back as transport errors when
---                  the edge holds an expired copy it may serve instead
---                  (first: a stale copy wins over any error page), replaces
+-- header_filter(): drops answers that are no HTTP/1.x response at all (see
+--                  not_http1()), hands origin failures back as transport
+--                  errors when the edge holds an expired copy it may serve
+--                  instead (first: a stale copy wins over any error page),
+--                  replaces
 --                  nginx's own upstream failures and, for sites that
 --                  intercept origin errors, origin responses whose status
 --                  has a page with error pages (edgeweir.errorpages, sent
@@ -606,9 +608,30 @@ function _M.page_code(site, status, upstream_header_time)
   return nil
 end
 
+-- not_http1 reports whether nginx took an origin's answer for HTTP/0.9: a
+-- status line that is no HTTP/1.x one (an h2c-only origin answers an
+-- HTTP/1.1 request with its HTTP/2 SETTINGS frame, a TLS port with an
+-- alert) is not an error to nginx's proxy module, it logs "upstream sent
+-- no valid HTTP/1.0 header", sets the request's version to 0.9 and hands
+-- the bytes on as the body of a response without a header, delimited by
+-- the end of the connection, which this layer keeps open for the edge's
+-- next request: the edge would wait for keepalive_timeout, then pass the
+-- bytes on to the client. The requests the edge sends are HTTP/1.1, so
+-- 0.9 can only be the origin's doing. http_version is ngx.req.http_version().
+function _M.not_http1(http_version)
+  return http_version == 0.9
+end
+
 function _M.header_filter()
   local ctx = ngx.ctx
   local h = ngx.header
+  -- Closed without a response, as for a stale copy below: the edge sees a
+  -- transport error and answers 502 (or serves a stale copy at once). The
+  -- origin counts as failing (log()).
+  if _M.not_http1(ngx.req.http_version()) then
+    ctx.edgeweir_invalid_answer = true
+    return ngx.exit(ngx.ERROR)
+  end
   -- Only this layer may set the stash header the edge restores, the
   -- carrier of cached Set-Cookie lines and the origin address; only the
   -- image converter the bytes a variant saved.
@@ -774,6 +797,11 @@ function _M.log()
       tls = upstreamerr.tls_failed(var.connection, upstreamerr.hostport(c.ip, o.port))
     end
     local code, params, text = _M.classify(st, answered, tls)
+    if ctx.edgeweir_invalid_answer and i == #statuses then
+      -- nginx records the 200 it makes up for HTTP/0.9: the origin
+      -- answered, but not with HTTP.
+      code, params, text = "", nil, "no valid HTTP/1.x response"
+    end
     if code then
       health.failure(site.id, o.id, text, site.health.max_fails, site.health.recovery_seconds, now, code, params)
       dns.invalidate(o.address)
