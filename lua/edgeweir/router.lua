@@ -37,6 +37,12 @@
 -- site's failure ban (edgeweir.challenge), never for addresses on a
 -- platform allow list, the site's allow lists or trusted proxies.
 --
+-- A request without Content-Length (HTTP/1.1 chunked, HTTP/2, HTTP/3) is
+-- read up to its own body limit, the site's or a config rule's: when that is
+-- below client_max_body_size, the access phase hands the request to the edge
+-- layer's location of the limit (@edgeweir_body_<limit>, body_access), where
+-- nginx answers 413 once the body passes it, and goes on there.
+--
 -- Sites that run the OWASP CRS continue in the edge layer's CRS location
 -- once these checks pass (edgeweir.waf); sites the edge compresses ask the
 -- origin for uncompressed responses (edgeweir.compress). The origin layer
@@ -273,6 +279,75 @@ local function unknown(cfg, host, var, is_local)
     end
   end
   return nil, errorpages.unknown_host(cfg, host)
+end
+
+-- route is the end of the access phase of a request that passed the checks
+-- and the body limit: the origin layer, and for requests the edge may
+-- cache, the cache key and the rules that decide. headers are the request
+-- headers as the rules left them, original_path the normalized path before
+-- any rewrite, acme whether the request is an HTTP-01 token for the origin.
+-- Returns true: the request goes on to the cache and origin.
+local function route(site, pctx, headers, host, original_path, acme)
+  local var = ngx.var
+  var.edgeweir_origin_layer = _M.origin_layer(site)
+
+  local method = ngx.req.get_method()
+  -- An ambiguous path may be another path at the origin than the key's
+  -- (edgeweir.uripath): never stored or served from the cache.
+  if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous() then
+    var.edgeweir_range_mode = "pass"
+    return true
+  end
+  -- RFC 9111, section 3.5: responses to requests with Authorization are
+  -- shared only when the applying rule allows it (cache_authorized).
+  local authorized = var.http_authorization ~= nil
+  if pctx and pctx.cache_bypass then
+    var.edgeweir_range_mode = "pass"
+    return true
+  end
+  local chain = rules.chain(site, original_path, authorized, pctx and pctx.original)
+  if not rules.may_cache(chain, authorized) then
+    var.edgeweir_range_mode = "pass"
+    return true
+  end
+  -- Cache rules, purge markers and the key all use nginx's normalized
+  -- path, so an encoded variant of a URL can never escape a purge.
+  local path = original_path
+  local req = key_request(site, var, path, headers)
+  if not req then
+    var.edgeweir_range_mode = "pass"
+    return true
+  end
+  req.handed = ngx.ctx.edgeweir_found == "handed"
+  if site._browser_ttl then
+    -- For the browser TTL of the rule that decides the response.
+    local ctx = ngx.ctx
+    ctx.edgeweir_chain = chain
+    ctx.edgeweir_authorized = authorized
+  end
+
+  var.edgeweir_cache_bypass = "0"
+  var.edgeweir_no_cache = "0"
+  var.edgeweir_rules = rule_ids(chain)
+  if site.slice then
+    var.edgeweir_range_mode = "slice"
+  end
+  -- WebP / AVIF variants (ADR-0043): the class joins the key; a variant
+  -- goes through the agent's image converter and is never sliced.
+  if site.image_convert then
+    req.image = imageconv.route(site, var, ngx.ctx, headers, path)
+  end
+
+  local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
+  local tmax = purge.tag_max(site.id)
+  if tmax then
+    -- The site has tag markers: the object's tags may move its key.
+    local base = cachekey.build(site, req, 0)
+    var.edgeweir_cache_key = cachekey.with_epoch(base, cachetags.key_epoch(site.id, base, epoch, tmax))
+  else
+    var.edgeweir_cache_key = cachekey.build(site, req, epoch)
+  end
+  return true
 end
 
 -- access returns true when the request goes on to the cache and origin;
@@ -517,75 +592,39 @@ local function access()
   end
   -- The site's body limit (a config rule's for this request) by
   -- Content-Length. A body without one (chunked, or HTTP/2 and HTTP/3
-  -- without Content-Length) is read here, up to client_max_body_size (the
-  -- largest limit of the sites; nginx answers 413 past it), and checked by
-  -- the size read: the CRS and the origin layer get the body read.
+  -- without Content-Length) is read up to that limit, and checked by the
+  -- size read: in the edge location of the limit (body_tier), where nginx
+  -- answers 413 past it, else up to client_max_body_size (the largest limit
+  -- of the sites). The CRS and the origin layer get the body read.
   local rule_limit = pctx and pctx.body_limit
   if _M.body_too_large(rule_limit, site.body_limit, var.http_content_length) then
     return deny(413, "body-too-large", "request body too large")
   end
+  -- Reading a body without Content-Length up to the site's own limit takes
+  -- the edge location of that limit (body_access continues there).
+  local tier = _M.body_tier(rule_limit, site.body_limit)
+  if tier then
+    ctx.edgeweir_acme = acme
+    var.edgeweir_ctx_ref = waf.stash_ctx(ctx)
+    return ngx.exec(tier)
+  end
   if _M.unsized_body_too_large(rule_limit, site.body_limit) then
     return deny(413, "body-too-large", "request body too large")
   end
-  var.edgeweir_origin_layer = _M.origin_layer(site)
+  return route(site, pctx, headers, host, original_path, acme)
+end
 
-  local method = ngx.req.get_method()
-  -- An ambiguous path may be another path at the origin than the key's
-  -- (edgeweir.uripath): never stored or served from the cache.
-  if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous() then
-    var.edgeweir_range_mode = "pass"
-    return true
+-- proceed hands a request that passed the access phase on: gRPC requests to
+-- @edgeweir_grpc, CRS sites' to their CRS location.
+local function proceed()
+  local ctx = ngx.ctx
+  if ctx.edgeweir_grpc then
+    return _M.grpc_enter()
   end
-  -- RFC 9111, section 3.5: responses to requests with Authorization are
-  -- shared only when the applying rule allows it (cache_authorized).
-  local authorized = var.http_authorization ~= nil
-  if pctx and pctx.cache_bypass then
-    var.edgeweir_range_mode = "pass"
-    return true
+  local site = ctx.edgeweir_site
+  if site and site.waf and ngx.var.edgeweir_local ~= "1" then
+    return waf.enter(site)
   end
-  local chain = rules.chain(site, original_path, authorized, pctx and pctx.original)
-  if not rules.may_cache(chain, authorized) then
-    var.edgeweir_range_mode = "pass"
-    return true
-  end
-  -- Cache rules, purge markers and the key all use nginx's normalized
-  -- path, so an encoded variant of a URL can never escape a purge.
-  local path = original_path
-  local req = key_request(site, var, path, headers)
-  if not req then
-    var.edgeweir_range_mode = "pass"
-    return true
-  end
-  req.handed = ngx.ctx.edgeweir_found == "handed"
-  if site._browser_ttl then
-    -- For the browser TTL of the rule that decides the response.
-    local ctx = ngx.ctx
-    ctx.edgeweir_chain = chain
-    ctx.edgeweir_authorized = authorized
-  end
-
-  var.edgeweir_cache_bypass = "0"
-  var.edgeweir_no_cache = "0"
-  var.edgeweir_rules = rule_ids(chain)
-  if site.slice then
-    var.edgeweir_range_mode = "slice"
-  end
-  -- WebP / AVIF variants (ADR-0043): the class joins the key; a variant
-  -- goes through the agent's image converter and is never sliced.
-  if site.image_convert then
-    req.image = imageconv.route(site, var, ngx.ctx, headers, path)
-  end
-
-  local epoch = purge.epoch(site.id, site.cache_key, host, path, var.args)
-  local tmax = purge.tag_max(site.id)
-  if tmax then
-    -- The site has tag markers: the object's tags may move its key.
-    local base = cachekey.build(site, req, 0)
-    var.edgeweir_cache_key = cachekey.with_epoch(base, cachetags.key_epoch(site.id, base, epoch, tmax))
-  else
-    var.edgeweir_cache_key = cachekey.build(site, req, epoch)
-  end
-  return true
 end
 
 function _M.access()
@@ -611,14 +650,28 @@ function _M.access()
     end
   end
   if access() then
-    local ctx = ngx.ctx
-    if ctx.edgeweir_grpc then
-      return _M.grpc_enter()
-    end
-    local site = ctx.edgeweir_site
-    if site and site.waf and var.edgeweir_local ~= "1" then
-      return waf.enter(site)
-    end
+    return proceed()
+  end
+end
+
+-- body_access is the access phase of @edgeweir_body_<limit> (nginx.conf):
+-- the request context comes back, nginx reads the body up to the location's
+-- limit (413 past it) and the access phase goes on where access() left it
+-- (route).
+function _M.body_access()
+  waf.restore()
+  local ctx = ngx.ctx
+  local site = ctx.edgeweir_site
+  if not site then
+    -- The stashed context is gone (swept after minutes).
+    return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+  end
+  local pctx = ctx.edgeweir_policy
+  if _M.unsized_body_too_large(pctx and pctx.body_limit, site.body_limit) then
+    return deny(413, "body-too-large", "request body too large")
+  end
+  if route(site, pctx, ngx.req.get_headers(0), ngx.var.host, ctx.edgeweir_original_path, ctx.edgeweir_acme) then
+    return proceed()
   end
 end
 
@@ -659,8 +712,9 @@ end
 -- unsized_body_too_large reads the body of a request without
 -- Content-Length that may have one (HTTP/1.x with Transfer-Encoding,
 -- HTTP/2 and HTTP/3) when a limit applies, and reports whether it exceeds
--- it. nginx reads chunked, HTTP/2 and HTTP/3 bodies up to
--- client_max_body_size and then sets $content_length to the size read.
+-- it. nginx reads chunked, HTTP/2 and HTTP/3 bodies up to the location's
+-- client_max_body_size (413 past it) and then sets $content_length to the
+-- size read.
 function _M.unsized_body_too_large(rule_limit, site_limit)
   local limit = rule_limit
   if limit == nil then limit = site_limit end
@@ -671,6 +725,67 @@ function _M.unsized_body_too_large(rule_limit, site_limit)
   if ngx.req.http_version() < 2 and var.http_transfer_encoding == nil then return false end
   ngx.req.read_body()
   return _M.body_too_large(rule_limit, site_limit, var.content_length)
+end
+
+-- body_max is client_max_body_size of the loaded nginx.conf (0: none),
+-- body_tiers the limits of its @edgeweir_body_<limit> locations in
+-- ascending order (init_body).
+local body_max, body_tiers = 0, {}
+
+-- init_body records the body limits of the loaded nginx.conf (init_by_lua).
+function _M.init_body(max, tiers)
+  body_max, body_tiers = tonumber(max) or 0, {}
+  for _, limit in ipairs(tiers or {}) do
+    local n = tonumber(limit)
+    if n and n > 0 and n == math.floor(n) then
+      body_tiers[#body_tiers + 1] = n
+    end
+  end
+  table.sort(body_tiers)
+end
+
+-- body_location returns the edge location nginx reads a body up to limit in
+-- (@edgeweir_body_<limit>), or nil when the base location already does:
+-- no limit, a limit that is client_max_body_size, or one no location of
+-- the loaded nginx.conf serves (right after a reload the site table may
+-- name a limit it has no location for yet): the next larger location is
+-- used, the limit still checked by the size read afterwards.
+function _M.body_location(limit)
+  limit = tonumber(limit)
+  if not limit or limit <= 0 or (body_max > 0 and limit >= body_max) then
+    return nil
+  end
+  for i = 1, #body_tiers do
+    if body_tiers[i] >= limit then
+      return "@edgeweir_body_" .. string.format("%d", body_tiers[i])
+    end
+  end
+  return nil
+end
+
+-- unsized_body reports whether a request may carry a body without
+-- Content-Length: HTTP/1.x with Transfer-Encoding, HTTP/2 and HTTP/3
+-- requests but those with a method that has no body (unsized_body_too_large
+-- reads those too, up to client_max_body_size).
+function _M.unsized_body(method, version, content_length, transfer_encoding)
+  if content_length ~= nil then return false end
+  if (version or 1.1) < 2 then return transfer_encoding ~= nil end
+  return method ~= "GET" and method ~= "HEAD" and method ~= "OPTIONS"
+end
+
+-- body_tier returns the edge location the request goes to before its body
+-- is read (see body_location), or nil: bodies with Content-Length are
+-- judged by it, and without a body there is nothing to read.
+function _M.body_tier(rule_limit, site_limit)
+  local limit = rule_limit
+  if limit == nil then limit = site_limit end
+  local name = _M.body_location(limit)
+  if not name then return nil end
+  local var = ngx.var
+  if not _M.unsized_body(ngx.req.get_method(), ngx.req.http_version(), var.http_content_length, var.http_transfer_encoding) then
+    return nil
+  end
+  return name
 end
 
 -- origin_layer returns the edge layer's upstream of the origin layer for a

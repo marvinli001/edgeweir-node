@@ -214,6 +214,56 @@ test("body limit: bodies without Content-Length are read and checked by their si
   eq(over, false, "HTTP/2 without a body"); eq(reads, 1)
 end)
 
+test("body limit: bodies without Content-Length are read in the location of their limit", function()
+  local runtime = ngx
+  -- client_max_body_size 1 GiB, locations for 4 KiB, 1 MiB and 100 MiB.
+  router.init_body(1073741824, { 104857600, 4096, 1048576 })
+  local function tier(rule_limit, site_limit, req)
+    _G.ngx = setmetatable({
+      var = { http_content_length = req.length, http_transfer_encoding = req.te },
+      req = {
+        get_method = function() return req.method or "POST" end,
+        http_version = function() return req.version or 1.1 end,
+      },
+    }, { __index = runtime })
+    local ok, name = pcall(router.body_tier, rule_limit, site_limit)
+    _G.ngx = runtime
+    assert(ok, name)
+    return name
+  end
+  local chunked = { te = "chunked" }
+  eq(tier(nil, 4096, chunked), "@edgeweir_body_4096", "chunked, the site's limit")
+  eq(tier(nil, 1048576, { version = 2 }), "@edgeweir_body_1048576", "HTTP/2")
+  eq(tier(nil, 104857600, { version = 3, method = "PUT" }), "@edgeweir_body_104857600", "HTTP/3")
+  eq(tier(nil, 1073741824, chunked), nil, "the limit nginx reads up to anyway")
+  eq(tier(nil, 0, chunked), nil, "0: no limit")
+  eq(tier(nil, nil, chunked), nil, "site tables without the field")
+  eq(tier(4096, 1073741824, chunked), "@edgeweir_body_4096", "a rule lowers the limit")
+  eq(tier(1048576, 4096, chunked), "@edgeweir_body_1048576", "a rule raises it")
+  eq(tier(0, 4096, chunked), nil, "a rule lifts it")
+  eq(tier(nil, 4096, { length = "2000" }), nil, "Content-Length: checked by body_too_large")
+  eq(tier(nil, 4096, {}), nil, "HTTP/1.1 without Content-Length and Transfer-Encoding has no body")
+  for _, method in ipairs({ "GET", "HEAD", "OPTIONS" }) do
+    eq(tier(nil, 4096, { version = 2, method = method }), nil, method .. " over HTTP/2 has no body")
+  end
+  eq(tier(nil, 4096, { te = "chunked", method = "GET" }), "@edgeweir_body_4096", "an HTTP/1.1 body is announced by Transfer-Encoding")
+  eq(tier(nil, 4096, { version = 2, method = "DELETE" }), "@edgeweir_body_4096", "DELETE may carry a body")
+  -- A limit between two locations (a site table newer than the nginx.conf):
+  -- the next larger one reads, the size read is judged afterwards.
+  eq(router.body_location(5000), "@edgeweir_body_1048576")
+  eq(router.body_location(209715200), nil, "above the largest location: client_max_body_size")
+  eq(router.body_location(1), "@edgeweir_body_4096")
+  router.init_body(1073741824, {})
+  eq(router.body_location(4096), nil, "no locations")
+  -- No limit anywhere (client_max_body_size 0): every limit has its location.
+  router.init_body(0, { 4096 })
+  eq(router.body_location(4096), "@edgeweir_body_4096")
+  eq(router.body_location(1099511627776), nil, "above the largest location")
+  eq(router.body_location(0), nil)
+  router.init_body(nil, nil)
+  eq(router.body_location(4096), nil, "nothing initialized")
+end)
+
 test("maintenance: allowed addresses and paths, the page and Retry-After", function()
   local s = site({ maintenance = { template = "<p>{{status}} {{host}}</p>", retry_after = 120,
     allow_cidrs = { "192.0.2.0/24", "2001:db8::/32" }, allow_prefixes = { "/health", "/api/status" } } })
