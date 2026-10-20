@@ -206,6 +206,8 @@ edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # ban status (JSON); --list adds up to 1000 bans
 edgeweir-node security [--control-socket PATH]        # challenge keys, captcha pool, per-site CC levels (JSON)
 edgeweir-node accesslog [--site ID] [--json] [--socket PATH]   # this node's requests as they happen; Ctrl-C stops
+edgeweir-node diagnose [--state-dir DIR] [--control-socket PATH] [--diag-socket PATH] [--json]   # check this node step by step
+edgeweir-node pprof PROFILE [--seconds 30] [--output FILE] [--diag-socket PATH]   # a Go profile of the running agent
 edgeweir-node version
 ```
 
@@ -215,6 +217,8 @@ edgeweir-node version
 - `probe` runs a regional probe: the first run enrolls with a one-time probe token (retrying while the console is unreachable), an enrolled probe ignores the token; missing enrollment settings exit with status 2.
 - `set-server` changes the node channel URL of an enrolled node (`--probe`: a probe), for a node that lost the console because the old address went down first: it makes one mTLS call to the new URL with the node's own identity (pinned CA and client certificate) and only then rewrites `identity.json` (`probe.json`) atomically, keeping the previous URL as the fallback; the identity and certificate stay. A failed check exits with status 1 and changes no file. A running agent moves to the new URL within seconds. Otherwise nodes follow the URL the console gives out on their own (see [Console URL](#console-url)).
 - `accesslog` reads the data plane's live view every 250 ms (control socket, the same permissions as `bans` and `security`; `--socket` is short for `--control-socket`), one request per line: time (UTC, milliseconds), client IP, method, Host, path (spaces as `%20`), status, bytes sent, duration, cache status (`-` without one) and `blocked=<reason>` when the node refused or challenged it; `--json` prints JSON Lines (with User-Agent, Referer, protocol, country, ASN, origin, blocking rule and the other fields). Sample rates do not apply, and the data plane records only while someone watches (it stops 5 s after the last call); without `--site` requests of unknown hosts are shown too. Requests missed (expired, or over the rate of 2000 per second and node; those count for the whole node, also with `--site`) are counted on stderr. Query strings, request headers and peer addresses go only into the sampled logs of sites that record them, never here.
+- `diagnose` runs one check after the other and prints a line for each (`ok`, `warn`, `fail`, `skip`): identity, the node certificate's lifetime, the console (one mTLS call to the current address with the node's identity), the clock (a second call: the console's time against the middle of the round trip; `warn` from 1 s, `fail` from 30 s), the running agent (diagnostics socket: version, last heartbeat and error), the configuration (applied and the console's latest revision, why an apply failed, certificates that did not load) and the data plane (control socket). It exits with 1 when a check fails; `--json` prints the results and the agent's full status. It reads the state directory and both sockets: run it as root or as the agent's user (`sudo -u edgeweir`).
+- `pprof` fetches a Go profile of the running agent from the diagnostics socket: `profile` (CPU, `--seconds` seconds, at most 120), `trace`, `heap`, `allocs`, `goroutine`, `block`, `mutex`, `threadcreate`, written to `--output` or a redirected standard output, for `go tool pprof` / `go tool trace`. The diagnostics socket (`--diag-socket`, default `/run/edgeweir-node/diag.sock`) is a unix socket only the agent's user may use (0600), never TCP; empty disables it, and `diagnose` then fails its agent and configuration checks.
 
 | `enroll` flag | Default | Description |
 | --- | --- | --- |
@@ -259,6 +263,7 @@ edgeweir-node version
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | Directory containing `edgeweir/*.lua` |
 | `--cache-dir` | `/var/cache/edgeweir-node` | Parent directory of the cache zones |
 | `--control-socket` | `/run/edgeweir-node/control.sock` | Data-plane control API socket |
+| `--diag-socket` | `/run/edgeweir-node/diag.sock` | Diagnostics socket (0600): `diagnose` reads the agent's status from it, `pprof` its Go profiles; empty disables it |
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | Internal origin layer socket; the origin layers for HTTP/2 to origins and gRPC sit next to it (`origin-h2.sock`, `origin-grpc.sock` and their `origin-noverify-*` versions) |
 | `--origin-socket-noverify` | `origin-noverify.sock` next to the origin socket | Origin layer socket without TLS verification |
 | `--edge-socket` | `edge.sock` next to the control socket | Local edge listener for prefetches only (`edge-tls.sock` next to it is its TLS twin, while a listener speaks HTTPS); bans, CC, challenges and denying rules do not apply there, nothing is counted in the statistics |

@@ -206,6 +206,8 @@ edgeweir-node healthcheck [--control-socket PATH]
 edgeweir-node bans [--control-socket PATH] [--list]   # 封禁状态（JSON）；--list 列出最多 1000 条
 edgeweir-node security [--control-socket PATH]        # 挑战密钥、验证码池、各站点 CC 级别（JSON）
 edgeweir-node accesslog [--site ID] [--json] [--socket PATH]   # 实时查看本节点的请求，Ctrl-C 结束
+edgeweir-node diagnose [--state-dir DIR] [--control-socket PATH] [--diag-socket PATH] [--json]   # 逐项检查本节点
+edgeweir-node pprof PROFILE [--seconds 30] [--output FILE] [--diag-socket PATH]   # 运行中 agent 的 Go profile
 edgeweir-node version
 ```
 
@@ -215,6 +217,8 @@ edgeweir-node version
 - `probe` 运行区域探针：首次运行用一次性探针 token 注册（控制台不可达时退避重试），已注册后忽略 token；缺少注册参数时退出码 2。
 - `set-server` 更换已注册节点（`--probe`：探针）的控制台节点通道地址，用于旧地址先下线、节点失联的情况：先用节点自己的身份（固定的 CA 与客户端证书）向新地址做一次 mTLS 调用，通过后才原子改写 `identity.json`（`probe.json`），原地址留作备用地址，身份与证书不变；检查失败时退出码 1，不改任何文件。运行中的 agent 几秒内改用新地址。平时节点自动跟随控制台给出的地址，不需要它（见 [控制台地址](#控制台地址)）。
 - `accesslog` 每 250 毫秒读取数据面的实时查看（控制 socket，权限同 `bans`、`security`；`--socket` 是 `--control-socket` 的简写），每行一个请求：时间（UTC，毫秒）、客户端 IP、方法、Host、路径（空格写作 `%20`）、状态码、发送字节、耗时、缓存状态（没有时为 `-`），有拦截原因时追加 `blocked=<原因>`；`--json` 输出 JSON Lines（含 UA、Referer、协议、国家、ASN、回源、拦截规则等字段）。不受采样率限制，只在有人查看时采集（停止查看 5 秒后数据面不再记录）；不带 `--site` 时也包括未知域名的请求。过期或超出速率（每节点每秒 2000 条；这部分按整个节点计，带 `--site` 时也是）而缺失的请求在标准错误输出计数。查询串、请求头与对端地址只进入开启了它们的网站的采样日志，不在这里显示。
+- `diagnose` 逐项检查并各输出一行（`ok`、`warn`、`fail`、`skip`）：身份、节点证书有效期、控制台（用节点身份向当前地址做一次 mTLS 调用）、时钟（再调用一次，以控制台时间与往返中点之差计算偏差：1 秒起 `warn`，30 秒起 `fail`）、运行中的 agent（诊断 socket：版本、最近一次心跳与错误）、配置（已应用与控制台最新的 revision、应用失败的原因、无法加载的证书）、数据面（控制 socket）。有 `fail` 时退出码 1；`--json` 输出各项结果与 agent 的完整状态。读取状态目录与两个 socket，需要 root 或 agent 的用户（`sudo -u edgeweir`）。
+- `pprof` 从诊断 socket 取运行中 agent 的 Go profile：`profile`（CPU，`--seconds` 秒，最多 120）、`trace`、`heap`、`allocs`、`goroutine`、`block`、`mutex`、`threadcreate`，写入 `--output` 或重定向的标准输出，用 `go tool pprof` / `go tool trace` 查看。诊断 socket（`--diag-socket`，默认 `/run/edgeweir-node/diag.sock`）只是 agent 用户可读写（0600）的 unix socket，不监听 TCP；设为空时关闭，`diagnose` 的 agent 与配置两项随之失败。
 
 | `enroll` 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -259,6 +263,7 @@ edgeweir-node version
 | `--lua-dir` | `/usr/share/edgeweir-node/lua` | `edgeweir/*.lua` 所在目录 |
 | `--cache-dir` | `/var/cache/edgeweir-node` | 缓存 zone 上级目录 |
 | `--control-socket` | `/run/edgeweir-node/control.sock` | 数据面控制 API socket |
+| `--diag-socket` | `/run/edgeweir-node/diag.sock` | 诊断 socket（0600）：`diagnose` 读取 agent 状态，`pprof` 读取 Go profile；空值关闭 |
 | `--origin-socket` | `/run/edgeweir-node/origin.sock` | 内部回源层 socket；以 HTTP/2 回源与 gRPC 的回源层在同目录（`origin-h2.sock`、`origin-grpc.sock` 及其 `origin-noverify-*` 版本） |
 | `--origin-socket-noverify` | 回源 socket 同目录的 `origin-noverify.sock` | 不校验 TLS 的回源层 socket |
 | `--edge-socket` | 控制 socket 同目录的 `edge.sock` | 预热专用的本地边缘监听（同目录的 `edge-tls.sock` 是其 TLS 版本，有 HTTPS 监听时启用）；不受封禁、CC、挑战与拒绝规则影响，不计入统计 |
