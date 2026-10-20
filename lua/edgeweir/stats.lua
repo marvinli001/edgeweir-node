@@ -7,7 +7,8 @@
 -- summary (edgeweir.topstats): country and network from the access
 -- phase's GeoIP record (or the worker's cache), referring host, user agent
 -- classes (edgeweir.uaclass), HTTP and TLS versions and block reason
--- (edgeweir.reasons). Requests refused with a reason before the site was
+-- (edgeweir.reasons); the origin layer counts each fetch from an origin
+-- (edgeweir.origin.log, origin-stats-v1). Requests refused with a reason before the site was
 -- set (client certificates, bans, maintenance) count for that site;
 -- requests of no site, SNI mismatches and PURGE requests count for none
 -- (the live view still sees them, edgeweir.tap). logged() counts the
@@ -195,6 +196,13 @@ local function count(v)
   return floor(v)
 end
 
+-- Counters of an origin's minute in the worker summaries (edgeweir.topstats)
+-- and their MinuteStats.origins names.
+local ORIGIN_FIELDS = { "n", "cf", "to", "tls", "inv", "e5", "ms" }
+local ORIGIN_NAMES = { n = "requests", cf = "connect_failures", to = "timeouts", tls = "tls_failures",
+  inv = "invalid_responses", e5 = "server_errors", ms = "header_time_ms_sum" }
+local HEADER_TIME_BUCKETS = #top.HEADER_TIME_BOUNDS + 1
+
 -- merge_dimensions adds a worker's minute summary's dimensions to the
 -- site's bucket (in the fields _countries, _asns, _asn_names, _referers).
 local function merge_dimensions(bucket, record)
@@ -239,6 +247,25 @@ local function merge_dimensions(bucket, record)
     local n = count(record[source])
     if n > 0 then bucket[field] = (bucket[field] or 0) + n end
   end
+  if type(record.origins) == "table" then
+    local into = bucket._origins or {}
+    bucket._origins = into
+    for id, o in pairs(record.origins) do
+      if type(id) == "string" and #id <= 128 and id:match("^[%w_-]+$") and type(o) == "table" then
+        local t = into[id]
+        if not t then
+          t = { h = {} }
+          for _, f in ipairs(ORIGIN_FIELDS) do t[f] = 0 end
+          for i = 1, HEADER_TIME_BUCKETS do t.h[i] = 0 end
+          into[id] = t
+        end
+        for _, f in ipairs(ORIGIN_FIELDS) do t[f] = t[f] + count(o[f]) end
+        if type(o.h) == "table" then
+          for i = 1, HEADER_TIME_BUCKETS do t.h[i] = t.h[i] + count(o.h[i]) end
+        end
+      end
+    end
+  end
 end
 
 -- heaviest returns the limit keys of counts with the most counts (ties:
@@ -258,7 +285,8 @@ end
 -- finish_dimensions bounds the merged dimensions of a bucket: countries
 -- (at most MAX_COUNTRIES by requests) as {requests, bytes_sent}, networks
 -- (the heaviest MAX_TOP_DIMENSIONS, with their names) as {requests, name},
--- referring hosts (the heaviest MAX_TOP_DIMENSIONS).
+-- referring hosts (the heaviest MAX_TOP_DIMENSIONS), origins (the MAX_ORIGINS
+-- with the most fetches, by origin id).
 local function finish_dimensions(bucket)
   local countries = bucket._countries
   if countries then
@@ -284,7 +312,20 @@ local function finish_dimensions(bucket)
     end
     if next(out) then bucket.referers = out end
   end
+  local origins = bucket._origins
+  if origins then
+    local out = {}
+    for _, k in ipairs(heaviest(origins, top.MAX_ORIGINS, function(o) return o.n end)) do
+      local o, entry = origins[k], {}
+      for _, f in ipairs(ORIGIN_FIELDS) do entry[ORIGIN_NAMES[f]] = o[f] end
+      entry.header_time_buckets = o.h
+      if cjson.array_mt then setmetatable(o.h, cjson.array_mt) end
+      out[k] = entry
+    end
+    if next(out) then bucket.origins = out end
+  end
   bucket._countries, bucket._asns, bucket._asn_names, bucket._referers = nil, nil, nil, nil
+  bucket._origins = nil
 end
 
 -- drain collects completed minutes (strictly before the minute containing

@@ -54,6 +54,7 @@ local affinity = require("edgeweir.affinity")
 local challenge = require("edgeweir.challenge")
 local policy = require("edgeweir.policy")
 local setcookie = require("edgeweir.setcookie")
+local topstats = require("edgeweir.topstats")
 
 local _M = {}
 
@@ -766,6 +767,41 @@ function _M.classify(status, answered, tls)
   return "", nil, "HTTP " .. status
 end
 
+-- outcome returns the class of an attempt for the origin statistics
+-- (edgeweir.topstats.OUTCOMES, nil: success): code is classify's (an
+-- unanswered 503 counts as no connection), invalid whether the answer was
+-- no HTTP/1.x response, and an answered 5xx other than 502-504 is a
+-- server error too.
+function _M.outcome(code, status, answered, invalid)
+  if invalid then
+    return "invalid"
+  end
+  if code == "upstream_status" then
+    return "server_error"
+  end
+  if code == "connect_failed" or code == "timeout" or code == "tls_failed" then
+    return code
+  end
+  if code == "" then
+    return "connect_failed"
+  end
+  local n = tonumber(status)
+  if answered and n and n >= 500 and n <= 599 then
+    return "server_error"
+  end
+  return nil
+end
+
+-- header_ms returns an attempt's $upstream_header_time item in whole
+-- milliseconds, nil when it is not a time.
+function _M.header_ms(v)
+  local seconds = tonumber(v)
+  if not seconds or seconds < 0 then
+    return nil
+  end
+  return math.floor(seconds * 1000 + 0.5)
+end
+
 local function split(v)
   local out = {}
   for item in gmatch(v or "", "[^,:%s]+") do
@@ -797,7 +833,8 @@ function _M.log()
       tls = upstreamerr.tls_failed(var.connection, upstreamerr.hostport(c.ip, o.port))
     end
     local code, params, text = _M.classify(st, answered, tls)
-    if ctx.edgeweir_invalid_answer and i == #statuses then
+    local invalid = ctx.edgeweir_invalid_answer and i == #statuses
+    if invalid then
       -- nginx records the 200 it makes up for HTTP/0.9: the origin
       -- answered, but not with HTTP.
       code, params, text = "", nil, "no valid HTTP/1.x response"
@@ -807,6 +844,10 @@ function _M.log()
       dns.invalidate(o.address)
     elseif st ~= "-" then
       health.success(site.id, o.id)
+    end
+    if code or st ~= "-" then
+      topstats.origin(site.id, o.id, _M.outcome(code, st, answered, invalid),
+        (answered and not invalid) and _M.header_ms(header_times[i]) or nil)
     end
   end
 end

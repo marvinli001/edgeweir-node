@@ -2,7 +2,8 @@
 -- heavy hitters (URLs and client addresses, 32 candidates each; networks
 -- and referring hosts, 64 each) and the bounded dimensions of ADR-0041
 -- (countries with requests and bytes, user agent classes, HTTP and TLS
--- versions, block reasons, challenges issued and passed). At most
+-- versions, block reasons, challenges issued and passed) and the fetches
+-- from each origin (ADR-0052). At most
 -- MAX_BUCKETS sites per worker and minute. Only completed minute summaries
 -- cross into shared memory (edgeweir_topstats, once per minute and
 -- worker); raw request headers and query strings never do.
@@ -92,6 +93,44 @@ function _M.challenge(site_id, kind)
   if not bucket then return end
   local field = kind == "passed" and "ch_passed" or "ch_issued"
   bucket[field] = (bucket[field] or 0) + 1
+end
+
+-- Upper bounds (ms) of the header time buckets; one more bucket counts
+-- everything above the last.
+_M.HEADER_TIME_BOUNDS = { 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 }
+-- Origins per site and minute (a site has at most 32).
+_M.MAX_ORIGINS = 64
+-- Failure classes of an attempt (see edgeweir.origin.log).
+local OUTCOMES = { connect_failed = "cf", timeout = "to", tls_failed = "tls", invalid = "inv", server_error = "e5" }
+_M.OUTCOMES = OUTCOMES
+
+-- origin counts an attempt to fetch from origin_id of site in the current
+-- minute: outcome nil (success) or a key of OUTCOMES, header_ms the time to
+-- the origin's response header when it answered (origin-stats-v1).
+function _M.origin(site, origin_id, outcome, header_ms)
+  local bucket = bucket_for(site, math.floor(ngx.time() / 60) * 60)
+  if not bucket then return end
+  local origins = bucket.origins
+  if not origins then
+    origins = {}
+    bucket.origins, bucket.origin_count = origins, 0
+  end
+  local o = origins[origin_id]
+  if not o then
+    if bucket.origin_count >= _M.MAX_ORIGINS then return end
+    o = { n = 0, ms = 0, h = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } }
+    origins[origin_id] = o
+    bucket.origin_count = bucket.origin_count + 1
+  end
+  o.n = o.n + 1
+  local field = outcome and OUTCOMES[outcome]
+  if field then o[field] = (o[field] or 0) + 1 end
+  if header_ms then
+    local bounds, i = _M.HEADER_TIME_BOUNDS, 1
+    while i <= #bounds and header_ms > bounds[i] do i = i + 1 end
+    o.h[i] = o.h[i] + 1
+    o.ms = o.ms + header_ms
+  end
 end
 
 function _M.flush(now)

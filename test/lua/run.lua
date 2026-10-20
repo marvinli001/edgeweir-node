@@ -409,6 +409,97 @@ test("origin.classify maps attempts to error codes", function()
   eq(origin.classify("404", true, false), nil)
 end)
 
+test("origin.outcome classes attempts for the origin statistics", function()
+  eq(origin.outcome(nil, "200", true, false), nil)
+  eq(origin.outcome(nil, "404", true, false), nil)
+  eq(origin.outcome(nil, "500", true, false), "server_error", "an answered 500 is a server error")
+  eq(origin.outcome(nil, "599", true, false), "server_error")
+  eq(origin.outcome(nil, "500", false, false), nil, "only answered statuses count")
+  eq(origin.outcome("upstream_status", "503", true, false), "server_error")
+  eq(origin.outcome("connect_failed", "502", false, false), "connect_failed")
+  eq(origin.outcome("timeout", "504", false, false), "timeout")
+  eq(origin.outcome("tls_failed", "502", false, false), "tls_failed")
+  eq(origin.outcome("", "503", false, false), "connect_failed", "an unanswered 503")
+  eq(origin.outcome("", "200", true, true), "invalid")
+  eq(origin.header_ms("0.123"), 123)
+  eq(origin.header_ms("0.0004"), 0)
+  eq(origin.header_ms("12"), 12000)
+  eq(origin.header_ms("-"), nil)
+  eq(origin.header_ms(nil), nil)
+end)
+
+test("origin.log counts every attempt of each origin (origin-stats-v1)", function()
+  local top = require("edgeweir.topstats")
+  top.reset()
+  stats.drain(ngx.time() + 120)
+  local runtime = ngx
+  local a = { id = "o-a", address = "192.0.2.10", port = 80, scheme = "http" }
+  local b = { id = "o-b", address = "192.0.2.11", port = 80, scheme = "http" }
+  local s = { id = "s-origins", health = { max_fails = 100, recovery_seconds = 10 } }
+  local function attempt(tried, status, header_time, invalid)
+    local ctx = { site = s, tried = tried, edgeweir_invalid_answer = invalid }
+    _G.ngx = setmetatable({ ctx = ctx, var = { upstream_status = status, upstream_header_time = header_time } }, { __index = runtime })
+    local ok, err = pcall(origin.log)
+    _G.ngx = runtime
+    assert(ok, err)
+  end
+  -- a: no connection, then b answered 200 after 30 ms (one request, two attempts).
+  attempt({ { origin = a, ip = a.address }, { origin = b, ip = b.address } }, "502, 200", "-, 0.030")
+  attempt({ { origin = a, ip = a.address } }, "200", "0.004")
+  attempt({ { origin = a, ip = a.address } }, "504", "-")
+  attempt({ { origin = a, ip = a.address } }, "500", "12.5")
+  attempt({ { origin = b, ip = b.address } }, "503", "0.250")
+  attempt({ { origin = b, ip = b.address } }, "200", "0.001", true)
+  attempt({ { origin = b, ip = b.address } }, "-", "-")
+  attempt({}, "200", "0.1")
+  local now = ngx.time() + 60
+  top.flush(now)
+  local bucket
+  for _, x in ipairs(stats.drain(now)) do
+    if x.site_id == "s-origins" then bucket = x end
+  end
+  assert(bucket and bucket.origins, "no origins in the bucket")
+  local oa, ob = bucket.origins["o-a"], bucket.origins["o-b"]
+  eq(oa.requests, 4)
+  eq(oa.connect_failures, 1)
+  eq(oa.timeouts, 1)
+  eq(oa.server_errors, 1)
+  eq(oa.invalid_responses, 0)
+  eq(oa.header_time_ms_sum, 12504)
+  eq(table.concat(oa.header_time_buckets, ","), "1,0,0,0,0,0,0,0,0,0,1")
+  eq(ob.requests, 3, "the attempt with status - is not counted")
+  eq(ob.server_errors, 1)
+  eq(ob.invalid_responses, 1)
+  eq(ob.header_time_ms_sum, 280, "the invalid answer has no header time")
+  eq(table.concat(ob.header_time_buckets, ","), "0,0,1,0,1,0,0,0,0,0,0")
+  local encoded = cjson.encode(bucket)
+  assert(encoded:find('"header_time_buckets":[1,0,0,0,0,0,0,0,0,0,1]', 1, true), encoded)
+end)
+
+test("origin statistics keep at most MAX_ORIGINS origins per site and minute", function()
+  local top = require("edgeweir.topstats")
+  top.reset()
+  stats.drain(ngx.time() + 120)
+  for i = 1, top.MAX_ORIGINS + 6 do
+    for _ = 1, i do top.origin("s-many", string.format("o%03d", i), nil, 5) end
+  end
+  top.origin("s-many", "bad|id", nil, 5)
+  local now = ngx.time() + 60
+  top.flush(now)
+  local bucket
+  for _, x in ipairs(stats.drain(now)) do
+    if x.site_id == "s-many" then bucket = x end
+  end
+  local n = 0
+  for id, o in pairs(bucket.origins) do
+    n = n + 1
+    assert(id:match("^o%d+$"), id)
+    eq(#o.header_time_buckets, 11)
+  end
+  eq(n, top.MAX_ORIGINS)
+  eq(bucket.origins["o001"].requests, 1)
+end)
+
 test("upstreamerr tells TLS failures apart from connection failures", function()
   -- Lines as captured from OpenResty 1.31.1.1 (lua_capture_error_log).
   local tls = '2026/09/25 10:23:30 [error] 15#15: *4 upstream SSL certificate does not match "wrong.test" while SSL handshaking to upstream, client: 127.0.0.1, server: , request: "GET / HTTP/1.1", upstream: "https://127.0.0.1:9443/?sni=wrong.test", host: "x"'
