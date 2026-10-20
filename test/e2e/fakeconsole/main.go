@@ -793,6 +793,8 @@ func main() {
 	go serveTestOrigin(":8082")
 	go serveTestOrigin(":8083")
 	go serveAuthService(":8086")
+	go serveAuthServiceTLS(":8447", "console", ca)
+	go serveAuthServiceTLS(":8448", "other.g12.test", ca)
 	serveL4Origins()
 	if *allowed != "" {
 		allowList = strings.Split(*allowed, ",")

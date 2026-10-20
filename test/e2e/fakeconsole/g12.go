@@ -4,6 +4,7 @@ import (
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
+	"github.com/marvinli001/edgeweir-node/internal/pki/pkitest"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
 )
 
@@ -35,8 +37,13 @@ import (
 //	                fails, /down/ asks a failing service, everything else
 //	                /check with answers cached 30 s
 //	fwd1.g12.test   one forward authentication rule (/check, /app/ only)
+//	tls.g12.test    forward authentication over HTTPS: /app/ asks
+//	                https://console:8447/check (certificate for console from
+//	                the origin CA the node trusts), /bad/ https://console:8448
+//	                (certificate for another name)
 //
-// The authentication service on :8086: /check answers 200 with X-Auth-User
+// The authentication service on :8086 (and over HTTPS on :8447 and :8448,
+// serveAuthServiceTLS): /check answers 200 with X-Auth-User
 // for the cookie sid=good, else 401 (Bearer challenge, JSON body); /login
 // 302 to the login page with the original URI; /fail 500. It counts its
 // requests and keeps the headers of the last one (helper GET /g12/auth).
@@ -52,7 +59,8 @@ var (
 	g12Seen  http.Header
 )
 
-func serveAuthService(addr string) {
+// authService is the authentication service's handler.
+func authService() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		g12Calls.Add(1)
@@ -61,6 +69,9 @@ func serveAuthService(addr string) {
 		g12Seen.Set("X-Seen-Method", r.Method)
 		g12Seen.Set("X-Seen-URI", r.RequestURI)
 		g12Seen.Set("X-Seen-Host", r.Host)
+		if r.TLS != nil {
+			g12Seen.Set("X-Seen-TLS", r.TLS.ServerName)
+		}
 		g12Mu.Unlock()
 		switch r.URL.Path {
 		case "/check":
@@ -80,9 +91,26 @@ func serveAuthService(addr string) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 	})
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	return mux
+}
+
+func serveAuthService(addr string) {
+	srv := &http.Server{Addr: addr, Handler: authService(), ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("authentication service on %s", addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// serveAuthServiceTLS serves the authentication service over HTTPS on
+// addr with a certificate of ca for name.
+func serveAuthServiceTLS(addr, name string, ca *pkitest.CA) {
+	cert, err := ca.IssueServer([]string{name}, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv := &http.Server{Addr: addr, Handler: authService(), ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
+	log.Printf("authentication service on %s (HTTPS, %s)", addr, name)
+	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
 // g12Setup gives the console the rules' secrets (as the real one does,
@@ -112,7 +140,11 @@ func g12URLRule(id string, kind nodev1.AuthKind) *nodev1.AuthRule {
 }
 
 func g12Forward(id, path string, change func(*nodev1.ForwardAuth)) *nodev1.AuthRule {
-	f := &nodev1.ForwardAuth{Url: "http://console:8086" + path, TimeoutMs: 2000,
+	return g12ForwardTo(id, "http://console:8086"+path, change)
+}
+
+func g12ForwardTo(id, url string, change func(*nodev1.ForwardAuth)) *nodev1.AuthRule {
+	f := &nodev1.ForwardAuth{Url: url, TimeoutMs: 2000,
 		RequestHeaders: []string{"authorization", "cookie"}, ResponseHeaders: []string{"x-auth-user"}}
 	change(f)
 	return &nodev1.AuthRule{Id: id, Kind: nodev1.AuthKind_AUTH_KIND_FORWARD, Forward: f}
@@ -151,7 +183,14 @@ func g12Config(origin string) *nodev1.NodeConfig {
 	one := site("site-g12f1", "fwd1.g12.test", origin, 80)
 	one.AuthRules = []*nodev1.AuthRule{g12Forward("g12-one", "/check", func(*nodev1.ForwardAuth) {})}
 	one.AuthRules[0].PathPrefixes = []string{"/app/"}
-	cfg := config(append(baseSites(origin), b, sc, u, f, one)...)
+	t := site("site-g12t", "tls.g12.test", origin, 80)
+	t.AuthRules = []*nodev1.AuthRule{
+		g12ForwardTo("g12-tls", "https://console:8447/check", func(*nodev1.ForwardAuth) {}),
+		g12ForwardTo("g12-tls-bad", "https://console:8448/check", func(*nodev1.ForwardAuth) {}),
+	}
+	t.AuthRules[0].PathPrefixes = []string{"/app/"}
+	t.AuthRules[1].PathPrefixes = []string{"/bad/"}
+	cfg := config(append(baseSites(origin), b, sc, u, f, one, t)...)
 	cfg.RequiredFeatures = append(cfg.RequiredFeatures, configir.FeatureAccessAuth)
 	return cfg
 }

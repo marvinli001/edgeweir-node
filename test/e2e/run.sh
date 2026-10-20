@@ -69,21 +69,22 @@
 #      connection survives the reload that adds a port, an origin change
 #      applies without a reload (E2E_STATS=1: their minute statistics);
 #  18. restarting the container serves the last-known-good config.
-# (After 17: G10 suffix and pattern domains, unknown host handling and scan
-# protection; G11 several certificates per site chosen by the ClientHello,
-# client certificates, TLS session resumption, ticket key rotation and no
-# early data; G12 Basic, signed URLs A-D and forward authentication; G13
-# site block and allow lists, CORS preflights at the edge, hotlink
-# protection, user agents, security headers and WebSocket origins; G14 the
-# ban, respond, close and skip actions, CRS exclusions by path and target
-# and the config rules' CRS mode, request body fields (in memory and from
-# nginx's temporary file, truncated over the limit), access log lines of
-# log rules, rate limit bans, challenge page texts, challenge failure bans
-# and crawler claims DNS does not back; G16 access log fields and options,
-# blocked requests logged whatever the sample rate, the live view and the
-# statistics dimensions; then the base configuration again; G18 WebP / AVIF
-# variants by Accept, cached once each, the original over the limits,
-# purges of every variant and the saved bytes.)
+# (After 17: G10 suffix and pattern domains, unknown host handling and
+# scan protection; G11 several certificates per site chosen by the
+# ClientHello, client certificates, TLS session resumption, ticket key
+# rotation and no early data; G12 Basic, signed URLs A-D and forward
+# authentication over HTTP and HTTPS; G13 site block and allow lists, CORS
+# preflights at the edge, hotlink protection, user agents, security
+# headers and WebSocket origins; G14 the ban, respond, close and skip
+# actions, CRS exclusions by path and target and the config rules' CRS
+# mode, request body fields (in memory and from nginx's temporary file,
+# truncated over the limit), access log lines of log rules, rate limit
+# bans, challenge page texts, challenge failure bans and crawler claims
+# DNS does not back; G16 access log fields and options, blocked requests
+# logged whatever the sample rate, the live view and the statistics
+# dimensions; then the base configuration again; G18 WebP / AVIF variants
+# by Accept, cached once each, the original over the limits, purges of
+# every variant and the saved bytes.)
 # Set E2E_KEEP=1 to keep the stack running afterwards; E2E_NODE_IMAGE names
 # the node image (default edgeweir-node:e2e-smoke).
 set -euo pipefail
@@ -1488,6 +1489,17 @@ r=$(req fwd1.g12.test '/app/..%2Fx' --path-as-is -H 'Cookie: sid=good')
 [ "$(status_of "$(req fwd1.g12.test /app/x -H 'Cookie: sid=good')")" = 200 ] || fail "one forward rule: an allowed request"
 [ "$(status_of "$(req fwd1.g12.test /other/x -H 'Cookie: sid=bad')")" = 200 ] || fail "one forward rule: a path outside its scope"
 pass "G12: one forward authentication rule refuses an ambiguous path (400) without asking the service"
+r=$(req tls.g12.test /app/x -H 'Cookie: sid=bad')
+[ "$(status_of "$r") $(header_of "$r" WWW-Authenticate)" = '401 Bearer realm="g12"' ] || fail "HTTPS forward: a refused request: $(status_of "$r")"
+r=$(req tls.g12.test /app/x -H 'Cookie: sid=good')
+[ "$(status_of "$r")" = 200 ] && grep -q '^X-Auth-User: alice$' <<<"$r" || fail "HTTPS forward: an allowed request: $(status_of "$r")"
+seen=$(curl -fsS "$HELPER/g12/auth")
+grep -qF 'X-Seen-Tls: console' <<<"$seen" && grep -qF 'X-Seen-Host: console:8447' <<<"$seen" || fail "HTTPS forward: the service's TLS name and Host: $seen"
+before=$(auth_calls)
+r=$(req tls.g12.test /bad/x -H 'Cookie: sid=good')
+[ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "503 auth-unavailable" ] || fail "HTTPS forward: a certificate for another name: $(status_of "$r") $(header_of "$r" X-Edgeweir-Error)"
+[ "$(auth_calls)" = "$before" ] || fail "HTTPS forward: the request reached a service whose certificate names another host"
+pass "G12: forward authentication over HTTPS verifies the service's certificate (SNI the URL's host), 503 for another name"
 
 leaks=$(compose logs node 2>&1 | grep -c 'g12-password\|g12-url-key\|g12-backup-key\|pbkdf2-sha256' || true)
 [ "$leaks" = 0 ] || fail "the node's logs carry a G12 secret ($leaks lines)"
