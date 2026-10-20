@@ -11,6 +11,8 @@
 //	edgeweir-node bans [--control-socket PATH] [--list]
 //	edgeweir-node security [--control-socket PATH]
 //	edgeweir-node accesslog [--site ID] [--json] [--socket PATH]
+//	edgeweir-node diagnose [--state-dir DIR] [--control-socket PATH] [--diag-socket PATH] [--json]
+//	edgeweir-node pprof PROFILE [--seconds N] [--output FILE] [--diag-socket PATH]
 //	edgeweir-node version
 //
 // Every flag can also be set with an environment variable
@@ -55,6 +57,7 @@ const (
 	defaultCacheDir      = "/var/cache/edgeweir-node"
 	defaultControlSocket = "/run/edgeweir-node/control.sock"
 	defaultOriginSocket  = "/run/edgeweir-node/origin.sock"
+	defaultDiagSocket    = "/run/edgeweir-node/diag.sock"
 	// edgeweirOpenResty is the nginx binary of the edgeweir-openresty
 	// package (and the container image).
 	edgeweirOpenResty = "/usr/lib/edgeweir-openresty/nginx/sbin/nginx"
@@ -97,6 +100,10 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdSecurity(args[1:], stdout, stderr)
 	case "accesslog":
 		return cmdAccesslog(args[1:], stdout, stderr)
+	case "diagnose":
+		return cmdDiagnose(args[1:], stdout, stderr)
+	case "pprof":
+		return cmdPprof(args[1:], stdout, stderr)
 	case imageconv.ChildCommand:
 		// One WebP / AVIF conversion for the agent's image converter
 		// (internal; not in the usage).
@@ -129,6 +136,8 @@ Usage:
   edgeweir-node bans [--control-socket PATH] [--list]
   edgeweir-node security [--control-socket PATH]
   edgeweir-node accesslog [--site ID] [--json] [--socket PATH]
+  edgeweir-node diagnose [--state-dir DIR] [--control-socket PATH] [--diag-socket PATH] [--json]
+  edgeweir-node pprof PROFILE [--seconds N] [--output FILE] [--diag-socket PATH]
   edgeweir-node version
 
 Run "edgeweir-node <command> -h" for the flags of a command. Every flag can
@@ -440,6 +449,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		cacheDir      = fs.String("cache-dir", defaultCacheDir, "parent directory of the proxy cache zones")
 		controlSocket = fs.String("control-socket", defaultControlSocket, "unix socket of the data plane control API")
 		originSocket  = fs.String("origin-socket", defaultOriginSocket, "unix socket of the internal origin layer")
+		diagSocket    = fs.String("diag-socket", defaultDiagSocket, "unix socket of the agent's diagnostics for `diagnose` and `pprof` (mode 0600); empty disables it")
 		noVerifySock  = fs.String("origin-socket-noverify", "", "unix socket of the origin layer without TLS verification (default: origin-noverify.sock next to --origin-socket)")
 		edgeSock      = fs.String("edge-socket", "", "local edge listener for prefetch requests when every listener uses the PROXY protocol (default: edge.sock next to --control-socket)")
 		l4Sock        = fs.String("l4-socket", "", "unix socket of the stream subsystem's control relay for layer-4 applications (default: l4.sock next to --control-socket)")
@@ -574,6 +584,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		return a
 	}
 	state := abs(*stateDir)
+	diagPath := ""
+	if *diagSocket != "" {
+		diagPath = abs(*diagSocket)
+	}
 	prefix := *nginxPrefix
 	if prefix == "" {
 		prefix = filepath.Join(state, "nginx")
@@ -735,6 +749,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	a := agent.New(agent.Config{
 		StateDir:            state,
 		SupervisorSocket:    os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"),
+		DiagSocket:          diagPath,
 		ConfPath:            conf,
 		Render:              params,
 		DefaultPort:         uint32(*defaultPort),

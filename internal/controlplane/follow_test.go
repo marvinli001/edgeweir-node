@@ -211,9 +211,20 @@ func TestCheck(t *testing.T) {
 	if err != nil || res.Legacy || !res.Advertised.Equal(e.viaRelay) {
 		t.Fatalf("check through the second address: %+v, %v", res, err)
 	}
-	if got := e.console.ChannelChecks(); len(got) != 1 || got[0] != "node-follow" {
-		t.Fatalf("checks = %v", got)
+	if got := e.console.ChannelChecks(); len(got) != 1 || got[0] != "node-follow" || res.ClockKnown {
+		t.Fatalf("checks = %v, clock %v", got, res.ClockKnown)
 	}
+	// With the clock: a second call on the open connection measures it
+	// (the console's clock 5 s ahead: the node is 5 s behind).
+	e.console.SetClock(5 * time.Second)
+	res, err = controlplane.CheckWithClock(ctx, id, certOf(id), e.viaRelay)
+	if err != nil || !res.ClockKnown || res.ClockOffset > -4*time.Second || res.ClockOffset < -6*time.Second || res.ClockRTT <= 0 {
+		t.Fatalf("check with clock: %+v, %v", res, err)
+	}
+	if got := e.console.ChannelChecks(); len(got) != 3 {
+		t.Fatalf("checks = %v, want 3", got)
+	}
+	e.console.SetClock(0)
 
 	codeOf := func(addr controlplane.Address) string {
 		t.Helper()

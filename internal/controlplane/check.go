@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -72,6 +73,13 @@ type CheckResult struct {
 	// The console answered, but has no CheckChannel: an RPC without side
 	// effects stood in for it.
 	Legacy bool
+	// How far the node's clock is ahead of the console's (negative:
+	// behind), from a second CheckChannel on the open connection
+	// (CheckWithClock): the console's time against the middle of its round
+	// trip (RTT). Unset for a console that does not tell its time.
+	ClockOffset time.Duration
+	ClockRTT    time.Duration
+	ClockKnown  bool
 }
 
 // Check makes one authenticated call at addr with id's credentials: the
@@ -81,6 +89,16 @@ type CheckResult struct {
 // RPCs is checked with GetCertificates (no ids) or GetProbeTargets. Errors
 // are CheckErrors.
 func Check(ctx context.Context, id *identity.Loaded, cert func() *tls.Certificate, addr Address) (CheckResult, error) {
+	return check(ctx, id, cert, addr, false)
+}
+
+// CheckWithClock is Check for a node that also measures its clock against
+// the console's with a second call (CheckResult.ClockOffset).
+func CheckWithClock(ctx context.Context, id *identity.Loaded, cert func() *tls.Certificate, addr Address) (CheckResult, error) {
+	return check(ctx, id, cert, addr, true)
+}
+
+func check(ctx context.Context, id *identity.Loaded, cert func() *tls.Certificate, addr Address, clock bool) (CheckResult, error) {
 	fail := func(code string, err error) (CheckResult, error) {
 		return CheckResult{}, &CheckError{Code: code, Err: err}
 	}
@@ -98,10 +116,10 @@ func Check(ctx context.Context, id *identity.Loaded, cert func() *tls.Certificat
 	if id.ProbeID != "" {
 		return checkProbe(ctx, nodev1connect.NewProbeServiceClient(hc, baseURL(u), clientOptions()...), id.ProbeID)
 	}
-	return checkNode(ctx, nodev1connect.NewNodeServiceClient(hc, baseURL(u), clientOptions()...), id.NodeID)
+	return checkNode(ctx, nodev1connect.NewNodeServiceClient(hc, baseURL(u), clientOptions()...), id.NodeID, clock)
 }
 
-func checkNode(ctx context.Context, client nodev1connect.NodeServiceClient, nodeID string) (CheckResult, error) {
+func checkNode(ctx context.Context, client nodev1connect.NodeServiceClient, nodeID string, clock bool) (CheckResult, error) {
 	resp, err := client.CheckChannel(ctx, connect.NewRequest(&nodev1.CheckChannelRequest{}))
 	if connect.CodeOf(err) == connect.CodeUnimplemented {
 		// The TLS handshake proved the console's CA; this proves the node
@@ -117,7 +135,19 @@ func checkNode(ctx context.Context, client nodev1connect.NodeServiceClient, node
 	if got := resp.Msg.GetNodeId(); got != nodeID {
 		return CheckResult{}, &CheckError{Code: CheckWrongIdentity, Err: fmt.Errorf("the console answered for node %q, not %q", got, nodeID)}
 	}
-	return CheckResult{Advertised: advertised(resp.Msg.GetChannel())}, nil
+	res := CheckResult{Advertised: advertised(resp.Msg.GetChannel())}
+	if clock && resp.Msg.GetConsoleTime() != nil {
+		// The first call included the connection setup.
+		sent := time.Now()
+		again, err := client.CheckChannel(ctx, connect.NewRequest(&nodev1.CheckChannelRequest{}))
+		received := time.Now()
+		if t := again.Msg.GetConsoleTime(); err == nil && t.IsValid() {
+			res.ClockRTT = received.Sub(sent)
+			res.ClockOffset = sent.Round(0).Add(res.ClockRTT / 2).Sub(t.AsTime())
+			res.ClockKnown = true
+		}
+	}
+	return res, nil
 }
 
 func checkProbe(ctx context.Context, client nodev1connect.ProbeServiceClient, probeID string) (CheckResult, error) {
