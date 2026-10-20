@@ -1715,7 +1715,7 @@ WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_
 # dimensions (g16.go). GeoIP comes from the synthetic database
 # (203.0.113.0/24: NZ, AS64512) for the PROXY protocol's client address.
 features=$(curl -fsS "$HELPER/features")
-for f in access-logs-v2 stats-dims-v1; do grep -qx "$f" <<<"$features" || fail "$f not reported"; done
+for f in access-logs-v2 stats-dims-v1 origin-stats-v1; do grep -qx "$f" <<<"$features" || fail "$f not reported"; done
 rev=$(curl -fsS -X POST "$HELPER/g16")
 WAIT_SECS=60 wait_for "G16 revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 g16_get() { # host client path [header line...]
@@ -1738,6 +1738,8 @@ r=$(g16_get log.g16.test 203.0.113.161 "/g16-a?x=1&y=two" "User-Agent: $FIREFOX"
 r=$(g16_get blk.g16.test 203.0.113.162 /g16-block "User-Agent: curl/8.0" | tr -d '\r')
 [ "$(status_of "$r") $(header_of "$r" X-Edgeweir-Error)" = "403 policy-denied" ] || fail "blk.g16.test: $(status_of "$r")"
 [ "$(status_of "$(g16_get blk.g16.test 203.0.113.162 /g16-open | tr -d '\r')")" = 200 ] || fail "blk.g16.test /g16-open"
+off=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: off.g16.test' "$NODE/g16-off")
+[ "$off" = 502 ] || fail "off.g16.test: $off, want 502"
 for i in 1 2 3; do curl -s -o /dev/null -H 'Host: log.g16.test' "$NODE/g16-live-$i"; done
 curl -s -o /dev/null -H 'Host: demo.test' "$NODE/g16-other-site"
 live_has() { grep -q "\"path\":\"$1\"" "$TMPDIR_E2E/g16-live.jsonl"; }
@@ -1763,12 +1765,13 @@ g16_dims() {
   s=$(curl -fsS "$HELPER/g16/stats")
   for want in '^site-g16 country NZ ' '^site-g16 asn 64512_Synthetic_AS64512 ' '^site-g16 referer ref\.g16\.test ' \
     '^site-g16 browser firefox ' '^site-g16 os linux ' '^site-g16 device desktop ' '^site-g16 http 1\.1 ' '^site-g16 tls none ' \
-    '^site-g16b reason rule ' '^site-g16b browser tool '; do
+    '^site-g16b reason rule ' '^site-g16b browser tool ' \
+    '^site-g16 origin o1 [1-9][0-9]* cf=0 to=0 tls=0 inv=0 e5=0 answered=[1-9]' '^site-g16c origin o1 [1-9][0-9]* cf=[1-9][0-9]* .* answered=0 ms=0$'; do
     grep -Eq "$want" <<<"$s" || return 1
   done
 }
 WAIT_SECS=180 wait_for "statistics dimensions uploaded" g16_dims
-pass "G16: countries, networks, referring hosts, user agent classes, versions and block reasons in the uploaded minutes"
+pass "G16: countries, networks, referring hosts, user agent classes, versions, block reasons and each origin's fetches in the uploaded minutes"
 rev=$(curl -fsS -X POST "$HELPER/g16?enabled=false")
 WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"
 

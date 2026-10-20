@@ -18,6 +18,8 @@ import (
 //	              the X-Trace-Id header and the connection's peer
 //	blk.g16.test  whoami, nothing sampled, blocked requests always logged;
 //	              rule g16-block blocks /g16-block
+//	off.g16.test  an origin nothing listens on (port 9 of the whoami host;
+//	              origin-stats-v1, ADR-0052)
 func g16Config(origin string) *nodev1.NodeConfig {
 	l := site("site-g16", "log.g16.test", origin, 80)
 	l.LogSampleRate = 10000
@@ -27,7 +29,8 @@ func g16Config(origin string) *nodev1.NodeConfig {
 	b.Rules = []*nodev1.EdgeRule{{Id: "g16-block", Phase: "waf-custom",
 		Expression: &nodev1.RuleExpression{Op: "eq", Field: "http.request.uri.path", ValueType: "string", Value: "/g16-block"},
 		Action:     &nodev1.RuleAction{Kind: "block", StatusCode: 403}}}
-	cfg := config(append(baseSites(origin), l, b)...)
+	off := site("site-g16c", "off.g16.test", origin, 9)
+	cfg := config(append(baseSites(origin), l, b, off)...)
 	cfg.RequiredFeatures = append(cfg.RequiredFeatures, configir.FeatureAccessLogsV2)
 	return cfg
 }
@@ -36,7 +39,9 @@ func g16Config(origin string) *nodev1.NodeConfig {
 // configuration again); GET /g16/logs lists the access log lines of the
 // G16 sites, "<site> <status> <path> key=value ..." (values with spaces
 // as "_"); GET /g16/stats the dimensions of the uploaded minutes of the
-// G16 sites, one "<site> <dimension> <key> <count>" line per value.
+// G16 sites, one "<site> <dimension> <key> <count>" line per value, and
+// "<site> origin <id> <attempts> cf=.. to=.. tls=.. inv=.. e5=.. answered=.. ms=.."
+// per origin and minute.
 func g16Handlers(mux *http.ServeMux, c *fakeconsole.Console, origin string) {
 	mux.HandleFunc("POST /g16", func(w http.ResponseWriter, r *http.Request) {
 		cfg := g16Config(origin)
@@ -83,6 +88,15 @@ func g16Handlers(mux *http.ServeMux, c *fakeconsole.Console, origin string) {
 				for k, n := range values {
 					fmt.Fprintf(w, "%s %s %s %d\n", site, name, k, n)
 				}
+			}
+			for _, o := range m.GetOrigins() {
+				var answered uint64
+				for _, n := range o.GetHeaderTimeBuckets() {
+					answered += n
+				}
+				fmt.Fprintf(w, "%s origin %s %d cf=%d to=%d tls=%d inv=%d e5=%d answered=%d ms=%d\n", site, o.GetOriginId(), o.GetRequests(),
+					o.GetConnectFailures(), o.GetTimeouts(), o.GetTlsFailures(), o.GetInvalidResponses(), o.GetServerErrors(), answered,
+					o.GetHeaderTimeMsSum())
 			}
 		}
 	})
