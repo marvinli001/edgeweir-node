@@ -71,6 +71,7 @@ type Console struct {
 	opts Options
 
 	mu                 sync.Mutex
+	clockAhead         time.Duration // SetClock
 	tokens             map[string]bool
 	revisions          []*nodev1.NodeConfig
 	watchers           map[chan struct{}]struct{}
@@ -559,6 +560,7 @@ func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.Re
 		TasksPending:          len(c.pendingTasks) > 0,
 		Probe:                 c.probe.nodeProbe,
 		Channel:               proto.CloneOf(c.channel),
+		ConsoleTime:           c.consoleTime(),
 	}), nil
 }
 

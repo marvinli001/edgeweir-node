@@ -91,6 +91,9 @@ type Config struct {
 	// StateDir holds the identity and the LKG configuration.
 	StateDir         string
 	SupervisorSocket string
+	// DiagSocket is the unix socket of the diagnostics (internal/diag:
+	// status and pprof, 0600); empty: none.
+	DiagSocket string
 	// NodeLogs holds the process's warnings, errors and events (its
 	// logger's nodelog.Handler and the engine's LogSink); the agent
 	// uploads them (feature node-logs-v1). nil: no node logs.
@@ -310,6 +313,14 @@ type Agent struct {
 	rejectedKey  string
 	rejectedAt   time.Time
 	lastRenew    time.Time
+	// Diagnostics (diag.go): heartbeats and the clock measured with them.
+	startedAt      time.Time
+	reportOK       time.Time
+	reportErr      string
+	reportErrAt    time.Time
+	reportInterval time.Duration
+	latestRevision uint64
+	clock          *clockSample
 
 	banStatus *dataplane.BanStatus // last ban status of the data plane (mu)
 
@@ -391,6 +402,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		ids:               identity.Store{Dir: cfg.StateDir},
 		lkg:               configstore.Store{Dir: filepath.Join(cfg.StateDir, identity.ConfigDir)},
 		message:           "waiting for the first configuration",
+		startedAt:         time.Now(),
 		creds:             map[string]configir.Credential{},
 		certificates:      map[string]configir.Certificate{},
 		originClientCerts: map[string]configir.Certificate{},
@@ -516,6 +528,9 @@ func (a *Agent) Run(parent context.Context) error {
 		return err
 	}
 	if err := a.serveImageSocket(ctx, spawn); err != nil {
+		return err
+	}
+	if err := a.serveDiagSocket(ctx); err != nil {
 		return err
 	}
 	spawn("activehealth", a.activeHealthLoop)
@@ -684,6 +699,12 @@ func (a *Agent) prepareDirs() error {
 		{filepath.Dir(a.cfg.Render.WithDefaults().L4Socket), 0o750},
 		{filepath.Dir(a.cfg.Render.OriginSocket), 0o750},
 		{filepath.Dir(a.cfg.ConfPath), 0o750},
+	}
+	if a.cfg.DiagSocket != "" {
+		dirs = append(dirs, struct {
+			path string
+			mode os.FileMode
+		}{filepath.Dir(a.cfg.DiagSocket), 0o750})
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d.path, d.mode); err != nil {

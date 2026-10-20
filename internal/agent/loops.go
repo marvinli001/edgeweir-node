@@ -189,6 +189,10 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 		req.AppliedAt = timestamppb.New(a.appliedAt)
 	}
 	req.CertificateFailures = a.certUse.report()
+	if a.clock != nil {
+		offset := a.clock.offset.Milliseconds()
+		req.ClockOffsetMillis = &offset
+	}
 	a.mu.Unlock()
 	req.RevisionReceipt = a.receiptFor(req.AppliedRevision, req.AppliedContentHash)
 	req.Info = hostinfo.Collect(a.engineVersion)
@@ -229,10 +233,13 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	if a.kernelActive() {
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "kernel-ban-v1")
 	}
+	sent := time.Now()
 	resp, err := a.channel.Client().ReportStatus(cctx, connect.NewRequest(req))
+	received := time.Now()
 	follow := a.follow.Load()
 	if err != nil {
 		if ctx.Err() == nil {
+			a.noteReportError(err, received)
 			if follow != nil {
 				follow.NoteFailure(err)
 			}
@@ -256,6 +263,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	if s := resp.Msg.GetReportIntervalSeconds(); s > 0 {
 		interval = min(max(time.Duration(s)*time.Second, time.Second), 5*time.Minute)
 	}
+	a.noteReport(resp.Msg, sent, received, interval)
 	a.noteHeartbeat(ctx, req.GetState() == nodev1.ApplyState_APPLY_STATE_APPLIED && req.GetDataPlaneHealthy() &&
 		resp.Msg.GetLatestRevision() == req.GetAppliedRevision(), interval)
 	if resp.Msg.GetLatestRevision() > a.appliedRevision() {

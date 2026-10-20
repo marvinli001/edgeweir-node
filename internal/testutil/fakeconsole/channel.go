@@ -3,9 +3,11 @@ package fakeconsole
 import (
 	"context"
 	"errors"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
@@ -41,7 +43,20 @@ func (c *Console) CheckChannel(ctx context.Context, _ *connect.Request[nodev1.Ch
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("CheckChannel is not implemented"))
 	}
 	c.channelChecks = append(c.channelChecks, c.opts.NodeID)
-	return connect.NewResponse(&nodev1.CheckChannelResponse{NodeId: c.opts.NodeID, Channel: proto.CloneOf(c.channel)}), nil
+	return connect.NewResponse(&nodev1.CheckChannelResponse{NodeId: c.opts.NodeID, Channel: proto.CloneOf(c.channel), ConsoleTime: c.consoleTime()}), nil
+}
+
+// SetClock sets how far the console's clock (console_time) is ahead of
+// the real time.
+func (c *Console) SetClock(ahead time.Duration) {
+	c.mu.Lock()
+	c.clockAhead = ahead
+	c.mu.Unlock()
+}
+
+// consoleTime is the console's clock (c.mu held).
+func (c *Console) consoleTime() *timestamppb.Timestamp {
+	return timestamppb.New(time.Now().Add(c.clockAhead))
 }
 
 // CheckProbeChannel implements ProbeService.
