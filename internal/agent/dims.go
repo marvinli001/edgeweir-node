@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
@@ -125,7 +126,44 @@ func statsKeyed(in map[string]uint64, keys map[string]bool) map[string]uint64 {
 	return out
 }
 
-// applyDimensions sets the dimensions of m on out (MinuteStats 14-24).
+// maxStatsOrigins bounds MinuteStats.origins (the data plane keeps the same).
+const maxStatsOrigins = 64
+
+// statsOrigins converts the origins of a minute (ADR-0052): valid origin
+// ids with attempts, the maxStatsOrigins with the most (ties: the id); the
+// header times are dropped when the buckets are not one per bound and one
+// above.
+func statsOrigins(in map[string]dataplane.OriginCount) []*nodev1.OriginCounter {
+	var out []*nodev1.OriginCounter
+	for id, o := range in {
+		if !configir.ValidID(id) || o.Requests == 0 {
+			continue
+		}
+		c := &nodev1.OriginCounter{
+			OriginId:         id,
+			Requests:         o.Requests,
+			ConnectFailures:  o.ConnectFailures,
+			Timeouts:         o.Timeouts,
+			TlsFailures:      o.TLSFailures,
+			InvalidResponses: o.InvalidResponses,
+			ServerErrors:     o.ServerErrors,
+		}
+		if len(o.HeaderTimeBuckets) == len(dataplane.HeaderTimeBoundsMS)+1 {
+			c.HeaderTimeBuckets = slices.Clone(o.HeaderTimeBuckets)
+			c.HeaderTimeMsSum = o.HeaderTimeMSSum
+		}
+		out = append(out, c)
+	}
+	slices.SortFunc(out, func(a, b *nodev1.OriginCounter) int {
+		return cmp.Or(cmp.Compare(b.Requests, a.Requests), strings.Compare(a.OriginId, b.OriginId))
+	})
+	if len(out) > maxStatsOrigins {
+		out = out[:maxStatsOrigins]
+	}
+	return out
+}
+
+// applyDimensions sets the dimensions of m on out (MinuteStats 14-24 and 26).
 func applyDimensions(out *nodev1.MinuteStats, m dataplane.MinuteStats) {
 	out.Countries = statsCountries(m.Countries)
 	out.Asns = statsASNs(m.ASNs)
@@ -138,4 +176,5 @@ func applyDimensions(out *nodev1.MinuteStats, m dataplane.MinuteStats) {
 	out.BlockReasons = statsKeyed(m.BlockReasons, statsBlockReasons)
 	out.ChallengesIssued = m.ChallengesIssued
 	out.ChallengesPassed = m.ChallengesPassed
+	out.Origins = statsOrigins(m.Origins)
 }

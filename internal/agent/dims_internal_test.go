@@ -90,3 +90,41 @@ func TestValidRefererHost(t *testing.T) {
 		}
 	}
 }
+
+// TestConvertStatsCarriesOrigins: MinuteStats.origins (feature
+// origin-stats-v1, ADR-0052): valid ids with attempts, the 64 with the
+// most, and header times only with one bucket per bound and one above.
+func TestConvertStatsCarriesOrigins(t *testing.T) {
+	buckets := []uint64{1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 4}
+	origins := map[string]dataplane.OriginCount{
+		"o-heavy":   {Requests: 500, ConnectFailures: 1, Timeouts: 2, TLSFailures: 3, InvalidResponses: 4, ServerErrors: 5, HeaderTimeBuckets: buckets, HeaderTimeMSSum: 41000},
+		"o-short":   {Requests: 400, HeaderTimeBuckets: []uint64{1, 2}, HeaderTimeMSSum: 9},
+		"bad|id":    {Requests: 300},
+		"o-silent":  {},
+		"o-no-time": {Requests: 300, ConnectFailures: 300},
+	}
+	for i := range 70 {
+		origins[fmt.Sprintf("o%02d", i)] = dataplane.OriginCount{Requests: uint64(i + 1)}
+	}
+	out := convertStats([]dataplane.MinuteStats{{Minute: 1800000000, SiteID: "s1", Requests: 10, Origins: origins}, {Minute: 1800000000, SiteID: "bare"}})
+	o := out[0].GetOrigins()
+	if len(o) != 64 || o[0].GetOriginId() != "o-heavy" || o[1].GetOriginId() != "o-short" || o[2].GetOriginId() != "o-no-time" {
+		t.Fatalf("origins %d: %v", len(o), o[:3])
+	}
+	h := o[0]
+	if h.GetRequests() != 500 || h.GetConnectFailures() != 1 || h.GetTimeouts() != 2 || h.GetTlsFailures() != 3 || h.GetInvalidResponses() != 4 ||
+		h.GetServerErrors() != 5 || fmt.Sprint(h.GetHeaderTimeBuckets()) != fmt.Sprint(buckets) || h.GetHeaderTimeMsSum() != 41000 {
+		t.Errorf("heavy %v", h)
+	}
+	if o[1].GetHeaderTimeBuckets() != nil || o[1].GetHeaderTimeMsSum() != 0 || o[1].GetRequests() != 400 {
+		t.Errorf("short buckets kept: %v", o[1])
+	}
+	for _, c := range o {
+		if c.GetOriginId() == "bad|id" || c.GetOriginId() == "o-silent" || c.GetOriginId() == "o00" {
+			t.Errorf("unexpected origin %v", c)
+		}
+	}
+	if out[1].GetOrigins() != nil {
+		t.Errorf("a bucket without origins: %v", out[1].GetOrigins())
+	}
+}

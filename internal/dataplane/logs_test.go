@@ -132,7 +132,9 @@ func TestMinuteStatsDecodesDimensions(t *testing.T) {
 		"asns":{"64512":{"requests":2,"name":"Synthetic AS64512"}},"referers":{"news.example.org":1},
 		"browsers":{"firefox":2,"tool":1},"operating_systems":{"windows":2},"devices":{"desktop":2},
 		"http_versions":{"2":2,"1.1":1},"tls_versions":{"1.3":2,"none":1},"block_reasons":{"rule":1},
-		"challenges_issued":4,"challenges_passed":1}`
+		"challenges_issued":4,"challenges_passed":1,
+		"origins":{"o1":{"requests":5,"connect_failures":1,"timeouts":1,"tls_failures":1,"invalid_responses":1,"server_errors":1,
+		"header_time_buckets":[1,0,0,0,0,0,0,0,0,0,0],"header_time_ms_sum":7}}}`
 	var m dataplane.MinuteStats
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatal(err)
@@ -141,6 +143,10 @@ func TestMinuteStatsDecodesDimensions(t *testing.T) {
 		m.Referers["news.example.org"] != 1 || m.Browsers["firefox"] != 2 || m.OperatingSystems["windows"] != 2 ||
 		m.Devices["desktop"] != 2 || m.HTTPVersions["2"] != 2 || m.TLSVersions["none"] != 1 || m.BlockReasons["rule"] != 1 ||
 		m.ChallengesIssued != 4 || m.ChallengesPassed != 1 {
+		t.Fatalf("decoded %+v", m)
+	}
+	if o := m.Origins["o1"]; o.Requests != 5 || o.ConnectFailures != 1 || o.Timeouts != 1 || o.TLSFailures != 1 ||
+		o.InvalidResponses != 1 || o.ServerErrors != 1 || len(o.HeaderTimeBuckets) != 11 || o.HeaderTimeBuckets[0] != 1 || o.HeaderTimeMSSum != 7 {
 		t.Fatalf("decoded %+v", m)
 	}
 }

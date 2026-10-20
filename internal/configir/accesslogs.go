@@ -19,6 +19,11 @@ const (
 	FeatureStatsDims    = "stats-dims-v1"
 )
 
+// FeatureOriginStats (proto v1.4.0, ADR-0052): MinuteStats carries each
+// origin's fetches (MinuteStats.origins). The console only reads them; no
+// configuration requires it.
+const FeatureOriginStats = "origin-stats-v1"
+
 // MaxLogHeaders bounds the request headers a site records (Site.log_headers).
 const MaxLogHeaders = 8
 

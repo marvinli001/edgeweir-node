@@ -228,7 +228,29 @@ type MinuteStats struct {
 	BlockReasons     map[string]uint64       `json:"block_reasons"`
 	ChallengesIssued uint64                  `json:"challenges_issued"`
 	ChallengesPassed uint64                  `json:"challenges_passed"`
+	// Origins counts the fetches from each origin, by origin id (feature
+	// origin-stats-v1, ADR-0052; at most 64).
+	Origins map[string]OriginCount `json:"origins"`
 }
+
+// OriginCount is a minute of an origin's fetches: attempts, failed attempts
+// by class, attempts answered with a 5xx, and the answered attempts' times
+// to the response header (HeaderTimeBuckets: upper bounds
+// HeaderTimeBoundsMS and above; HeaderTimeMSSum: their sum in ms).
+type OriginCount struct {
+	Requests          uint64   `json:"requests"`
+	ConnectFailures   uint64   `json:"connect_failures"`
+	Timeouts          uint64   `json:"timeouts"`
+	TLSFailures       uint64   `json:"tls_failures"`
+	InvalidResponses  uint64   `json:"invalid_responses"`
+	ServerErrors      uint64   `json:"server_errors"`
+	HeaderTimeBuckets []uint64 `json:"header_time_buckets"`
+	HeaderTimeMSSum   uint64   `json:"header_time_ms_sum"`
+}
+
+// HeaderTimeBoundsMS are the upper bounds of OriginCount.HeaderTimeBuckets
+// but the last (edgeweir.topstats.HEADER_TIME_BOUNDS).
+var HeaderTimeBoundsMS = []uint64{10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
 
 // CountryCount is a country's requests and bytes sent in a minute.
 type CountryCount struct {
