@@ -176,8 +176,11 @@ read -r agent _ <<<"$(proc_pid '^\S*edgeweir-node\0run')"
 compose exec -T node perl -e 'kill "TERM", $ARGV[0] or die "kill: $!"' "$agent"
 agent_back() { [ "$(compose logs node | grep -c 'supervisor started node')" -ge 2 ] && applied_is "1 APPLY_STATE_APPLIED"; }
 WAIT_SECS=30 wait_for "agent restarted by the supervisor" agent_back
-read -r master_after _ <<<"$(proc_pid '^nginx: master')"
-[ "$master_after" = "$master" ] || fail "nginx master changed from $master to $master_after when the agent restarted"
+# The agent's apply reloads nginx: a worker it just forked still carries the
+# master's title for a moment (and /proc/1xx sorts before /proc/33), so the
+# master is the match whose parent is the supervisor.
+same_master() { local pid parent; read -r pid parent <<<"$(proc_pid '^nginx: master')"; [ "$parent" = 1 ] && [ "$pid" = "$master" ]; }
+WAIT_SECS=10 wait_for "nginx master $master to keep running when the agent restarted" same_master
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.test' "$NODE/e2e-agent-restart")
 [ "$code" = 200 ] || fail "demo.test after the agent restarted: $code"
 pass "OpenResty runs under the supervisor and keeps serving while the agent restarts"
