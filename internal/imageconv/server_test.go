@@ -536,7 +536,19 @@ func TestLimiter(t *testing.T) {
 	}
 }
 
+// TestRunChild runs RunChild in a child: its limitSelf changes the process
+// for good (capabilities, resource limits, no_new_privs), and the test
+// binary of a default-tag Linux build crashed after the last test with it
+// applied in-process.
 func TestRunChild(t *testing.T) {
+	if os.Getenv("IMAGECONV_RUN_CHILD") != "1" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRunChild$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "IMAGECONV_RUN_CHILD=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("child: %v\n%s", err, out)
+		}
+		return
+	}
 	jpg := encodeJPEG(t, testImage(32, 24, false))
 	run := func(stdin []byte, args ...string) (int, []byte) {
 		var out, errb bytes.Buffer

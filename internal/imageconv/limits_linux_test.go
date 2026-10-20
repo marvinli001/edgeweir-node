@@ -98,8 +98,8 @@ func TestLimitSelfNoNewPrivs(t *testing.T) {
 
 // TestLimitSelfKeepsLowerLimits: a child without CAP_SYS_RESOURCE whose
 // inherited data limit is below what limitSelf would set keeps the lower
-// one instead of failing (every conversion would). RunChild in-process
-// (TestRunChild) depends on it too: VmData grows between conversions.
+// one instead of failing (every conversion would). RunChild in TestRunChild's
+// child depends on it too: VmData grows between conversions.
 func TestLimitSelfKeepsLowerLimits(t *testing.T) {
 	if os.Getenv("IMAGECONV_LOWER_CHILD") == "1" {
 		if err := dropCapabilities(); err != nil {
