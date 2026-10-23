@@ -30,7 +30,8 @@ var errNoModSecurity = errors.New("no ModSecurity module")
 // detectModules finds the optional OpenResty modules this node can use:
 // brotli-v1 and zstd-v1 from the configure arguments of `nginx -V`,
 // modsecurity-v1 when the ModSecurity module and the OWASP CRS load in a
-// configuration test.
+// configuration test, origin-proxy-protocol-v1 when an upstream with
+// proxy_protocol_header passes one.
 func (a *Agent) detectModules(ctx context.Context) {
 	features, err := a.engine.ModuleFeatures(ctx)
 	if err != nil {
@@ -40,6 +41,11 @@ func (a *Agent) detectModules(ctx context.Context) {
 		features = append(features, configir.FeatureModSecurity)
 	} else if !errors.Is(err, errNoModSecurity) {
 		a.log.Warn("ModSecurity module unusable; sites cannot run the OWASP CRS on this node", "err", err)
+	}
+	if err := a.probeUpstreamProxyProtocol(ctx); err == nil {
+		features = append(features, configir.FeatureOriginProxyProtocol)
+	} else {
+		a.log.Warn("OpenResty cannot send PROXY protocol to HTTP origins (edgeweir-openresty 1.31.1.1-3 or later can)", "err", err)
 	}
 	slices.Sort(features)
 	a.moduleFeatures = slices.Compact(features)
@@ -87,6 +93,22 @@ func (a *Agent) probeModSecurity(ctx context.Context) error {
 		return fmt.Errorf("ModSecurity and the OWASP CRS do not load: %w", err)
 	}
 	return nil
+}
+
+// probeUpstreamProxyProtocol tests a configuration whose upstream writes a
+// PROXY protocol header (render.UpstreamProxyProtocolProbe).
+func (a *Agent) probeUpstreamProxyProtocol(ctx context.Context) error {
+	p := a.cfg.Render.WithDefaults()
+	conf, err := render.UpstreamProxyProtocolProbe(p)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(p.Prefix, "conf", "proxy-protocol-probe.nginx.conf")
+	defer func() { _ = os.Remove(path) }()
+	if err := fsutil.WriteFileAtomic(path, conf, 0o644); err != nil {
+		return err
+	}
+	return a.engine.Test(ctx, path)
 }
 
 // installModSecurityConf writes the CRS configuration plan needs next to

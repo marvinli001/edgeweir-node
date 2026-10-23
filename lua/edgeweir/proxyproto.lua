@@ -25,6 +25,11 @@ local char, concat, floor = string.char, table.concat, math.floor
 local tonumber = tonumber
 
 _M.V2_SIGNATURE = "\r\n\r\n\0\r\nQUIT\n"
+-- V1_UNKNOWN and V2_LOCAL are the headers of connections the proxy opens
+-- on its own behalf (health checks, its own requests): the receiver uses
+-- the connection's endpoints.
+_M.V1_UNKNOWN = "PROXY UNKNOWN\r\n"
+_M.V2_LOCAL = _M.V2_SIGNATURE .. "\x20\x00\x00\x00"
 
 local function port(p)
   p = tonumber(p)

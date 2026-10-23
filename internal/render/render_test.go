@@ -995,3 +995,77 @@ func TestRenderErrorPages(t *testing.T) {
 		t.Errorf("%d edge named error locations for %d edge servers", n, edgeServers)
 	}
 }
+
+// TestRenderOriginProxyProtocol: while an origin is sent PROXY protocol the
+// edge passes the client connection in X-Edgeweir-Conn (gRPC too), the
+// origin layers declare $edgeweir_proxy_protocol and never forward the
+// header, and every balancer upstream writes the variable on new
+// connections; otherwise none of it is rendered (unpatched OpenResty keeps
+// working).
+func TestRenderOriginProxyProtocol(t *testing.T) {
+	p := params()
+	plan := configir.Bootstrap(80)
+	plan.Sites = []configir.Site{{ID: "s", Origins: []configir.Origin{{ID: "o", Scheme: configir.SchemeHTTP, Address: "192.0.2.1", Port: 80, Weight: 1, ProxyProtocol: 2}}}}
+	got, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	for _, name := range []string{"edgeweir_balancer", "edgeweir_balancer_h2", "edgeweir_balancer_grpc"} {
+		balancer := section(t, conf, "upstream "+name+" {", "}")
+		if !strings.Contains(balancer, "proxy_protocol_header $edgeweir_proxy_protocol;") {
+			t.Errorf("balancer upstream without proxy_protocol_header:\n%s", balancer)
+		}
+	}
+	conn := `_set_header X-Edgeweir-Conn "$remote_addr $remote_port $edgeweir_conn_dst $edgeweir_conn_dport";`
+	for _, want := range []string{
+		"map $proxy_protocol_server_addr $edgeweir_conn_dst {",
+		"map $proxy_protocol_server_port $edgeweir_conn_dport {",
+		"proxy" + conn,
+		"grpc" + conn,
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	for _, l := range renderedLayers(p.WithDefaults(), plan) {
+		layer := originLayerServer(t, conf, l.Socket)
+		module := "proxy"
+		if l.Protocol == protocolGRPC {
+			module = "grpc"
+		}
+		for _, want := range []string{`set $edgeweir_proxy_protocol "";`, module + `_set_header X-Edgeweir-Conn "";`} {
+			if strings.Count(layer, want) != 2 { // location / and @edgeweir_origin_noretry
+				t.Errorf("origin layer %s: %q %d times", l.Socket, want, strings.Count(layer, want))
+			}
+		}
+	}
+
+	plan.Sites[0].Origins[0].ProxyProtocol = 0
+	bare, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"proxy_protocol_header", "edgeweir_proxy_protocol", "X-Edgeweir-Conn", "edgeweir_conn_dst"} {
+		if bytes.Contains(bare, []byte(unwanted)) {
+			t.Errorf("%s rendered without PROXY protocol origins", unwanted)
+		}
+	}
+}
+
+func TestUpstreamProxyProtocolProbe(t *testing.T) {
+	conf, err := UpstreamProxyProtocolProbe(params())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"proxy_protocol_header $edgeweir_proxy_protocol;", "listen unix:/var/lib/edgeweir-node/nginx/tmp/proxy-protocol-probe.sock;"} {
+		if !strings.Contains(string(conf), want) {
+			t.Errorf("probe without %q:\n%s", want, conf)
+		}
+	}
+	p := params()
+	p.Prefix = "/bad path"
+	if _, err := UpstreamProxyProtocolProbe(p); err == nil {
+		t.Error("unsafe prefix accepted")
+	}
+}

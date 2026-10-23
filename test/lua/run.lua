@@ -1159,6 +1159,63 @@ test("origin client certificates and keep-alive pool keys", function()
   end
 end)
 
+test("PROXY protocol to origins: client connection, headers and pool keys", function()
+  local c = origin.conn_endpoints("203.0.113.7 40000 198.51.100.9 443")
+  eq(c.src, "203.0.113.7")
+  eq(c.sport, 40000)
+  eq(c.dst, "198.51.100.9")
+  eq(c.dport, 443)
+  -- realip from a header leaves $remote_port empty: port 0.
+  local header_ip = origin.conn_endpoints("2001:db8::1  2001:db8::2 8443")
+  eq(header_ip.src, "2001:db8::1")
+  eq(header_ip.sport, 0)
+  eq(header_ip.dport, 8443)
+  eq(origin.conn_endpoints(nil), nil)
+  eq(origin.conn_endpoints(""), nil)
+  eq(origin.conn_endpoints("garbage"), nil)
+  eq(origin.conn_endpoints("a 1 b 99999").dport, 0, "out of range port")
+
+  eq(origin.proxy_header(1, c), "PROXY TCP4 203.0.113.7 198.51.100.9 40000 443\r\n")
+  eq(origin.proxy_header(2, c), require("edgeweir.proxyproto").v2("203.0.113.7", "198.51.100.9", 40000, 443))
+  eq(origin.proxy_header(1, header_ip), "PROXY TCP6 2001:db8::1 2001:db8::2 0 8443\r\n")
+  -- The agent's prefetches (unix sockets) and requests without the header:
+  -- the forms for connections of the proxy itself.
+  local prefetch = origin.conn_endpoints("unix: 0 unix: 0")
+  eq(origin.proxy_header(1, prefetch), "PROXY UNKNOWN\r\n")
+  eq(origin.proxy_header(2, prefetch), "\r\n\r\n\0\r\nQUIT\n\x20\x00\x00\x00")
+  eq(origin.proxy_header(2, nil), "\r\n\r\n\0\r\nQUIT\n\x20\x00\x00\x00")
+
+  local plain = store.prepare(site("p1", { { name = "p1.test" } }))
+  local http, https = { scheme = "http" }, { scheme = "https" }
+  local pp_http = { scheme = "http", proxy_protocol = 2 }
+  local pp_https = { scheme = "https", proxy_protocol = 1 }
+  -- Origins without PROXY protocol keep their keys.
+  eq(origin.pool_key(plain, http, nil, c), nil)
+  eq(origin.pool_key(plain, https, "o.test", c), "o.test")
+  local other = origin.conn_endpoints("203.0.113.8 40000 198.51.100.9 443")
+  local keys = {
+    origin.pool_key(plain, pp_http, nil, c),
+    origin.pool_key(plain, pp_http, nil, other),
+    origin.pool_key(plain, { scheme = "http", proxy_protocol = 1 }, nil, c),
+    origin.pool_key(plain, pp_https, "o.test", c),
+    origin.pool_key(plain, pp_http, nil, nil),
+    origin.pool_key(plain, http, nil, c) or "",
+  }
+  for i = 1, #keys do
+    for j = i + 1, #keys do
+      assert(keys[i] ~= keys[j], "pools " .. i .. " and " .. j .. " share connections: " .. keys[i])
+    end
+  end
+  eq(keys[1], "|pp2|203.0.113.7|40000|198.51.100.9|443")
+  eq(keys[4], "o.test|pp1|203.0.113.7|40000|198.51.100.9|443")
+  eq(origin.pool_key(plain, pp_http, nil, c), keys[1], "the same client connection shares its pool")
+  -- The site table keeps the version.
+  local s = store.prepare(site("p2", { { name = "p2.test" } }, {
+    origins = { { id = "o", address = "127.0.0.1", port = 80, scheme = "http", weight = 1, proxy_protocol = 2 } },
+  }))
+  eq(s.origins[1].proxy_protocol, 2)
+end)
+
 test("router gRPC content types", function()
   for _, ct in ipairs({ "application/grpc", "application/grpc+proto", "application/GRPC+json",
     "application/grpc; charset=utf-8", "application/grpc ;x=1" }) do
