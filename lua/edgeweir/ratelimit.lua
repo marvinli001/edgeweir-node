@@ -38,4 +38,19 @@ function M.check(dict, site_id, namespace, rule_id, action, value)
   if count > action.limit then return { status = action.status_code or 429, retry_after = window, count = count } end
 end
 
+-- greylist counts a request of client against a greylist entry's limit
+-- (requests per window seconds) in lua_shared_dict edgeweir_cc and returns
+-- the window when the client is over it, else nil. A full dictionary lets
+-- the request through uncounted (like the rules' limits).
+function M.greylist(id, client, requests, window)
+  local dict = ngx.shared.edgeweir_cc
+  if not dict or not id or not client or not requests or not window then return nil end
+  local key = "gl|" .. ngx.md5_bin(id .. "|" .. client) .. tostring(math.floor(ngx.now() / window))
+  local ok, err = dict:safe_add(key, 0, window + 1)
+  if not ok and err ~= "exists" then return nil end
+  local count = dict:incr(key, 1)
+  if count and count > requests then return window end
+  return nil
+end
+
 return M

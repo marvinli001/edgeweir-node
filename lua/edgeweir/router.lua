@@ -350,6 +350,38 @@ local function route(site, pctx, headers, host, original_path, acme)
   return true
 end
 
+-- greylist_level raises a challenge (level, kind) to a greylist entry's
+-- challenge unless the request is exempt (allow rules, skip actions with
+-- challenges, allow lists).
+function _M.greylist_level(grey, exempt, level, kind)
+  if grey and grey.action == "challenge" and not exempt then
+    local l = challenge.LEVELS[grey.challenge]
+    if l and l > (level or 0) then
+      return l, grey.challenge
+    end
+  end
+  return level, kind
+end
+
+-- greylist_rate_exempt: allow rules, the platform allow lists and skip
+-- actions with rate_limits (of the entry's own scope) exempt from a
+-- greylist entry's rate limit.
+function _M.greylist_rate_exempt(grey, pctx)
+  if not pctx then
+    return false
+  end
+  return pctx.allowed or pctx.platform_allowed
+    or (grey.platform and pctx.skip_rate_limits_platform)
+    or (not grey.platform and pctx.skip_rate_limits_site) or false
+end
+
+-- greylist_rate counts the request against a greylist entry's rate limit
+-- per client (IPv4 address, IPv6 /64) and returns the seconds to wait when
+-- it is over (edgeweir.ratelimit.greylist).
+function _M.greylist_rate(grey, addr)
+  return require("edgeweir.ratelimit").greylist(grey.id, ipaddr.client_network(addr), grey.requests, grey.window)
+end
+
 -- access returns true when the request goes on to the cache and origin;
 -- every other outcome has answered the request already.
 local function access()
@@ -452,6 +484,12 @@ local function access()
     reasons.set("ip_banned")
     return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
   end
+  -- Greylist entries (proto v1.6.0): looked up like the bans and with the
+  -- same exemptions; acted on after the rules (edgeweir.bans.grey).
+  local grey = not is_local and not acme and bans.grey(not site_allowed and site.id or nil, remote_addr) or nil
+  if grey and (_M.platform_allowed(site, var.remote_addr) or store.trusted_proxy(site, var.remote_addr)) then
+    grey = nil
+  end
   -- The PURGE method of sites that turned it on, before maintenance and
   -- the rules (edgeweir.purgemethod).
   if site.purge and ngx.req.get_method() == "PURGE" then
@@ -531,16 +569,47 @@ local function access()
     -- A close action: no response, the connection (HTTP/2 and HTTP/3: the
     -- stream) is closed.
     if result.close then return ngx.exit(444) end
-    if result.challenge then return run_challenge(site, result.challenge, result.level, result.rule_id) end
+    if result.challenge then
+      -- A greylist entry asking for more raises the rule's challenge.
+      local level, kind = _M.greylist_level(grey, exempt, result.level, result.challenge)
+      return run_challenge(site, kind, level, result.rule_id)
+    end
     if result.location then return ngx.redirect(result.location, result.status) end
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
     return deny(result.status, result.code or "policy-denied", result.message or "request denied")
+  end
+  -- A greylist entry's rate limit, after the rules (their own outcome
+  -- comes first) and with the CC ban's exemptions (allow rules, the
+  -- platform allow lists) plus skip actions with rate_limits.
+  if grey and grey.action == "rate_limit" and not _M.greylist_rate_exempt(grey, pctx) then
+    local retry = _M.greylist_rate(grey, var.remote_addr)
+    if retry then
+      reasons.set("rate_limit")
+      ngx.header["Retry-After"] = tostring(retry)
+      return deny(429, "ip-greylisted", "rate limited")
+    end
   end
   local under_attack = pctx and pctx.under_attack
   if (site._guard or under_attack == true) and not exempt and not is_local and not acme then
     local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
     local level, kind = challenge.required(site, cc_level, under_attack)
-    if level > 0 and challenge.pass_level(site) < level and not _M.verified_crawler(site) then
+    local glevel, gkind = _M.greylist_level(grey, exempt, 0, nil)
+    local pass = (level > 0 or glevel > 0) and challenge.pass_level(site) or 0
+    -- Verified crawlers skip Under Attack and CC challenges, not a
+    -- greylist entry's.
+    if level > 0 and (pass >= level or _M.verified_crawler(site)) then
+      level = 0
+    end
+    if glevel > level then
+      level, kind = glevel, gkind
+    end
+    if level > 0 and pass < level then
+      return run_challenge(site, kind, level)
+    end
+  elseif grey and grey.action == "challenge" and not exempt then
+    -- A greylist challenge is asked of verified crawlers too.
+    local level, kind = _M.greylist_level(grey, exempt, 0, nil)
+    if challenge.pass_level(site) < level then
       return run_challenge(site, kind, level)
     end
   end
