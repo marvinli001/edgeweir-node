@@ -473,6 +473,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		purgeTags     = fs.Int("purge-tags-per-site", agent.DefaultPurgeTagsPerSite, "tag purge markers per site before the site's markers collapse into one site-level marker")
 		prefetchTime  = fs.Duration("prefetch-budget", 4*time.Minute, "time the prefetch tasks of one pulled batch may take (the console hands tasks out again after 5 minutes)")
 		cacheUsage    = fs.Duration("cache-usage-interval", 10*time.Minute, "how often the disk usage of the cache zones is measured for the console (a walk over the cache directory)")
+		statsEvery    = fs.Duration("stats-interval", time.Minute, "how often the statistics of completed minutes are drained from the data plane and uploaded, 1s-1m (shorter only in end-to-end tests)")
 		banCapacity   = fs.Int("ban-capacity", render.DefaultBanCapacity, "dynamic bans the data plane holds (console and own); the oldest automatic bans make room first")
 		banDictMB     = fs.Int("ban-dict-mb", render.DefaultBanDictMB, "size of the ban store (lua_shared_dict edgeweir_bans) in MiB")
 		ccDictMB      = fs.Int("cc-dict-mb", render.DefaultCCDictMB, "size of the CC mitigation store (lua_shared_dict edgeweir_cc: counters, levels, events) in MiB")
@@ -529,6 +530,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *cacheUsage < time.Second {
 		fmt.Fprintln(stderr, "run: --cache-usage-interval must be at least 1s")
+		return 2
+	}
+	if *statsEvery < time.Second || *statsEvery > time.Minute {
+		fmt.Fprintln(stderr, "run: --stats-interval must be 1s-1m")
 		return 2
 	}
 	if *purgePerSite < 1 {
@@ -757,6 +762,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		PurgeTagsPerSite:    *purgeTags,
 		PrefetchBudget:      *prefetchTime,
 		CacheUsageInterval:  *cacheUsage,
+		StatsInterval:       *statsEvery,
 		GeoIP:               geoip.Paths{IPinfo: ipinfoPath, IPinfoOptional: ipinfoOptional, City: *geoCity, ASN: *geoASN},
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
