@@ -131,14 +131,16 @@ func (a *Agent) syncBans(ctx context.Context) {
 	next := a.bans.Clone()
 	a.banMu.Unlock()
 	after := next.Sequence
-	if next.ClusterID != id.ClusterID {
-		after = 0 // enrolled into another cluster: start over
+	if next.ClusterID != id.ClusterID || !next.Greylist {
+		// Enrolled into another cluster, or fetched without greylist
+		// entries (an older agent): start over.
+		after = 0
 	}
 	reset, pages := false, 0
 	var lifted []*nodev1.Ban
 	for pages < maxBanPages {
 		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
-		resp, err := a.channel.Client().GetBans(cctx, connect.NewRequest(&nodev1.GetBansRequest{AfterSequence: after, Limit: banPageSize}))
+		resp, err := a.channel.Client().GetBans(cctx, connect.NewRequest(&nodev1.GetBansRequest{AfterSequence: after, Limit: banPageSize, Greylist: true}))
 		cancel()
 		if err != nil {
 			if connect.CodeOf(err) == connect.CodeUnimplemented {
@@ -156,6 +158,7 @@ func (a *Agent) syncBans(ctx context.Context) {
 		if msg.GetReset_() {
 			reset = true
 			next.ClusterID = id.ClusterID
+			next.Greylist = true
 		}
 		for _, err := range next.Apply(msg, time.Now()) {
 			a.log.Warn("ignoring an invalid ban from the console", "err", err)
@@ -227,7 +230,7 @@ func (a *Agent) installBans(ctx context.Context, next *bans.State, reset bool) {
 	up, rm := bans.Diff(from, to)
 	// A console without any ban answers every request with an empty
 	// snapshot (sequence 0): nothing to do then.
-	unchanged := prev.Sequence == next.Sequence && prev.ClusterID == next.ClusterID && len(up)+len(rm) == 0
+	unchanged := prev.Sequence == next.Sequence && prev.ClusterID == next.ClusterID && prev.Greylist == next.Greylist && len(up)+len(rm) == 0
 	if unchanged {
 		a.banMu.Unlock()
 		return
@@ -258,7 +261,10 @@ func (a *Agent) installBans(ctx context.Context, next *bans.State, reset bool) {
 func toDataPlane(s bans.Slot) dataplane.Ban {
 	b := dataplane.Ban{ID: s.ID, CIDR: s.Prefix.String(), Scope: string(s.Scope), SiteID: s.SiteID, Kind: "c",
 		ExpiresAt: float64(s.ExpiresAt.UnixMilli()) / 1000}
-	if s.Manual {
+	switch {
+	case s.Grey:
+		b.Kind, b.Grey, b.Action, b.Challenge, b.Requests, b.Window = "g", true, string(s.Action), s.Challenge, s.RateRequests, s.RateWindow
+	case s.Manual:
 		b.Kind = "m"
 	}
 	return b
@@ -488,7 +494,7 @@ func (a *Agent) syncKernel(ctx context.Context) time.Time {
 	a.banMu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	at, err := a.nft.Sync(cctx, list, protected, now)
+	at, err := a.nft.Sync(cctx, list, protected, a.connectionLimits(), now)
 	if err != nil {
 		if !errors.Is(err, nft.ErrInactive) {
 			a.log.Warn("cannot update the nftables sets; retrying in a minute", "err", err)
@@ -498,6 +504,20 @@ func (a *Agent) syncKernel(ctx context.Context) time.Time {
 	}
 	a.log.Debug("kernel bans synced", "bans", a.nft.Entries(now), "protected", len(protected))
 	return at
+}
+
+// connectionLimits returns the applied configuration's connection limits
+// (nil: none). The configuration was validated when it was applied.
+func (a *Agent) connectionLimits() *nft.Limits {
+	l, err := configir.ParseConnectionLimits(a.appliedConfig().GetConnectionLimits())
+	if err != nil || l == nil {
+		return nil
+	}
+	out := &nft.Limits{PerIP: l.PerIP, NewPerSecond: l.NewPerSecond, Burst: l.Burst}
+	for _, r := range l.Ports {
+		out.Ports = append(out.Ports, nft.PortRange{Start: r.Start, End: r.End})
+	}
+	return out
 }
 
 // protectedPrefixes are the addresses nftables never drops: loopback,
@@ -766,6 +786,10 @@ func (a *Agent) banReport(ctx context.Context) *nodev1.BanStatus {
 	}
 	if a.kernelActive() {
 		out.KernelEntries = uint32(a.nft.Entries(time.Now()))
+		out.ConnectionLimitsActive, out.ConnectionLimitsError = a.nft.LimitsStatus()
+	}
+	if a.appliedConfig().GetConnectionLimits() != nil && !out.ConnectionLimitsActive && out.ConnectionLimitsError == "" {
+		out.ConnectionLimitsError = "kernel bans are not active (nftables with CAP_NET_ADMIN is required)"
 	}
 	return out
 }

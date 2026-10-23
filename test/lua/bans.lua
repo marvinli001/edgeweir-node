@@ -422,6 +422,92 @@ test("platform allow lists exempt addresses from bans", function()
   eq(router.platform_allowed({ _config = {} }, "198.51.100.3"), false)
 end)
 
+local function grey(id, cidr, scope, site, action, ttl)
+  local g = ban(id, cidr, scope, "g", ttl, site)
+  g.grey = true
+  for k, v in pairs(action) do
+    g[k] = v
+  end
+  return g
+end
+
+test("greylist entries live apart from bans and are found by grey()", function()
+  put("5", {
+    ban("p", "198.51.100.0/24", "platform", "m"),
+    grey("g1", "198.51.100.0/24", "platform", nil, { action = "challenge", challenge = "pow" }),
+    grey("g2", "203.0.113.0/24", "site", "site-a", { action = "rate_limit", requests = 30, window = 10 }),
+    grey("g3", "2001:db8:1::/48", "site", "site-b", { action = "challenge", challenge = "cookie302" }),
+  })
+  eq(bans.match(nil, "198.51.100.7"), "m", "the ban of the same prefix still matches")
+  eq(bans.match("site-a", "203.0.113.9"), nil, "a greylist entry is no ban")
+  local g = bans.grey("site-a", "198.51.100.7")
+  eq(g.id, "g1"); eq(g.action, "challenge"); eq(g.challenge, "pow"); eq(g.platform, true)
+  g = bans.grey("site-a", "203.0.113.9")
+  eq(g.id, "g2"); eq(g.action, "rate_limit"); eq(g.requests, 30); eq(g.window, 10); eq(g.platform, false)
+  eq(bans.grey("site-b", "203.0.113.9"), nil, "another site's entry")
+  eq(bans.grey(nil, "203.0.113.9"), nil, "site entries need the site")
+  eq(bans.grey("site-b", "::ffff:198.51.100.1").id, "g1", "IPv4-mapped addresses")
+  eq(bans.grey("site-b", "2001:db8:1:2::5").challenge, "cookie302")
+  eq(bans.grey("site-a", "192.0.2.1"), nil)
+
+  -- A delta removes the greylist entry, not the ban of the same prefix.
+  local st = bans.add({ base = "5", sequence = "6", remove = { { id = "g1", cidr = "198.51.100.0/24", scope = "platform", grey = true } } })
+  assert(st, "delta")
+  eq(bans.grey("site-a", "198.51.100.7"), nil, "entry removed")
+  eq(bans.match(nil, "198.51.100.7"), "m", "ban kept")
+
+  local list = bans.status(true).bans
+  local by = {}
+  for _, b in ipairs(list) do by[b.id] = b end
+  eq(by.g2.grey, true); eq(by.g2.scope, "site"); eq(by.g2.site_id, "site-a"); eq(by.g2.cidr, "203.0.113.0/24")
+  eq(by.p.grey, nil)
+end)
+
+test("greylist entries are validated and never evicted", function()
+  local bad = {
+    grey("x", "192.0.2.0/24", "platform", nil, { action = "challenge", challenge = "image" }),
+    grey("x", "192.0.2.0/24", "platform", nil, { action = "rate_limit", requests = 0, window = 10 }),
+    grey("x", "192.0.2.0/24", "platform", nil, { action = "rate_limit", requests = 10, window = 3601 }),
+    grey("x", "192.0.2.0/24", "platform", nil, { action = "block" }),
+    ban("x", "192.0.2.0/24", "platform", "g"),
+  }
+  local wrong = grey("x", "192.0.2.0/24", "platform", nil, { action = "challenge", challenge = "js" })
+  wrong.kind = "m"
+  bad[#bad + 1] = wrong
+  for i, b in ipairs(bad) do
+    local st, _, code = bans.replace({ sequence = "1", bans = { b } })
+    eq(st, nil, "case " .. i); eq(code, 400, "case " .. i)
+  end
+  bans.capacity = 1
+  put("2", { grey("g", "192.0.2.0/24", "platform", nil, { action = "challenge", challenge = "js" }),
+    grey("h", "192.0.3.0/24", "platform", nil, { action = "challenge", challenge = "js" }) })
+  local st = bans.status()
+  eq(st.unapplied, 1, "a greylist entry that does not fit is reported like a manual ban")
+end)
+
+test("greylist challenges raise the level unless exempt", function()
+  local g = { action = "challenge", challenge = "pow" }
+  local level, kind = router.greylist_level(g, false, 2, "js")
+  eq(level, 3); eq(kind, "pow")
+  level, kind = router.greylist_level(g, false, 4, "captcha")
+  eq(level, 4, "a higher level stays"); eq(kind, "captcha")
+  level = router.greylist_level(g, true, 0, nil)
+  eq(level, 0, "allow rules, skip challenges and allow lists exempt")
+  level = router.greylist_level({ action = "rate_limit", requests = 1, window = 1 }, false, 0, nil)
+  eq(level, 0, "rate limits ask for no challenge")
+  eq(router.greylist_level(nil, false, 1, "cookie302"), 1)
+end)
+
+test("greylist rate limits honour allow rules and skip actions of their scope", function()
+  local site_entry, platform_entry = { platform = false }, { platform = true }
+  eq(router.greylist_rate_exempt(site_entry, nil), false)
+  eq(router.greylist_rate_exempt(site_entry, { allowed = true }), true)
+  eq(router.greylist_rate_exempt(site_entry, { platform_allowed = true }), true)
+  eq(router.greylist_rate_exempt(site_entry, { skip_rate_limits_site = true }), true)
+  eq(router.greylist_rate_exempt(platform_entry, { skip_rate_limits_site = true }), false)
+  eq(router.greylist_rate_exempt(platform_entry, { skip_rate_limits_platform = true }), true)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

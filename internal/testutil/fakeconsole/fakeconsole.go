@@ -1010,6 +1010,10 @@ func (c *Console) GetBans(_ context.Context, req *connect.Request[nodev1.GetBans
 		if row.removed && resp.Reset_ || !row.removed && !row.ban.GetExpiresAt().AsTime().After(time.Now()) {
 			continue
 		}
+		// Greylist entries only for nodes that ask for them.
+		if row.ban.GetAction() != nodev1.BanAction_BAN_ACTION_UNSPECIFIED && !req.Msg.GetGreylist() {
+			continue
+		}
 		rows = append(rows, row)
 	}
 	slices.SortFunc(rows, func(a, b *banRow) int { return cmp.Compare(a.seq, b.seq) })

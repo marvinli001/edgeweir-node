@@ -286,3 +286,97 @@ func TestPlatform(t *testing.T) {
 		t.Fatalf("platform after expiry = %v", got)
 	}
 }
+
+func greyChallenge(id, cidr, challenge string) *nodev1.Ban {
+	b := platform(id, cidr, time.Hour)
+	b.Action, b.Challenge = nodev1.BanAction_BAN_ACTION_CHALLENGE, challenge
+	return b
+}
+
+func greyRate(id, cidr, siteID string, requests, window uint32) *nodev1.Ban {
+	b := site(id, cidr, siteID, time.Hour)
+	b.Action, b.RateLimitRequests, b.RateLimitWindowSeconds = nodev1.BanAction_BAN_ACTION_RATE_LIMIT, requests, window
+	return b
+}
+
+func TestFromProtoGreylist(t *testing.T) {
+	b, err := FromProto(greyChallenge("g1", "192.0.2.0/24", "captcha"))
+	if err != nil || !b.Grey() || b.Action != ActionChallenge || b.Challenge != "captcha" {
+		t.Fatalf("challenge entry = %+v, %v", b, err)
+	}
+	b, err = FromProto(greyRate("g2", "192.0.2.7/32", "site-a", 100000, 3600))
+	if err != nil || b.Action != ActionRateLimit || b.RateRequests != 100000 || b.RateWindow != 3600 {
+		t.Fatalf("rate limit entry = %+v, %v", b, err)
+	}
+	autoGrey := greyChallenge("g3", "192.0.2.0/24", "js")
+	autoGrey.Source = nodev1.BanSource_BAN_SOURCE_AUTO
+	unknown := platform("u1", "192.0.2.0/24", time.Hour)
+	unknown.Action = nodev1.BanAction(9)
+	for name, in := range map[string]*nodev1.Ban{
+		"unknown challenge":  greyChallenge("x", "192.0.2.0/24", "image"),
+		"no challenge":       greyChallenge("x", "192.0.2.0/24", ""),
+		"zero requests":      greyRate("x", "192.0.2.0/24", "s", 0, 10),
+		"too many requests":  greyRate("x", "192.0.2.0/24", "s", 100001, 10),
+		"zero window":        greyRate("x", "192.0.2.0/24", "s", 10, 0),
+		"long window":        greyRate("x", "192.0.2.0/24", "s", 10, 3601),
+		"automatic greylist": autoGrey,
+		"unknown action":     unknown,
+	} {
+		if _, err := FromProto(in); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// TestGreylistApartFromBans: a greylist entry has its own slot next to a
+// ban of the same prefix, never reaches the kernel and is stored in its own
+// field of bans.json (older agents only read "bans").
+func TestGreylistApartFromBans(t *testing.T) {
+	s := New()
+	s.Apply(&nodev1.GetBansResponse{Reset_: true, Sequence: 3, Bans: []*nodev1.Ban{
+		platform("p1", "192.0.2.0/24", time.Hour), greyChallenge("g1", "192.0.2.0/24", "pow"),
+		greyRate("g2", "198.51.100.0/24", "site-a", 10, 60),
+	}}, now)
+	s.Greylist = true
+	if got := ids(s.Platform(now)); !slices.Equal(got, []string{"p1"}) {
+		t.Fatalf("Platform = %v", got)
+	}
+	slots := s.Slots(now)
+	if len(slots) != 3 {
+		t.Fatalf("slots = %v", slots)
+	}
+	g := slots[SlotKey{Scope: ScopePlatform, Prefix: netip.MustParsePrefix("192.0.2.0/24"), Grey: true}]
+	if g.ID != "g1" || !g.Manual || g.Action != ActionChallenge || g.Challenge != "pow" {
+		t.Fatalf("greylist slot = %+v", g)
+	}
+	// A changed rate is a change of the slot.
+	changed := s.Clone()
+	b := changed.Bans["g2"]
+	b.RateRequests = 20
+	changed.Bans["g2"] = b
+	if up, rm := Diff(slots, changed.Slots(now)); len(up) != 1 || up[0].ID != "g2" || len(rm) != 0 {
+		t.Fatalf("Diff after a rate change = %v, %v", up, rm)
+	}
+
+	path := filepath.Join(t.TempDir(), File)
+	if err := s.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `"bans":[{"id":"p1"`) || !strings.Contains(string(raw), `"greylist":[{"id":"g1"`) ||
+		!strings.Contains(string(raw), `"greylist_sync":true`) {
+		t.Fatalf("bans.json = %s", raw)
+	}
+	loaded, err := Load(path)
+	if err != nil || !loaded.Greylist || len(loaded.Bans) != 3 || loaded.Bans["g2"].RateWindow != 60 {
+		t.Fatalf("Load = %+v, %v", loaded, err)
+	}
+	// A greylist entry in the bans field (or the other way round) is dropped.
+	bad := strings.Replace(string(raw), `"bans":[{"id":"p1"`, `"bans":[{"id":"p1","action":"challenge","challenge":"js"`, 1)
+	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := Load(path); err == nil || len(loaded.Bans) != 2 {
+		t.Fatalf("Load with a greylist entry among the bans = %+v, %v", loaded, err)
+	}
+}

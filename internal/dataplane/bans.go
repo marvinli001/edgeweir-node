@@ -16,10 +16,20 @@ type Ban struct {
 	// Scope is "platform" or "site".
 	Scope  string `json:"scope"`
 	SiteID string `json:"site_id,omitempty"`
-	// Kind is "m" (manual) or "c" (automatic); not needed for removals.
+	// Kind is "m" (manual), "c" (automatic) or "g" (a greylist entry); not
+	// needed for removals.
 	Kind string `json:"kind,omitempty"`
 	// ExpiresAt is the expiry in Unix seconds (millisecond precision).
 	ExpiresAt float64 `json:"expires_at,omitempty"`
+	// Grey marks a greylist entry, also in removals (it lives apart from
+	// the bans of the same prefix).
+	Grey bool `json:"grey,omitempty"`
+	// Greylist entries: action "challenge" with challenge (cookie302, js,
+	// pow, captcha) or "rate_limit" with requests per window seconds.
+	Action    string `json:"action,omitempty"`
+	Challenge string `json:"challenge,omitempty"`
+	Requests  uint32 `json:"requests,omitempty"`
+	Window    uint32 `json:"window,omitempty"`
 }
 
 // BanTable is the body of PUT /v1/bans: the whole console set, in the

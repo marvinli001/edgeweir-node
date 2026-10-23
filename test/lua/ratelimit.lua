@@ -44,3 +44,11 @@ assert(rate.check(dict, "b", "site", "requests", action, "client").status == 429
 assert(logs:get("rate-full-n:b") == 11 and logs:get("rate-full:b"))
 
 print(clients .. " counters per 256 KiB partition; full partitions pass new clients; independent counters, hot updates and missing-partition handling passed")
+
+-- Greylist rate limits (proto v1.6.0): per entry and client, in edgeweir_cc.
+assert(rate.greylist("g1", "192.0.2.1", 2, 60) == nil)
+assert(rate.greylist("g1", "192.0.2.1", 2, 60) == nil)
+assert(rate.greylist("g1", "192.0.2.1", 2, 60) == 60, "third request over the limit")
+assert(rate.greylist("g1", "192.0.2.2", 2, 60) == nil, "another client counts apart")
+assert(rate.greylist("g2", "192.0.2.1", 2, 60) == nil, "another entry counts apart")
+print("greylist rate limits passed")

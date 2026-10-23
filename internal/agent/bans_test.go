@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/marvinli001/edgeweir-node/internal/agent"
@@ -314,4 +316,130 @@ func TestBansLiftedOwnBansAreReleased(t *testing.T) {
 	if n := len(e.dp.Released()); n != 3 {
 		t.Fatalf("released %d times", n)
 	}
+}
+
+// TestBansGreylist: greylist entries reach the data plane next to the bans
+// (kind g, their own slot), never nftables, and live apart in bans.json; a
+// state an older agent wrote (without greylist_sync) is fetched again from
+// the start.
+func TestBansGreylist(t *testing.T) {
+	kernel := &nft.Fake{}
+	e := startEnrolled(t, "bans-grey", func(c *agent.Config) { c.Kernel = kernel }, demoSite("site-a", "site-a.test"))
+	grey := platformBan("g1", "198.51.100.0/24")
+	grey.Action, grey.Challenge = nodev1.BanAction_BAN_ACTION_CHALLENGE, "pow"
+	e.console.AddBan(platformBan("p1", "198.51.100.0/24"))
+	limited := siteBan("g2", "203.0.113.0/24", "site-a")
+	limited.Action, limited.RateLimitRequests, limited.RateLimitWindowSeconds = nodev1.BanAction_BAN_ACTION_RATE_LIMIT, 30, 10
+	e.console.AddBan(grey)
+	seq := e.console.AddBan(limited)
+	eventually(t, "greylist entries in the data plane", func() bool {
+		return e.dp.BanSequence() == seq && slices.Equal(banIDs(e.dp.Bans()), []string{"g1", "g2", "p1"})
+	})
+	for _, b := range e.dp.Bans() {
+		switch b.ID {
+		case "g1":
+			if b.Kind != "g" || !b.Grey || b.Action != "challenge" || b.Challenge != "pow" || b.Scope != "platform" {
+				t.Fatalf("challenge entry in the data plane = %+v", b)
+			}
+		case "g2":
+			if b.Kind != "g" || !b.Grey || b.Action != "rate_limit" || b.Requests != 30 || b.Window != 10 || b.SiteID != "site-a" {
+				t.Fatalf("rate limit entry in the data plane = %+v", b)
+			}
+		case "p1":
+			if b.Kind != "m" || b.Grey || b.Action != "" {
+				t.Fatalf("ban in the data plane = %+v", b)
+			}
+		}
+	}
+	eventually(t, "only the ban in nftables", func() bool {
+		return strings.Contains(kernel.Last("flush set"), "add element inet edgeweir ban4 { 198.51.100.0/24 timeout ")
+	})
+	if script := kernel.Last("flush set"); strings.Contains(script, "203.0.113.0") || strings.Count(script, "198.51.100.0/24") != 1 {
+		t.Fatalf("kernel sync with greylist entries:\n%s", script)
+	}
+	for _, req := range e.console.GetBansCalls() {
+		if !req.GetGreylist() {
+			t.Fatalf("GetBans without greylist: %v", req)
+		}
+	}
+	path := filepath.Join(e.cfg.StateDir, "bans.json")
+	raw, err := os.ReadFile(path)
+	if err != nil || !regexp.MustCompile(`"bans":\[\{"id":"p1"[^\]]*\],"greylist":\[\{"id":"g1".*"greylist_sync":true`).Match(raw) {
+		t.Fatalf("bans.json = %s, %v", raw, err)
+	}
+
+	// Lifting a greylist entry removes it, not the ban of the same prefix.
+	seq = e.console.RemoveBan("g1")
+	eventually(t, "greylist entry removed", func() bool {
+		return e.dp.BanSequence() == seq && slices.Equal(banIDs(e.dp.Bans()), []string{"g2", "p1"})
+	})
+
+	// An older agent rewrote bans.json without greylist entries: the next
+	// start asks for a snapshot even though the sequence is known.
+	e.stop()
+	raw, _ = os.ReadFile(path)
+	var older map[string]any
+	if err := json.Unmarshal(raw, &older); err != nil {
+		t.Fatal(err)
+	}
+	delete(older, "greylist")
+	delete(older, "greylist_sync")
+	older["bans"] = []any{}
+	if raw, err = json.Marshal(older); err != nil || os.WriteFile(path, raw, 0o600) != nil {
+		t.Fatal(err)
+	}
+	calls := len(e.console.GetBansCalls())
+	dp2 := fakedataplane.Start(t)
+	cfg := e.cfg
+	cfg.Kernel = &nft.Fake{}
+	cfg.Render.ControlSocket = dp2.Socket
+	startAgent(t, cfg, newFakeEngine(), dataplane.NewClient(dp2.Socket))
+	eventually(t, "snapshot after an older agent", func() bool {
+		return dp2.BanSequence() == seq && slices.Equal(banIDs(dp2.Bans()), []string{"g2", "p1"})
+	})
+	if req := e.console.GetBansCalls()[calls]; req.GetAfterSequence() != 0 || !req.GetGreylist() {
+		t.Fatalf("first GetBans after the restart = %v", req)
+	}
+}
+
+// TestConnectionLimits: the applied configuration's connection limits go
+// into nftables with the bans, are reported as enforced, follow a new
+// revision and leave with it; nodes without nftables report why not.
+func TestConnectionLimits(t *testing.T) {
+	kernel := &nft.Fake{}
+	cfg := baseConfig(demoSite("site-a", "site-a.test"))
+	cfg.ConnectionLimits = &nodev1.ConnectionLimits{PerIpConnections: 64, NewPerSecond: 10, Burst: 40,
+		Ports: []*nodev1.PortRange{{Start: 80, End: 80}, {Start: 443, End: 443}}}
+	e := startEnrolledConfig(t, "connlimit", func(c *agent.Config) { c.Kernel = kernel }, cfg)
+	eventually(t, "limits in nftables", func() bool {
+		s := kernel.Last("flush chain inet edgeweir connlimit")
+		return strings.Contains(s, "add @conn4 { ip saddr ct count over 64 } counter drop") &&
+			strings.Contains(s, "limit rate over 10/second burst 40 packets") &&
+			strings.Contains(s, "add element inet edgeweir limitports { 80, 443 }")
+	})
+	eventually(t, "limits reported as enforced", func() bool {
+		st := e.console.LastStatus()
+		return st.GetBans().GetConnectionLimitsActive() && st.GetBans().GetConnectionLimitsError() == "" &&
+			hasFeature(st, "conn-limit-v1") && hasFeature(st, "greylist-v1")
+	})
+
+	next := proto.CloneOf(cfg)
+	next.ConnectionLimits = nil
+	rev := e.console.Publish(next)
+	eventually(t, "revision without limits applied", statusWith(e.console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
+	eventually(t, "limits removed", func() bool {
+		s := kernel.Last("flush chain inet edgeweir connlimit")
+		return !strings.Contains(s, "ct count") && !lastBanStatus(e).GetConnectionLimitsActive()
+	})
+}
+
+func TestConnectionLimitsWithoutKernel(t *testing.T) {
+	kernel := &nft.Fake{Fail: func(string) error { return errors.New("nft: Operation not permitted") }}
+	cfg := baseConfig(demoSite("site-a", "site-a.test"))
+	cfg.ConnectionLimits = &nodev1.ConnectionLimits{PerIpConnections: 64, Ports: []*nodev1.PortRange{{Start: 443, End: 443}}}
+	e := startEnrolledConfig(t, "connlimit-l7", func(c *agent.Config) { c.Kernel = kernel }, cfg)
+	eventually(t, "limits reported as not enforced", func() bool {
+		b := lastBanStatus(e)
+		return !b.GetConnectionLimitsActive() && strings.Contains(b.GetConnectionLimitsError(), "CAP_NET_ADMIN")
+	})
 }

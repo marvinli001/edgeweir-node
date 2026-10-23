@@ -44,12 +44,41 @@ table inet edgeweir {
 		type ipv6_addr
 		flags interval
 	}
+	set limitports {
+		type inet_service
+		flags interval
+	}
+	set conn4 {
+		type ipv4_addr
+		size 65536
+		flags dynamic
+	}
+	set conn6 {
+		type ipv6_addr
+		size 65536
+		flags dynamic
+	}
+	set rate4 {
+		type ipv4_addr
+		size 65536
+		flags dynamic, timeout
+		timeout 1m
+	}
+	set rate6 {
+		type ipv6_addr
+		size 65536
+		flags dynamic, timeout
+		timeout 1m
+	}
+	chain connlimit {
+	}
 	chain input {
 		type filter hook input priority -10; policy accept;
 		ip saddr @allow4 accept
 		ip6 saddr @allow6 accept
 		ip saddr @ban4 drop
 		ip6 saddr @ban6 drop
+		tcp dport @limitports ct state new jump connlimit
 	}
 }
 `
@@ -176,7 +205,7 @@ func TestProtectedSetDropsCoveredPrefixes(t *testing.T) {
 func TestManagerLifecycle(t *testing.T) {
 	fake := &Fake{}
 	m := NewManager(fake, nil)
-	if _, err := m.Sync(context.Background(), nil, nil, now); !errors.Is(err, ErrInactive) {
+	if _, err := m.Sync(context.Background(), nil, nil, nil, now); !errors.Is(err, ErrInactive) {
 		t.Fatalf("sync before start: %v", err)
 	}
 	if err := m.Start(context.Background()); err != nil || !m.Active() {
@@ -184,7 +213,7 @@ func TestManagerLifecycle(t *testing.T) {
 	}
 	resync, err := m.Sync(context.Background(), []Ban{
 		ban("198.51.100.0/24", time.Hour), ban("198.51.100.1/32", 2*time.Hour), ban("203.0.113.1/32", time.Minute),
-	}, prefixes("127.0.0.0/8"), now)
+	}, prefixes("127.0.0.0/8"), nil, now)
 	if err != nil || !resync.Equal(now.Add(time.Hour)) {
 		t.Fatalf("sync: %v resync %v", err, resync)
 	}
@@ -213,7 +242,7 @@ func TestManagerProbeFailureLeavesItInactive(t *testing.T) {
 	if err := m.Start(context.Background()); err == nil || m.Active() {
 		t.Fatalf("start with a failing nft: %v, active %v", err, m.Active())
 	}
-	if _, err := m.Sync(context.Background(), []Ban{ban("198.51.100.0/24", time.Hour)}, nil, now); !errors.Is(err, ErrInactive) {
+	if _, err := m.Sync(context.Background(), []Ban{ban("198.51.100.0/24", time.Hour)}, nil, nil, now); !errors.Is(err, ErrInactive) {
 		t.Fatalf("sync while inactive: %v", err)
 	}
 	if err := m.Stop(context.Background()); err != nil {
@@ -237,7 +266,7 @@ func TestManagerRecreatesAMissingTable(t *testing.T) {
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Sync(context.Background(), []Ban{ban("198.51.100.0/24", time.Hour)}, nil, now); err != nil {
+	if _, err := m.Sync(context.Background(), []Ban{ban("198.51.100.0/24", time.Hour)}, nil, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	scripts := fake.Scripts()
@@ -257,5 +286,84 @@ func TestFormatRefusesAnythingButAddresses(t *testing.T) {
 	}
 	if _, err := format(netip.Prefix{}); err == nil {
 		t.Error("invalid prefix formatted")
+	}
+}
+
+func TestLimitsScript(t *testing.T) {
+	none, err := limitsScript(nil)
+	if err != nil || none != "flush chain inet edgeweir connlimit\nflush set inet edgeweir limitports\n" {
+		t.Fatalf("no limits: %q, %v", none, err)
+	}
+	got, err := limitsScript(&Limits{PerIP: 100, NewPerSecond: 20, Burst: 0, Ports: []PortRange{{80, 80}, {443, 443}, {10000, 10999}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := none +
+		"add rule inet edgeweir connlimit update @rate4 { ip saddr limit rate over 20/second burst 20 packets } counter drop\n" +
+		"add rule inet edgeweir connlimit update @rate6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate over 20/second burst 20 packets } counter drop\n" +
+		"add rule inet edgeweir connlimit add @conn4 { ip saddr ct count over 100 } counter drop\n" +
+		"add rule inet edgeweir connlimit add @conn6 { ip6 saddr & ffff:ffff:ffff:ffff:: ct count over 100 } counter drop\n" +
+		"add element inet edgeweir limitports { 80, 443, 10000-10999 }\n"
+	if got != want {
+		t.Fatalf("limits script:\n%s\nwant:\n%s", got, want)
+	}
+	only, _ := limitsScript(&Limits{PerIP: 5, Ports: []PortRange{{8443, 8443}}})
+	if strings.Contains(only, "rate") || !strings.Contains(only, "ct count over 5") {
+		t.Fatalf("connection count only:\n%s", only)
+	}
+	for _, l := range []*Limits{{PerIP: 1}, {PerIP: 1, Ports: []PortRange{{0, 80}}}, {PerIP: 1, Ports: []PortRange{{90, 80}}}} {
+		if _, err := limitsScript(l); err == nil {
+			t.Errorf("%+v accepted", l)
+		}
+	}
+}
+
+// TestManagerWritesLimitsWithTheBans: the limits go into the same
+// transaction as the sets; when nftables refuses them the bans are written
+// without them and the error is reported, and the next accepted sync
+// clears it.
+func TestManagerWritesLimitsWithTheBans(t *testing.T) {
+	refuse := true
+	fake := &Fake{Fail: func(script string) error {
+		if refuse && strings.Contains(script, "ct count") {
+			return errors.New("Error: Could not process rule: No such file or directory")
+		}
+		return nil
+	}}
+	m := NewManager(fake, nil)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(SetupScript, "tcp dport @limitports ct state new jump connlimit") {
+		t.Fatalf("setup script without the jump:\n%s", SetupScript)
+	}
+	limits := &Limits{PerIP: 50, Ports: []PortRange{{443, 443}}}
+	if _, err := m.Sync(context.Background(), []Ban{ban("198.51.100.0/24", time.Hour)}, nil, limits, now); err != nil {
+		t.Fatal(err)
+	}
+	scripts := fake.Scripts()
+	last := scripts[len(scripts)-1]
+	if len(scripts) != 3 || !strings.Contains(last, "198.51.100.0/24") || strings.Contains(last, "ct count") ||
+		!strings.Contains(last, "flush chain inet edgeweir connlimit") {
+		t.Fatalf("scripts after a refused limit = %q", scripts)
+	}
+	if on, msg := m.LimitsStatus(); on || !strings.Contains(msg, "Could not process rule") {
+		t.Fatalf("limits status = %v %q", on, msg)
+	}
+	if m.Entries(now) != 1 {
+		t.Fatalf("entries = %d", m.Entries(now))
+	}
+	refuse = false
+	if _, err := m.Sync(context.Background(), nil, nil, limits, now); err != nil {
+		t.Fatal(err)
+	}
+	if on, msg := m.LimitsStatus(); !on || msg != "" || !strings.Contains(fake.Last("flush set"), "ct count over 50") {
+		t.Fatalf("limits status = %v %q", on, msg)
+	}
+	if _, err := m.Sync(context.Background(), nil, nil, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if on, msg := m.LimitsStatus(); on || msg != "" || strings.Contains(fake.Last("flush set"), "ct count") {
+		t.Fatalf("limits removed: status = %v %q", on, msg)
 	}
 }

@@ -7,6 +7,12 @@
 // plane (lua/edgeweir/bans.lua) and, for platform bans, to nftables.
 // Bans the node creates itself (automatic mitigation) live only in the
 // data plane until they are reported with ReportBans.
+//
+// Greylist entries (proto v1.6.0, Ban.action) travel the same way: the
+// edge layer challenges or rate-limits their addresses instead of refusing
+// them, and the kernel never drops them. They are stored apart from the
+// bans in bans.json ("greylist"), so an older agent reading the file
+// never mistakes one for a ban.
 package bans
 
 import (
@@ -57,6 +63,26 @@ const (
 	SourceAuto   Source = "auto"   // a node's automatic mitigation
 )
 
+// Action is what an entry does: "" refuses (a ban), the others make it a
+// greylist entry.
+type Action string
+
+// Actions.
+const (
+	ActionBlock     Action = ""
+	ActionChallenge Action = "challenge"
+	ActionRateLimit Action = "rate_limit"
+)
+
+// Challenges a greylist entry may ask for.
+var challenges = map[string]bool{"cookie302": true, "js": true, "pow": true, "captcha": true}
+
+// Bounds of a greylist rate limit.
+const (
+	MaxRateRequests = 100000
+	MaxRateWindow   = 3600
+)
+
 // Ban is one console ban.
 type Ban struct {
 	ID string `json:"id"`
@@ -68,7 +94,15 @@ type Ban struct {
 	Reason    string       `json:"reason,omitempty"`
 	CreatedAt time.Time    `json:"created_at"`
 	ExpiresAt time.Time    `json:"expires_at"`
+	// Greylist entries only.
+	Action       Action `json:"action,omitempty"`
+	Challenge    string `json:"challenge,omitempty"`
+	RateRequests uint32 `json:"rate_requests,omitempty"`
+	RateWindow   uint32 `json:"rate_window,omitempty"`
 }
+
+// Grey reports whether b is a greylist entry.
+func (b Ban) Grey() bool { return b.Action != ActionBlock }
 
 // Manual reports whether the ban was created by a person (manual bans are
 // never dropped for capacity).
@@ -148,7 +182,45 @@ func FromProto(pb *nodev1.Ban) (Ban, error) {
 	if len(b.Reason) > 64 {
 		b.Reason = b.Reason[:64]
 	}
+	switch pb.GetAction() {
+	case nodev1.BanAction_BAN_ACTION_UNSPECIFIED:
+	case nodev1.BanAction_BAN_ACTION_CHALLENGE:
+		b.Action, b.Challenge = ActionChallenge, pb.GetChallenge()
+	case nodev1.BanAction_BAN_ACTION_RATE_LIMIT:
+		b.Action, b.RateRequests, b.RateWindow = ActionRateLimit, pb.GetRateLimitRequests(), pb.GetRateLimitWindowSeconds()
+	default:
+		return Ban{}, fmt.Errorf("ban %s: unsupported action %v", b.ID, pb.GetAction())
+	}
+	if err := b.validateAction(); err != nil {
+		return Ban{}, err
+	}
 	return b, nil
+}
+
+// validateAction checks a greylist entry's parameters: only console
+// (manual) entries are greylist entries.
+func (b Ban) validateAction() error {
+	switch b.Action {
+	case ActionBlock:
+		if b.Challenge != "" || b.RateRequests != 0 || b.RateWindow != 0 {
+			return fmt.Errorf("ban %s: greylist parameters without a greylist action", b.ID)
+		}
+		return nil
+	case ActionChallenge:
+		if !challenges[b.Challenge] || b.RateRequests != 0 || b.RateWindow != 0 {
+			return fmt.Errorf("ban %s: invalid challenge %q", b.ID, truncate(b.Challenge))
+		}
+	case ActionRateLimit:
+		if b.Challenge != "" || b.RateRequests < 1 || b.RateRequests > MaxRateRequests || b.RateWindow < 1 || b.RateWindow > MaxRateWindow {
+			return fmt.Errorf("ban %s: invalid rate limit %d per %d s", b.ID, b.RateRequests, b.RateWindow)
+		}
+	default:
+		return fmt.Errorf("ban %s: invalid action %q", b.ID, truncate(string(b.Action)))
+	}
+	if b.Source != SourceManual {
+		return fmt.Errorf("ban %s: an automatic greylist entry", b.ID)
+	}
+	return nil
 }
 
 func (b Ban) validate() error {
@@ -176,7 +248,7 @@ func (b Ban) validate() error {
 	if b.ExpiresAt.IsZero() {
 		return fmt.Errorf("ban %s: no expiry", b.ID)
 	}
-	return nil
+	return b.validateAction()
 }
 
 func truncate(s string) string {
@@ -193,7 +265,12 @@ type State struct {
 	ClusterID string
 	// Sequence is the console sequence the bans are complete up to.
 	Sequence uint64
-	Bans     map[string]Ban
+	// Greylist: the bans were fetched with greylist entries
+	// (GetBansRequest.greylist). A state written without them (by an
+	// older agent) is fetched again from the start.
+	Greylist bool
+	// Bans holds the bans and the greylist entries by id.
+	Bans map[string]Ban
 }
 
 // New returns an empty state.
@@ -201,7 +278,7 @@ func New() *State { return &State{Bans: map[string]Ban{}} }
 
 // Clone returns a copy of s.
 func (s *State) Clone() *State {
-	c := &State{ClusterID: s.ClusterID, Sequence: s.Sequence, Bans: make(map[string]Ban, len(s.Bans))}
+	c := &State{ClusterID: s.ClusterID, Sequence: s.Sequence, Greylist: s.Greylist, Bans: make(map[string]Ban, len(s.Bans))}
 	for id, b := range s.Bans {
 		c.Bans[id] = b
 	}
@@ -213,6 +290,10 @@ type fileFormat struct {
 	ClusterID string `json:"cluster_id,omitempty"`
 	Sequence  uint64 `json:"sequence,string"`
 	Bans      []Ban  `json:"bans"`
+	// Greylist entries, apart from the bans: older agents ignore both
+	// fields and keep only the bans.
+	Greylist     []Ban `json:"greylist,omitempty"`
+	GreylistSync bool  `json:"greylist_sync,omitempty"`
 }
 
 const fileVersion = 1
@@ -235,21 +316,39 @@ func Load(path string) (*State, error) {
 	if f.Version != fileVersion {
 		return nil, fmt.Errorf("%s: unsupported version %d", path, f.Version)
 	}
-	s := &State{ClusterID: f.ClusterID, Sequence: f.Sequence, Bans: make(map[string]Ban, len(f.Bans))}
+	s := &State{ClusterID: f.ClusterID, Sequence: f.Sequence, Greylist: f.GreylistSync, Bans: make(map[string]Ban, len(f.Bans)+len(f.Greylist))}
 	var errs []error
 	for _, b := range f.Bans {
-		if err := b.validate(); err != nil {
+		if err := b.validate(); err == nil && b.Grey() {
+			errs = append(errs, fmt.Errorf("ban %s: greylist entry among the bans", b.ID))
+		} else if err != nil {
 			errs = append(errs, err)
-			continue
+		} else {
+			s.Bans[b.ID] = b
 		}
-		s.Bans[b.ID] = b
+	}
+	for _, b := range f.Greylist {
+		if err := b.validate(); err == nil && !b.Grey() {
+			errs = append(errs, fmt.Errorf("ban %s: ban among the greylist entries", b.ID))
+		} else if err != nil {
+			errs = append(errs, err)
+		} else {
+			s.Bans[b.ID] = b
+		}
 	}
 	return s, errors.Join(errs...)
 }
 
 // Save writes the state atomically (0600).
 func (s *State) Save(path string) error {
-	f := fileFormat{Version: fileVersion, ClusterID: s.ClusterID, Sequence: s.Sequence, Bans: s.sorted()}
+	f := fileFormat{Version: fileVersion, ClusterID: s.ClusterID, Sequence: s.Sequence, Bans: []Ban{}, GreylistSync: s.Greylist}
+	for _, b := range s.sorted() {
+		if b.Grey() {
+			f.Greylist = append(f.Greylist, b)
+		} else {
+			f.Bans = append(f.Bans, b)
+		}
+	}
 	raw, err := json.Marshal(f)
 	if err != nil {
 		return err
@@ -314,11 +413,12 @@ func (s *State) Prune(now time.Time) int {
 	return n
 }
 
-// Platform returns the unexpired platform bans.
+// Platform returns the unexpired platform bans (greylist entries are not
+// bans: the kernel never drops them).
 func (s *State) Platform(now time.Time) []Ban {
 	var out []Ban
 	for _, b := range s.Bans {
-		if b.Scope == ScopePlatform && b.ExpiresAt.After(now) {
+		if b.Scope == ScopePlatform && !b.Grey() && b.ExpiresAt.After(now) {
 			out = append(out, b)
 		}
 	}
@@ -327,11 +427,12 @@ func (s *State) Platform(now time.Time) []Ban {
 }
 
 // SlotKey is where a ban lives in the data plane: bans of the same scope,
-// site and prefix share one entry.
+// site and prefix share one entry, greylist entries one of their own.
 type SlotKey struct {
 	Scope  Scope
 	SiteID string
 	Prefix netip.Prefix
+	Grey   bool
 }
 
 // Slot is the data plane entry of one or more bans with the same key
@@ -347,10 +448,22 @@ type Slot struct {
 	CreatedAt time.Time
 	// ExpiresAt is the latest expiry of the bans in the slot.
 	ExpiresAt time.Time
+	// The greylist entry's action and parameters (of the entry with ID).
+	Action       Action
+	Challenge    string
+	RateRequests uint32
+	RateWindow   uint32
 }
 
 // Key returns the slot key of a ban.
-func (b Ban) Key() SlotKey { return SlotKey{Scope: b.Scope, SiteID: b.SiteID, Prefix: b.Prefix} }
+func (b Ban) Key() SlotKey {
+	return SlotKey{Scope: b.Scope, SiteID: b.SiteID, Prefix: b.Prefix, Grey: b.Grey()}
+}
+
+func (b Ban) slot() Slot {
+	return Slot{SlotKey: b.Key(), ID: b.ID, Manual: b.Manual(), CreatedAt: b.CreatedAt, Action: b.Action,
+		Challenge: b.Challenge, RateRequests: b.RateRequests, RateWindow: b.RateWindow}
+}
 
 // Slots groups the unexpired bans by data plane key.
 func (s *State) Slots(now time.Time) map[SlotKey]Slot {
@@ -362,7 +475,9 @@ func (s *State) Slots(now time.Time) map[SlotKey]Slot {
 		k := b.Key()
 		cur, ok := out[k]
 		if !ok {
-			out[k] = Slot{SlotKey: k, ID: b.ID, Manual: b.Manual(), CreatedAt: b.CreatedAt, ExpiresAt: b.ExpiresAt}
+			cur = b.slot()
+			cur.ExpiresAt = b.ExpiresAt
+			out[k] = cur
 			continue
 		}
 		expires := cur.ExpiresAt
@@ -381,7 +496,7 @@ func (s *State) Slots(now time.Time) map[SlotKey]Slot {
 			replace = b.ID < cur.ID
 		}
 		if replace {
-			cur = Slot{SlotKey: k, ID: b.ID, Manual: b.Manual(), CreatedAt: b.CreatedAt}
+			cur = b.slot()
 		}
 		cur.ExpiresAt = expires
 		out[k] = cur
@@ -390,8 +505,14 @@ func (s *State) Slots(now time.Time) map[SlotKey]Slot {
 }
 
 func compareSlots(a, b Slot) int {
+	grey := func(s Slot) int {
+		if s.Grey {
+			return 1
+		}
+		return 0
+	}
 	return cmp.Or(strings.Compare(string(a.Scope), string(b.Scope)), strings.Compare(a.SiteID, b.SiteID),
-		a.Prefix.Addr().Compare(b.Prefix.Addr()), cmp.Compare(a.Prefix.Bits(), b.Prefix.Bits()))
+		a.Prefix.Addr().Compare(b.Prefix.Addr()), cmp.Compare(a.Prefix.Bits(), b.Prefix.Bits()), cmp.Compare(grey(a), grey(b)))
 }
 
 // Ordered returns the slots in the order the data plane must hold them:
@@ -426,7 +547,8 @@ func Ordered(slots map[SlotKey]Slot, capacity int) (ordered, dropped []Slot) {
 // the data plane holds them under) to turn from into to.
 func Diff(from, to map[SlotKey]Slot) (upsert, remove []Slot) {
 	for k, n := range to {
-		if o, ok := from[k]; !ok || o.ID != n.ID || o.Manual != n.Manual || !o.ExpiresAt.Equal(n.ExpiresAt) {
+		if o, ok := from[k]; !ok || o.ID != n.ID || o.Manual != n.Manual || !o.ExpiresAt.Equal(n.ExpiresAt) ||
+			o.Action != n.Action || o.Challenge != n.Challenge || o.RateRequests != n.RateRequests || o.RateWindow != n.RateWindow {
 			upsert = append(upsert, n)
 		}
 	}

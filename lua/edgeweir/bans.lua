@@ -15,6 +15,10 @@
 --        bytes of the masked address; kind m (console, manual), c (console,
 --        automatic) or a (this node's own); the TTL is the remaining
 --        lifetime, so expired bans disappear by themselves
+--   e|~<scope>|...  one greylist entry (proto v1.6.0), kind g:
+--        "g|<id>|<expires>|<cidr>|challenge|<challenge>" or
+--        "g|<id>|<expires>|<cidr>|rate_limit|<requests>|<window>"; looked
+--        up by grey(), never by match()
 --   #len|<scope>  prefix lengths of the scope's console bans ("4/32,6/48")
 --   #loc|<scope>  the scope has (had) own bans of /32 and /64
 --   #lop|<scope>  the scope has (had) own bans of other lengths (bans
@@ -98,7 +102,8 @@ local function key_for(scope, bytes, len)
 end
 _M.key_for = key_for
 
--- parse_value splits "<kind>|<id>|<expires>|<cidr>" (nil for nil).
+-- parse_value splits "<kind>|<id>|<expires>|<cidr>[|<rest>]" (nil for
+-- nil); rest is a greylist entry's action and parameters.
 local function parse_value(v)
   if not v then
     return nil
@@ -107,6 +112,10 @@ local function parse_value(v)
   local p3 = p2 and find(v, "|", p2 + 1, true)
   if not p3 then
     return nil
+  end
+  local p4 = find(v, "|", p3 + 1, true)
+  if p4 then
+    return sub(v, 1, 1), sub(v, 3, p2 - 1), tonumber(sub(v, p2 + 1, p3 - 1)), sub(v, p3 + 1, p4 - 1), sub(v, p4 + 1)
   end
   return sub(v, 1, 1), sub(v, 3, p2 - 1), tonumber(sub(v, p2 + 1, p3 - 1)), sub(v, p3 + 1)
 end
@@ -314,9 +323,32 @@ end
 -- ---------------------------------------------------------------------
 -- Console bans.
 
+local CHALLENGES = { cookie302 = true, js = true, pow = true, captcha = true }
+
+-- greylist returns the action part of a greylist entry's value, or nil
+-- and an error.
+local function greylist(b)
+  if b.action == "challenge" then
+    if not CHALLENGES[b.challenge] then
+      return nil, "invalid challenge"
+    end
+    return "challenge|" .. b.challenge
+  elseif b.action == "rate_limit" then
+    local n, w = b.requests, b.window
+    if type(n) ~= "number" or n ~= floor(n) or n < 1 or n > 100000
+      or type(w) ~= "number" or w ~= floor(w) or w < 1 or w > 3600 then
+      return nil, "invalid rate limit"
+    end
+    return string.format("rate_limit|%d|%d", n, w)
+  end
+  return nil, "invalid action"
+end
+
 -- entry validates a ban of the control API:
--- {id, cidr, scope = "platform" | "site", site_id, kind = "m" | "c", expires_at}
--- (kind and expires_at are not needed to remove a ban).
+-- {id, cidr, scope = "platform" | "site", site_id, kind = "m" | "c" | "g",
+-- expires_at}; a greylist entry (kind g) has grey = true and action =
+-- "challenge" with challenge, or "rate_limit" with requests and window
+-- (kind, expires_at and the action are not needed to remove one, grey is).
 local function entry(b, removal)
   if type(b) ~= "table" then
     return nil, "ban must be an object"
@@ -335,6 +367,10 @@ local function entry(b, removal)
   else
     return nil, "invalid scope"
   end
+  local grey = b.grey == true
+  if grey then
+    scope = "~" .. scope
+  end
   local p = ipaddr.parse_prefix(b.cidr)
   if not p then
     return nil, "invalid cidr"
@@ -347,7 +383,7 @@ local function entry(b, removal)
   if removal then
     return e
   end
-  if b.kind ~= "m" and b.kind ~= "c" then
+  if grey ~= (b.kind == "g") or (b.kind ~= "m" and b.kind ~= "c" and b.kind ~= "g") then
     return nil, "invalid kind"
   end
   local expires = tonumber(b.expires_at)
@@ -356,6 +392,13 @@ local function entry(b, removal)
   end
   e.kind, e.expires = b.kind, expires
   e.value = b.kind .. "|" .. b.id .. "|" .. tostring(expires) .. "|" .. b.cidr
+  if grey then
+    local action, err = greylist(b)
+    if not action then
+      return nil, err
+    end
+    e.value = e.value .. "|" .. action
+  end
   return e
 end
 
@@ -485,7 +528,7 @@ local function write(dict, list, now, un, lengths)
       if err ~= "full" then
         return nil, err
       end
-      if e.kind == "m" then
+      if e.kind == "m" or e.kind == "g" then
         un[e.id] = e.expires
       else
         dict:incr("#evicted", 1)
@@ -531,10 +574,15 @@ function _M.status(list)
         local kind, id, expires, cidr = parse_value(v)
         if kind then
           local scope = sub(k, 3, find(k, "|", 3, true) - 1)
+          local grey = sub(scope, 1, 1) == "~"
+          if grey then
+            scope = sub(scope, 2)
+          end
           out[#out + 1] = {
             id = id, kind = kind, cidr = cidr, expires_at = expires,
             scope = scope == PLATFORM and "platform" or "site",
             site_id = scope ~= PLATFORM and scope or nil,
+            grey = grey or nil,
           }
           if #out >= LIST_MAX then
             break
@@ -1132,6 +1180,56 @@ function _M.match(site_id, addr)
   end
   local kind, id = parse_value(v)
   return kind, id
+end
+
+local GREY_PLATFORM = "~" .. PLATFORM
+
+-- grey returns the greylist entry holding addr on site_id (platform
+-- entries first) as {id, action = "challenge", challenge} or {id, action =
+-- "rate_limit", requests, window}, or nil. addr may be a function as in
+-- match().
+function _M.grey(site_id, addr)
+  local dict = shdict()
+  local ver = dict and dict:get("#ver")
+  if not ver then
+    return nil
+  end
+  if ver ~= cache_ver then
+    cache, cache_ver = {}, ver
+  end
+  local gs = site_id and ("~" .. site_id)
+  local pl = lengths(dict, GREY_PLATFORM)
+  local sl = gs and lengths(dict, gs)
+  if not pl and not sl then
+    return nil
+  end
+  if type(addr) == "function" then
+    addr = addr()
+  end
+  local bytes = ipaddr.parse(addr)
+  if not bytes then
+    return nil
+  end
+  local v4 = mapped(bytes)
+  local v, platform
+  if pl then
+    v = lookup(dict, GREY_PLATFORM, pl, bytes) or (v4 and lookup(dict, GREY_PLATFORM, pl, v4))
+    platform = v ~= nil
+  end
+  if not v and sl then
+    v = lookup(dict, gs, sl, bytes) or (v4 and lookup(dict, gs, sl, v4))
+  end
+  local kind, id, _, _, rest = parse_value(v)
+  if kind ~= "g" or not rest then
+    return nil
+  end
+  local action, a, b = match(rest, "^([a-z_]+)|([^|]+)|?(.*)$")
+  if action == "challenge" then
+    return { id = id, platform = platform, action = action, challenge = a }
+  elseif action == "rate_limit" then
+    return { id = id, platform = platform, action = action, requests = tonumber(a), window = tonumber(b) }
+  end
+  return nil
 end
 
 return _M
