@@ -215,3 +215,35 @@ http {
 }
 `, p.ModSecurityModule, p.Prefix, modsecConf, p.Prefix)), nil
 }
+
+// UpstreamProxyProtocolProbe returns an nginx.conf with an upstream that
+// writes a PROXY protocol header (proxy_protocol_header, edgeweir-openresty's
+// nginx-upstream-proxy-protocol.patch) without listening anywhere: `nginx
+// -t` on it tells whether the node can send PROXY protocol to HTTP origins
+// (feature origin-proxy-protocol-v1).
+func UpstreamProxyProtocolProbe(p Params) ([]byte, error) {
+	p = p.WithDefaults()
+	if !safePath.MatchString(p.Prefix) {
+		return nil, fmt.Errorf("nginx prefix %q must be an absolute path without spaces or special characters", p.Prefix)
+	}
+	return []byte(fmt.Sprintf(`# edgeweir-node: can this node send PROXY protocol to HTTP origins?
+pid %s/logs/proxy-protocol-probe.pid;
+error_log stderr notice;
+events {
+    worker_connections 16;
+}
+http {
+    upstream edgeweir_probe {
+        server 127.0.0.1:1;
+        proxy_protocol_header $edgeweir_proxy_protocol;
+    }
+    server {
+        listen unix:%s/tmp/proxy-protocol-probe.sock;
+        set $edgeweir_proxy_protocol "";
+        location / {
+            proxy_pass http://edgeweir_probe;
+        }
+    }
+}
+`, p.Prefix, p.Prefix)), nil
+}

@@ -10,6 +10,7 @@ mv "$src/ngx_brotli-$(ver ngx_brotli)" "$ngx_brotli"
 rm -rf "$ngx_brotli/deps/brotli"
 mv "$src/brotli-$(ver brotli)" "$ngx_brotli/deps/brotli"
 patch -d "$nginx_src" -p1 --no-backup-if-mismatch </build/patches/nginx-nogroup.patch
+patch -d "$nginx_src" -p1 --no-backup-if-mismatch </build/patches/nginx-upstream-proxy-protocol.patch
 for p in /build/patches/yajl-*.patch; do patch -d "$yajl" -p1 --no-backup-if-mismatch <"$p"; done
 patch -d "$modsecurity" -p1 --no-backup-if-mismatch </build/patches/modsecurity-request-body-phase.patch
 patch -d "$modsecurity_nginx" -p1 --no-backup-if-mismatch </build/patches/modsecurity-nginx-log-vars.patch

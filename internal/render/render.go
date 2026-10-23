@@ -363,6 +363,13 @@ type data struct {
 	DefaultZone       string
 	OriginLayers      []originLayer
 	Balancers         []string
+	// OriginProxyProtocol: an origin is sent PROXY protocol
+	// (configir.Origin.ProxyProtocol). The edge layer passes the client
+	// connection's endpoints in X-Edgeweir-Conn, and the balancer
+	// upstreams write $edgeweir_proxy_protocol (edgeweir.origin) at the
+	// start of new connections (proxy_protocol_header,
+	// edgeweir-openresty's patch).
+	OriginProxyProtocol bool
 	// ModSecurityConf is the CRS configuration (ModSecurityConf) when a
 	// site runs the CRS; WAFBodyLimits are the request body limits of the
 	// edge layer's CRS locations.
@@ -1067,16 +1074,19 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		Params:    p,
 		L4Servers: l4,
 		// Whole milliseconds, at least one (nginx's time syntax).
-		ShutdownTimeoutMS:  (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
-		SharedDicts:        dicts,
-		RegexCacheEntries:  regexCacheEntries(plan),
-		EdgeServers:        edge,
-		ForwardedFor:       forwardedFor,
-		ForwardedMap:       forwardedFor == forwardedForChain,
-		CacheZones:         plan.CacheZones,
-		DefaultZone:        plan.CacheZones[0].Name,
-		OriginLayers:       layers,
-		Balancers:          balancers,
+		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
+		SharedDicts:       dicts,
+		RegexCacheEntries: regexCacheEntries(plan),
+		EdgeServers:       edge,
+		ForwardedFor:      forwardedFor,
+		ForwardedMap:      forwardedFor == forwardedForChain,
+		CacheZones:        plan.CacheZones,
+		DefaultZone:       plan.CacheZones[0].Name,
+		OriginLayers:      layers,
+		Balancers:         balancers,
+		OriginProxyProtocol: slices.ContainsFunc(plan.Sites, func(s configir.Site) bool {
+			return slices.ContainsFunc(s.Origins, func(o configir.Origin) bool { return o.ProxyProtocol != 0 })
+		}),
 		ModSecurityConf:    modsecConf,
 		WAFHeader:          WAFHeader,
 		WAFExclusionHeader: WAFExclusionHeader,

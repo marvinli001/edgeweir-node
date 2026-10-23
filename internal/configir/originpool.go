@@ -68,6 +68,28 @@ type ActiveHealthCheck struct {
 	// unhealthy.
 	HealthyThreshold   uint32
 	UnhealthyThreshold uint32
+	// GRPC probes ask grpc.health.v1.Health/Check over HTTP/2 instead of
+	// sending the HTTP request (feature active-health-grpc-v1); Path,
+	// Method and the expected status range are not used then.
+	GRPC bool
+	// GRPCService is HealthCheckRequest.service; empty asks for the
+	// server's overall health.
+	GRPCService string
+}
+
+// validGRPCService reports whether s is a valid
+// ActiveHealthCheck.grpc_service: up to 255 printable ASCII bytes without
+// spaces.
+func validGRPCService(s string) bool {
+	if len(s) > 255 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // Affinity is a pool's session affinity (site table field "affinity"):
@@ -82,7 +104,14 @@ func buildActiveHealthCheck(a *nodev1.ActiveHealthCheck) (*ActiveHealthCheck, er
 	if a == nil {
 		return nil, nil
 	}
-	out := &ActiveHealthCheck{Path: a.GetPath(), Method: a.GetMethod(), Host: a.GetHost()}
+	out := &ActiveHealthCheck{Path: a.GetPath(), Method: a.GetMethod(), Host: a.GetHost(),
+		GRPC: a.GetType() == nodev1.ActiveHealthCheckType_ACTIVE_HEALTH_CHECK_TYPE_GRPC, GRPCService: a.GetGrpcService()}
+	if !out.GRPC && out.GRPCService != "" {
+		return nil, fmt.Errorf("%w: active health check grpc_service without the gRPC type", ErrRejected)
+	}
+	if !validGRPCService(out.GRPCService) {
+		return nil, fmt.Errorf("%w: invalid active health check gRPC service %q", ErrRejected, out.GRPCService)
+	}
 	if out.Path == "" {
 		out.Path = DefaultHealthPath
 	}

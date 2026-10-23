@@ -29,6 +29,16 @@
 //     gets the check's timeout. A status within the expected range is a
 //     success; failures are connect_failed, timeout, tls_failed and
 //     upstream_status {status}, the codes of the passive check.
+//   - gRPC (active-health-grpc-v1): grpc.health.v1.Health/Check over
+//     HTTP/2 whatever the pool's protocol (ALPN h2 over TLS, prior
+//     knowledge otherwise), :authority the Host above, the check's service
+//     in the request. Healthy: HTTP 200, grpc-status 0 and the status
+//     SERVING; failures are upstream_status {status} (HTTP), grpc_status
+//     {status} (a grpc-status other than 0) and grpc_not_serving {status}
+//     (NOT_SERVING, SERVICE_UNKNOWN or UNKNOWN).
+//   - PROXY protocol: to origins the pool sends it to, a probe starts its
+//     connection with "PROXY UNKNOWN" (v1) or the LOCAL command (v2), as
+//     the protocol has it for health checks of the proxy itself.
 //   - State: an origin starts healthy, becomes unhealthy after
 //     unhealthy_threshold consecutive failures and healthy again after
 //     healthy_threshold consecutive successes.
@@ -36,10 +46,12 @@ package healthcheck
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +67,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protowire"
+
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/version"
 )
@@ -68,6 +82,8 @@ const (
 	CodeUpstreamStatus   = "upstream_status"   // status
 	CodeDNSFailed        = "dns_failed"        // host
 	CodeAddressForbidden = "address_forbidden" // address
+	CodeGRPCStatus       = "grpc_status"       // status
+	CodeGRPCNotServing   = "grpc_not_serving"  // status
 )
 
 const (
@@ -179,6 +195,9 @@ type spec struct {
 	certRef  string
 	certPath string
 	keyPath  string
+	// proxyProtocol is the PROXY protocol version the pool sends the
+	// origin (0 none).
+	proxyProtocol uint32
 }
 
 type check struct {
@@ -225,7 +244,7 @@ func specs(plan *configir.Plan) map[Key]spec {
 				continue
 			}
 			sp := spec{check: *s.ActiveHealthCheck, scheme: o.Scheme, address: o.Address, port: o.Port, insecure: !s.TLSVerify, http2: s.OriginHTTP2,
-				originCA: s.TLSVerify && s.OriginTrust == configir.TrustOriginCA}
+				originCA: s.TLSVerify && s.OriginTrust == configir.TrustOriginCA, proxyProtocol: o.ProxyProtocol}
 			// Like the data plane: HTTPS origins only, never S3 ones (skipped above).
 			if c := s.OriginClientCert; c != nil && o.Scheme == configir.SchemeHTTPS {
 				sp.certRef, sp.certPath, sp.keyPath = c.Ref, c.CertPath, c.KeyPath
@@ -508,8 +527,18 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+	if header := proxyHeader(sp.proxyProtocol); header != "" {
+		if _, err := io.WriteString(conn, header); err != nil {
+			if timedOut(ctx, err) {
+				return timeout
+			}
+			return failure(CodeConnectFailed, nil, "send PROXY protocol header: %v", err)
+		}
+	}
+	// gRPC goes over HTTP/2 whatever the pool's protocol.
+	h2 := sp.http2 || sp.check.GRPC
 	alpn := "http/1.1"
-	if sp.http2 {
+	if h2 {
 		alpn = "h2"
 	}
 	if sp.scheme == configir.SchemeHTTPS {
@@ -525,15 +554,18 @@ func (c *Checker) probe(parent context.Context, sp spec, policy configir.Address
 			return failure(CodeTLSFailed, nil, "TLS handshake: %v", err)
 		}
 		// The data plane offers h2 alone and has no fallback either.
-		if got := tc.ConnectionState().NegotiatedProtocol; sp.http2 && got != "h2" {
+		if got := tc.ConnectionState().NegotiatedProtocol; h2 && got != "h2" {
 			return failure(CodeConnectFailed, nil, "origin does not speak HTTP/2 (ALPN %q)", got)
 		}
 		conn = tc
 	}
+	if sp.check.GRPC {
+		return probeGRPC(ctx, conn, sp, timeout)
+	}
 	var resp *http.Response
 	var err error
 	if sp.http2 {
-		resp, err = roundTripHTTP2(ctx, conn, sp)
+		resp, err = roundTripHTTP2(ctx, conn, sp, sp.check.Method, sp.check.Path, http.Header{}, nil)
 	} else {
 		resp, err = roundTripHTTP1(conn, sp)
 	}
@@ -611,11 +643,11 @@ func roundTripHTTP1(conn net.Conn, sp spec) (*http.Response, error) {
 	return resp, nil
 }
 
-// roundTripHTTP2 sends the probe's request over conn (TLS with h2
+// roundTripHTTP2 sends a request of the probe over conn (TLS with h2
 // negotiated, or plain for prior knowledge) with HTTP/2 and reads the
 // response header. The path goes out as it is (:path), the Host as
-// :authority.
-func roundTripHTTP2(ctx context.Context, conn net.Conn, sp spec) (*http.Response, error) {
+// :authority; header adds to the probe's User-Agent and Accept.
+func roundTripHTTP2(ctx context.Context, conn net.Conn, sp spec, method, path string, header http.Header, body []byte) (*http.Response, error) {
 	var protocols http.Protocols
 	dial := func(context.Context, string, string) (net.Conn, error) { return conn, nil }
 	t := &http.Transport{Protocols: &protocols, DisableCompression: true}
@@ -629,12 +661,21 @@ func roundTripHTTP2(ctx context.Context, conn net.Conn, sp spec) (*http.Response
 		t.DialContext = dial
 	}
 	defer t.CloseIdleConnections()
+	header.Set("User-Agent", userAgent)
+	if header.Get("Accept") == "" {
+		header.Set("Accept", "*/*")
+	}
 	req := (&http.Request{
-		Method: sp.check.Method,
-		URL:    &url.URL{Scheme: scheme, Host: sp.host, Opaque: sp.check.Path},
-		Header: http.Header{"User-Agent": {userAgent}, "Accept": {"*/*"}},
+		Method: method,
+		URL:    &url.URL{Scheme: scheme, Host: sp.host, Opaque: path},
+		Header: header,
 		Host:   sp.host,
 	}).WithContext(ctx)
+	if body != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	}
 	resp, err := t.RoundTrip(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP/2 request: %w", err)
@@ -678,4 +719,118 @@ func (c *Checker) addresses(ctx context.Context, host string, policy configir.Ad
 		return nil, &r
 	}
 	return allowed, nil
+}
+
+// proxyHeader is what a probe writes before anything else to an origin
+// that is sent PROXY protocol of version v: "PROXY UNKNOWN" (v1) or the
+// LOCAL command without addresses (v2), the forms the protocol defines for
+// connections the proxy opens on its own, such as health checks.
+func proxyHeader(v uint32) string {
+	switch v {
+	case 1:
+		return "PROXY UNKNOWN\r\n"
+	case 2:
+		return "\r\n\r\n\x00\r\nQUIT\n\x20\x00\x00\x00"
+	}
+	return ""
+}
+
+// The grpc.health.v1 method a gRPC probe calls and the statuses of its
+// answer (HealthCheckResponse.ServingStatus).
+const grpcHealthPath = "/grpc.health.v1.Health/Check"
+
+var servingStatus = map[uint64]string{0: "UNKNOWN", 1: "SERVING", 2: "NOT_SERVING", 3: "SERVICE_UNKNOWN"}
+
+// grpcHealthRequest is the length-prefixed message of a
+// HealthCheckRequest asking about service.
+func grpcHealthRequest(service string) []byte {
+	var msg []byte
+	if service != "" {
+		msg = protowire.AppendTag(msg, 1, protowire.BytesType)
+		msg = protowire.AppendString(msg, service)
+	}
+	out := make([]byte, 5, 5+len(msg))
+	binary.BigEndian.PutUint32(out[1:], uint32(len(msg)))
+	return append(out, msg...)
+}
+
+// grpcServingStatus reads HealthCheckResponse.status from the body of a
+// gRPC answer: one uncompressed length-prefixed message (an empty one is
+// UNKNOWN, the default).
+func grpcServingStatus(body []byte) (uint64, error) {
+	if len(body) < 5 {
+		return 0, errors.New("no response message")
+	}
+	if body[0] != 0 {
+		return 0, errors.New("compressed response message")
+	}
+	n := binary.BigEndian.Uint32(body[1:5])
+	if uint64(n) != uint64(len(body)-5) {
+		return 0, fmt.Errorf("response message of %d bytes in a body of %d", n, len(body))
+	}
+	msg, status := body[5:], uint64(0)
+	for len(msg) > 0 {
+		num, typ, n := protowire.ConsumeTag(msg)
+		if n < 0 {
+			return 0, protowire.ParseError(n)
+		}
+		msg = msg[n:]
+		if num == 1 && typ == protowire.VarintType {
+			v, n := protowire.ConsumeVarint(msg)
+			if n < 0 {
+				return 0, protowire.ParseError(n)
+			}
+			status, msg = v, msg[n:]
+			continue
+		}
+		if n = protowire.ConsumeFieldValue(num, typ, msg); n < 0 {
+			return 0, protowire.ParseError(n)
+		}
+		msg = msg[n:]
+	}
+	return status, nil
+}
+
+// probeGRPC calls grpc.health.v1.Health/Check over conn (HTTP/2 ready to
+// use: TLS with h2 negotiated, or plain for prior knowledge).
+func probeGRPC(ctx context.Context, conn net.Conn, sp spec, timeout result) result {
+	header := http.Header{"Content-Type": {"application/grpc"}, "Te": {"trailers"}, "Accept": {"application/grpc"}}
+	resp, err := roundTripHTTP2(ctx, conn, sp, http.MethodPost, grpcHealthPath, header, grpcHealthRequest(sp.check.GRPCService))
+	if err != nil {
+		if timedOut(ctx, err) {
+			return timeout
+		}
+		return failure(CodeConnectFailed, nil, "%v", err)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	if err != nil {
+		if timedOut(ctx, err) {
+			return timeout
+		}
+		return failure(CodeConnectFailed, nil, "read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return failure(CodeUpstreamStatus, map[string]string{"status": strconv.Itoa(resp.StatusCode)}, "HTTP %d", resp.StatusCode)
+	}
+	// A trailers-only answer carries the status in its header.
+	status := cmp.Or(resp.Header.Get("Grpc-Status"), resp.Trailer.Get("Grpc-Status"))
+	if status == "" {
+		return failure(CodeGRPCStatus, map[string]string{"status": "2"}, "gRPC answer without grpc-status")
+	}
+	if status != "0" {
+		message := cmp.Or(resp.Header.Get("Grpc-Message"), resp.Trailer.Get("Grpc-Message"))
+		return failure(CodeGRPCStatus, map[string]string{"status": status}, "gRPC status %s %s", status, message)
+	}
+	if len(body) > maxBody {
+		return failure(CodeGRPCStatus, map[string]string{"status": "8"}, "gRPC response larger than %d bytes", maxBody)
+	}
+	serving, err := grpcServingStatus(body)
+	if err != nil {
+		return failure(CodeGRPCStatus, map[string]string{"status": "13"}, "gRPC health response: %v", err)
+	}
+	if serving != 1 {
+		name := cmp.Or(servingStatus[serving], strconv.FormatUint(serving, 10))
+		return failure(CodeGRPCNotServing, map[string]string{"status": name}, "gRPC health %s", name)
+	}
+	return result{ok: true}
 }

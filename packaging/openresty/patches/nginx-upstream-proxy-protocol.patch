@@ -1,0 +1,160 @@
+Send a PROXY protocol header to HTTP upstreams.
+
+nginx's stream proxy sends PROXY protocol (proxy_protocol on), its HTTP
+upstreams cannot. This adds one directive to upstream{} blocks:
+
+    proxy_protocol_header <complex value>;
+
+Its value, evaluated for the request when a new connection to a peer has
+been established (after balancer_by_lua chose the peer, so the Lua code
+may set the variables it uses then), is written at the start of that
+connection, before the TLS handshake and the request. An empty value
+writes nothing. Connections taken from a keepalive cache (NGX_DONE) never
+get it again: the cache must keep connections apart by what they were
+sent (edgeweir.origin keys the Lua balancer's pools by the client
+connection). It applies to every module on ngx_http_upstream: proxy_pass
+(HTTP/1.x and HTTP/2) and grpc_pass. Like the stream proxy, the header
+must be sent at once; a failed or partial write is an upstream error
+(proxy_next_upstream error).
+
+edgeweir-node renders the directive into its balancer upstreams only and
+checks for it with a configuration test before announcing the feature
+origin-proxy-protocol-v1.
+
+--- a/src/http/ngx_http_upstream.h
++++ b/src/http/ngx_http_upstream.h
+@@ -149,6 +149,8 @@
+     ngx_resolver_t                  *resolver;
+     ngx_msec_t                       resolver_timeout;
+ #endif
++
++    ngx_http_complex_value_t        *proxy_protocol_header;
+ };
+ 
+ 
+@@ -425,6 +427,7 @@
+     unsigned                         request_body_blocked:1;
+     unsigned                         header_sent:1;
+     unsigned                         response_received:1;
++    unsigned                         proxy_protocol:1;
+ };
+ 
+ 
+--- a/src/http/ngx_http_upstream.c
++++ b/src/http/ngx_http_upstream.c
+@@ -45,6 +45,8 @@
+     ngx_http_upstream_t *u, ngx_uint_t do_write);
+ static void ngx_http_upstream_send_request_handler(ngx_http_request_t *r,
+     ngx_http_upstream_t *u);
++static ngx_int_t ngx_http_upstream_send_proxy_protocol(ngx_http_request_t *r,
++    ngx_http_upstream_t *u, ngx_connection_t *c);
+ static void ngx_http_upstream_read_request_handler(ngx_http_request_t *r);
+ static void ngx_http_upstream_process_header(ngx_http_request_t *r,
+     ngx_http_upstream_t *u);
+@@ -348,6 +350,13 @@
+       ngx_http_upstream_server,
+       NGX_HTTP_SRV_CONF_OFFSET,
+       0,
++      NULL },
++
++    { ngx_string("proxy_protocol_header"),
++      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
++      ngx_http_set_complex_value_slot,
++      NGX_HTTP_SRV_CONF_OFFSET,
++      offsetof(ngx_http_upstream_srv_conf_t, proxy_protocol_header),
+       NULL },
+ 
+ #if (NGX_HTTP_UPSTREAM_ZONE)
+@@ -1723,6 +1732,10 @@
+     u->request_body_blocked = 0;
+     u->response_received = 0;
+ 
++    /* a new connection starts with the PROXY protocol header, if any */
++    u->proxy_protocol = (rc != NGX_DONE && u->upstream
++                         && u->upstream->proxy_protocol_header);
++
+     if (rc == NGX_AGAIN) {
+         ngx_add_timer(c->write, u->connect_timeout);
+         return;
+@@ -1755,6 +1768,13 @@
+         return;
+     }
+ 
++    if (u->proxy_protocol
++        && ngx_http_upstream_send_proxy_protocol(r, u, c) != NGX_OK)
++    {
++        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
++        return;
++    }
++
+     if (ngx_ssl_create_connection(u->conf->ssl, c,
+                                   NGX_SSL_BUFFER|NGX_SSL_CLIENT)
+         != NGX_OK)
+@@ -2177,6 +2197,13 @@
+         return;
+     }
+ 
++    if (u->proxy_protocol
++        && ngx_http_upstream_send_proxy_protocol(r, u, c) != NGX_OK)
++    {
++        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
++        return;
++    }
++
+     c->log->action = "sending request to upstream";
+ 
+     rc = ngx_http_upstream_send_request_body(r, u, do_write);
+@@ -2391,6 +2418,53 @@
+     }
+ 
+     return rc;
++}
++
++
++/*
++ * Writes the upstream's proxy_protocol_header (evaluated now, after the
++ * balancer chose the peer) at the start of a new connection, before TLS
++ * and the request. An empty value sends nothing. Like the stream proxy,
++ * the header must go out at once.
++ */
++
++static ngx_int_t
++ngx_http_upstream_send_proxy_protocol(ngx_http_request_t *r,
++    ngx_http_upstream_t *u, ngx_connection_t *c)
++{
++    ssize_t    n;
++    ngx_str_t  header;
++
++    u->proxy_protocol = 0;
++
++    if (ngx_http_complex_value(r, u->upstream->proxy_protocol_header, &header)
++        != NGX_OK)
++    {
++        return NGX_ERROR;
++    }
++
++    if (header.len == 0) {
++        return NGX_OK;
++    }
++
++    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
++                   "http upstream send PROXY protocol header: %uz bytes",
++                   header.len);
++
++    c->log->action = "sending PROXY protocol header to upstream";
++
++    n = c->send(c, header.data, header.len);
++
++    if (n == (ssize_t) header.len) {
++        return NGX_OK;
++    }
++
++    if (n != NGX_ERROR) {
++        ngx_log_error(NGX_LOG_ERR, c->log, 0,
++                      "could not send PROXY protocol header at once");
++    }
++
++    return NGX_ERROR;
+ }
+ 
+ 

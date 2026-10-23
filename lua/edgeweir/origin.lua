@@ -34,6 +34,11 @@
 --                  and checked like them (origin address policy), one try
 --                  with the rule's timeout, only the forwarded request
 --                  headers; nothing here caches, intercepts or counts it.
+--                  Origins sent PROXY protocol get the header of the
+--                  client connection the edge names in X-Edgeweir-Conn
+--                  ($edgeweir_proxy_protocol, written by the balancer
+--                  upstream's proxy_protocol_header on new connections),
+--                  and their connections are pooled per client connection.
 -- log():           passive health accounting from $upstream_status.
 -- error_page():    nginx's own errors in this layer (uncaught Lua errors,
 --                  requests nginx refuses): the stale copy first, as in
@@ -55,6 +60,8 @@ local challenge = require("edgeweir.challenge")
 local policy = require("edgeweir.policy")
 local setcookie = require("edgeweir.setcookie")
 local topstats = require("edgeweir.topstats")
+local proxyproto = require("edgeweir.proxyproto")
+local ipaddr = require("edgeweir.ipaddr")
 
 local _M = {}
 
@@ -62,7 +69,7 @@ local _M = {}
 local NO_OVERRIDE = {}
 
 local concat = table.concat
-local find, gmatch, gsub, sub = string.find, string.gmatch, string.gsub, string.sub
+local find, gmatch, gsub, match, sub = string.find, string.gmatch, string.gsub, string.match, string.sub
 local tonumber = tonumber
 
 -- fail answers with the origin layer's own failure: an error page (never
@@ -371,17 +378,67 @@ function _M.client_cert(site, o)
   return site.origin_client_cert
 end
 
+-- port returns p (a number or decimal string) as a port, 0 when it is
+-- none ($remote_port is empty when realip took the address from a header).
+local function port(p)
+  p = tonumber(p)
+  if not p or p < 0 or p > 65535 or p % 1 ~= 0 then return 0 end
+  return p
+end
+
+-- conn_endpoints parses X-Edgeweir-Conn, "<client address> <client port>
+-- <server address> <server port>" of the client connection (the edge layer
+-- sends it while an origin is sent PROXY protocol); nil without it.
+function _M.conn_endpoints(value)
+  if not value or value == "" then return nil end
+  local src, sport, dst, dport = match(value, "^(%S+) (%S*) (%S+) (%S*)$")
+  if not src then return nil end
+  return { src = src, sport = port(sport), dst = dst, dport = port(dport) }
+end
+
+-- proxy_header returns the PROXY protocol header of version v (1 or 2)
+-- for the client connection conn (conn_endpoints): "PROXY UNKNOWN" (v1) or
+-- the LOCAL command (v2) when there is none or its endpoints are no IP
+-- addresses (the agent's prefetches on the local listeners).
+function _M.proxy_header(v, conn)
+  local known = conn and ipaddr.parse(conn.src) and ipaddr.parse(conn.dst)
+  if v == 1 then
+    return known and proxyproto.v1(conn.src, conn.dst, conn.sport, conn.dport) or proxyproto.V1_UNKNOWN
+  end
+  return known and proxyproto.v2(conn.src, conn.dst, conn.sport, conn.dport) or proxyproto.V2_LOCAL
+end
+
+local NO_CONN = {}
+
 -- pool_key returns the host argument of set_current_peer for an attempt to
--- origin o of site with SNI sni (nil for plain HTTP): with the address and
--- port it keys the keep-alive pool. A connection is reused only by requests
--- that verify the origin the same way and present the same client
--- certificate; nginx takes the SNI and the name it verifies from
--- proxy_ssl_name ($edgeweir_ssl_name), not from this key.
-function _M.pool_key(site, o, sni)
-  if not sni then return nil end
-  local cert = _M.client_cert(site, o)
-  if not site.tls_trust and not cert then return sni end
-  return sni .. "|" .. (site.tls_trust or "system") .. "|" .. (cert and cert.ref or "")
+-- origin o of site with SNI sni (nil for plain HTTP) for the client
+-- connection conn (conn_endpoints): with the address and port it keys the
+-- keep-alive pool. A connection is reused only by requests that verify the
+-- origin the same way and present the same client certificate; nginx takes
+-- the SNI and the name it verifies from proxy_ssl_name ($edgeweir_ssl_name),
+-- not from this key. A connection that started with a PROXY protocol header
+-- speaks for one client connection: only its requests reuse it.
+function _M.pool_key(site, o, sni, conn)
+  local key
+  if sni then
+    local cert = _M.client_cert(site, o)
+    if not site.tls_trust and not cert then
+      key = sni
+    else
+      key = sni .. "|" .. (site.tls_trust or "system") .. "|" .. (cert and cert.ref or "")
+    end
+  end
+  local v = o.proxy_protocol
+  if not v or v == 0 then return key end
+  local c = conn or NO_CONN
+  return concat({ key or "", "pp" .. v, c.src or "", c.sport or "", c.dst or "", c.dport or "" }, "|")
+end
+
+-- set_proxy_protocol sets $edgeweir_proxy_protocol, which exists while an
+-- origin is sent PROXY protocol (the configuration with it is reloaded
+-- before such sites are pushed).
+local function set_proxy_protocol(header)
+  ngx.var.edgeweir_proxy_protocol = header
 end
 
 local function same_request(a, b)
@@ -432,7 +489,24 @@ function _M.balance()
   local cert = _M.client_cert(ctx.site, o)
   ngx.var.edgeweir_origin_cert = cert and cert.crt or ""
   ngx.var.edgeweir_origin_key = cert and cert.key or ""
-  local ok, err = ngx_balancer.set_current_peer(c.ip, o.port, _M.pool_key(ctx.site, o, sni))
+  -- The PROXY protocol header of the attempt; a retry to an origin that is
+  -- not sent one clears it.
+  local pp = o.proxy_protocol or 0
+  local conn
+  if pp ~= 0 or ctx.proxy_protocol then
+    if ctx.conn == nil then
+      ctx.conn = _M.conn_endpoints(ngx.var.http_x_edgeweir_conn) or false
+    end
+    conn = ctx.conn or nil
+    local header = pp ~= 0 and _M.proxy_header(pp, conn) or ""
+    local set, err = pcall(set_proxy_protocol, header)
+    if not set then
+      ngx.log(ngx.ERR, "edgeweir: cannot send PROXY protocol to ", o.address, ": ", err)
+      return ngx.exit(ngx.ERROR)
+    end
+    ctx.proxy_protocol = pp ~= 0
+  end
+  local ok, err = ngx_balancer.set_current_peer(c.ip, o.port, _M.pool_key(ctx.site, o, sni, conn))
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: set_current_peer ", c.ip, ":", o.port, ": ", err)
     return ngx.exit(ngx.ERROR)

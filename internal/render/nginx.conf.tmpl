@@ -208,6 +208,19 @@ http {
         default "$http_x_forwarded_for, $edgeweir_peer";
     }
 {{- end }}
+{{- if .OriginProxyProtocol }}
+    # The address and port the client connected to, for the PROXY protocol
+    # header towards origins: the one a PROXY protocol header named on
+    # listeners that receive it, else the local one.
+    map $proxy_protocol_server_addr $edgeweir_conn_dst {
+        ""      $server_addr;
+        default $proxy_protocol_server_addr;
+    }
+    map $proxy_protocol_server_port $edgeweir_conn_dport {
+        ""      $server_port;
+        default $proxy_protocol_server_port;
+    }
+{{- end }}
 
     # Edge -> origin layer (local unix sockets). The variants without TLS
     # verification serve sites that turned it off; the _h2 variants send
@@ -255,6 +268,12 @@ http {
     upstream {{ . }} {
         server 0.0.0.1;
         keepalive 0;
+{{- if $.OriginProxyProtocol }}
+        # PROXY protocol header of the origin chosen for the attempt (set in
+        # balancer_by_lua; empty: none), written before anything else on a
+        # new connection.
+        proxy_protocol_header $edgeweir_proxy_protocol;
+{{- end }}
         balancer_by_lua_block { require("edgeweir.origin").balance() }
     }
 {{- end }}
@@ -547,6 +566,9 @@ http {
             grpc_set_header CDN-Loop $edgeweir_cdn_loop;
             grpc_set_header X-Edgeweir-Site $edgeweir_site;
             grpc_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+{{- if $.OriginProxyProtocol }}
+            grpc_set_header X-Edgeweir-Conn "$remote_addr $remote_port $edgeweir_conn_dst $edgeweir_conn_dport";
+{{- end }}
             grpc_set_header X-Request-Id $edgeweir_request_id;
             # Timeouts towards origins are per site in the origin layer;
             # these only bound the local hop.
@@ -675,6 +697,11 @@ stream {
             # Origin rules' group, Host, SNI and port and config rules'
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+{{- if $.OriginProxyProtocol }}
+            # The client connection's endpoints, for origins sent PROXY
+            # protocol (edgeweir.origin).
+            proxy_set_header X-Edgeweir-Conn "$remote_addr $remote_port $edgeweir_conn_dst $edgeweir_conn_dport";
+{{- end }}
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
@@ -731,6 +758,9 @@ stream {
             set $edgeweir_ssl_name "";
             set $edgeweir_origin_cert "";
             set $edgeweir_origin_key "";
+{{- if .Root.OriginProxyProtocol }}
+            set $edgeweir_proxy_protocol "";
+{{- end }}
             access_by_lua_block { require("edgeweir.origin").access() }
 {{ if eq .Layer.Protocol "grpc" }}
             # HTTP/2 (grpcs: TLS with ALPN h2) to the origin, unbuffered
@@ -760,6 +790,9 @@ stream {
             {{ .P }}_set_header X-Edgeweir-Origin "";
             {{ .P }}_set_header X-Edgeweir-Auth "";
             {{ .P }}_set_header X-Edgeweir-Image "";
+{{- if .Root.OriginProxyProtocol }}
+            {{ .P }}_set_header X-Edgeweir-Conn "";
+{{- end }}
 {{- if .Root.ModSecurityConf }}
             {{ .P }}_set_header {{ .Root.WAFHeader }} "";
             {{ .P }}_set_header {{ .Root.WAFExclusionHeader }} "";
