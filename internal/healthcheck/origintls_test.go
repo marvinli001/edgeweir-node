@@ -91,7 +91,7 @@ func TestProbeOriginProtection(t *testing.T) {
 	c := New(Options{Dialer: to(srv.Listener.Addr().String(), &asked, &mu), RootCAs: system.Pool()})
 	defer c.Close()
 	certPath, keyPath := clientCertFiles(t, clientCA)
-	ca := &configir.OriginCA{Certificate: originCA.Cert, Revoked: map[string]bool{}}
+	ca := &configir.OriginCA{Authorities: []configir.OriginAuthority{{Certificate: originCA.Cert, Revoked: map[string]bool{}}}}
 	setCA := func(ca *configir.OriginCA) {
 		c.mu.Lock()
 		c.originCA = ca
@@ -124,7 +124,23 @@ func TestProbeOriginProtection(t *testing.T) {
 	if r := probe("", true); r.code != CodeTLSFailed || !strings.Contains(r.err, "unknown authority") {
 		t.Fatalf("Origin CA certificate against the node's trust store: %+v", r)
 	}
-	ca.Revoked[serverCert.Leaf.SerialNumber.Text(16)] = true
+	// During a rotation the origin's certificate is the previous authority's.
+	next, err := pkitest.NewCA("Edgeweir Origin CA G2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial := serverCert.Leaf.SerialNumber.Text(16)
+	current := configir.OriginAuthority{Certificate: next.Cert, Revoked: map[string]bool{serial: true}}
+	setCA(&configir.OriginCA{Authorities: []configir.OriginAuthority{current, ca.Authorities[0]}})
+	if r := probe(configir.TrustOriginCA, true); !r.ok {
+		t.Fatalf("certificate of the previous Origin CA during a rotation: %+v", r)
+	}
+	setCA(&configir.OriginCA{Authorities: []configir.OriginAuthority{current}})
+	if r := probe(configir.TrustOriginCA, true); r.code != CodeTLSFailed || !strings.Contains(r.err, "unknown authority") {
+		t.Fatalf("certificate of a retired Origin CA: %+v", r)
+	}
+	setCA(ca)
+	ca.Authorities[0].Revoked[serial] = true
 	if r := probe(configir.TrustOriginCA, true); r.code != CodeTLSFailed || !strings.Contains(r.err, "revoked") {
 		t.Fatalf("revoked certificate: %+v", r)
 	}

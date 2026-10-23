@@ -34,12 +34,17 @@ type testOriginCA struct {
 
 func newTestOriginCA(t *testing.T) testOriginCA {
 	t.Helper()
+	return newNamedOriginCA(t, "Edgeweir Origin CA")
+}
+
+func newNamedOriginCA(t *testing.T, commonName string) testOriginCA {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Edgeweir Origin CA"},
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: commonName},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(20 * 365 * 24 * time.Hour),
 		IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
@@ -50,6 +55,26 @@ func newTestOriginCA(t *testing.T) testOriginCA {
 	}
 	cert, _ := x509.ParseCertificate(der)
 	return testOriginCA{cert: cert, key: key, pem: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))}
+}
+
+// leaf is an origin certificate the CA signed with the serial number.
+func (ca testOriginCA) leaf(t *testing.T, serial int64) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "origin.test"}, DNSNames: []string{"origin.test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, _ := x509.ParseCertificate(der)
+	return cert
 }
 
 func (ca testOriginCA) crl(t *testing.T, label string, nextUpdate time.Time, serials ...int64) string {
@@ -99,13 +124,17 @@ func TestBuildOriginProtection(t *testing.T) {
 	if p.OriginClientCertificates["occ"] != fp {
 		t.Fatalf("origin client certificates %v", p.OriginClientCertificates)
 	}
-	if p.OriginCA == nil || !p.OriginCA.Certificate.Equal(ca.cert) {
+	if p.OriginCA == nil || len(p.OriginCA.Authorities) != 1 || !p.OriginCA.Certificates()[0].Equal(ca.cert) {
 		t.Fatal("origin CA not built")
 	}
 	for serial, want := range map[int64]bool{7: true, 0x1f: true, 8: false} {
-		if got := p.OriginCA.IsRevoked(&x509.Certificate{SerialNumber: big.NewInt(serial)}); got != want {
+		if got := p.OriginCA.IsRevoked(ca.leaf(t, serial)); got != want {
 			t.Errorf("serial %d revoked = %v, want %v", serial, got, want)
 		}
+	}
+	// Another authority's certificate with a listed serial number is not.
+	if p.OriginCA.IsRevoked(newTestOriginCA(t).leaf(t, 7)) {
+		t.Error("revoked by another authority's serial number")
 	}
 	a, b := p.Sites[0], p.Sites[1]
 	if a.OriginTrust != TrustOriginCA || a.OriginClientCertID != "occ" {
@@ -169,6 +198,81 @@ func TestBuildOriginProtectionRejects(t *testing.T) {
 	c.OriginCa = nil
 	if _, err := Build(c, Options{}); !errors.Is(err, ErrRejected) {
 		t.Errorf("disabled site trusting a missing CA: err = %v", err)
+	}
+}
+
+func TestBuildOriginCARotation(t *testing.T) {
+	if !slices.Contains(SupportedFeatures, FeatureOriginCARotation) {
+		t.Fatal("origin-ca-rotation-v1 is not announced")
+	}
+	current := newNamedOriginCA(t, "Edgeweir Origin CA G2")
+	previous := newTestOriginCA(t)
+	c := originProtectedConfig(t, current)
+	c.OriginCaPrevious = &nodev1.OriginCa{CertificatePem: previous.pem, CrlPem: previous.crl(t, "X509 CRL", time.Now().Add(time.Hour), 9)}
+	c.RequiredFeatures = append(c.RequiredFeatures, FeatureOriginCARotation)
+	p, err := Build(c, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := p.OriginCA
+	if certs := ca.Certificates(); len(certs) != 2 || !certs[0].Equal(current.cert) || !certs[1].Equal(previous.cert) {
+		t.Fatalf("authorities %v", certs)
+	}
+	// nginx reads one file of certificates and one of CRLs: both, current first.
+	if ca.CertificatePEM != current.pem+previous.pem || ca.CRLPEM != c.OriginCa.CrlPem+c.OriginCaPrevious.CrlPem {
+		t.Fatal("trust files do not hold both authorities")
+	}
+	for name, tc := range map[string]struct {
+		cert *x509.Certificate
+		want bool
+	}{
+		"current, listed":               {current.leaf(t, 7), true},
+		"current, listed by the other":  {current.leaf(t, 9), false},
+		"previous, listed":              {previous.leaf(t, 9), true},
+		"previous, listed by the other": {previous.leaf(t, 7), false},
+	} {
+		if got := ca.IsRevoked(tc.cert); got != tc.want {
+			t.Errorf("%s: revoked = %v, want %v", name, got, tc.want)
+		}
+	}
+	other := newNamedOriginCA(t, "Edgeweir Origin CA G3")
+	for name, change := range map[string]func(*nodev1.NodeConfig){
+		"previous without the CA": func(c *nodev1.NodeConfig) { c.OriginCa = nil },
+		"previous CRL of another CA": func(c *nodev1.NodeConfig) {
+			c.OriginCaPrevious.CrlPem = other.crl(t, "X509 CRL", time.Now().Add(time.Hour))
+		},
+		"previous without a CRL": func(c *nodev1.NodeConfig) { c.OriginCaPrevious.CrlPem = "" },
+		"previous CRL expired": func(c *nodev1.NodeConfig) {
+			c.OriginCaPrevious.CrlPem = previous.crl(t, "X509 CRL", time.Now().Add(-time.Minute))
+		},
+		"two previous CAs":        func(c *nodev1.NodeConfig) { c.OriginCaPrevious.CertificatePem += other.pem },
+		"previous is the current": func(c *nodev1.NodeConfig) { c.OriginCaPrevious = proto.CloneOf(c.OriginCa) },
+		"previous with its subject": func(c *nodev1.NodeConfig) {
+			same := newNamedOriginCA(t, "Edgeweir Origin CA G2")
+			c.OriginCaPrevious = &nodev1.OriginCa{CertificatePem: same.pem, CrlPem: same.crl(t, "X509 CRL", time.Now().Add(time.Hour))}
+		},
+	} {
+		bad := proto.CloneOf(c)
+		change(bad)
+		if _, err := Build(bad, Options{}); !errors.Is(err, ErrRejected) {
+			t.Errorf("%s: err = %v, want rejection", name, err)
+		}
+	}
+	// The diff carries it in full and clears it once retired.
+	base := withHash(t, &nodev1.NodeConfig{Revision: 1, ClusterId: "c1", Sites: []*nodev1.Site{site("b", "b.test")}})
+	c.Revision = 2
+	withHash(t, c)
+	got, err := ApplyDiff(base, Diff(base, c))
+	if err != nil || !proto.Equal(got, c) {
+		t.Fatalf("diff loses the previous Origin CA: %v", err)
+	}
+	retired := proto.CloneOf(c)
+	retired.Revision = 3
+	retired.OriginCaPrevious = nil
+	withHash(t, retired)
+	back, err := ApplyDiff(c, Diff(c, retired))
+	if err != nil || back.GetOriginCaPrevious() != nil || back.GetContentHash() != retired.GetContentHash() {
+		t.Fatalf("diff keeps the retired Origin CA: %v", err)
 	}
 }
 

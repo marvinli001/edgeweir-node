@@ -598,12 +598,15 @@ func (c *Checker) tlsConfig(sp spec, alpn string) (*tls.Config, *result) {
 		c.mu.Lock()
 		ca := c.originCA
 		c.mu.Unlock()
-		if ca == nil || ca.Certificate == nil {
+		if ca == nil || len(ca.Authorities) == 0 {
 			r := failure(CodeTLSFailed, nil, "the Origin CA is missing")
 			return nil, &r
 		}
+		// During a rotation the previous Origin CA too.
 		roots := x509.NewCertPool()
-		roots.AddCert(ca.Certificate)
+		for _, cert := range ca.Certificates() {
+			roots.AddCert(cert)
+		}
 		config.RootCAs = roots
 		config.VerifyConnection = func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) > 0 && ca.IsRevoked(cs.PeerCertificates[0]) {
