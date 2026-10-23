@@ -274,7 +274,9 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 - **写不下的手动封禁**：数据面把它们记为未生效并在 `GET /v1/bans` 报告，agent 每分钟重试一次（未生效条目都列得出 id 时增量重写，否则全量替换）。
 - **本机自动封禁**：Lua 写入本地字典并排入上报队列（最多 10000 条），agent 每 5 秒 `POST /v1/bans/auto/drain`（每次最多 1000 条），把地址规范化为单地址 CIDR 后经 `ReportBans` 上报；失败的批次留在内存重试，超过 10000 条时丢弃最旧的。未共享的自动封禁在控制台解封后，`GetBans` 的增量页在 `lifted_own_bans` 中带回，agent 经 `POST /v1/bans/release` 删除本机条目，失败时随之后每次拉取重试，直到到期。
 - **状态回报**：`ReportStatus.bans`（`BanStatus`）带数据面已应用的序号、条目数、容量、未生效的手动封禁（最多 100 个 id 与总数）、内核条目数，以及因容量丢弃的自动封禁数（数据面淘汰的与 agent 没有发送的，自 agent 启动起）。
-- **能力**：`bans-v1` 总是上报；`kernel-ban-v1` 只在 nftables 表可用时上报（§3.13）。数据面的保存与查找见 §3.12。
+- **灰名单**（`greylist-v1`）：`GetBans` 带 `greylist=true`，控制台才在同一序号流里下发灰名单条目（`Ban.action` 为 `BAN_ACTION_CHALLENGE` 或 `BAN_ACTION_RATE_LIMIT`，另带 `challenge` 或 `rate_limit_requests` / `rate_limit_window_seconds`）。只接受手动条目，挑战为 `cookie302`、`js`、`pow`、`captcha`，限速为每 1–3600 秒 1–100000 次，不合法的丢弃。`bans.json` 把它们存在单独的 `greylist` 字段（旧版 agent 读到的仍只有封禁），并以 `greylist_sync` 标记文件里的序号覆盖了灰名单；没有该标记（升级后第一次启动）时从 0 拉取一次快照。灰名单条目与同一 CIDR 的封禁各占一个 slot，从不写入内核。
+- **连接数限制**（`conn-limit-v1`）：`NodeConfig.connection_limits` 随配置应用（含回滚与重启后的最近配置），与封禁在同一个 nft 事务里同步（§3.13）。`BanStatus.connection_limits_active` 表示内核规则已生效，`connection_limits_error` 是未生效的原因（配置有限制但没有内核封禁、nft 拒绝规则）。
+- **能力**：`bans-v1`、`greylist-v1`、`conn-limit-v1` 总是上报；`kernel-ban-v1` 只在 nftables 表可用时上报（§3.13）。数据面的保存与查找见 §3.12。
 
 ### 2.8 挑战密钥与验证码池
 
@@ -631,7 +633,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 
 | 键 | 内容 |
 | --- | --- |
-| `e\|<范围>\|<4 或 6>/<前缀长度>\|<字节>` | 一条封禁，值为 `<类型>\|<id>\|<到期时间>\|<cidr>`；范围 `*` 为平台、否则为站点 id；字节是掩码后地址的前 ceil(len/8) 个字节；类型 `m`（控制台手动）、`c`（控制台自动）、`a`（本机自动）；TTL 为剩余有效期 |
+| `e\|<范围>\|<4 或 6>/<前缀长度>\|<字节>` | 一条封禁，值为 `<类型>\|<id>\|<到期时间>\|<cidr>`；范围 `*` 为平台、否则为站点 id；字节是掩码后地址的前 ceil(len/8) 个字节；类型 `m`（控制台手动）、`c`（控制台自动）、`a`（本机自动）、`g`（灰名单，范围前加 `~`，值另带 `challenge\|<类型>` 或 `rate_limit\|<次数>\|<秒>`）；TTL 为剩余有效期 |
 | `#len\|<范围>` | 该范围控制台条目出现过的前缀长度；全量替换时重算 |
 | `#loc\|<范围>` | 该范围有过本机自动封禁（IPv4 /32、IPv6 /64） |
 | `#lop\|<范围>`、`#lol\|<范围>\|<族>/<长度>` | 该范围有过其他长度的本机封禁（规则封禁的 IPv4 /16–/31、IPv6 /48–/63）及其长度（§3.30） |
@@ -644,6 +646,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 | `#evicted` | 为腾出空间淘汰或丢弃的自动封禁数 |
 
 - **查找**：边缘层解析站点之后、规则之前。每个请求读一次 `#ver`；平台与站点范围都没有长度时到此为止。否则按各长度掩码客户端地址逐个查找（IPv4 映射的 IPv6 地址也按 IPv4 查），先平台后站点。平台 `allow` 名单命中的地址不受封禁，网站的本站放行名单命中的地址不受该网站范围的封禁（§3.29），其余返回 `403`、`X-Edgeweir-Error: ip-banned`。
+- **灰名单**：没有封禁命中时，`bans.grey` 以同样方式查范围 `~*` 与 `~<站点>`（先平台后站点）。平台 `allow` 名单与可信代理免除全部灰名单，本站放行名单只免除站点范围的条目。限速在规则结果之后判断（`allow` 规则、跳过限速的规则免除），每个客户端（IPv4 地址、IPv6 /64）在 `edgeweir_cc` 中按条目计数（键 `gl|md5(id|客户端)|窗口`，字典满时放行），超出返回 `429`、`X-Edgeweir-Error: ip-greylisted`。挑战级别与 Under Attack、CC、规则挑战取最大值（§3.14）；`allow` 规则、跳过挑战的规则与放行名单免除，认证爬虫不免除。灰名单条目与手动封禁一样从不淘汰。
 - **容量与内存**：所有写入用 `safe_set` / `safe_add`，共享内存不会自行淘汰封禁。新条目超出容量或内存不足时，先按写入顺序淘汰最早的本机自动封禁；控制台条目从不在数据面被淘汰。仍然写不下时，手动封禁记为未生效并上报，控制台自动封禁丢弃并计数。
 - **规则封禁**：`bans.add_rule(scope, addr, prefix4, prefix6, ttl, trigger)` 写入规则要求的网络（IPv4 /16–/32、IPv6 /48–/64），只写一次，带规则 ID 上报（§3.30）。
 - **本机自动封禁**：`bans.add_auto(site_id, client, ttl_seconds, trigger)` 写入站点范围的封禁：IPv4 地址（/32）或 IPv6 /64（`ipaddr.client_network`；给出 IPv6 地址时取它的 /64），已有控制台条目时只上报；回环与未指定网络（`127.0.0.0/8`、`0.0.0.0`、`::/64`，即节点自己的流量）一律拒绝。排入上报队列（最多 10000 条，满了丢弃最旧的），上报的 `AutoBan.cidr` 即该网络。
@@ -686,6 +689,17 @@ table inet edgeweir {
 - **受保护地址**（`allow` 集合，永不丢弃）：回环（`127.0.0.0/8`、`::1`）、本机所有网卡地址、控制台地址（`identity.json` 中控制台 URL 的主机名解析出的全部地址，5 分钟刷新一次，解析失败时沿用上次结果）、已应用配置中平台 `allow` 名单的条目。
 - **去重叠**：区间集合不接受重叠元素。被更大前缀覆盖、且到期不晚于它的条目不写入；被覆盖但更晚到期的条目在覆盖条目到期后重新同步写入。`allow` 集合同样去掉被覆盖的前缀。
 - **权限**：需要 `CAP_NET_ADMIN`。默认 systemd unit 和默认镜像都不授予（§5）。
+- **连接数限制**：表另有集合 `limitports`（`inet_service`，区间）、`conn4` / `conn6`（动态，65536 条）、`rate4` / `rate6`（动态，timeout 1m）与链 `connlimit`；input 链在 allow 与 ban 规则之后有 `tcp dport @limitports ct state new jump connlimit`。每次同步在同一事务里 `flush chain connlimit`、`flush set limitports` 再按配置写入：
+
+  ```text
+  add rule inet edgeweir connlimit update @rate4 { ip saddr limit rate over 50/second burst 100 packets } counter drop
+  add rule inet edgeweir connlimit update @rate6 { ip6 saddr & ffff:ffff:ffff:ffff:: limit rate over 50/second burst 100 packets } counter drop
+  add rule inet edgeweir connlimit add @conn4 { ip saddr ct count over 256 } counter drop
+  add rule inet edgeweir connlimit add @conn6 { ip6 saddr & ffff:ffff:ffff:ffff:: ct count over 256 } counter drop
+  add element inet edgeweir limitports { 80, 443, 10000-10999 }
+  ```
+
+  只限 TCP；IPv6 按 /64 计数；受保护地址在 allow 规则里先放行。nft 拒绝限制规则时不带限制重写一次（封禁照常生效），错误经 `BanStatus.connection_limits_error` 上报。
 
 ### 3.14 挑战与通行凭证
 
