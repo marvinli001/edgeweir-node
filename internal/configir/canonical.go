@@ -51,6 +51,7 @@
 //     v0.30.0);
 //   - inside a site auth_identity_headers ascending without duplicates
 //     (proto v1.1.0);
+//   - inside a site encoded_path_exemptions by prefix (proto v1.6.0);
 //   - content_hash = lowercase hex SHA-256 of the deterministic binary
 //     encoding with revision and content_hash cleared.
 //
@@ -151,6 +152,9 @@ func CanonicalizeSite(s *nodev1.Site) {
 	s.Ports = slices.Compact(s.Ports)
 	s.LogHeaders = sortedSet(s.LogHeaders)
 	s.AuthIdentityHeaders = sortedSet(s.AuthIdentityHeaders)
+	slices.SortStableFunc(s.EncodedPathExemptions, func(a, b *nodev1.EncodedPathExemption) int {
+		return cmp.Compare(a.GetPrefix(), b.GetPrefix())
+	})
 	if s.Tls != nil {
 		slices.Sort(s.Tls.RedirectExcludedDomains)
 		s.Tls.RedirectExcludedDomains = slices.Compact(s.Tls.RedirectExcludedDomains)

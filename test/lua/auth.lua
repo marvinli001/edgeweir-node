@@ -855,6 +855,84 @@ test("the 401 page is a built-in page of its own", function()
   assert(errorpages.STATUSES[401])
 end)
 
+test("encoded path exemptions: vectors of the rule each reading selects (edgeweir.uripath)", function()
+  local uripath = require("edgeweir.uripath")
+  local v = assert(cjson.decode(assert(io.open("/t/encoded_path_vectors.json")):read("*a")))
+  for _, c in ipairs(v.auth) do
+    local rules = {}
+    for i, r in ipairs(c.rules) do
+      rules[i] = rule("basic", { id = "r" .. i, path_prefixes = r.pathPrefixes, extensions = r.extensions,
+        exclude_path_prefixes = r.excludePathPrefixes })
+    end
+    local s = site(rules)
+    local ex = {}
+    for i, e in ipairs(c.exemptions) do ex[i] = { prefix = e.prefix, encoded_slash = e.encodedSlash, semicolon = e.semicolon } end
+    local class = uripath.classify(c.raw, ex)
+    local got
+    if class.ambiguous and #s._auth > 1 then
+      got = "ambiguous"
+    else
+      local i = auth.pick(s._auth, "a.test", c.raw, c.uri, class.ambiguous, class.no_exemption, class.views)
+      got = i == false and "ambiguous" or (i and i - 1) or nil
+    end
+    eq(got, c.result ~= cjson.null and c.result or nil, c.name)
+  end
+end)
+
+test("encoded path exemptions never let a path past its rule", function()
+  local all = { { prefix = "/", encoded_slash = true, semicolon = true } }
+  local s = site({
+    rule("url_a", { id = "admin", path_prefixes = { "/admin/" }, exclude_path_prefixes = { "/admin/public/" } }),
+  }, { encoded_path_exemptions = all })
+  local function chosen(raw, uri)
+    local _, _, fake = with_request({ host = "a.test", raw = raw, uri = uri }, function() auth.select(s, false) end)
+    return fake.ctx.edgeweir_auth and fake.ctx.edgeweir_auth.rule and fake.ctx.edgeweir_auth.rule.id or nil
+  end
+  eq(chosen("/admin;x/secret", "/admin;x/secret"), "admin", "; parameters cut into the prefix")
+  eq(chosen("/admin;/secret", "/admin;/secret"), "admin", "an empty parameter")
+  eq(chosen("/admin/public%2Fsecret", "/admin/public/secret"), "admin", "an exclusion for one reading only")
+  eq(chosen("/admin/public;x/../secret", "/admin/secret"), "admin", "a dot segment behind parameters")
+  eq(chosen("/admin%2F..", "/"), "admin", "a dot segment behind an encoded slash")
+  eq(chosen("/public/..;/admin/x", "/public/..;/admin/x"), "admin", "..; is ambiguous")
+  eq(chosen("/x%2F..%2Fadmin/y", "/admin/y"), "admin", "..%2F is ambiguous")
+  eq(chosen("/ADMIN%2Fx", "/ADMIN/x"), "admin", "prefixes still ignore ASCII case")
+  eq(chosen("/admin/public/a%2Fb", "/admin/public/a/b"), nil, "excluded in every reading")
+  eq(chosen("/files/a%2Fb", "/files/a/b"), nil, "an exempt path keeps its own scope")
+  eq(chosen("/files/a;v=1", "/files/a;v=1"), nil)
+  -- The same paths without the exemption are ambiguous: in every scope.
+  local plain = site({ rule("url_a", { id = "admin", path_prefixes = { "/admin/" } }) })
+  local _, _, fake = with_request({ host = "a.test", raw = "/files/a%2Fb", uri = "/files/a/b" }, function() auth.select(plain, false) end)
+  eq(fake.ctx.edgeweir_auth.rule.id, "admin", "no exemption")
+  -- Readings that select different rules are refused.
+  local two = site({
+    rule("basic", { id = "a", path_prefixes = { "/a/" } }),
+    rule("basic", { id = "all" }),
+  }, { encoded_path_exemptions = all })
+  local result = with_request({ host = "a.test", raw = "/a;p/x", uri = "/a;p/x",
+    headers = { authorization = "Basic " .. ngx.encode_base64("alice:correct horse") } }, function()
+    auth.select(two, false)
+    return auth.check(two, policy.site_https_redirect)
+  end)
+  eq(result and result.status, 400); eq(result.code, "auth-path-ambiguous")
+  _, _, fake = with_request({ host = "a.test", raw = "/b/x;p", uri = "/b/x;p" }, function() auth.select(two, false) end)
+  eq(fake.ctx.edgeweir_auth.rule.id, "all", "readings that agree")
+end)
+
+test("encoded path exemptions: a signed path's readings lose the signature too", function()
+  local uripath = require("edgeweir.uripath")
+  local s = site({ rule("url_b", { id = "b", path_prefixes = { "/files/" } }) },
+    { encoded_path_exemptions = { { prefix = "/", encoded_slash = true } } })
+  local prefix = "/1700000000/" .. string.rep("a", 32)
+  local _, state, fake = with_request({ host = "a.test", raw = prefix .. "/files/a%2Fb", uri = prefix .. "/files/a/b" },
+    function() auth.select(s, false) end)
+  eq(fake.ctx.edgeweir_auth.rule.id, "b")
+  eq(state.uri, "/files/a/b")
+  local class = fake.ctx.edgeweir_path_class
+  eq(table.concat(class.views, " "), "/files/a/b /files/a%2Fb")
+  eq(class.key, "/files/a%2Fb")
+  eq(uripath.ambiguous(prefix .. "/files/a%2Fb"), true)
+end)
+
 print(string.format("%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

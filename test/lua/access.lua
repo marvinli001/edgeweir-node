@@ -198,6 +198,11 @@ local function install(revision)
       site("other", { { name = "other.test" } }),
       -- No access authentication rules left, identity headers of former ones.
       site("ident", { { name = "ident.test" } }, { auth_identity_headers = { "x-auth-user", "x-groups" } }),
+      site("enc", { { name = "enc.test" } }, { cache_rules = { { id = "c1", action = "cache", ttl = 60, mode = "override" } },
+        encoded_path_exemptions = { { prefix = "/files/", encoded_slash = true },
+        { prefix = "/api/", semicolon = true } }, access_control = { user_agents = { rules = { { pattern = "*curl*" } },
+        path_prefixes = { "/files/private/" } }, cors = { allowed_origins = { "https://app.test" }, allowed_methods = { "GET" },
+        path_prefixes = { "/files/pub/" } } } }),
       site("redir", { { name = "redir.test" } }, { access_control = { hotlink = { redirect_url = "/hotlink.png?v=1" } } }),
       site("pto", { { name = "pto.test" } }, { access_control = { cors = { allowed_origins = { "*" }, allowed_methods = { "GET" },
         preflight_to_origin = true, keep_origin_headers = true, echo_request_headers = true }, user_agents = { rules = { { pattern = "*curl*" } } } } }),
@@ -264,6 +269,7 @@ local function request(req)
   out.code = raw["x-edgeweir-error"]
   out.request_headers = headers
   out.ctx = ctx
+  out.var = var
   out.body = table.concat(out.body)
   return out
 end
@@ -702,6 +708,33 @@ test("site tables: unknown IP lists are refused; a site without access control h
   eq(s.access_control, nil)
   eq(access.site_allowed(s, "192.0.2.50"), false)
   eq(access.websocket_allowed(s, nil), true)
+end)
+
+test("encoded path exemptions: cached under their own key, scopes on every reading (edgeweir.uripath)", function()
+  local out = passes({ host = "enc.test", raw = "/files/a%2Fb.txt", uri = "/files/a/b.txt" })
+  eq(out.var.edgeweir_range_mode, nil, "cached")
+  assert(out.var.edgeweir_cache_key:find("enc.test/files/a%252Fb.txt", 1, true), out.var.edgeweir_cache_key)
+  out = passes({ host = "enc.test", uri = "/files/a/b.txt" })
+  assert(out.var.edgeweir_cache_key:find("enc.test/files/a/b.txt", 1, true), "a plain path keeps $uri")
+  out = passes({ host = "enc.test", raw = "/api/cars;color=red", uri = "/api/cars;color=red" })
+  assert(out.var.edgeweir_cache_key:find("enc.test/api/cars;color=red", 1, true), out.var.edgeweir_cache_key)
+  -- Outside an exemption, or with what it does not allow: ambiguous, never cached.
+  for _, raw in ipairs({ "/other/a%2Fb", "/files/a;b", "/api/a%2Fb", "/files/..%2Fx" }) do
+    out = passes({ host = "enc.test", raw = raw, uri = "/x" })
+    eq(out.var.edgeweir_range_mode, "pass", raw)
+    eq(out.var.edgeweir_cache_key, nil, raw)
+  end
+  -- A user agent scope that adds a check: any reading.
+  local curl = { ["user-agent"] = "curl/8" }
+  local denied = request({ host = "enc.test", raw = "/files/private%2Fkey", uri = "/files/private/key", headers = curl })
+  eq(denied.status, 403); eq(denied.code, "ua-denied")
+  passes({ host = "enc.test", raw = "/files/privateer%2Fkey", uri = "/files/privateer/key", headers = curl }, "outside the scope")
+  -- CORS grants: every reading must be in scope, else the preflight is not answered here.
+  local pre = { origin = "https://app.test", ["access-control-request-method"] = "GET" }
+  local answered = request({ host = "enc.test", method = "OPTIONS", raw = "/files/pub/a%2Fb", uri = "/files/pub/a/b", headers = pre })
+  eq(answered.exit, 204, "every reading under /files/pub/")
+  passes({ host = "enc.test", method = "OPTIONS", raw = "/files/pub%2Fa", uri = "/files/pub/a", headers = pre },
+    "the kept reading is outside the grant")
 end)
 
 print(string.format("%d passed, %d failed", passed, failed))

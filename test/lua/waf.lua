@@ -163,7 +163,8 @@ test("exclusion entries match the normalized path exactly, as a byte prefix or a
   local uripath = require("edgeweir.uripath")
   eq(waf.exclusion_value(w, "/api/x", uripath.no_exemption("/api//x")), nil, "nor one with //")
   local src = assert(io.open("/lua/edgeweir/waf.lua")):read("*a")
-  assert(src:find("uripath.request_no_exemption())", 1, true), "enter() asks exclusion_value with request_no_exemption")
+  assert(src:find("local class = uripath.request_class(site)\n  local ex = _M.exclusion_value(site.waf, ctx.edgeweir_original_path or ngx.var.uri, class.no_exemption, class.views)", 1, true),
+    "enter() asks exclusion_value with the request's no_exemption and readings")
   eq(waf.exclusion_value({ exclusions = { { path = "/a", token = "dddddddddddddddd" } } }, "/b"), nil)
   eq(waf.exclusion_value({ mode = "block" }, "/a"), nil, "no entries")
   eq(waf.exclusion_value(w, nil), nil)
