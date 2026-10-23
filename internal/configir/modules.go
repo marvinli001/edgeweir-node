@@ -154,6 +154,11 @@ func requireModules(site *Site, extra []string) error {
 			return err
 		}
 	}
+	if slices.ContainsFunc(site.Origins, func(o Origin) bool { return o.ProxyProtocol != 0 }) {
+		if err := need(FeatureOriginProxyProtocol, "PROXY protocol towards its origins"); err != nil {
+			return err
+		}
+	}
 	if site.WAF != nil {
 		return need(FeatureModSecurity, "OWASP CRS")
 	}

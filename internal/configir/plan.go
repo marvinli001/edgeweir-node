@@ -380,7 +380,18 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureActiveHealthGRPC}
+
+// FeatureActiveHealthGRPC (proto v1.6.0): ActiveHealthCheck.type GRPC,
+// grpc.health.v1 probes. FeatureOriginProxyProtocol (proto v1.6.0):
+// Origin.proxy_protocol_version; it needs edgeweir-openresty's
+// proxy_protocol_header (patches/nginx-upstream-proxy-protocol.patch), so
+// the agent announces it only when a configuration test with the
+// directive passes (Options.ExtraFeatures).
+const (
+	FeatureActiveHealthGRPC    = "active-health-grpc-v1"
+	FeatureOriginProxyProtocol = "origin-proxy-protocol-v1"
+)
 
 // Features of the proto v0.12.0 site settings: the console requires them
 // (required_features) when a served site uses the setting.
@@ -523,6 +534,10 @@ type Origin struct {
 	// Group is the origin group inside the site ("" is the default group);
 	// origin rules send requests to the other groups (feature rules-v2).
 	Group string `json:"group,omitempty"`
+	// ProxyProtocol is the PROXY protocol version (1 or 2) written at the
+	// start of every connection to the origin; 0 none (feature
+	// origin-proxy-protocol-v1). Never set for S3 origins.
+	ProxyProtocol uint32 `json:"proxy_protocol,omitempty"`
 }
 
 // S3Auth is the signing configuration of an S3-compatible origin.
@@ -1311,17 +1326,25 @@ func buildOrigin(o *nodev1.Origin) (Origin, error) {
 		}
 		s3 = &S3Auth{Region: a.GetRegion(), Bucket: a.GetBucket(), CredentialID: a.GetCredentialId(), CredentialVersion: a.GetCredentialVersion()}
 	}
+	pp := o.GetProxyProtocolVersion()
+	switch {
+	case pp > 2:
+		return Origin{}, fmt.Errorf("unsupported PROXY protocol version %d", pp)
+	case pp != 0 && s3 != nil:
+		return Origin{}, errors.New("PROXY protocol to an S3 origin")
+	}
 	return Origin{
-		ID:         o.GetId(),
-		Scheme:     scheme,
-		Address:    addr,
-		Port:       port,
-		Weight:     weight,
-		Backup:     o.GetBackup(),
-		HostHeader: host,
-		SNI:        sni,
-		S3:         s3,
-		Group:      o.GetGroup(),
+		ID:            o.GetId(),
+		Scheme:        scheme,
+		Address:       addr,
+		Port:          port,
+		Weight:        weight,
+		Backup:        o.GetBackup(),
+		HostHeader:    host,
+		SNI:           sni,
+		S3:            s3,
+		Group:         o.GetGroup(),
+		ProxyProtocol: pp,
 	}, nil
 }
 
