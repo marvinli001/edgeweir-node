@@ -418,7 +418,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func banKey(b dataplane.Ban) string { return b.Scope + "|" + b.SiteID + "|" + b.CIDR }
+// banKey is the data plane key: greylist entries live apart from the bans
+// of the same prefix.
+func banKey(b dataplane.Ban) string {
+	k := b.Scope + "|" + b.SiteID + "|" + b.CIDR
+	if b.Grey {
+		k = "~" + k
+	}
+	return k
+}
 
 func (s *Server) banStatusLocked() map[string]any {
 	ids := make([]string, 0, len(s.unapplied))
