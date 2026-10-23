@@ -65,8 +65,10 @@ func TestContentHashVectorV160(t *testing.T) {
 	}
 	for name, change := range map[string]func(*nodev1.NodeConfig){
 		"proxy protocol": func(c *nodev1.NodeConfig) { vectorSite(c, "a").OriginPool.Origins[0].ProxyProtocolVersion = 0 },
-		"type":           func(c *nodev1.NodeConfig) { check(c, "b").Type = nodev1.ActiveHealthCheckType_ACTIVE_HEALTH_CHECK_TYPE_HTTP },
-		"service":        func(c *nodev1.NodeConfig) { check(c, "a").GrpcService = "e2e.Other" },
+		"type": func(c *nodev1.NodeConfig) {
+			check(c, "b").Type = nodev1.ActiveHealthCheckType_ACTIVE_HEALTH_CHECK_TYPE_HTTP
+		},
+		"service": func(c *nodev1.NodeConfig) { check(c, "a").GrpcService = "e2e.Other" },
 	} {
 		c, _ := v160Vector(t)
 		change(c)
