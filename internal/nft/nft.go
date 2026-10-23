@@ -8,7 +8,15 @@
 //	                     (console, the node's own addresses, loopback,
 //	                     platform allow lists)
 //	chain input          type filter hook input priority -10; policy accept;
-//	                     allow sets accept, ban sets drop
+//	                     allow sets accept, ban sets drop, new TCP
+//	                     connections to @limitports jump to connlimit
+//	set limitports       flags interval: TCP ports with connection limits
+//	set conn4 / conn6    flags dynamic: connections per client (ct count)
+//	set rate4 / rate6    flags dynamic, timeout: new connections per client
+//	                     (limit rate)
+//	chain connlimit      the connection limits of the applied configuration
+//	                     (empty without limits); a client is an IPv4
+//	                     address or an IPv6 /64
 //
 // Every change is one `nft -f -` transaction (flush the sets, add the
 // elements), so the kernel never sees a half-written set. Interval sets
@@ -16,8 +24,13 @@
 // that expires no earlier is left out, and one that outlives its cover is
 // written once the cover has expired (Sync returns when to sync again).
 //
+// Connection limits are written in the same transaction (flush the chain,
+// add its rules); when nftables refuses them (a kernel without
+// nft_connlimit) the bans are written without them and the error is kept
+// for the node's status.
+//
 // Scripts are built only from netip values formatted by the standard
-// library; no string from the console reaches nft unparsed.
+// library and integers; no string from the console reaches nft unparsed.
 package nft
 
 import (
@@ -73,6 +86,68 @@ func (c Command) Run(ctx context.Context, script string) error {
 	return nil
 }
 
+// Limits are per-client TCP connection limits (NodeConfig.connection_limits,
+// validated by configir): PerIP concurrent connections and NewPerSecond
+// new connections per second with Burst, each 0 when off, on Ports.
+type Limits struct {
+	PerIP        uint32
+	NewPerSecond uint32
+	Burst        uint32
+	Ports        []PortRange
+}
+
+// PortRange is the ports Start..End.
+type PortRange struct {
+	Start, End uint16
+}
+
+// v6Client is the IPv6 /64 mask: IPv6 clients are counted by network.
+const v6Client = "ip6 saddr & ffff:ffff:ffff:ffff::"
+
+// limitsScript returns the statements that replace the connection limits
+// with l (nil: none).
+func limitsScript(l *Limits) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "flush chain %s connlimit\nflush set %s limitports\n", Table, Table)
+	if l == nil || (l.PerIP == 0 && l.NewPerSecond == 0) {
+		return b.String(), nil
+	}
+	if len(l.Ports) == 0 {
+		return "", errors.New("connection limits without ports")
+	}
+	ports := make([]string, 0, len(l.Ports))
+	for _, r := range l.Ports {
+		if r.Start == 0 || r.End < r.Start {
+			return "", fmt.Errorf("refusing port range %d-%d", r.Start, r.End)
+		}
+		if r.Start == r.End {
+			ports = append(ports, fmt.Sprint(r.Start))
+		} else {
+			ports = append(ports, fmt.Sprintf("%d-%d", r.Start, r.End))
+		}
+	}
+	// New connections first: their drops are the cheapest.
+	if l.NewPerSecond > 0 {
+		burst := l.Burst
+		if burst < l.NewPerSecond {
+			burst = l.NewPerSecond
+		}
+		limit := fmt.Sprintf("limit rate over %d/second burst %d packets", l.NewPerSecond, burst)
+		fmt.Fprintf(&b, "add rule %s connlimit update @rate4 { ip saddr %s } counter drop\n", Table, limit)
+		fmt.Fprintf(&b, "add rule %s connlimit update @rate6 { %s %s } counter drop\n", Table, v6Client, limit)
+	}
+	if l.PerIP > 0 {
+		fmt.Fprintf(&b, "add rule %s connlimit add @conn4 { ip saddr ct count over %d } counter drop\n", Table, l.PerIP)
+		fmt.Fprintf(&b, "add rule %s connlimit add @conn6 { %s ct count over %d } counter drop\n", Table, v6Client, l.PerIP)
+	}
+	for len(ports) > 0 {
+		n := min(chunk, len(ports))
+		fmt.Fprintf(&b, "add element %s limitports { %s }\n", Table, strings.Join(ports[:n], ", "))
+		ports = ports[n:]
+	}
+	return b.String(), nil
+}
+
 // Ban is a banned prefix until Expires.
 type Ban struct {
 	Prefix  netip.Prefix
@@ -102,12 +177,41 @@ table inet edgeweir {
 		type ipv6_addr
 		flags interval
 	}
+	set limitports {
+		type inet_service
+		flags interval
+	}
+	set conn4 {
+		type ipv4_addr
+		size 65536
+		flags dynamic
+	}
+	set conn6 {
+		type ipv6_addr
+		size 65536
+		flags dynamic
+	}
+	set rate4 {
+		type ipv4_addr
+		size 65536
+		flags dynamic, timeout
+		timeout 1m
+	}
+	set rate6 {
+		type ipv6_addr
+		size 65536
+		flags dynamic, timeout
+		timeout 1m
+	}
+	chain connlimit {
+	}
 	chain input {
 		type filter hook input priority -10; policy accept;
 		ip saddr @allow4 accept
 		ip6 saddr @allow6 accept
 		ip saddr @ban4 drop
 		ip6 saddr @ban6 drop
+		tcp dport @limitports ct state new jump connlimit
 	}
 }
 `
@@ -369,6 +473,10 @@ type Manager struct {
 	mu      sync.Mutex
 	active  bool
 	expires []time.Time // expiry of each ban element written
+	// The connection limits last written, and why the last ones asked for
+	// were not (empty: written or none).
+	limitsOn  bool
+	limitsErr string
 }
 
 // NewManager returns an inactive manager.
@@ -391,6 +499,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	m.active = true
 	m.expires = nil
+	m.limitsOn, m.limitsErr = false, ""
 	return nil
 }
 
@@ -404,11 +513,13 @@ func (m *Manager) Active() bool {
 // ErrInactive is returned by Sync when the table is not managed.
 var ErrInactive = errors.New("kernel bans are not active")
 
-// Sync replaces the sets with bans and protected prefixes. When the sets
-// cannot be written (for example the table was deleted by someone else)
-// the table is created again once and the sync retried. It returns when a
-// ban left out because of an overlap must be written (zero: never).
-func (m *Manager) Sync(ctx context.Context, bans []Ban, protected []netip.Prefix, now time.Time) (time.Time, error) {
+// Sync replaces the sets with bans and protected prefixes and the
+// connection limits with limits (nil: none). When the sets cannot be
+// written (for example the table was deleted by someone else) the table is
+// created again once and the sync retried; when only the limits are
+// refused, the bans are written without them (LimitsStatus). It returns
+// when a ban left out because of an overlap must be written (zero: never).
+func (m *Manager) Sync(ctx context.Context, bans []Ban, protected []netip.Prefix, limits *Limits, now time.Time) (time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.active {
@@ -419,15 +530,43 @@ func (m *Manager) Sync(ctx context.Context, bans []Ban, protected []netip.Prefix
 	if err != nil {
 		return time.Time{}, err
 	}
-	if err := m.exec.Run(ctx, script); err != nil {
+	without, _ := limitsScript(nil)
+	with, lerr := limitsScript(limits)
+	wanted := lerr == nil && with != without
+	if lerr != nil {
+		with = without
+	}
+	// run writes the sets with the limits, or without them when those are
+	// refused.
+	run := func() (bool, error, error) {
+		err := m.exec.Run(ctx, script+with)
+		if err == nil || !wanted {
+			return wanted, nil, err
+		}
+		if err2 := m.exec.Run(ctx, script+without); err2 != nil {
+			return false, nil, errors.Join(err, err2)
+		}
+		return false, err, nil
+	}
+	on, refused, err := run()
+	if err != nil {
 		m.log.Warn("cannot update the nftables sets; creating the table again", "err", err)
 		if serr := m.exec.Run(ctx, SetupScript); serr != nil {
 			return time.Time{}, errors.Join(err, serr)
 		}
 		m.expires = nil
-		if err := m.exec.Run(ctx, script); err != nil {
+		m.limitsOn = false
+		if on, refused, err = run(); err != nil {
 			return time.Time{}, err
 		}
+	}
+	m.limitsOn, m.limitsErr = on, ""
+	switch {
+	case lerr != nil:
+		m.limitsErr = lerr.Error()
+	case refused != nil:
+		m.limitsErr = refused.Error()
+		m.log.Warn("nftables refused the connection limits; bans are written without them", "err", refused)
 	}
 	m.expires = m.expires[:0]
 	for _, set := range [][]element{plan.Ban4, plan.Ban6} {
@@ -436,6 +575,18 @@ func (m *Manager) Sync(ctx context.Context, bans []Ban, protected []netip.Prefix
 		}
 	}
 	return plan.Resync, nil
+}
+
+// LimitsStatus reports whether connection limits are written and why the
+// last ones asked for are not (empty when they are, or none were asked
+// for).
+func (m *Manager) LimitsStatus() (bool, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.active {
+		return false, ""
+	}
+	return m.limitsOn, m.limitsErr
 }
 
 // Entries returns the number of ban elements the kernel still holds at now.
@@ -460,5 +611,6 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 	m.active = false
 	m.expires = nil
+	m.limitsOn, m.limitsErr = false, ""
 	return m.exec.Run(ctx, StopScript)
 }

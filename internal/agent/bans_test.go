@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/marvinli001/edgeweir-node/internal/agent"
@@ -399,4 +400,46 @@ func TestBansGreylist(t *testing.T) {
 	if req := e.console.GetBansCalls()[calls]; req.GetAfterSequence() != 0 || !req.GetGreylist() {
 		t.Fatalf("first GetBans after the restart = %v", req)
 	}
+}
+
+// TestConnectionLimits: the applied configuration's connection limits go
+// into nftables with the bans, are reported as enforced, follow a new
+// revision and leave with it; nodes without nftables report why not.
+func TestConnectionLimits(t *testing.T) {
+	kernel := &nft.Fake{}
+	cfg := baseConfig(demoSite("site-a", "site-a.test"))
+	cfg.ConnectionLimits = &nodev1.ConnectionLimits{PerIpConnections: 64, NewPerSecond: 10, Burst: 40,
+		Ports: []*nodev1.PortRange{{Start: 80, End: 80}, {Start: 443, End: 443}}}
+	e := startEnrolledConfig(t, "connlimit", func(c *agent.Config) { c.Kernel = kernel }, cfg)
+	eventually(t, "limits in nftables", func() bool {
+		s := kernel.Last("flush chain inet edgeweir connlimit")
+		return strings.Contains(s, "add @conn4 { ip saddr ct count over 64 } counter drop") &&
+			strings.Contains(s, "limit rate over 10/second burst 40 packets") &&
+			strings.Contains(s, "add element inet edgeweir limitports { 80, 443 }")
+	})
+	eventually(t, "limits reported as enforced", func() bool {
+		st := e.console.LastStatus()
+		return st.GetBans().GetConnectionLimitsActive() && st.GetBans().GetConnectionLimitsError() == "" &&
+			hasFeature(st, "conn-limit-v1") && hasFeature(st, "greylist-v1")
+	})
+
+	next := proto.CloneOf(cfg)
+	next.ConnectionLimits = nil
+	rev := e.console.Publish(next)
+	eventually(t, "revision without limits applied", statusWith(e.console, rev, nodev1.ApplyState_APPLY_STATE_APPLIED))
+	eventually(t, "limits removed", func() bool {
+		s := kernel.Last("flush chain inet edgeweir connlimit")
+		return !strings.Contains(s, "ct count") && !lastBanStatus(e).GetConnectionLimitsActive()
+	})
+}
+
+func TestConnectionLimitsWithoutKernel(t *testing.T) {
+	kernel := &nft.Fake{Fail: func(string) error { return errors.New("nft: Operation not permitted") }}
+	cfg := baseConfig(demoSite("site-a", "site-a.test"))
+	cfg.ConnectionLimits = &nodev1.ConnectionLimits{PerIpConnections: 64, Ports: []*nodev1.PortRange{{Start: 443, End: 443}}}
+	e := startEnrolledConfig(t, "connlimit-l7", func(c *agent.Config) { c.Kernel = kernel }, cfg)
+	eventually(t, "limits reported as not enforced", func() bool {
+		b := lastBanStatus(e)
+		return !b.GetConnectionLimitsActive() && strings.Contains(b.GetConnectionLimitsError(), "CAP_NET_ADMIN")
+	})
 }

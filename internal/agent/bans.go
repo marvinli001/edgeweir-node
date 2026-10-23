@@ -494,7 +494,7 @@ func (a *Agent) syncKernel(ctx context.Context) time.Time {
 	a.banMu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	at, err := a.nft.Sync(cctx, list, protected, now)
+	at, err := a.nft.Sync(cctx, list, protected, a.connectionLimits(), now)
 	if err != nil {
 		if !errors.Is(err, nft.ErrInactive) {
 			a.log.Warn("cannot update the nftables sets; retrying in a minute", "err", err)
@@ -504,6 +504,20 @@ func (a *Agent) syncKernel(ctx context.Context) time.Time {
 	}
 	a.log.Debug("kernel bans synced", "bans", a.nft.Entries(now), "protected", len(protected))
 	return at
+}
+
+// connectionLimits returns the applied configuration's connection limits
+// (nil: none). The configuration was validated when it was applied.
+func (a *Agent) connectionLimits() *nft.Limits {
+	l, err := configir.ParseConnectionLimits(a.appliedConfig().GetConnectionLimits())
+	if err != nil || l == nil {
+		return nil
+	}
+	out := &nft.Limits{PerIP: l.PerIP, NewPerSecond: l.NewPerSecond, Burst: l.Burst}
+	for _, r := range l.Ports {
+		out.Ports = append(out.Ports, nft.PortRange{Start: r.Start, End: r.End})
+	}
+	return out
 }
 
 // protectedPrefixes are the addresses nftables never drops: loopback,
@@ -772,6 +786,10 @@ func (a *Agent) banReport(ctx context.Context) *nodev1.BanStatus {
 	}
 	if a.kernelActive() {
 		out.KernelEntries = uint32(a.nft.Entries(time.Now()))
+		out.ConnectionLimitsActive, out.ConnectionLimitsError = a.nft.LimitsStatus()
+	}
+	if a.appliedConfig().GetConnectionLimits() != nil && !out.ConnectionLimitsActive && out.ConnectionLimitsError == "" {
+		out.ConnectionLimitsError = "kernel bans are not active (nftables with CAP_NET_ADMIN is required)"
 	}
 	return out
 }

@@ -79,6 +79,9 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 	if u := d.GetUnknownHosts(); u != nil {
 		out.UnknownHosts = proto.CloneOf(u)
 	}
+	if l := d.GetConnectionLimits(); l != nil {
+		out.ConnectionLimits = proto.CloneOf(l)
+	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
 		removed[id] = true
@@ -150,6 +153,9 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 	}
 	if u := target.GetUnknownHosts(); u != nil {
 		d.UnknownHosts = proto.CloneOf(u)
+	}
+	if l := target.GetConnectionLimits(); l != nil {
+		d.ConnectionLimits = proto.CloneOf(l)
 	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {
