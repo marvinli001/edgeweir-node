@@ -84,6 +84,9 @@ const (
 	// NodeServiceReportNodeLogsProcedure is the fully-qualified name of the NodeService's
 	// ReportNodeLogs RPC.
 	NodeServiceReportNodeLogsProcedure = "/edgeweir.node.v1.NodeService/ReportNodeLogs"
+	// NodeServiceUploadDebugLogsProcedure is the fully-qualified name of the NodeService's
+	// UploadDebugLogs RPC.
+	NodeServiceUploadDebugLogsProcedure = "/edgeweir.node.v1.NodeService/UploadDebugLogs"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -153,6 +156,10 @@ type NodeServiceClient interface {
 	// supervisor, OpenResty) in sequenced batches; an empty sequence-zero
 	// request reads the cursor (feature node-logs-v1).
 	ReportNodeLogs(context.Context, *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error)
+	// UploadDebugLogs answers a DebugLogsTask with the node's debug log
+	// buffer; ReportTaskResult follows. Added in v1.6.0 (feature
+	// debug-logs-v1).
+	UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -286,6 +293,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("ReportNodeLogs")),
 			connect.WithClientOptions(opts...),
 		),
+		uploadDebugLogs: connect.NewClient[v1.UploadDebugLogsRequest, v1.UploadDebugLogsResponse](
+			httpClient,
+			baseURL+NodeServiceUploadDebugLogsProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("UploadDebugLogs")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -311,6 +324,7 @@ type nodeServiceClient struct {
 	getSessionTicketKeys *connect.Client[v1.GetSessionTicketKeysRequest, v1.GetSessionTicketKeysResponse]
 	checkChannel         *connect.Client[v1.CheckChannelRequest, v1.CheckChannelResponse]
 	reportNodeLogs       *connect.Client[v1.ReportNodeLogsRequest, v1.ReportNodeLogsResponse]
+	uploadDebugLogs      *connect.Client[v1.UploadDebugLogsRequest, v1.UploadDebugLogsResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -413,6 +427,11 @@ func (c *nodeServiceClient) ReportNodeLogs(ctx context.Context, req *connect.Req
 	return c.reportNodeLogs.CallUnary(ctx, req)
 }
 
+// UploadDebugLogs calls edgeweir.node.v1.NodeService.UploadDebugLogs.
+func (c *nodeServiceClient) UploadDebugLogs(ctx context.Context, req *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error) {
+	return c.uploadDebugLogs.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -480,6 +499,10 @@ type NodeServiceHandler interface {
 	// supervisor, OpenResty) in sequenced batches; an empty sequence-zero
 	// request reads the cursor (feature node-logs-v1).
 	ReportNodeLogs(context.Context, *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error)
+	// UploadDebugLogs answers a DebugLogsTask with the node's debug log
+	// buffer; ReportTaskResult follows. Added in v1.6.0 (feature
+	// debug-logs-v1).
+	UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -609,6 +632,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("ReportNodeLogs")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceUploadDebugLogsHandler := connect.NewUnaryHandler(
+		NodeServiceUploadDebugLogsProcedure,
+		svc.UploadDebugLogs,
+		connect.WithSchema(nodeServiceMethods.ByName("UploadDebugLogs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -651,6 +680,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceCheckChannelHandler.ServeHTTP(w, r)
 		case NodeServiceReportNodeLogsProcedure:
 			nodeServiceReportNodeLogsHandler.ServeHTTP(w, r)
+		case NodeServiceUploadDebugLogsProcedure:
+			nodeServiceUploadDebugLogsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -738,4 +769,8 @@ func (UnimplementedNodeServiceHandler) CheckChannel(context.Context, *connect.Re
 
 func (UnimplementedNodeServiceHandler) ReportNodeLogs(context.Context, *connect.Request[v1.ReportNodeLogsRequest]) (*connect.Response[v1.ReportNodeLogsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.ReportNodeLogs is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.UploadDebugLogs is not implemented"))
 }
