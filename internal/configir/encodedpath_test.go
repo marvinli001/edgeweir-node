@@ -115,3 +115,29 @@ func TestEncodedPathExemptions(t *testing.T) {
 		t.Errorf("too many: err %v", err)
 	}
 }
+
+// TestEncodedPathPrefixVectors checks the prefixes against the console's
+// vectors (test/lua/encoded_path_vectors.json, rule-engine encoded-path.ts).
+func TestEncodedPathPrefixVectors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "test", "lua", "encoded_path_vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Prefixes []struct {
+			Prefix string `json:"prefix"`
+			Valid  bool   `json:"valid"`
+		} `json:"prefixes"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Prefixes) == 0 {
+		t.Fatal("no prefix vectors")
+	}
+	for _, p := range v.Prefixes {
+		if got := validEncodedPathPrefix(p.Prefix); got != p.Valid {
+			t.Errorf("%q: valid %v, want %v", p.Prefix, got, p.Valid)
+		}
+	}
+}
