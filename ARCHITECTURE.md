@@ -626,7 +626,7 @@ reload 与否只看渲染出的 `nginx.conf` 与已安装的是否不同（§2.3
 **回源**（`Origin.proxy_protocol_version`，proto v1.6.0，能力 `origin-proxy-protocol-v1`）：nginx 1.31.1 的 HTTP upstream（proxy、proxy_v2、grpc）不能发送 PROXY protocol（`proxy_protocol on` 只在 stream 代理里），`balancer_by_lua` 也没有对应的 API，所以 edgeweir-openresty 1.31.1.1-3 打了补丁 `nginx-upstream-proxy-protocol.patch`：`upstream {}` 里的 `proxy_protocol_header <复杂值>` 在负载均衡选定节点、新连接建立之后（从连接池取出的连接不写）、TLS 握手与请求之前写出该值，空值不写，写失败或写不完按连接失败处理（下一个 upstream）。三个 balancer upstream（HTTP/1.1、HTTP/2、gRPC，§3.24）都设置 `proxy_protocol_header $edgeweir_proxy_protocol`；渲染只在有站点用到时加入这些内容（`OriginProxyProtocol`）。
 
 - 地址：边缘层在请求带到回源层的 `X-Edgeweir-Conn` 里写访客连接的 `$remote_addr $remote_port <目标地址> <目标端口>`，目标取 `$proxy_protocol_server_addr` / `_port`（监听带 PROXY protocol 时），否则 `$server_addr` / `$server_port`；回源层删掉这个头再回源。`edgeweir.origin.balance` 每次尝试按源站的版本生成头（`proxyproto.v1` / `v2`），地址不是 IP（agent 经本地监听的预热）时用 `PROXY UNKNOWN` / LOCAL，写进 `$edgeweir_proxy_protocol`。
-- 连接池：带 PROXY 头的连接只代表一个访客连接，`pool_key` 在原有的 SNI / 信任 / 客户端证书之后加上 `|pp<版本>|源地址|源端口|目标地址|目标端口`，只有同一访客连接上的请求复用它。HTTP/2 与 gRPC 回源每个连接只承载一个请求，不受影响。
+- 连接池：带 PROXY 头的连接只代表一个访客连接，`pool_key` 在原有的 SNI / 信任 / 客户端证书之后加上 `|pp<版本>|源地址|源端口|目标地址|目标端口`，只有同一访客连接上的请求复用它。连接池属于各个 worker：边缘层到回源层的 unix socket 不保持连接（`keepalive 0`，§3.1），同一访客连接的每个请求都可能由另一个 worker 的回源层接手，所以一个访客连接最多有 worker 数条回源连接；不同访客连接从不共用。HTTP/2 与 gRPC 回源每个连接只承载一个请求，不受影响。
 - 健康统计：写失败计为连接失败，被动健康检查与回源统计（§3.31）照常；主动健康检查发送 UNKNOWN / LOCAL（§2.10）。
 - 限制：HTTP/3 访客也报为 TCP；访客 IP 取自可信代理报头时源端口为 0；S3 源站不允许（整份配置里该源站被丢弃）。
 

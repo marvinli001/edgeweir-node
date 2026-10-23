@@ -1209,6 +1209,14 @@ test("PROXY protocol to origins: client connection, headers and pool keys", func
   eq(keys[1], "|pp2|203.0.113.7|40000|198.51.100.9|443")
   eq(keys[4], "o.test|pp1|203.0.113.7|40000|198.51.100.9|443")
   eq(origin.pool_key(plain, pp_http, nil, c), keys[1], "the same client connection shares its pool")
+  -- Every request parses X-Edgeweir-Conn again: the requests of one client
+  -- connection find its pool, another connection from the same address
+  -- (another port) does not.
+  eq(origin.pool_key(plain, pp_http, nil, origin.conn_endpoints("203.0.113.7 40000 198.51.100.9 443")), keys[1])
+  local next_port = origin.pool_key(plain, pp_http, nil, origin.conn_endpoints("203.0.113.7 40001 198.51.100.9 443"))
+  assert(next_port ~= keys[1], "two connections of one address share a pool: " .. next_port)
+  local other_listener = origin.pool_key(plain, pp_http, nil, origin.conn_endpoints("203.0.113.7 40000 198.51.100.9 8443"))
+  assert(other_listener ~= keys[1], "connections to two listeners share a pool: " .. other_listener)
   -- The site table keeps the version.
   local s = store.prepare(site("p2", { { name = "p2.test" } }, {
     origins = { { id = "o", address = "127.0.0.1", port = 80, scheme = "http", weight = 1, proxy_protocol = 2 } },
