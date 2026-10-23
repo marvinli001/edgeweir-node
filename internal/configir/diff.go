@@ -67,6 +67,9 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 	if ca := d.GetOriginCa(); ca != nil {
 		out.OriginCa = proto.CloneOf(ca)
 	}
+	if ca := d.GetOriginCaPrevious(); ca != nil {
+		out.OriginCaPrevious = proto.CloneOf(ca)
+	}
 	if p := d.GetPlatformProtection(); p != nil {
 		out.PlatformProtection = proto.CloneOf(p)
 	}
@@ -138,6 +141,9 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 	}
 	if ca := target.GetOriginCa(); ca != nil {
 		d.OriginCa = proto.CloneOf(ca)
+	}
+	if ca := target.GetOriginCaPrevious(); ca != nil {
+		d.OriginCaPrevious = proto.CloneOf(ca)
 	}
 	if p := target.GetPlatformProtection(); p != nil {
 		d.PlatformProtection = proto.CloneOf(p)

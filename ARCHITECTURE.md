@@ -956,7 +956,7 @@ proto v0.31.0（ADR-0043）。`Site.image_convert` 经 `configir.buildImageConve
 - **子进程**（`edgeweir-node imgconv`，`/proc/self/exe`）：环境只有 `GOMAXPROCS=1`，`Pdeathsig=SIGKILL`、自己的进程组；启动后设 `RLIMIT_DATA` = 当时的数据段（`VmData`）+ 估算 + 256 MiB（`RLIMIT_AS` 会算上 Go 运行时保留而未用的地址空间；race 检测构建启动即有 TB 级影子内存）、`RLIMIT_FSIZE` 0、`RLIMIT_NOFILE` 16、`RLIMIT_CORE` 0，清空环境能力集与全部线程的能力，并对全部线程设 `PR_SET_NO_NEW_PRIVS`（`AllThreadsSyscall`；运行时链接 cgo 时它返回 `ENOTSUP`，改为锁定当前线程、只设这个线程并在其上转换；Go 的 `SysProcAttr` 没有在 fork 与 exec 之间设置它的字段，systemd 单元另有 `NoNewPrivileges=yes`，容器镜像没有）；各上限不超过继承的硬上限。输出以 `--max-output`（原图字节数 − 1：变体不比原图小就不用）为界，子进程超过时停止编码并以 3 退出，agent 读到超过时立即结束子进程；写入缓存前校验文件头（WebP：`RIFF` + 长度与文件一致 + `WEBP`；AVIF：`ftyp` 主品牌 `avif`，顶层 box 恰好覆盖文件），不符时返回原图。解码用标准库，按 EXIF 方向转正像素，编码用 gen2brain/webp v0.6.4（libwebp 1.6.0，method 4）与 gen2brain/avif v0.6.0（libavif 1.4.2、aom 3.14.1，speed 8，4:2:0），透明度质量 100，输出不带元数据。退出码 3 表示不可转换。发布构建带 `-tags nodynamic,wasm2go`（不经 purego 加载系统库，AVIF 不用 wazero 运行时），第三方许可证见包内 `/usr/share/doc/edgeweir-node/NOTICE`（`scripts/notice.sh` 生成）。每次转换一行日志 `image converted`（原图与变体字节、像素、耗时、CPU 时间）。
 - **统计**：log 阶段对完整的 200 GET 响应把 `$upstream_http_x_edgeweir_image_saved`（缓存命中时来自缓存的头）累加到分钟指标 `is`，`drain` 报为 `image_bytes_saved`（`MinuteStats` 25）。
 
-### 3.33 源站保护：回源客户端证书与 Origin CA（`origin-mtls-v1`、`origin-ca-v1`）
+### 3.33 源站保护：回源客户端证书与 Origin CA（`origin-mtls-v1`、`origin-ca-v1`、`origin-ca-rotation-v1`）
 
 proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origin_client_certificates`（id、64 位小写十六进制指纹，不重复），`buildOriginCA` 校验 `NodeConfig.origin_ca`：恰好一张 CA 证书、PEM 标签为 `X509 CRL` 的 CRL（nginx 只认这个标签）且由该 CA 签名、未过期；`buildOriginTLS` 要求信任 Origin CA 的池开启校验、没有 S3 源站、配置带 Origin CA，客户端证书 id 在列表中。不合格时整份配置被拒绝（停用的站点也检查）。
 
@@ -964,6 +964,7 @@ proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origi
 - **回源层**：九个回源层都渲染 `*_ssl_certificate $edgeweir_origin_cert`、`*_ssl_certificate_key $edgeweir_origin_key` 与 `*_ssl_certificate_cache max=1000 inactive=10m valid=1m`（nginx 1.21.0 起证书路径可用变量，1.27.4 起有缓存；变量为空时不出示证书）。`edgeweir.origin.balance` 按所选源站设置两个变量（HTTP 与 S3 源站为空）；传给 `set_current_peer` 的 host 由 `pool_key` 给出：没有源站保护时就是 SNI（与以前相同），否则为 `SNI|信任|证书 id/指纹`。SNI 与证书名称校验仍取自 `proxy_ssl_name`，它覆盖 `u->ssl_name`，所以 host 只用于区分连接池。lua 的 balancer 不复用 TLS 会话，每条新连接都完整校验。
 - **Origin CA**：配置带 `origin_ca` 时多渲染三个回源层 `origin-oca[-h2|-grpc].sock`（`edgeweir_origin_oca[_h2|_grpc]`），`*_ssl_verify on`、`*_ssl_verify_depth 1`、`*_ssl_trusted_certificate` 与 `*_ssl_crl` 指向 `<prefix>/conf/origin-ca/<内容哈希>.pem` / `.crl`（agent 在 `openresty -t` 之前写入；文件名随内容变化，所以吊销改变 `nginx.conf` 并 reload）。nginx 的 CRL 检查覆盖整条链（`CRL_CHECK_ALL`），系统 CA 的链没有 CRL 会失败，所以 Origin CA 只单独作为信任。`edgeweir.router.origin_layer` 对 `tls_trust` 为 `origin_ca` 的站点选这些回源层。OpenResty 的 `proxy_ssl_certificate_by_lua` / `proxy_ssl_verify_by_lua` 只挂在 proxy 模块上，gRPC（`grpc_pass`）用不到，所以三种协议统一用 nginx 原生指令。
 - **主动健康检查**：探测出示同一张客户端证书（读取上述文件），信任 Origin CA 的池只以它为根并在 `VerifyConnection` 中拒绝 CRL 列出的序列号；吊销随 `Update` 立即生效。
+- **Origin CA 轮换**（proto v1.6.0，`origin-ca-rotation-v1`）：控制台轮换 Origin CA 期间配置另带 `origin_ca_previous`（旧 CA 与它自己的 CRL），只能与 `origin_ca` 同时出现，校验与 `origin_ca` 相同，且主题不能与新 CA 相同（OpenSSL 按主题找签发者与 CRL）。`.pem` 依次放新旧两张 CA 证书，`.crl` 依次放两份 CRL；nginx 两者都读，每张证书按自己的签发者检查 CRL。健康检查以两张 CA 为根，吊销按签发者区分（`OriginCA.IsRevoked` 先找签发它的 CA，再查该 CA 的 CRL）。运营者退役旧 CA 后的新版本不再带它，文件名随内容变化并 reload。回源客户端证书的轮换不需要节点变化：节点只出示控制台当前签发的证书。
 
 ## 4. 文件布局
 
