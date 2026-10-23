@@ -204,12 +204,13 @@ func TestLineLoggerLevels(t *testing.T) {
 func TestLineLoggerSinkTakesWholeMessages(t *testing.T) {
 	var out strings.Builder
 	base := slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug})
-	var captured, sunk []nodelog.Entry
+	var captured, sunk, debug []nodelog.Entry
 	// The agent's logger adds warnings as entries; the line logger's own
 	// records must not become entries a second time.
 	log := slog.New(nodelog.NewHandler(base, func(e nodelog.Entry) { captured = append(captured, e) }, nodelog.SourceAgent))
 	now := time.Unix(100, 0)
-	l := &lineLogger{log: log.With(nodelog.Skip), sink: func(e nodelog.Entry) { sunk = append(sunk, e) }, now: func() time.Time { return now }}
+	l := &lineLogger{log: log.With(nodelog.Skip), sink: func(e nodelog.Entry) { sunk = append(sunk, e) }, now: func() time.Time { return now },
+		debugSink: func(e nodelog.Entry) { debug = append(debug, e) }}
 	_, _ = l.Write([]byte("2026/10/15 10:00:00 [error] 7#7: *1 lua entry thread aborted: runtime error: boom\nstack traceback:\n\t[C]: in function 'error'\n" +
 		"2026/10/15 10:00:00 [notice] 7#7: signal process started\n2026/10/15 10:00:00 [warn] 7#7: *2 upstream response is buffered"))
 	// The second warning ends in the next write.
@@ -226,6 +227,10 @@ func TestLineLoggerSinkTakesWholeMessages(t *testing.T) {
 	}
 	if sunk[1].Level != nodelog.LevelWarn || sunk[1].Message != "upstream response is buffered to a temporary file" || sunk[1].Fields["server"] != "a.test" {
 		t.Fatalf("second %+v", sunk[1])
+	}
+	// The debug log ring gets every message, the notice too.
+	if len(debug) != 3 || debug[1].Level != nodelog.LevelInfo || debug[1].Message != "signal process started" || debug[1].Fields["severity"] != "notice" {
+		t.Fatalf("debug %+v", debug)
 	}
 	if !strings.Contains(out.String(), "signal process started") || strings.Contains(out.String(), "nodelog.skip") {
 		t.Fatalf("local output %q", out.String())

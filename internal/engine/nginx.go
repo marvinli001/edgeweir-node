@@ -45,6 +45,9 @@ type Config struct {
 	// LogSink receives OpenResty's error log messages of level warn and
 	// above as node log entries (nodelog.ParseNginx); nil: none.
 	LogSink func(nodelog.Entry)
+	// DebugSink receives every error log message of every level
+	// (nodelog.ParseNginxDebug) for the debug log ring; nil: none.
+	DebugSink func(nodelog.Entry)
 }
 
 // Nginx implements the engine for OpenResty.
@@ -196,7 +199,7 @@ func (n *Nginx) runOnce(ctx context.Context) error {
 	}
 	// The lines become node log entries through the sink, not through
 	// the logger.
-	lw := &lineLogger{log: n.log.With(nodelog.Skip), sink: n.cfg.LogSink}
+	lw := &lineLogger{log: n.log.With(nodelog.Skip), sink: n.cfg.LogSink, debugSink: n.cfg.DebugSink}
 	cmd := exec.Command(n.cfg.Bin, n.args(n.cfg.Conf, "-g", "daemon off;")...)
 	cmd.Stdout = lw
 	cmd.Stderr = lw
@@ -258,6 +261,9 @@ type lineLogger struct {
 	// message (a Lua stack traceback) continue the one before.
 	sink    func(nodelog.Entry)
 	message []string
+	// debugSink receives every message, of every level (the debug log
+	// ring).
+	debugSink func(nodelog.Entry)
 
 	now          func() time.Time // for tests; nil = time.Now
 	denied       int
@@ -299,7 +305,14 @@ func (l *lineLogger) flushMessage() {
 	if l.now != nil {
 		now = l.now()
 	}
-	if e, ok := nodelog.ParseNginx(text, now); ok {
+	e, ok := nodelog.ParseNginxDebug(text, now)
+	if !ok {
+		return
+	}
+	if l.debugSink != nil {
+		l.debugSink(e)
+	}
+	if l.sink != nil && (e.Level == nodelog.LevelWarn || e.Level == nodelog.LevelError) {
 		l.sink(e)
 	}
 }
@@ -338,7 +351,7 @@ func (l *lineLogger) emit(line string) {
 	if line == "" {
 		return
 	}
-	if l.sink != nil {
+	if l.sink != nil || l.debugSink != nil {
 		if nodelog.IsNginxLine(line) {
 			l.flushMessage()
 			l.message = append(l.message, line)

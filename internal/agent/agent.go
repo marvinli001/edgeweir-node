@@ -98,6 +98,10 @@ type Config struct {
 	// logger's nodelog.Handler and the engine's LogSink); the agent
 	// uploads them (feature node-logs-v1). nil: no node logs.
 	NodeLogs *nodelog.Collector
+	// DebugLogs is the process's debug log ring (its logger's
+	// nodelog.Handler and the engine's DebugSink); the agent uploads it
+	// for a DebugLogsTask (feature debug-logs-v1). nil: none.
+	DebugLogs *nodelog.Ring
 	// NodeLogsUnsupportedRetry: a console without ReportNodeLogs is asked
 	// again this often (default 10m).
 	NodeLogsUnsupportedRetry time.Duration

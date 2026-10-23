@@ -208,6 +208,9 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	if a.cfg.NodeLogs != nil {
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, nodelog.Feature)
 	}
+	if a.cfg.DebugLogs != nil {
+		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, nodelog.DebugFeature)
+	}
 	if f := a.follow.Load(); f != nil {
 		req.Channel = f.Status()
 	}

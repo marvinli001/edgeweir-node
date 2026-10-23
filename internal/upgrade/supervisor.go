@@ -64,6 +64,10 @@ type Options struct {
 	// Logs holds the supervisor's own warnings and events and OpenResty's
 	// error log (Engine.LogSink) for its children (GET /logs); nil: none.
 	Logs *nodelog.Collector
+	// DebugLogs is the supervisor's debug log ring (its own records and
+	// OpenResty's error log of every level) for its children (GET
+	// /debug-logs); nil: none.
+	DebugLogs *nodelog.Ring
 	// Test seams remain package-private and cannot be configured by the console.
 	prepare func(context.Context, Trust, Task) (Bundle, error)
 }
@@ -517,7 +521,7 @@ func body(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if s.serveEngine(w, r) || s.serveLogs(w, r) {
+	if s.serveEngine(w, r) || s.serveLogs(w, r) || s.serveDebugLogs(w, r) {
 		return
 	}
 	switch {
@@ -528,7 +532,8 @@ func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err := exec.LookPath(bin)
 		enabled := err == nil && (s.opts.Trust.PublicKey == "" || fsutil.Exists(s.opts.Trust.PublicKey))
-		reply(w, 200, map[string]bool{"enabled": enabled, "engine": s.opts.Engine != nil, "logs": s.opts.Logs != nil})
+		reply(w, 200, map[string]bool{"enabled": enabled, "engine": s.opts.Engine != nil, "logs": s.opts.Logs != nil,
+			"debug_logs": s.opts.DebugLogs != nil})
 	case r.Method == http.MethodPost && r.URL.Path == "/health":
 		var h struct {
 			PID     int    `json:"pid"`

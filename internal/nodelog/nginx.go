@@ -25,6 +25,16 @@ func IsNginxLine(line string) bool { return nginxLine.MatchString(line) }
 // statistics count those). The message keeps further lines of the same
 // message after a newline.
 func ParseNginx(message string, now time.Time) (Entry, bool) {
+	e, ok := ParseNginxDebug(message, now)
+	if !ok || (e.Level != LevelWarn && e.Level != LevelError) {
+		return Entry{}, false
+	}
+	return e, true
+}
+
+// ParseNginxDebug is ParseNginx for a ring: messages of every level, info
+// for notice and info (severity keeps which), debug for debug.
+func ParseNginxDebug(message string, now time.Time) (Entry, bool) {
 	first, rest, _ := strings.Cut(message, "\n")
 	m := nginxLine.FindStringSubmatch(first)
 	if m == nil {
@@ -39,8 +49,11 @@ func ParseNginx(message string, now time.Time) (Entry, bool) {
 	case "crit", "alert", "emerg":
 		e.Level = LevelError
 		e.Fields = map[string]string{"severity": m[1]}
+	case "notice", "info":
+		e.Level = LevelInfo
+		e.Fields = map[string]string{"severity": m[1]}
 	default:
-		return Entry{}, false
+		e.Level = LevelDebug
 	}
 	text := m[2]
 	if strings.HasPrefix(text, "ModSecurity: Access denied") || strings.HasPrefix(text, "ModSecurity: Warning.") {
