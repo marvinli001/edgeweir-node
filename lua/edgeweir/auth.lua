@@ -18,7 +18,9 @@
 -- reserved prefix /.edgeweir/ are never selected. An ambiguous raw path
 -- (edgeweir.uripath) is refused with 400 auth-path-ambiguous when more than
 -- one rule covers the host, or when the one rule is forward authentication
--- (the service decides on a path the origin may read otherwise).
+-- (the service decides on a path the origin may read otherwise); so is a
+-- path an encoded path exemption lets through (Site.encoded_path_exemptions)
+-- whose readings select different rules (pick).
 --
 -- check(site, https_redirect) runs inside edgeweir.policy after the
 -- platform allow and block lists, before the rule phases (the local
@@ -231,13 +233,52 @@ end
 -- no_exemption (a raw path with "//", edgeweir.uripath.no_exemption): under
 -- no excluded prefix. Path prefixes compare without ASCII case (origins such
 -- as Express route "/ADMIN/" to "/admin/"); excluded prefixes compare
--- exactly.
+-- exactly. select checks an exempt path's readings one by one.
 function _M.in_scope(rule, host, path, ambiguous, no_exemption)
   if not domain_match(rule, host) then return false end
   if ambiguous then return true end
   if #rule.prefixes_lower > 0 and not starts_with_any(lower(path), rule.prefixes_lower) then return false end
   if rule.extensions and not rule.extensions[expressions.path_extension(path)] then return false end
   return no_exemption or not starts_with_any(path, rule.excludes)
+end
+
+-- rule_path is the path a rule's scope compares for a reading of the
+-- request's path: without a B/C rule's signature segments when the raw path
+-- carries them and the reading starts with the same two segments (nothing
+-- is decoded out of the raw path: no ".." or "%2F" past normalization), and
+-- the parsed signature.
+local function rule_path(rule, raw_path, reading)
+  local kind = rule.kind
+  if kind == "url_b" or kind == "url_c" then
+    local sig = _M.parse_segments(kind, raw_path)
+    if sig and sub(reading, 1, #sig.prefix + 1) == sig.prefix .. "/" then
+      return sub(reading, #sig.prefix + 1), sig
+    end
+  end
+  return reading, nil
+end
+
+-- pick returns the index of the first rule whose scope a request for host
+-- is in (nil: none), or false when the request cannot be told apart: an
+-- exempt path's readings (uri, then views; edgeweir.uripath) that select
+-- different rules. Rules see uri (each reading) via rule_path.
+function _M.pick(rules, host, raw_path, uri, ambiguous, no_exemption, views)
+  local function first(reading, amb)
+    for i = 1, #rules do
+      if _M.in_scope(rules[i], host, (rule_path(rules[i], raw_path, reading)), amb, no_exemption) then return i end
+    end
+    return nil
+  end
+  if ambiguous or not views then return first(uri, ambiguous) end
+  local chosen = first(uri, false)
+  for i = 1, #views do
+    local j = first(views[i], false)
+    if j then
+      if chosen and chosen ~= j then return false end
+      chosen = j
+    end
+  end
+  return chosen
 end
 
 -- Query elements: name (text before the first "=") and value.
@@ -319,8 +360,8 @@ function _M.select(site, acme, headers)
   local request_uri = var.request_uri
   local q = find(request_uri, "?", 1, true)
   local raw_path = q and sub(request_uri, 1, q - 1) or request_uri
-  local ambiguous = uripath.request_ambiguous()
-  local no_exemption = uripath.request_no_exemption()
+  local class = uripath.request_class(site)
+  local ambiguous, no_exemption = class.ambiguous, class.no_exemption
   if ambiguous then
     -- The origin may route an ambiguous path under any rule's scope: with
     -- more than one rule for the host, which one applies cannot be told. A
@@ -335,39 +376,34 @@ function _M.select(site, acme, headers)
       return
     end
   end
-  for i = 1, #rules do
-    local rule = rules[i]
-    local path, sig = uri, nil
-    local kind = rule.kind
-    if kind == "url_b" or kind == "url_c" then
-      sig = _M.parse_segments(kind, raw_path)
-      -- The normalized path must carry the same two segments: nothing is
-      -- decoded out of the raw path (no ".." or "%2F" past normalization).
-      if sig and sub(uri, 1, #sig.prefix + 1) == sig.prefix .. "/" then
-        path = sub(uri, #sig.prefix + 1)
-      else
-        sig = nil
-      end
-    end
-    if _M.in_scope(rule, host, path, ambiguous, no_exemption) then
-      local state = { rule = rule, request_uri = request_uri }
-      if kind == "url_a" or kind == "url_d" then
-        sig = _M.parse_query(kind, rule.url, var.args)
-        if sig then
-          ngx.req.set_uri_args(sig.args)
-          state.stripped = sig.args ~= "" and (raw_path .. "?" .. sig.args) or raw_path
-          sig.path = raw_path
-        end
-      elseif sig then
-        ngx.req.set_uri(path, false)
-        state.stripped = q and (sig.rest .. sub(request_uri, q)) or sig.rest
-        sig.path = sig.rest
-      end
-      state.sig = sig
-      ngx.ctx.edgeweir_auth = state
-      return
-    end
+  local index = _M.pick(rules, host, raw_path, uri, ambiguous, no_exemption, class.views)
+  if index == false then
+    -- An exempt path's readings select different rules: which one applies
+    -- at the origin cannot be told.
+    ngx.ctx.edgeweir_auth = { ambiguous = true, request_uri = request_uri }
+    return
   end
+  if not index then return end
+  local rule = rules[index]
+  local kind = rule.kind
+  local path, sig = rule_path(rule, raw_path, uri)
+  local state = { rule = rule, request_uri = request_uri }
+  if kind == "url_a" or kind == "url_d" then
+    sig = _M.parse_query(kind, rule.url, var.args)
+    if sig then
+      ngx.req.set_uri_args(sig.args)
+      state.stripped = sig.args ~= "" and (raw_path .. "?" .. sig.args) or raw_path
+      sig.path = raw_path
+    end
+  elseif sig then
+    ngx.req.set_uri(path, false)
+    -- Later scopes compare the readings without the signature too.
+    uripath.cut_prefix(site, sig.prefix)
+    state.stripped = q and (sig.rest .. sub(request_uri, q)) or sig.rest
+    sig.path = sig.rest
+  end
+  state.sig = sig
+  ngx.ctx.edgeweir_auth = state
 end
 
 -- request_uri is the request URI the rules see: without the signature of a

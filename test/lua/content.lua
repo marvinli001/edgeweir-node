@@ -283,8 +283,14 @@ test("maintenance: allowed addresses and paths, the page and Retry-After", funct
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", uripath.no_exemption("/api/status//1")), false, "// under an allowed path")
   eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", uripath.no_exemption("/api/status/1")), true)
   local src = assert(io.open("/lua/edgeweir/router.lua")):read("*a")
-  assert(src:find("maintenance_allowed(site, var.remote_addr, original_path, uripath.request_no_exemption())", 1, true),
-    "the edge asks maintenance_allowed with request_no_exemption")
+  assert(src:find("maintenance_allowed(site, var.remote_addr, original_path,\n    uripath.request_no_exemption(site), uripath.request_views(site))", 1, true),
+    "the edge asks maintenance_allowed with request_no_exemption and the readings")
+  -- An exempt path (Site.encoded_path_exemptions): every reading must be allowed.
+  local class = uripath.classify("/api%2Fstatus/1", { { prefix = "/", encoded_slash = true } })
+  eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/1", class.no_exemption, class.views), false,
+    "the kept reading is outside the allowed prefix")
+  class = uripath.classify("/api/status/a%2Fb", { { prefix = "/", encoded_slash = true } })
+  eq(router.maintenance_allowed(s, "198.51.100.1", "/api/status/a/b", class.no_exemption, class.views), true)
   eq(errorpages.render(s._maintenance_page, { status = "503", host = "s.test" }), "<p>503 s.test</p>")
   local bare = site({ maintenance = {} })
   eq(bare._maintenance_allow, nil)

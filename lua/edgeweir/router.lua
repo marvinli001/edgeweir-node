@@ -294,7 +294,7 @@ local function route(site, pctx, headers, host, original_path, acme)
   local method = ngx.req.get_method()
   -- An ambiguous path may be another path at the origin than the key's
   -- (edgeweir.uripath): never stored or served from the cache.
-  if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous() then
+  if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous(site) then
     var.edgeweir_range_mode = "pass"
     return true
   end
@@ -311,13 +311,17 @@ local function route(site, pctx, headers, host, original_path, acme)
     return true
   end
   -- Cache rules, purge markers and the key all use nginx's normalized
-  -- path, so an encoded variant of a URL can never escape a purge.
+  -- path, so an encoded variant of a URL can never escape a purge; only the
+  -- key of a path an encoded path exemption lets through with "%2F" keeps
+  -- it apart from "/" (edgeweir.uripath), as an origin may.
   local path = original_path
   local req = key_request(site, var, path, headers)
   if not req then
     var.edgeweir_range_mode = "pass"
     return true
   end
+  local key_path = uripath.request_class(site).key
+  if key_path then req.path = key_path end
   req.handed = ngx.ctx.edgeweir_found == "handed"
   if site._browser_ttl then
     -- For the browser TTL of the rule that decides the response.
@@ -474,7 +478,8 @@ local function access()
   local original_path = var.uri
   -- Maintenance: 503 and the maintenance page, but for allowed addresses
   -- and paths and HTTP-01 requests for the origin; nothing is cached.
-  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path, uripath.request_no_exemption()) then
+  if site.maintenance and not acme and not _M.maintenance_allowed(site, var.remote_addr, original_path,
+    uripath.request_no_exemption(site), uripath.request_views(site)) then
     reasons.set("maintenance")
     return errorpages.maintenance(site)
   end
@@ -678,8 +683,9 @@ end
 -- maintenance_allowed reports whether a request of a site in maintenance
 -- is served as usual: its client address in the allowed CIDRs or its
 -- original path under an allowed prefix (not when no_exemption: an
--- ambiguous raw path or one with "//", edgeweir.uripath.no_exemption).
-function _M.maintenance_allowed(site, addr, path, no_exemption)
+-- ambiguous raw path or one with "//", edgeweir.uripath.no_exemption; for
+-- an exempt path, every reading: views).
+function _M.maintenance_allowed(site, addr, path, no_exemption, views)
   local allow = site._maintenance_allow
   if allow and addr and allow(addr) then
     return true
@@ -688,7 +694,7 @@ function _M.maintenance_allowed(site, addr, path, no_exemption)
   if type(prefixes) == "table" and not no_exemption then
     for i = 1, #prefixes do
       local p = prefixes[i]
-      if sub(path, 1, #p) == p then
+      if uripath.all_views(path, views, function(v) return sub(v, 1, #p) == p end) then
         return true
       end
     end

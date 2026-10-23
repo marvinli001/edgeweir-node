@@ -26,7 +26,8 @@
 -- whose path matches the client's normalized path (the original $uri, a
 -- signed URL's signature removed; exact, or as a byte prefix; empty: every
 -- path; none for an ambiguous raw path or one with "//",
--- edgeweir.uripath.no_exemption) are named by their
+-- edgeweir.uripath.no_exemption; for an exempt path every reading must
+-- match) are named by their
 -- tokens in X-Edgeweir-Waf-Ex (",<token>,...,"):
 -- the generated rules remove their CRS rules or targets. Both headers are
 -- removed before the request goes to the origin layer.
@@ -86,8 +87,9 @@ end
 -- normalized path: the tokens of the site's exclusion entries whose path
 -- matches, ",<token>,<token>,"; nil when none does, and when no_exemption:
 -- an ambiguous raw path or one with "//" (edgeweir.uripath.no_exemption),
--- which the origin may route elsewhere.
-function _M.exclusion_value(waf, path, no_exemption)
+-- which the origin may route elsewhere. views (an exempt path's other
+-- readings): an entry matches only when it matches path and every view.
+function _M.exclusion_value(waf, path, no_exemption, views)
   local list = waf and waf.exclusions
   if no_exemption or type(list) ~= "table" or #list == 0 or type(path) ~= "string" then return nil end
   local tokens = {}
@@ -99,9 +101,9 @@ function _M.exclusion_value(waf, path, no_exemption)
       if p == "" then
         hit = true
       elseif e.exact then
-        hit = path == p
+        hit = uripath.all_views(path, views, function(v) return v == p end)
       else
-        hit = string.sub(path, 1, #p) == p
+        hit = uripath.all_views(path, views, function(v) return string.sub(v, 1, #p) == p end)
       end
       if hit then tokens[#tokens + 1] = e.token end
     end
@@ -168,7 +170,8 @@ function _M.enter(site)
   local mode = _M.mode(site, ctx.edgeweir_policy)
   if not mode then return end
   ngx.req.set_header(HEADER, _M.header_value(site.id, site.waf, mode))
-  local ex = _M.exclusion_value(site.waf, ctx.edgeweir_original_path or ngx.var.uri, uripath.request_no_exemption())
+  local class = uripath.request_class(site)
+  local ex = _M.exclusion_value(site.waf, ctx.edgeweir_original_path or ngx.var.uri, class.no_exemption, class.views)
   if ex then ngx.req.set_header(EX_HEADER, ex) end
   ctx.edgeweir_waf = true
   ngx.var.edgeweir_ctx_ref = _M.stash_ctx(ctx)
