@@ -338,6 +338,7 @@ agent 每 5 秒调用 `POST /v1/security/drain`（每次最多 1000 条，满了
 - 监督进程：自己的条目与 OpenResty 的条目留在监督进程的缓冲区（编号带实例 ID），`/capabilities` 报告 `logs`；agent 经 `GET /logs?instance=&after=` 读取，写入 `nodelogs-spool.json` 后 `POST /logs/ack`（带丢弃计数的 mark），监督进程再删除。agent 重启、升级试运行失败或崩溃时这些条目不丢。自升级后旧监督进程没有 `logs` 时，agent 记事件 `engine_logs_unavailable`，重启节点服务后恢复。
 - 上报：`nodelogs-spool.json` 复用访问日志的 spool（最多 5000 条 / 4 MiB，超出时丢最旧的批次并计入丢弃数）；先以序号 0 查控制台游标，批次按序号上报，同序号重发。控制台答 Unimplemented（早于 `node-logs-v1`）时保留 spool，10 分钟后再试。
 - Lua：源站被标记为不可用时（`health.failure` 达到 `max_fails`，每次下线一条）写一条 warn，含原因（如域名解析失败）与请求上下文。
+- Debug 日志（`debug-logs-v1`）：agent 与监督进程各有一个内存环形缓冲区 `nodelog.Ring`（`--debug-log-buffer`，默认 5000 条、最多 4 MiB，满了丢最旧的），收 `nodelog.Handler` 的全部级别（debug 起；`Enabled` 因此对 debug 也为真，本地输出仍按 `--log-level`）与 `lineLogger` 解析的 OpenResty 全部级别（notice、info 记为 info 并在 `severity` 保留原级别，ModSecurity 拒绝请求的行仍不收）；入缓冲前同样脱敏与截断，不折叠、不限速，带 `nodelog.Skip` 的不收。不落盘，平时不上传：控制台下发 `DebugLogsTask`（时间窗、组件、来源）时，agent 取自己的缓冲区，再经监督 socket `GET /debug-logs`（`/capabilities` 的 `debug_logs`）取监督进程的，按时间合并后保留最新的至多 10000 条 / 4 MiB，`UploadDebugLogs` 上传一次后回报任务结果；失败（没有缓冲区 `disabled`、上传失败 `upload_failed`）记 `debug_logs_failed`，不重试。旧监督进程没有 `debug_logs` 时上传标 `supervisor_missing`。
 
 ## 3. 数据面
 

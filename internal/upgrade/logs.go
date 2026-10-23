@@ -104,6 +104,8 @@ type Capabilities struct {
 	Enabled bool `json:"enabled"`
 	Engine  bool `json:"engine"`
 	Logs    bool `json:"logs"`
+	// GET /debug-logs (debug-logs-v1).
+	DebugLogs bool `json:"debug_logs"`
 }
 
 // Capabilities returns what the supervisor offers.

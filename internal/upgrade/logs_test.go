@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 )
@@ -63,5 +64,41 @@ func TestSupervisorServesLogs(t *testing.T) {
 	}
 	if w := logsCall(t, &Supervisor{}, http.MethodGet, "/logs", ""); w.Code != 404 {
 		t.Fatalf("without logs %d", w.Code)
+	}
+}
+
+func TestSupervisorServesDebugLogs(t *testing.T) {
+	s := &Supervisor{}
+	if w := logsCall(t, s, http.MethodGet, "/debug-logs", ""); w.Code != 404 {
+		t.Fatalf("without a ring: %d", w.Code)
+	}
+	ring := nodelog.NewRing(10)
+	s = &Supervisor{opts: Options{DebugLogs: ring}}
+	base := time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)
+	ring.Add(nodelog.Entry{Time: base, Level: nodelog.LevelDebug, Source: nodelog.SourceSupervisor, Component: "upgrade", Message: "one"})
+	ring.Add(nodelog.Entry{Time: base.Add(time.Second), Level: nodelog.LevelInfo, Source: nodelog.SourceNginx, Message: "two"})
+	ring.Add(nodelog.Entry{Time: base.Add(2 * time.Second), Level: nodelog.LevelWarn, Source: nodelog.SourceLua, Message: "three"})
+	var caps Capabilities
+	if err := json.NewDecoder(logsCall(t, s, http.MethodGet, "/capabilities", "").Body).Decode(&caps); err != nil || !caps.DebugLogs || caps.Logs {
+		t.Fatalf("capabilities %+v %v", caps, err)
+	}
+	if w := logsCall(t, s, http.MethodPost, "/debug-logs", ""); w.Code != 405 {
+		t.Fatalf("POST: %d", w.Code)
+	}
+	if w := logsCall(t, s, http.MethodGet, "/debug-logs?since=yesterday", ""); w.Code != 400 {
+		t.Fatalf("bad since: %d", w.Code)
+	}
+	f := nodelog.DebugFilter{Since: base.Add(time.Second), Sources: []nodelog.Source{nodelog.SourceNginx, nodelog.SourceLua}}
+	w := logsCall(t, s, http.MethodGet, "/debug-logs?"+debugFilterQuery(f).Encode(), "")
+	var snap nodelog.DebugSnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snap); err != nil || w.Code != 200 {
+		t.Fatalf("%d %v", w.Code, err)
+	}
+	if len(snap.Entries) != 2 || snap.Entries[0].Message != "two" || snap.Entries[1].Level != nodelog.LevelWarn || !snap.Oldest.Equal(base) {
+		t.Fatalf("%+v", snap)
+	}
+	got, err := parseDebugFilter(debugFilterQuery(nodelog.DebugFilter{Until: base, Components: []string{"a", "b"}}))
+	if err != nil || !got.Until.Equal(base) || !got.Since.IsZero() || len(got.Components) != 2 || got.Sources != nil {
+		t.Fatalf("%+v %v", got, err)
 	}
 }

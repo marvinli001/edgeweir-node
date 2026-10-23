@@ -305,6 +305,7 @@ edgeweir-node version
 | `--image-workers` | min(4, max(1, CPU 数 / 2)) | 同时进行的 WebP / AVIF 转换数，每个转换是一个只用一个 CPU 的子进程；0 关闭转换（节点不上报 `image-convert-v1`，开启转换的网站不能由它服务） |
 | `--image-memory-mb` | `1024` | 正在进行的转换合计可用的内存（MiB）；按像素估算每次转换的需要，超过时返回原图 |
 | `--image-timeout` | `8s` | 单次转换的最长时间，超时杀掉子进程并返回原图 |
+| `--debug-log-buffer` | `5000` | 内存中保留的最近日志条数（所有级别，最多 4 MiB），控制台在节点「日志」页签按需拉取；`0` 关闭（节点不上报 `debug-logs-v1`），最多 100000 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
 

@@ -19,12 +19,13 @@ const skipKey = "nodelog.skip"
 var Skip = slog.Bool(skipKey, true)
 
 // Handler passes every record to its base handler and adds warnings,
-// errors and events of the process to a collector. Its level is that of
-// the base handler for local output; warnings and events become entries
-// whatever it is.
+// errors and events of the process to a collector, and with Debug every
+// record to a ring. Its level is that of the base handler for local
+// output; entries are added whatever it is.
 type Handler struct {
 	base   slog.Handler
 	add    func(Entry)
+	debug  func(Entry)
 	source Source
 	fields []field
 	prefix string
@@ -39,10 +40,17 @@ func NewHandler(base slog.Handler, add func(Entry), source Source) *Handler {
 	return &Handler{base: base, add: add, source: source}
 }
 
+// Debug makes h also pass every record, from debug up, to add (a ring);
+// nil adds none. It returns h.
+func (h *Handler) Debug(add func(Entry)) *Handler {
+	h.debug = add
+	return h
+}
+
 // Enabled reports whether records of level are handled: by the base
-// handler, or as entries (info records may carry an event).
+// handler, as entries (info records may carry an event), or by the ring.
 func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
-	return level >= slog.LevelInfo || h.base.Enabled(ctx, level)
+	return level >= slog.LevelInfo || h.debug != nil || h.base.Enabled(ctx, level)
 }
 
 // Handle passes r on and adds it as an entry when it is one.
@@ -70,15 +78,18 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		}
 		err = h.base.Handle(ctx, local)
 	}
-	if skip || h.add == nil || r.Level < slog.LevelInfo {
+	entry := h.add != nil && r.Level >= slog.LevelInfo
+	if skip || (!entry && h.debug == nil) {
 		return err
 	}
-	e := Entry{Time: r.Time, Level: LevelInfo, Source: h.source, Message: r.Message}
+	e := Entry{Time: r.Time, Level: LevelDebug, Source: h.source, Message: r.Message}
 	switch {
 	case r.Level >= slog.LevelError:
 		e.Level = LevelError
 	case r.Level >= slog.LevelWarn:
 		e.Level = LevelWarn
+	case r.Level >= slog.LevelInfo:
+		e.Level = LevelInfo
 	}
 	fields := make(map[string]string, len(h.fields)+r.NumAttrs())
 	take := func(f field) {
@@ -100,6 +111,14 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		}
 		return true
 	})
+	e.Fields = fields
+	if h.debug != nil {
+		// The ring copies what it keeps (and makes other events fields).
+		h.debug(e)
+	}
+	if !entry {
+		return err
+	}
 	// Only the events of info records; warnings and errors carry none.
 	if e.Level == LevelInfo {
 		if !IsEvent(e.Event) {
@@ -108,7 +127,6 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	} else {
 		e.Event = ""
 	}
-	e.Fields = fields
 	h.add(e)
 	return err
 }

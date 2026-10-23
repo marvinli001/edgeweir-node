@@ -63,6 +63,8 @@ type Console struct {
 	nodeLogsSequences   []uint64
 	nodeLogs            []*nodev1.NodeLogEntry
 	nodeLogsDropped     [2]uint64
+	debugUploads        []*nodev1.UploadDebugLogsRequest
+	debugUploadFailures int
 	nodeLogsAckFailures int
 	nodeLogsUnsupported bool
 	nodev1connect.UnimplementedNodeServiceHandler
@@ -808,6 +810,36 @@ func (c *Console) ReportNodeLogs(_ context.Context, req *connect.Request[nodev1.
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test acknowledgement lost after commit"))
 	}
 	return connect.NewResponse(&nodev1.ReportNodeLogsResponse{Accepted: accepted, BatchSequence: req.Msg.BatchSequence}), nil
+}
+
+// UploadDebugLogs stores the upload (debug-logs-v1).
+func (c *Console) UploadDebugLogs(_ context.Context, req *connect.Request[nodev1.UploadDebugLogsRequest]) (*connect.Response[nodev1.UploadDebugLogsResponse], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.debugUploadFailures > 0 {
+		c.debugUploadFailures--
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("test upload failure"))
+	}
+	c.debugUploads = append(c.debugUploads, proto.CloneOf(req.Msg))
+	return connect.NewResponse(&nodev1.UploadDebugLogsResponse{}), nil
+}
+
+// FailDebugLogUploads refuses the next n debug log uploads.
+func (c *Console) FailDebugLogUploads(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.debugUploadFailures = n
+}
+
+// DebugLogUploads returns the debug log uploads received.
+func (c *Console) DebugLogUploads() []*nodev1.UploadDebugLogsRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*nodev1.UploadDebugLogsRequest, 0, len(c.debugUploads))
+	for _, u := range c.debugUploads {
+		out = append(out, proto.CloneOf(u))
+	}
+	return out
 }
 
 // FailNodeLogsAcknowledgements loses the next n acknowledgements of node

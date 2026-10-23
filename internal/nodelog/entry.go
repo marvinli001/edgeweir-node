@@ -82,6 +82,7 @@ var protoLevels = map[Level]nodev1.NodeLogLevel{
 	LevelInfo:  nodev1.NodeLogLevel_NODE_LOG_LEVEL_INFO,
 	LevelWarn:  nodev1.NodeLogLevel_NODE_LOG_LEVEL_WARN,
 	LevelError: nodev1.NodeLogLevel_NODE_LOG_LEVEL_ERROR,
+	LevelDebug: nodev1.NodeLogLevel_NODE_LOG_LEVEL_DEBUG,
 }
 
 var protoSources = map[Source]nodev1.NodeLogSource{
@@ -106,10 +107,10 @@ func (e Entry) Proto() *nodev1.NodeLogEntry {
 	}
 }
 
-// valid reports whether the entry has a known level and source, and an
-// event exactly when it is an info entry.
+// valid reports whether the entry has a known level other than debug and
+// a known source, and an event exactly when it is an info entry.
 func (e Entry) valid() bool {
-	if _, ok := protoLevels[e.Level]; !ok {
+	if _, ok := protoLevels[e.Level]; !ok || e.Level == LevelDebug {
 		return false
 	}
 	if _, ok := protoSources[e.Source]; !ok {

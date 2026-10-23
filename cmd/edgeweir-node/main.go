@@ -488,6 +488,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		imageWorkers  = fs.Int("image-workers", imageconv.DefaultWorkers(), "concurrent WebP / AVIF conversions, each a child process on one CPU (0 turns conversion off: sites that convert cannot be served by this node)")
 		imageMemoryMB = fs.Int("image-memory-mb", int(imageconv.DefaultMemory>>20), "memory the running WebP / AVIF conversions may use together, in MiB (each conversion's need is estimated from its pixels; larger images keep their original)")
 		imageTimeout  = fs.Duration("image-timeout", imageconv.DefaultTimeout, "longest WebP / AVIF conversion (the child is killed and the original kept)")
+		debugBuffer   = fs.Int("debug-log-buffer", nodelog.DefaultDebugCapacity, "recent log entries of every level kept in memory (at most 4 MiB) for the console to pull from the node's logs; 0 turns it off")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -509,7 +510,17 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	if supervised {
 		source = nodelog.SourceSupervisor
 	}
-	log = slog.New(nodelog.NewHandler(log.Handler(), nodeLogs.Add, source))
+	// Records of every level, kept until the console asks for them.
+	if *debugBuffer < 0 || *debugBuffer > nodelog.MaxDebugCapacity {
+		fmt.Fprintf(stderr, "run: --debug-log-buffer must be 0-%d\n", nodelog.MaxDebugCapacity)
+		return 2
+	}
+	debugLogs := nodelog.NewRing(*debugBuffer)
+	handler := nodelog.NewHandler(log.Handler(), nodeLogs.Add, source)
+	if debugLogs != nil {
+		handler.Debug(debugLogs.Add)
+	}
+	log = slog.New(handler)
 	slog.SetDefault(log)
 	if *defaultPort == 0 || *defaultPort > 65535 {
 		fmt.Fprintln(stderr, "run: --default-port must be 1-65535")
@@ -696,8 +707,11 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		// (an upgrade, a restart) does not restart it.
 		engineConfig := engineConfig(*nginxBin, prefix, conf, params, log)
 		engineConfig.LogSink = nodeLogs.Add
+		if debugLogs != nil {
+			engineConfig.DebugSink = debugLogs.Add
+		}
 		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr,
-			Engine: &engineConfig, AllowDowngrade: *downgrade, Logs: nodeLogs})
+			Engine: &engineConfig, AllowDowngrade: *downgrade, Logs: nodeLogs, DebugLogs: debugLogs})
 		if errors.Is(err, upgrade.ErrUsage) {
 			log.Error("supervisor stopped", "err", err)
 			return 2
@@ -727,6 +741,9 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	engineConfig := engineConfig(*nginxBin, prefix, conf, params, log)
 	engineConfig.Managed = *manage
 	engineConfig.LogSink = nodeLogs.Add
+	if debugLogs != nil {
+		engineConfig.DebugSink = debugLogs.Add
+	}
 	local := engine.New(engineConfig)
 	var eng agent.Engine = local
 	if sock := os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"); sock != "" && *manage {
@@ -762,6 +779,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		Kernel:              kernel,
 		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
 		NodeLogs:            nodeLogs,
+		DebugLogs:           debugLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

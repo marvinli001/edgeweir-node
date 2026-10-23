@@ -32,6 +32,9 @@ const (
 	NodeLogLevel_NODE_LOG_LEVEL_WARN NodeLogLevel = 2
 	// Also nginx's crit, alert and emerg (fields["severity"] keeps which).
 	NodeLogLevel_NODE_LOG_LEVEL_ERROR NodeLogLevel = 3
+	// Only in UploadDebugLogsRequest: below info. Added in v1.6.0. The values
+	// are not ordered by severity.
+	NodeLogLevel_NODE_LOG_LEVEL_DEBUG NodeLogLevel = 4
 )
 
 // Enum value maps for NodeLogLevel.
@@ -41,12 +44,14 @@ var (
 		1: "NODE_LOG_LEVEL_INFO",
 		2: "NODE_LOG_LEVEL_WARN",
 		3: "NODE_LOG_LEVEL_ERROR",
+		4: "NODE_LOG_LEVEL_DEBUG",
 	}
 	NodeLogLevel_value = map[string]int32{
 		"NODE_LOG_LEVEL_UNSPECIFIED": 0,
 		"NODE_LOG_LEVEL_INFO":        1,
 		"NODE_LOG_LEVEL_WARN":        2,
 		"NODE_LOG_LEVEL_ERROR":       3,
+		"NODE_LOG_LEVEL_DEBUG":       4,
 	}
 )
 
@@ -388,6 +393,214 @@ func (x *ReportNodeLogsResponse) GetAccepted() uint32 {
 	return 0
 }
 
+// DebugLogsTask asks for the node's debug log buffer: what the agent, the
+// supervisor and OpenResty logged recently at every level. The buffer is
+// kept in memory, bounded, and leaves the node only for this task. The
+// node answers with UploadDebugLogs, then ReportTaskResult. Added in
+// v1.6.0 (feature debug-logs-v1).
+type DebugLogsTask struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Only entries at or after since and before until; unset: no bound.
+	Since *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=since,proto3" json:"since,omitempty"`
+	Until *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=until,proto3" json:"until,omitempty"`
+	// Only entries of these components (NodeLogEntry.component); empty: all.
+	Components []string `protobuf:"bytes,3,rep,name=components,proto3" json:"components,omitempty"`
+	// Only entries of these sources; empty: all.
+	Sources       []NodeLogSource `protobuf:"varint,4,rep,packed,name=sources,proto3,enum=edgeweir.node.v1.NodeLogSource" json:"sources,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugLogsTask) Reset() {
+	*x = DebugLogsTask{}
+	mi := &file_edgeweir_node_v1_node_log_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugLogsTask) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugLogsTask) ProtoMessage() {}
+
+func (x *DebugLogsTask) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_log_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugLogsTask.ProtoReflect.Descriptor instead.
+func (*DebugLogsTask) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_log_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *DebugLogsTask) GetSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Since
+	}
+	return nil
+}
+
+func (x *DebugLogsTask) GetUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Until
+	}
+	return nil
+}
+
+func (x *DebugLogsTask) GetComponents() []string {
+	if x != nil {
+		return x.Components
+	}
+	return nil
+}
+
+func (x *DebugLogsTask) GetSources() []NodeLogSource {
+	if x != nil {
+		return x.Sources
+	}
+	return nil
+}
+
+// UploadDebugLogsRequest carries the answer to a DebugLogsTask.
+type UploadDebugLogsRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	TaskId string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	// Oldest first, at most 10000 entries and 4 MiB. Secrets are removed and
+	// sizes capped as for ReportNodeLogs; entries are neither folded nor
+	// rate limited, info entries need no event, and the level may be
+	// NODE_LOG_LEVEL_DEBUG.
+	Entries []*NodeLogEntry `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	// Older matching entries were left out for the limits.
+	Truncated bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// Time of the oldest entry the buffers held: older entries are gone.
+	// Unset when they held none.
+	BufferSince *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=buffer_since,json=bufferSince,proto3" json:"buffer_since,omitempty"`
+	// Entries the buffers dropped for their capacity since they started.
+	Overwritten uint64 `protobuf:"varint,5,opt,name=overwritten,proto3" json:"overwritten,omitempty"`
+	// The supervisor's buffer could not be read: its own and OpenResty's
+	// entries are missing.
+	SupervisorMissing bool `protobuf:"varint,6,opt,name=supervisor_missing,json=supervisorMissing,proto3" json:"supervisor_missing,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UploadDebugLogsRequest) Reset() {
+	*x = UploadDebugLogsRequest{}
+	mi := &file_edgeweir_node_v1_node_log_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadDebugLogsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadDebugLogsRequest) ProtoMessage() {}
+
+func (x *UploadDebugLogsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_log_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadDebugLogsRequest.ProtoReflect.Descriptor instead.
+func (*UploadDebugLogsRequest) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_log_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *UploadDebugLogsRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+func (x *UploadDebugLogsRequest) GetEntries() []*NodeLogEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *UploadDebugLogsRequest) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *UploadDebugLogsRequest) GetBufferSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.BufferSince
+	}
+	return nil
+}
+
+func (x *UploadDebugLogsRequest) GetOverwritten() uint64 {
+	if x != nil {
+		return x.Overwritten
+	}
+	return 0
+}
+
+func (x *UploadDebugLogsRequest) GetSupervisorMissing() bool {
+	if x != nil {
+		return x.SupervisorMissing
+	}
+	return false
+}
+
+// UploadDebugLogsResponse acknowledges an upload.
+type UploadDebugLogsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UploadDebugLogsResponse) Reset() {
+	*x = UploadDebugLogsResponse{}
+	mi := &file_edgeweir_node_v1_node_log_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadDebugLogsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadDebugLogsResponse) ProtoMessage() {}
+
+func (x *UploadDebugLogsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_log_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadDebugLogsResponse.ProtoReflect.Descriptor instead.
+func (*UploadDebugLogsResponse) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_log_proto_rawDescGZIP(), []int{5}
+}
+
 var File_edgeweir_node_v1_node_log_proto protoreflect.FileDescriptor
 
 const file_edgeweir_node_v1_node_log_proto_rawDesc = "" +
@@ -413,12 +626,28 @@ const file_edgeweir_node_v1_node_log_proto_rawDesc = "" +
 	"\x10dropped_overflow\x18\x04 \x01(\rR\x0fdroppedOverflow\"[\n" +
 	"\x16ReportNodeLogsResponse\x12%\n" +
 	"\x0ebatch_sequence\x18\x01 \x01(\x04R\rbatchSequence\x12\x1a\n" +
-	"\baccepted\x18\x02 \x01(\rR\baccepted*z\n" +
+	"\baccepted\x18\x02 \x01(\rR\baccepted\"\xce\x01\n" +
+	"\rDebugLogsTask\x120\n" +
+	"\x05since\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x120\n" +
+	"\x05until\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x05until\x12\x1e\n" +
+	"\n" +
+	"components\x18\x03 \x03(\tR\n" +
+	"components\x129\n" +
+	"\asources\x18\x04 \x03(\x0e2\x1f.edgeweir.node.v1.NodeLogSourceR\asources\"\x99\x02\n" +
+	"\x16UploadDebugLogsRequest\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\x128\n" +
+	"\aentries\x18\x02 \x03(\v2\x1e.edgeweir.node.v1.NodeLogEntryR\aentries\x12\x1c\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12=\n" +
+	"\fbuffer_since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vbufferSince\x12 \n" +
+	"\voverwritten\x18\x05 \x01(\x04R\voverwritten\x12-\n" +
+	"\x12supervisor_missing\x18\x06 \x01(\bR\x11supervisorMissing\"\x19\n" +
+	"\x17UploadDebugLogsResponse*\x94\x01\n" +
 	"\fNodeLogLevel\x12\x1e\n" +
 	"\x1aNODE_LOG_LEVEL_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13NODE_LOG_LEVEL_INFO\x10\x01\x12\x17\n" +
 	"\x13NODE_LOG_LEVEL_WARN\x10\x02\x12\x18\n" +
-	"\x14NODE_LOG_LEVEL_ERROR\x10\x03*\x9f\x01\n" +
+	"\x14NODE_LOG_LEVEL_ERROR\x10\x03\x12\x18\n" +
+	"\x14NODE_LOG_LEVEL_DEBUG\x10\x04*\x9f\x01\n" +
 	"\rNodeLogSource\x12\x1f\n" +
 	"\x1bNODE_LOG_SOURCE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15NODE_LOG_SOURCE_AGENT\x10\x01\x12\x1e\n" +
@@ -440,27 +669,35 @@ func file_edgeweir_node_v1_node_log_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_node_log_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_edgeweir_node_v1_node_log_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_edgeweir_node_v1_node_log_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_edgeweir_node_v1_node_log_proto_goTypes = []any{
-	(NodeLogLevel)(0),              // 0: edgeweir.node.v1.NodeLogLevel
-	(NodeLogSource)(0),             // 1: edgeweir.node.v1.NodeLogSource
-	(*NodeLogEntry)(nil),           // 2: edgeweir.node.v1.NodeLogEntry
-	(*ReportNodeLogsRequest)(nil),  // 3: edgeweir.node.v1.ReportNodeLogsRequest
-	(*ReportNodeLogsResponse)(nil), // 4: edgeweir.node.v1.ReportNodeLogsResponse
-	nil,                            // 5: edgeweir.node.v1.NodeLogEntry.FieldsEntry
-	(*timestamppb.Timestamp)(nil),  // 6: google.protobuf.Timestamp
+	(NodeLogLevel)(0),               // 0: edgeweir.node.v1.NodeLogLevel
+	(NodeLogSource)(0),              // 1: edgeweir.node.v1.NodeLogSource
+	(*NodeLogEntry)(nil),            // 2: edgeweir.node.v1.NodeLogEntry
+	(*ReportNodeLogsRequest)(nil),   // 3: edgeweir.node.v1.ReportNodeLogsRequest
+	(*ReportNodeLogsResponse)(nil),  // 4: edgeweir.node.v1.ReportNodeLogsResponse
+	(*DebugLogsTask)(nil),           // 5: edgeweir.node.v1.DebugLogsTask
+	(*UploadDebugLogsRequest)(nil),  // 6: edgeweir.node.v1.UploadDebugLogsRequest
+	(*UploadDebugLogsResponse)(nil), // 7: edgeweir.node.v1.UploadDebugLogsResponse
+	nil,                             // 8: edgeweir.node.v1.NodeLogEntry.FieldsEntry
+	(*timestamppb.Timestamp)(nil),   // 9: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_node_log_proto_depIdxs = []int32{
-	6, // 0: edgeweir.node.v1.NodeLogEntry.time:type_name -> google.protobuf.Timestamp
-	0, // 1: edgeweir.node.v1.NodeLogEntry.level:type_name -> edgeweir.node.v1.NodeLogLevel
-	1, // 2: edgeweir.node.v1.NodeLogEntry.source:type_name -> edgeweir.node.v1.NodeLogSource
-	5, // 3: edgeweir.node.v1.NodeLogEntry.fields:type_name -> edgeweir.node.v1.NodeLogEntry.FieldsEntry
-	2, // 4: edgeweir.node.v1.ReportNodeLogsRequest.entries:type_name -> edgeweir.node.v1.NodeLogEntry
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	9,  // 0: edgeweir.node.v1.NodeLogEntry.time:type_name -> google.protobuf.Timestamp
+	0,  // 1: edgeweir.node.v1.NodeLogEntry.level:type_name -> edgeweir.node.v1.NodeLogLevel
+	1,  // 2: edgeweir.node.v1.NodeLogEntry.source:type_name -> edgeweir.node.v1.NodeLogSource
+	8,  // 3: edgeweir.node.v1.NodeLogEntry.fields:type_name -> edgeweir.node.v1.NodeLogEntry.FieldsEntry
+	2,  // 4: edgeweir.node.v1.ReportNodeLogsRequest.entries:type_name -> edgeweir.node.v1.NodeLogEntry
+	9,  // 5: edgeweir.node.v1.DebugLogsTask.since:type_name -> google.protobuf.Timestamp
+	9,  // 6: edgeweir.node.v1.DebugLogsTask.until:type_name -> google.protobuf.Timestamp
+	1,  // 7: edgeweir.node.v1.DebugLogsTask.sources:type_name -> edgeweir.node.v1.NodeLogSource
+	2,  // 8: edgeweir.node.v1.UploadDebugLogsRequest.entries:type_name -> edgeweir.node.v1.NodeLogEntry
+	9,  // 9: edgeweir.node.v1.UploadDebugLogsRequest.buffer_since:type_name -> google.protobuf.Timestamp
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_node_log_proto_init() }
@@ -474,7 +711,7 @@ func file_edgeweir_node_v1_node_log_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_node_log_proto_rawDesc), len(file_edgeweir_node_v1_node_log_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
