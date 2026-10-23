@@ -290,6 +290,7 @@ edgeweir-node version
 | `--purge-tags-per-site` | `5000` | 每站点标签标记上限，超出后该站点的标记合并为全站标记 |
 | `--prefetch-budget` | `4m` | 单批预热时间上限 |
 | `--cache-usage-interval` | `10m` | 测量缓存区磁盘用量的间隔（遍历缓存目录，结果随心跳上报） |
+| `--stats-interval` | `1m` | 从数据面取出已结束分钟的统计并上报的间隔（1s–1m；只在端到端测试中缩短） |
 | `--ban-capacity` | `100000` | 动态封禁条数上限；超出时先淘汰最早的自动封禁 |
 | `--ban-dict-mb` | `32` | 封禁存储（`lua_shared_dict edgeweir_bans`），MiB |
 | `--cc-dict-mb` | `32` | CC 防护存储（`lua_shared_dict edgeweir_cc`），MiB |

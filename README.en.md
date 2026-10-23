@@ -290,6 +290,7 @@ edgeweir-node version
 | `--purge-tags-per-site` | `5000` | Tag markers per site before the site's markers collapse into a site-level marker |
 | `--prefetch-budget` | `4m` | Time limit per prefetch batch |
 | `--cache-usage-interval` | `10m` | How often the disk usage of the cache zones is measured (a walk over the cache directory, reported with the heartbeat) |
+| `--stats-interval` | `1m` | How often the statistics of completed minutes are drained from the data plane and uploaded (1s–1m; shortened only in end-to-end tests) |
 | `--ban-capacity` | `100000` | Maximum dynamic bans; oldest automatic bans are evicted first |
 | `--ban-dict-mb` | `32` | Ban store (`lua_shared_dict edgeweir_bans`), MiB |
 | `--cc-dict-mb` | `32` | CC mitigation store (`lua_shared_dict edgeweir_cc`), MiB |
