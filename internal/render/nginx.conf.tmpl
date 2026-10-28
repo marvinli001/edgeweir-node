@@ -268,6 +268,11 @@ http {
     upstream {{ . }} {
         server 0.0.0.1;
         keepalive 0;
+        # Idle connections the worker keeps for all origins of this upstream
+        # (balancer.enable_keepalive, LRU across the pools). OpenResty's
+        # default of 32 is shared by every site: past it, a connection
+        # closes after its request and the next one opens a new one.
+        balancer_keepalive 256;
 {{- if $.OriginProxyProtocol }}
         # PROXY protocol header of the origin chosen for the attempt (set in
         # balancer_by_lua; empty: none), written before anything else on a

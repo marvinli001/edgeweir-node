@@ -322,6 +322,9 @@ func TestRenderOriginTLSName(t *testing.T) {
 		if !strings.Contains(balancer, "keepalive 0;") {
 			t.Errorf("balancer upstream keeps nginx's default connection cache:\n%s", balancer)
 		}
+		if !strings.Contains(balancer, "balancer_keepalive 256;") {
+			t.Errorf("balancer upstream keeps OpenResty's default pool of 32:\n%s", balancer)
+		}
 	}
 	for _, l := range originLayers(p.WithDefaults()) {
 		layer := originLayerServer(t, conf, l.Socket)

@@ -70,7 +70,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "e91260ebfb3a7895",
+            conf_id = "ba8e99f1a2b7c953",
             -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
             geoip_socket = "",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
@@ -233,16 +233,31 @@ http {
     upstream edgeweir_balancer {
         server 0.0.0.1;
         keepalive 0;
+        # Idle connections the worker keeps for all origins of this upstream
+        # (balancer.enable_keepalive, LRU across the pools). OpenResty's
+        # default of 32 is shared by every site: past it, a connection
+        # closes after its request and the next one opens a new one.
+        balancer_keepalive 256;
         balancer_by_lua_block { require("edgeweir.origin").balance() }
     }
     upstream edgeweir_balancer_h2 {
         server 0.0.0.1;
         keepalive 0;
+        # Idle connections the worker keeps for all origins of this upstream
+        # (balancer.enable_keepalive, LRU across the pools). OpenResty's
+        # default of 32 is shared by every site: past it, a connection
+        # closes after its request and the next one opens a new one.
+        balancer_keepalive 256;
         balancer_by_lua_block { require("edgeweir.origin").balance() }
     }
     upstream edgeweir_balancer_grpc {
         server 0.0.0.1;
         keepalive 0;
+        # Idle connections the worker keeps for all origins of this upstream
+        # (balancer.enable_keepalive, LRU across the pools). OpenResty's
+        # default of 32 is shared by every site: past it, a connection
+        # closes after its request and the next one opens a new one.
+        balancer_keepalive 256;
         balancer_by_lua_block { require("edgeweir.origin").balance() }
     }
 
