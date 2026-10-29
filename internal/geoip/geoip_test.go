@@ -2,6 +2,7 @@ package geoip
 
 import (
 	"context"
+	"fmt"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/geofixture"
 	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
@@ -135,6 +136,55 @@ func TestIPinfoLite(t *testing.T) {
 		if wrong, err := Open(paths); err == nil {
 			wrong.Close()
 			t.Fatalf("accepted wrong database type: %+v", paths)
+		}
+	}
+}
+
+func TestLocate(t *testing.T) {
+	dir := t.TempDir()
+	city, _, err := geofixture.Write(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipinfo, err := geofixture.WriteIPinfo(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	only, err := Open(Paths{IPinfo: ipinfo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer only.Close()
+	both, err := Open(Paths{IPinfo: ipinfo, City: city})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer both.Close()
+	format := func(p Place) string {
+		s := p.Country + "/" + p.Subdivision
+		if p.Lat != nil && p.Lng != nil {
+			s += fmt.Sprintf("@%.2f,%.2f", *p.Lat, *p.Lng)
+		}
+		return s
+	}
+	for _, test := range []struct {
+		db   *Databases
+		ip   string
+		want string
+	}{
+		// IPinfo Lite has the country only.
+		{only, "203.0.113.7", "NZ/"},
+		// The City database adds the subdivision and coordinates where it agrees on the country.
+		{both, "203.0.113.7", "NZ/AUK@-36.85,174.76"},
+		{both, "2001:db8::7", "AU/"},
+		{both, "192.0.2.1", "/"},
+	} {
+		got, err := test.db.Locate(netip.MustParseAddr(test.ip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if format(got) != test.want {
+			t.Errorf("%s: got %s, want %s", test.ip, format(got), test.want)
 		}
 	}
 }

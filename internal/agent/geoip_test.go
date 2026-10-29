@@ -1,13 +1,16 @@
 package agent_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
+	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
+	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/geofixture"
 )
@@ -59,5 +62,51 @@ func TestAgentNamesTheGeoIPSocketOnlyWhenItServesOne(t *testing.T) {
 			}
 			stop()
 		})
+	}
+}
+
+// The console names the address to place the node by on its map; the node
+// answers with where its GeoIP databases put it in the next heartbeat.
+func TestAgentReportsWhereTheLocateAddressIs(t *testing.T) {
+	city, asn, err := geofixture.Write(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	console, err := fakeconsole.New(fakeconsole.Options{NodeID: "node-7", ClusterID: "cl-1", NodeName: "edge-7", ReportInterval: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := console.StartTLS(t)
+	console.Publish(baseConfig())
+	console.SetLocateAddress("203.0.113.7")
+	root := t.TempDir()
+	h := &harness{t: t, console: console, url: srv.URL, stateDir: filepath.Join(root, "state"), root: root}
+	dp := fakedataplane.Start(t)
+	cfg := h.agentConfig(dp.Socket)
+	cfg.GeoIP = geoip.Paths{City: city, ASN: asn}
+	startAgent(t, cfg, newFakeEngine(), dataplane.NewClient(dp.Socket))
+	console.AddToken("secret-token")
+	if _, err := enroll.Run(context.Background(), enroll.Options{
+		ServerURL: srv.URL, Token: "secret-token", CASHA256: console.CA.Pin(),
+		StateDir: h.stateDir, Logger: testLogger(t),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	located := func(address string) func() bool {
+		return func() bool {
+			l := console.LastStatus().GetLocation()
+			return l.GetAddress() == address
+		}
+	}
+	eventually(t, "location reported", located("203.0.113.7"))
+	l := console.LastStatus().GetLocation()
+	if l.GetCountry() != "NZ" || l.GetSubdivision() != "AUK" || l.GetLatitude() != -36.85 || l.GetLongitude() != 174.76 {
+		t.Fatalf("location = %v", l)
+	}
+	// A new address is looked up again; one no database knows has no country.
+	console.SetLocateAddress("192.0.2.1")
+	eventually(t, "new location reported", located("192.0.2.1"))
+	if l := console.LastStatus().GetLocation(); l.GetCountry() != "" || l.Latitude != nil {
+		t.Fatalf("location = %v", l)
 	}
 }

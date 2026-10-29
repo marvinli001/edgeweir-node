@@ -221,6 +221,44 @@ func (d *Databases) Lookup(ip netip.Addr) (Result, error) {
 	return out, nil
 }
 
+// Place is where an address is: Lookup's country and subdivision, plus the
+// coordinates of a City database that agrees on the country (Lat and Lng are
+// nil without one; IPinfo Lite has none).
+type Place struct {
+	Country, Subdivision string
+	Lat, Lng             *float64
+}
+
+// Locate places an address for the console's map (ReportStatusRequest.location).
+func (d *Databases) Locate(ip netip.Addr) (Place, error) {
+	result, err := d.Lookup(ip)
+	if err != nil {
+		return Place{}, err
+	}
+	out := Place{Country: result.Country, Subdivision: result.Subdivision}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.closed || d.City == nil || out.Country == "" {
+		return out, nil
+	}
+	var record struct {
+		Country struct {
+			Code string `maxminddb:"iso_code"`
+		} `maxminddb:"country"`
+		Location struct {
+			Latitude  *float64 `maxminddb:"latitude"`
+			Longitude *float64 `maxminddb:"longitude"`
+		} `maxminddb:"location"`
+	}
+	if err := d.City.Lookup(ip.Unmap()).Decode(&record); err != nil {
+		return out, err
+	}
+	if record.Country.Code == out.Country && record.Location.Latitude != nil && record.Location.Longitude != nil {
+		out.Lat, out.Lng = record.Location.Latitude, record.Location.Longitude
+	}
+	return out, nil
+}
+
 // parseASN reads IPinfo's "AS15169" form; anything else counts as no record.
 func parseASN(s string) uint {
 	digits, ok := strings.CutPrefix(s, "AS")

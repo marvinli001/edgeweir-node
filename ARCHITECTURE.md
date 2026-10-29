@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v1.6.0`）里的 `edgeweir.node.v1`。
+本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v1.7.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -64,7 +64,7 @@
 | `internal/diag` | 诊断 socket（§2.4）：0600 unix socket（默认 `/run/edgeweir-node/diag.sock`，`--diag-socket`，不监听 TCP），`GET /status` 返回运行中 agent 的状态（JSON：身份、在用的控制台地址、心跳、配置、时钟偏差），`/debug/pprof/` 为 Go profile；`edgeweir-node diagnose` / `pprof` 是它的客户端 |
 | `internal/healthcheck` | 主动健康检查（§2.10）：按应用的 Plan 调度探测，地址策略、请求与 TLS 校验、状态阈值；resolver、dialer 与时钟可替换 |
 | `internal/captcha` | 验证码图片：内置 5×7 点阵字体，随机位置、缩放、旋转、倾斜、波浪基线、干扰线与噪点，160×60 调色板 PNG；答案取自 crypto/rand |
-| `internal/geoip` | 读取本地 MMDB（内置 IPinfo Lite、运维提供的 City / ASN），经 0600 unix socket（默认 `control.sock.geo`）为 Lua 提供查询（没有数据库时不提供，nginx.conf 的 `geoip_socket` 为空）；`internal/geoip/check` 在镜像构建时校验下载的 IPinfo Lite |
+| `internal/geoip` | 读取本地 MMDB（内置 IPinfo Lite、运维提供的 City / ASN），经 0600 unix socket（默认 `control.sock.geo`）为 Lua 提供查询（没有数据库时不提供，nginx.conf 的 `geoip_socket` 为空）；`Locate` 查心跳响应 `locate_address` 给出的本节点公网地址，下一次心跳在 `ReportStatus.location` 报国家、一级行政区与（City MMDB 有时）经纬度，供控制台概览地球使用，结果按地址缓存；`internal/geoip/check` 在镜像构建时校验下载的 IPinfo Lite |
 | `internal/upgrade` | `supervise` 监督进程：经 `upgrade.sock` 接收升级任务，按本机信任策略下载并用 cosign 验签发布包，试运行新版本，失败时回滚（§2.6） |
 | `internal/hostinfo` | 上报给控制台的 `NodeInfo`（主机名、非回环非链路本地地址、版本），以及渲染用的本机探测：是否有全局 IPv6（resolver 是否查 AAAA）、能否监听 IPv6、打开文件数硬上限（`worker_rlimit_nofile`） |
 | `internal/bans` | 控制台动态封禁的状态：校验 `GetBans` 页、应用（reset、upsert、removed_ids）、持久化 `bans.json`、按数据面键分组（slot）、差量与容量排序 |

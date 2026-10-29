@@ -273,6 +273,12 @@ type Agent struct {
 	lkg        configstore.Store
 
 	geoFeatures []string
+	// geo is set while the agent runs with GeoIP databases; locateAddress is
+	// the address the console asks it to place itself by and located the
+	// lookup of it (all guarded by mu).
+	geo           *geoip.Databases
+	locateAddress string
+	located       *nodev1.NodeLocation
 	// moduleFeatures are the optional OpenResty modules this node can use
 	// (brotli-v1, zstd-v1, modsecurity-v1), detected at startup.
 	moduleFeatures []string
@@ -472,6 +478,14 @@ func (a *Agent) Run(parent context.Context) error {
 	}
 	a.geoFeatures = databases.Features()
 	if len(a.geoFeatures) > 0 {
+		a.mu.Lock()
+		a.geo = databases
+		a.mu.Unlock()
+		defer func() {
+			a.mu.Lock()
+			a.geo = nil
+			a.mu.Unlock()
+		}()
 		attrs := []any{"features", a.geoFeatures}
 		if built := databases.IPinfoBuilt(); !built.IsZero() {
 			attrs = append(attrs, "ipinfo", a.cfg.GeoIP.IPinfo, "ipinfo_built", built.Format(time.DateOnly))

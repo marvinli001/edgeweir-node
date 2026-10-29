@@ -89,6 +89,7 @@ type Console struct {
 	corruptNextDiff    bool
 	pinned             uint64 // serve this revision as the latest (0: the newest)
 	renewNext          bool
+	locateAddress      string
 	refuseReports      bool
 	renewals           int
 	enrollments        int
@@ -563,7 +564,15 @@ func (c *Console) ReportStatus(_ context.Context, req *connect.Request[nodev1.Re
 		Probe:                 c.probe.nodeProbe,
 		Channel:               proto.CloneOf(c.channel),
 		ConsoleTime:           c.consoleTime(),
+		LocateAddress:         c.locateAddress,
 	}), nil
+}
+
+// SetLocateAddress makes ReportStatus ask the node to locate address.
+func (c *Console) SetLocateAddress(address string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.locateAddress = address
 }
 
 // SetCredential makes GetOriginCredentials hand out cred.

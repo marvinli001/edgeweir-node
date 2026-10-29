@@ -47,6 +47,7 @@ func (a *Agent) noteReport(resp *nodev1.ReportStatusResponse, sent, received tim
 	a.reportOK = received
 	a.reportInterval = interval
 	a.latestRevision = resp.GetLatestRevision()
+	a.locateAddress = resp.GetLocateAddress()
 	if clock != nil {
 		a.clock = clock
 	}

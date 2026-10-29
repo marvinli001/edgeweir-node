@@ -214,6 +214,7 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	if f := a.follow.Load(); f != nil {
 		req.Channel = f.Status()
 	}
+	req.Location = a.nodeLocation()
 	return req
 }
 
