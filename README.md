@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[![Telegram 交流群](https://img.shields.io/badge/Telegram-%E4%BA%A4%E6%B5%81%E7%BE%A4-26A5E4?logo=telegram&logoColor=white)](https://t.me/darkfiber_labs)
 
 [Edgeweir](https://github.com/marvinli001/edgeweir) 边缘节点：Go agent `edgeweir-node` 与 OpenResty（Lua）数据面。OpenResty 为自建的 edgeweir-openresty：从固定并校验过的源码构建，带 Brotli、Zstandard 与可选的 ModSecurity、OWASP CRS。
 
