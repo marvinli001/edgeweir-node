@@ -4,7 +4,8 @@
 
 [![CI](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/marvinli001/edgeweir-node/actions/workflows/ci.yml)
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
-[![Telegram group](https://img.shields.io/badge/Telegram-group-26A5E4?logo=telegram&logoColor=white)](https://t.me/darkfiber_labs)
+
+[![Join the Telegram group](.github/assets/telegram-en.svg)](https://t.me/darkfiber_labs)
 
 Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir-node` Go agent and an OpenResty (Lua) data plane. OpenResty is edgeweir-openresty, built from pinned and verified sources with Brotli, Zstandard and optional ModSecurity with the OWASP CRS.
 
