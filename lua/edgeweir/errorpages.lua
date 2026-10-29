@@ -24,10 +24,10 @@
 -- {{...}}, is sent as it is. Template content is never interpreted.
 --
 -- Built-in pages are self-contained (inline CSS and SVG, no script, no
--- external URL, light and dark), in Chinese or English by Accept-Language,
--- and show the status, which hop failed (the visitor for requests nginx
--- refuses, the edge node or the origin), a short title, what to do, the
--- request id, the host and the client address.
+-- external URL, no web font, light and dark), in Chinese or English by
+-- Accept-Language, and show the status, which hop failed (the visitor for
+-- requests nginx refuses, the edge node or the origin), a short title,
+-- what to do, the request id, the host, the client address and the time.
 --
 -- Every page: Content-Type text/html; charset=utf-8, Cache-Control:
 -- no-store, the exact Content-Length and X-Edgeweir-Error: <code>. The edge
@@ -206,16 +206,20 @@ end
 -- ---------------------------------------------------------------------
 -- Built-in pages
 --
--- A built-in page reads one request like an instrument: a signal runs from
--- the visitor through the edge node to the origin and stops, thins out or
--- breaks at the hop that failed (SHAPES), under the status set large. A
+-- A built-in page is a card on a gray canvas under Edgeweir's tile, like
+-- the console's status pages: the status with a pill naming what failed,
+-- the title, what to do, then the hop trace of the request from the
+-- visitor through the edge node to the origin. The hops before the one
+-- that failed are healthy, the failing one is red (a rate limit holds the
+-- request there in orange) and the ones after it were not reached. A
 -- request nginx refuses (malformed, too large, plain HTTP on an HTTPS
--- port) fails at the visitor: its signal never gets through to the edge
--- node. The hops say in words which one failed; below come the title, what
--- to do, a reload link where reloading can help, the request id, the host
--- and the client address (shown on request). Motion is CSS only and stops
--- under prefers-reduced-motion; the page has no script and no external
--- URL.
+-- port) fails at the visitor. Under the trace come the request id, the
+-- host, the client address (shown on request) and the time, and a retry
+-- button where retrying can help. The card fades in once and the failing
+-- hop's badge after it; nothing loops, nothing moves under
+-- prefers-reduced-motion, and the page has no script, no external URL and
+-- no web font. The challenge pages (edgeweir.challenge) use the same
+-- style, tile and trace.
 --
 -- Kinds are statuses, nginx's own 494 (request header too large) and 497
 -- (plain HTTP on an HTTPS port), both sent as 400, "site-disabled" and
@@ -240,11 +244,11 @@ local LANG = { zh = "zh-CN", en = "en" }
 local REQUEST_ID = { zh = "请求 ID", en = "Request ID" }
 
 -- TEXT: the hops, their states and the page's other words; stamp is the
--- failing hop's state, todo what the visitor can do.
+-- failing hop's state (also the status pill), todo what the visitor can do.
 local TEXT = {
   zh = {
-    hops = { "你", "边缘节点", "源站" }, ok = "正常", unreached = "未到达",
-    host = "域名", ip = "你的 IP", show = "显示", reload = "重新加载", time = "时间",
+    hops = { "访客", "边缘节点", "源站" }, ok = "正常", unreached = "未到达",
+    host = "主机", ip = "客户端 IP", show = "显示", reload = "重试", time = "时间",
     stamp = {
       [400] = "格式错误", [403] = "拦截", [404] = "未接入", [413] = "过大", [414] = "过长", [429] = "限速",
       [494] = "过大", [497] = "未加密", [500] = "出错", [502] = "无法连接", [503] = "暂不可用", [504] = "超时",
@@ -271,8 +275,8 @@ local TEXT = {
     },
   },
   en = {
-    hops = { "You", "Edge", "Origin" }, ok = "OK", unreached = "Not reached",
-    host = "Host", ip = "Your IP", show = "Show", reload = "Reload", time = "Time",
+    hops = { "Visitor", "Edge", "Origin" }, ok = "Working", unreached = "Not reached",
+    host = "Host", ip = "Client IP", show = "Show", reload = "Retry", time = "Time",
     stamp = {
       [400] = "Malformed", [403] = "Blocked", [404] = "No site", [413] = "Too large", [414] = "Too long",
       [429] = "Rate limited", [494] = "Too large", [497] = "Not encrypted", [500] = "Error", [502] = "Unreachable",
@@ -301,159 +305,84 @@ local TEXT = {
   },
 }
 
--- SHAPES: the failing hop (at: 0 the visitor, 1 the edge node, 2 the
--- origin), the signal from the visitor to the edge node (a) and on to the
--- origin (b), the failing hop's mark, the readout's weight and whether
--- reloading can help. 503-origin is a 503 of the origin (nginx's own
--- upstream failure). A request nginx refuses leaves the visitor garbled
--- (malformed), swollen against the edge node's limit (too large) or
--- fading out unencrypted (plain HTTP on an HTTPS port).
-local SHAPES = {
-  [400] = { at = 0, a = "garble", b = "held", mark = "query", w = 640 },
-  [401] = { at = 0, a = "fade", b = "held", mark = "lock", w = 480 },
-  [403] = { at = 1, a = "flow", b = "held", mark = "stop", w = 760 },
-  [404] = { at = 1, a = "flow", b = "fade", mark = "logo", w = 250, void = true },
-  [413] = { at = 0, a = "swell", b = "held", mark = "wide", w = 880 },
-  [414] = { at = 0, a = "swell", b = "held", mark = "wide", w = 880 },
-  [429] = { at = 1, a = "chirp", b = "held", mark = "hourglass", w = 560, retry = true },
-  [494] = { at = 0, a = "swell", b = "held", mark = "wide", w = 880 },
-  [497] = { at = 0, a = "fade", b = "held", mark = "lock", w = 420 },
-  [500] = { at = 1, a = "flow", b = "held", mark = "cross", w = 680, retry = true },
-  [502] = { at = 2, a = "flow", b = "noise", mark = "cross", w = 700, retry = true },
-  [503] = { at = 1, a = "flow", b = "held", mark = "pause", w = 600, retry = true },
-  ["503-origin"] = { at = 2, a = "flow", b = "flow", mark = "pause", w = 600, retry = true },
-  [504] = { at = 2, a = "flow", b = "slow", mark = "clock", w = 200, retry = true },
-  ["site-disabled"] = { at = 1, a = "flow", b = "held", mark = "pause", w = 500 },
-  [405] = { at = 1, a = "flow", b = "held", mark = "stop", w = 700 },
-  maintenance = { at = 1, a = "flow", b = "held", mark = "pause", w = 500, retry = true },
-  other = { at = 1, a = "flow", b = "held", mark = "cross", w = 600, retry = true },
+-- FAILS: the failing hop of each kind (0 the visitor, 1 the edge node, 2
+-- the origin), whether retrying can help and whether the request is held
+-- there (a rate limit: orange, not red). 503-origin is a 503 of the origin
+-- (nginx's own upstream failure).
+local FAILS = {
+  [400] = { 0 }, [401] = { 0 }, [403] = { 1 }, [404] = { 1 }, [405] = { 1 }, [413] = { 0 }, [414] = { 0 },
+  [429] = { 1, retry = true, held = true }, [494] = { 0 }, [497] = { 0 }, [500] = { 1, retry = true },
+  [502] = { 2, retry = true }, [503] = { 1, retry = true }, ["503-origin"] = { 2, retry = true },
+  [504] = { 2, retry = true }, ["site-disabled"] = { 1 }, maintenance = { 1, retry = true },
+  other = { 1, retry = true },
 }
 
-local STYLE = [=[:root{color-scheme:light dark;--bg:#fff;--fg:#0a0a0a;--mu:#737373;--gr:#e5e5e5;--de:#cfcfcf;--sg:#2a78d6;--bd:#e7000b;--bt:#1447e6;--bf:#eff6ff;--lk:#1447e6;--h:1px;--e:cubic-bezier(.16,1,.3,1);--sa:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}]=]
-  .. [=[@media (prefers-color-scheme:dark){:root{--bg:#0a0a0a;--fg:#fafafa;--mu:#a1a1a1;--gr:#232323;--de:#3d3d3d;--sg:#3987e5;--bd:#ff6467;--bt:#193cb8;--bf:#eff6ff;--lk:#3987e5}}]=]
-  .. [=[@media (min-resolution:2dppx){:root{--h:.5px}}*{box-sizing:border-box}html,body{margin:0}]=]
-  .. [=[body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sa);-webkit-font-smoothing:antialiased}]=]
-  .. [=[::selection{background:color-mix(in srgb,var(--sg) 22%,transparent)}:focus-visible{outline:2px solid var(--sg);outline-offset:3px}]=]
-  .. [=[main{min-height:100vh;min-height:100svh;display:grid;place-items:center;padding:56px 20px;overflow:hidden}]=]
-  .. [=[.f{position:relative;width:min(100%,960px)}.f:before,.f:after,.top:before,.top:after{content:"";position:absolute;pointer-events:none}]=]
-  .. [=[.f:before{inset:0 -100vw;border-block:var(--h) dashed var(--gr)}.f:after{inset:-100vh 0;border-inline:var(--h) dashed var(--gr)}]=]
-  .. [=[.top:after{inset:auto -100vw 0;border-top:var(--h) dashed var(--gr)}]=]
-  .. [=[.top:before{inset:auto 0 0;height:5px;background:repeating-linear-gradient(90deg,var(--de) 0 var(--h),transparent 0 2.0833%)}]=]
-  .. [=[.d{position:absolute;width:7px;height:7px;margin:-3.5px;background:var(--bg);border:var(--h) solid var(--de);z-index:1}]=]
-  .. [=[.d1,.d3{top:0}.d2,.d4,.d5,.d6{top:100%}.d1,.d2,.d5{left:0}.d3,.d4,.d6{left:100%}]=]
-  .. [=[.top{position:relative;padding:44px 0 26px;--at:50%}.at2 .top{--at:83.333%}]=]
-  .. [=[.code{width:max-content;margin:0 0 0 var(--at);transform:translateX(-50%);font-size:clamp(76px,13vw,136px);line-height:.78;letter-spacing:-.04em;font-weight:var(--w);font-variant-numeric:tabular-nums;animation:wt 1.2s var(--e) both}]=]
-  .. [=[@keyframes wt{from{font-weight:100;opacity:0}}.tr{position:relative;height:56px;margin-top:30px}.df{position:absolute;width:0;height:0}]=]
-  .. [=[.cur{position:absolute;left:var(--at);top:-26px;height:38px;border-left:var(--h) dashed var(--fg);opacity:.45;animation:fd .5s .9s both}]=]
-  .. [=[.hd{position:absolute;top:28px;left:16.667%;width:7px;height:7px;margin:-3.5px;border-radius:50%;background:var(--sg);opacity:0;animation:h1 .9s .1s both;z-index:2}.hd:after{content:"";position:absolute;inset:-4px;border:1px solid var(--sg);border-radius:50%;opacity:.5}]=]
-  .. [=[@keyframes h1{0%{opacity:1;left:16.667%;animation-timing-function:var(--e)}78%{opacity:1;left:50%}to{opacity:0;left:50%;scale:2.4}}]=]
-  .. [=[.s{position:absolute;top:0;height:56px;width:33.333%}.s svg{display:block;width:100%;height:56px}]=]
-  .. [=[.sa{left:16.667%;animation:wp .7s .1s var(--e) both}.sb{left:50%;animation:wp .6s .8s var(--e) both}@keyframes wp{from{clip-path:inset(0 100% 0 0)}}]=]
-  .. [=[.ln{fill:none;stroke:var(--sg);stroke-width:1.5;stroke-linecap:round;vector-effect:non-scaling-stroke;animation:fl 1.6s linear infinite}@keyframes fl{to{translate:var(--p,-24px)}}]=]
-  .. [=[.mk{position:absolute;inset:0;width:100%;height:56px;overflow:visible}.mk *{vector-effect:non-scaling-stroke}.dt{fill:var(--fg)}.rg{fill:var(--bg);stroke:var(--de)}]=]
-  .. [=[.bg,.bx{fill:var(--bg);stroke:var(--fg);stroke-width:1.5}.g{fill:none;stroke:var(--fg);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}]=]
-  .. [=[.at1 .m2 *,.at2 .m3 *{stroke:var(--bd)}.at1 .m2 g,.at2 .m3 g{transform-origin:0 0;animation:pp .5s .75s var(--e) both}@keyframes pp{from{opacity:0;scale:.5}}]=]
-  .. [=[.hops{list-style:none;margin:18px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);text-align:center}.hops li{display:grid;justify-items:center;min-width:0}]=]
-  .. [=[.hops b{font-weight:560;font-size:14px}.hops span{font-size:12.5px;color:var(--mu)}.hops .x span{color:var(--bd);font-weight:560;animation:fd .3s .8s both}.hops .n b{color:var(--mu);font-weight:500}]=]
-  .. [=[.bot{display:grid;gap:28px 64px;padding:34px 4px 36px;animation:rs .7s .4s var(--e) both}@keyframes rs{from{opacity:0;translate:0 10px}}@keyframes fd{from{opacity:0}}]=]
-  .. [=[@media (min-width:720px){.bot{grid-template-columns:minmax(0,1fr) minmax(0,16.5rem);padding:44px 44px 48px}}]=]
-  .. [=[h1{margin:0;font-size:28px;line-height:1.15;font-weight:620;letter-spacing:-.02em;text-wrap:balance}.todo{margin:10px 0 0;color:var(--mu);max-width:34em;text-wrap:pretty}]=]
-  .. [=[dl{margin:0;display:grid;gap:12px;align-content:start}dl div{display:grid;gap:3px;padding-top:11px;border-top:var(--h) solid var(--gr)}dt{color:var(--mu);font-size:12px}]=]
-  .. [=[dd{margin:0;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}.rid{user-select:all}]=]
-  .. [=[summary{cursor:pointer;width:max-content;font:13px/1.5 var(--sa);color:var(--lk);list-style:none}summary::-webkit-details-marker{display:none}details[open] summary{display:none}]=]
-  .. [=[@media (max-width:719px){.at2 .code{margin:0 10px 0 auto;transform:none}}@media (prefers-reduced-motion:reduce){*,:before,:after{animation:none!important}}]=]
+-- STYLE: the console's tokens (light and dark), the canvas, the tile, the
+-- card, the status line, the hop trace and the details well; shared with
+-- the challenge pages. A held page (body class w) turns the failing hop's
+-- red (--x, --xi, --xl) orange. The light --warn-ink is a step darker
+-- than the console's #be5a00 so the pill's words reach 4.5:1 on its tint.
+_M.STYLE = [=[:root{color-scheme:light dark;--bg:#f3f4f7;--panel:#fff;--faint:#f7f8fa;--line:#e7e8eb;--fg:rgb(0 0 0/90%);--mu:rgb(0 0 0/60%);--brand:#0052d9;--ink:#0052d9;--ok:#2ba471;--warn:#e37318;--warn-ink:#ad5200;--err:#d54941;--err-ink:#c4342c;--shadow:0 6px 30px rgb(0 0 0/5%),0 2px 8px rgb(0 0 0/4%);--bo:transparent;]=]
+  .. [=[--sa:Inter,"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Noto Sans SC",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mo:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}]=]
+  .. [=[@media (prefers-color-scheme:dark){:root{--bg:#181818;--panel:#242424;--faint:#2c2c2c;--line:#383838;--fg:rgb(255 255 255/90%);--mu:rgb(255 255 255/60%);--brand:#3a6fd8;--ink:#699ef5;--ok:#56c08d;--warn:#f08a3c;--warn-ink:#f5a15b;--err:#f36d64;--err-ink:#f7857d;--shadow:none;--bo:var(--line)}}]=]
+  .. [=[*{box-sizing:border-box}html,body,p{margin:0}body{background:var(--bg);color:var(--fg);font:14px/22px var(--sa);-webkit-font-smoothing:antialiased}:focus-visible{outline:2px solid var(--ink);outline-offset:2px}]=]
+  .. [=[main{min-height:100vh;min-height:100svh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}]=]
+  .. [=[.br{display:flex;align-items:center;gap:8px;margin-bottom:24px;font-size:16px;line-height:24px;font-weight:500}.br svg{width:28px;height:28px}.br rect{fill:var(--brand)}.br path{fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}]=]
+  .. [=[.cd{--x:var(--err);--xi:var(--err-ink);--xl:var(--line);width:100%;max-width:560px;padding:40px;border:1px solid var(--bo);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);animation:in .2s cubic-bezier(.2,0,0,1) both}.w .cd{--x:var(--warn);--xi:var(--warn-ink);--xl:var(--warn)}]=]
+  .. [=[.st{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}.code{font-size:40px;line-height:48px;font-weight:500;font-variant-numeric:tabular-nums}]=]
+  .. [=[.pl{padding:2px 8px;border-radius:4px;font-size:12px;line-height:20px;color:var(--xi);background:color-mix(in srgb,var(--x) 8%,transparent)}]=]
+  .. [=[h1{margin:16px 0 0;font-size:20px;line-height:28px;font-weight:500}.todo,.hint{margin-top:8px;color:var(--mu);max-width:34em}]=]
+  .. [=[.hops{list-style:none;margin:28px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));text-align:center}.hops li{position:relative;display:flex;flex-direction:column;align-items:center;padding:0 4px}]=]
+  .. [=[.hops li+li:before{content:"";position:absolute;top:15px;left:calc(22px - 50%);right:calc(50% + 22px);border-top:2px solid var(--brand)}.hops .x:before{border-top-style:dashed;border-color:var(--xl)}.hops .n:before{border-top-style:dashed;border-color:var(--line)}]=]
+  .. [=[.hops i{position:relative;display:grid;place-items:center;width:32px;height:32px;margin-bottom:8px;border-radius:50%;color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,transparent)}]=]
+  .. [=[.hops .x i{color:var(--x);background:color-mix(in srgb,var(--x) 12%,transparent)}.hops .n i{color:var(--mu);background:var(--faint)}]=]
+  .. [=[.hops svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}]=]
+  .. [=[.hops .bd{position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 2px var(--panel);stroke:#fff}.hops .x .bd{background:var(--x);animation:fd .15s .2s both}]=]
+  .. [=[.hops b{font-size:13px;line-height:20px;font-weight:400}.hops span{font-size:12px;line-height:18px;color:var(--mu)}.hops .x span{color:var(--xi);font-weight:500}]=]
+  .. [=[dl{display:grid;gap:8px;margin:28px 0 0;padding:16px;border-radius:8px;background:var(--faint)}dl div{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px}]=]
+  .. [=[dt{font-size:12px;line-height:20px;color:var(--mu)}dd{margin:0;font:13px/20px var(--mo);overflow-wrap:anywhere}.rid{user-select:all}]=]
+  .. [=[summary{cursor:pointer;width:max-content;font:13px/20px var(--sa);color:var(--ink);list-style:none}summary::-webkit-details-marker{display:none}dd details[open] summary{display:none}]=]
+  .. [=[.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}@keyframes in{from{opacity:0;transform:translateY(4px)}}@keyframes fd{from{opacity:0}}]=]
+  .. [=[@media (max-width:479px){main{padding:16px}.cd{padding:24px}.st{flex-direction:column;align-items:flex-start}}@media (prefers-reduced-motion:reduce){*{animation:none!important}}]=]
 
--- Rules only some pages need.
-local STYLES = {
-  at0 = [=[.at0 .top{--at:16.667%}.at0 .hd{animation:h0 .6s .1s both}@keyframes h0{0%{opacity:1}to{opacity:0;scale:2.4}}]=]
-    .. [=[.at0 .m1 *{stroke:var(--bd)}.at0 .m1 g{transform-origin:0 0;animation:pp .5s .25s var(--e) both}.at0 .cur{animation-delay:.4s}.at0 .hops .x span{animation-delay:.3s}]=]
-    .. [=[@media (max-width:719px){.at0 .code{margin:0 0 0 10px;transform:none}}]=],
-  at2 = [=[.at2 .cur{animation-delay:1.5s}.at2 .hd{animation:h2 1.55s .1s both}.at2 .m3 g{animation-delay:1.35s}.at2 .hops .x span{animation-delay:1.4s}]=]
-    .. [=[@keyframes h2{0%{opacity:1;left:16.667%;animation-timing-function:var(--e)}45%{left:50%;animation-timing-function:var(--e)}87%{opacity:1;left:83.333%}to{opacity:0;left:83.333%;scale:2.4}}]=],
-  held = [=[.hl line{stroke:var(--mu);stroke-dasharray:1 5;stroke-linecap:round;vector-effect:non-scaling-stroke}]=],
-  chirp = [=[.ch path{fill:none;stroke:var(--sg);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke;animation:pr 1.4s ease-in-out infinite}@keyframes pr{50%{translate:4px}}]=],
-  slow = [=[.sl .ln{transform:scale(2,.6);transform-origin:0 28px;animation-duration:4.8s;--p:-48px}]=],
-  fade = [=[.fa{-webkit-mask:linear-gradient(90deg,#000 15%,transparent 70%);mask:linear-gradient(90deg,#000 15%,transparent 70%)}]=],
-  noise = [=[.ou{-webkit-mask:linear-gradient(90deg,#000 30%,transparent 62%);mask:linear-gradient(90deg,#000 30%,transparent 62%)}]=]
-    .. [=[.zz{-webkit-mask:linear-gradient(90deg,transparent 34%,#000 66%);mask:linear-gradient(90deg,transparent 34%,#000 66%)}]=],
-  garble = [=[.gb{-webkit-mask:linear-gradient(90deg,#000 10%,transparent 58%);mask:linear-gradient(90deg,#000 10%,transparent 58%)}]=],
-  jitter = [=[.zz path,.gb path{fill:none;stroke:var(--bd);stroke-width:1.25;stroke-linejoin:round;vector-effect:non-scaling-stroke;animation:jt .16s steps(2) infinite}@keyframes jt{50%{translate:0 1.5px}}]=],
-  swell = [=[.sw{-webkit-mask:linear-gradient(90deg,#000 64%,transparent 0);mask:linear-gradient(90deg,#000 64%,transparent 0)}.sw .ln{transform:scale(1,2.6);transform-origin:0 28px}]=]
-    .. [=[.hl .lm{stroke:var(--bd);stroke-width:1.5;stroke-dasharray:none}]=],
-  decay = [=[.code{animation:dc 2.6s var(--e) both}@keyframes dc{0%{font-weight:100;opacity:0}28%{font-weight:620;opacity:1}}]=],
-  void = [=[.bx.v{stroke:var(--mu);stroke-dasharray:2.5 2.5}]=],
-  retry = [=[.btn{display:inline-flex;align-items:center;height:36px;margin-top:22px;padding:0 15px;border-radius:999px;background:var(--bt);color:var(--bf);font-size:14px;font-weight:560;text-decoration:none}.btn:hover{filter:brightness(1.1)}]=],
+-- BUTTON: the primary button (retry, the captcha's verify).
+_M.BUTTON = [=[.btn{display:inline-flex;align-items:center;height:32px;padding:0 16px;border:0;border-radius:6px;background:var(--brand);color:#fff;font:14px/22px var(--sa);text-decoration:none;cursor:pointer}.btn:hover{filter:brightness(1.1)}]=]
+
+-- BRAND: Edgeweir's tile (the weir crest over two waves, white on the
+-- brand fill) and name above the card.
+_M.BRAND = '<div class="br"><svg viewBox="0 0 28 28" aria-hidden="true"><rect width="28" height="28" rx="6"/>'
+  .. '<path transform="translate(5 5) scale(.75)" d="M3 17c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 3 2M3 21c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 3 2M4 12l8-8 8 8"/></svg>Edgeweir</div>'
+
+-- ICONS: the visitor, the edge node and the origin (Hugeicons' user,
+-- server stack and database); BADGES: a healthy hop's check, a failing
+-- hop's cross and a held hop's exclamation mark.
+local ICONS = {
+  '<path d="M20 21c-.3-3.7-3.3-6.7-7-6.9L12 14c-.4 0-.7 0-1 .04C7.3 14.2 4.3 17.3 4 21"/><circle cx="12" cy="7" r="4"/>',
+  '<rect x="2" y="4" width="20" height="6" rx="3"/><rect x="2" y="14" width="20" height="6" rx="3"/><path d="M6 7h.01M10 7h.01M6 17h.01M10 17h.01"/>',
+  '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M20 12c0 1.7-3.6 3-8 3s-8-1.3-8-3M20 5v14c0 1.7-3.6 3-8 3s-8-1.3-8-3V5M7 10.8c.6.2 1.3.3 2 .4M7 17.8c.6.2 1.3.3 2 .4"/>',
 }
+local BADGES = { ok = "M3.5 6.2l1.7 1.7 3.3-3.6", x = "M4.2 4.2l3.6 3.6m0-3.6L4.2 7.8", held = "M6 3.2v3.3M6 8.6v.1" }
 
--- RULES are the STYLES each signal needs.
-local RULES = {
-  held = { "held" }, chirp = { "chirp" }, fade = { "fade" }, slow = { "slow", "fade", "decay" },
-  noise = { "noise", "jitter" }, garble = { "held", "garble", "jitter" }, swell = { "held", "swell" },
-}
-
--- The signal: Edgeweir's wave (24px period), long enough to fill a third of
--- the frame; for a rate limit, waves that shorten and rise as they pile up
--- against the edge node (drawn leftwards from it).
-local WAVE = "M-24 30.5" .. string.rep("c6 0 6-5 12-5s6 5 12 5", 17)
-local CHIRP = "M-332.7 28c7.5 0 7.5-2.5 15-2.5c6.8 0 6.8 5 13.5 5c6.1 0 6.1-5 12.2-5c5.5 0 5.5 5 10.9 5c4.9 0 4.9-5 9.8-5c4.4 0 4.4 5 8.9 5c4 0 4-5.1 8-5.1c3.6 0 3.6 5.1 7.2 5.1c3.2 0 3.2-5.1 6.5-5.1c2.9 0 2.9 5.2 5.8 5.2c2.6 0 2.6-5.2 5.2-5.2c2.4 0 2.4 5.2 4.7 5.2c2.1 0 2.1-5.3 4.2-5.3c1.9 0 1.9 5.3 3.8 5.3c1.8 0 1.8-5.4 3.5-5.4c1.8 0 1.8 5.4 3.5 5.4c1.8 0 1.8-5.5 3.5-5.5c1.8 0 1.8 5.6 3.5 5.6c1.8 0 1.8-5.7 3.5-5.7c1.8 0 1.8 5.7 3.5 5.7c1.8 0 1.8-5.8 3.5-5.8c1.8 0 1.8 5.9 3.5 5.9c1.8 0 1.8-6 3.5-6c1.8 0 1.8 6.1 3.5 6.1c1.8 0 1.8-6.2 3.5-6.2c1.8 0 1.8 6.3 3.5 6.3c1.8 0 1.8-6.4 3.5-6.4c1.8 0 1.8 6.5 3.5 6.5c1.8 0 1.8-6.6 3.5-6.6c1.8 0 1.8 6.7 3.5 6.7c1.8 0 1.8-6.9 3.5-6.9c1.8 0 1.8 7 3.5 7c1.8 0 1.8-7.1 3.5-7.1c1.8 0 1.8 7.3 3.5 7.3c1.8 0 1.8-7.4 3.5-7.4c1.8 0 1.8 7.5 3.5 7.5c1.8 0 1.8-7.7 3.5-7.7c1.8 0 1.8 7.8 3.5 7.8c1.8 0 1.8-8 3.5-8c1.8 0 1.8 8.2 3.5 8.2c1.8 0 1.8-8.3 3.5-8.3c1.8 0 1.8 8.5 3.5 8.5c1.8 0 1.8-8.7 3.5-8.7c1.8 0 1.8 8.9 3.5 8.9c1.8 0 1.8-9 3.5-9c1.8 0 1.8 9.2 3.5 9.2c1.8 0 1.8-9.4 3.5-9.4c1.8 0 1.8 9.6 3.5 9.6c1.8 0 1.8-9.8 3.5-9.8c1.8 0 1.8 10 3.5 10c1.8 0 1.8-10.2 3.5-10.2c1.8 0 1.8 10.4 3.5 10.4c1.8 0 1.8-10.7 3.5-10.7c1.8 0 1.8 10.9 3.5 10.9c1.8 0 1.8-11.1 3.5-11.1c1.8 0 1.8 11.3 3.5 11.3c1.8 0 1.8-11.6 3.5-11.6c1.8 0 1.8 11.8 3.5 11.8c1.8 0 1.8-12.1 3.5-12.1c1.8 0 1.8 12.3 3.5 12.3c1.8 0 1.8-12.6 3.5-12.6c1.8 0 1.8 12.8 3.5 12.8c1.8 0 1.8-13.1 3.5-13.1c1.8 0 1.8 13.3 3.5 13.3c1.8 0 1.8-13.6 3.5-13.6c1.8 0 1.8 13.9 3.5 13.9c1.8 0 1.8-14.2 3.5-14.2c1.8 0 1.8 14.4 3.5 14.4c1.8 0 1.8-14.7 3.5-14.7c1.8 0 1.8 15 3.5 15c1.8 0 1.8-15.3 3.5-15.3c1.8 0 1.8 15.6 3.5 15.6c1.8 0 1.8-15.9 3.5-15.9c1.8 0 1.8 16.2 3.5 16.2c1.8 0 1.8-16.5 3.5-16.5c1.8 0 1.8 16.8 3.5 16.8"
-local NOISE = "M0 28L6 37 10 18 16 39 24 21 30 36 34 16 40 41 44 17 50 35 58 19 64 40 70 22 74 35 82 17 86 39"
-  .. " 92 20 98 37 106 18 110 41 116 24 120 36 126 16 134 38 140 22 146 41 152 18 156 35 162 21 170 38 176 17"
-  .. " 180 40 186 23 192 36 200 19 206 37 210 16 216 39 224 22 230 35"
-
-local LINE = '<svg><use href="#w" class="ln"/></svg>'
-local HELD = '<line x1="0" y1="28" x2="100%" y2="28"/>'
-
--- seg is the signal from one hop to the next (side a or b): held (nothing
--- gets through), noise (the wave breaks up), garble (it breaks up as it
--- leaves), swell (an oversized wave stopped at the limit), fade, chirp,
--- slow, or the wave flowing.
-local function seg(kind, side)
-  local c = '<span class="s s' .. side
-  if kind == "held" then
-    return c .. ' hl"><svg>' .. HELD .. "</svg></span>"
-  elseif kind == "noise" then
-    return c .. ' ou">' .. LINE .. "</span>" .. c .. ' zz"><svg><path d="' .. NOISE .. '"/></svg></span>'
-  elseif kind == "garble" then
-    return c .. ' hl"><svg>' .. HELD .. "</svg></span>" .. c .. ' gb"><svg><path d="' .. NOISE .. '"/></svg></span>'
-  elseif kind == "swell" then
-    return c .. ' hl"><svg>' .. HELD .. '<line class="lm" x1="66%" y1="13" x2="66%" y2="43"/></svg></span>'
-      .. c .. ' sw">' .. LINE .. "</span>"
-  elseif kind == "fade" then
-    return c .. ' fa">' .. LINE .. "</span>"
-  elseif kind == "chirp" then
-    return c .. ' ch"><svg><svg x="100%" overflow="visible"><path d="' .. CHIRP .. '"/></svg></svg></span>'
-  elseif kind == "slow" then
-    return c .. ' sl fa">' .. LINE .. "</span>"
+-- hops returns the hop trace in lang: hops[i] = { class ("" healthy, "x"
+-- failing or held, "n" not reached), state words, badge (BADGES; nil for
+-- none) } for the visitor, the edge node and the origin.
+function _M.hops(lang, hops)
+  local names = (TEXT[lang] or TEXT.en).hops
+  local out = { '<ol class="hops">' }
+  for i = 1, 3 do
+    local h = hops[i]
+    out[i + 1] = (h[1] == "" and "<li>" or ('<li class="' .. h[1] .. '">')) .. '<i aria-hidden="true"><svg viewBox="0 0 24 24">'
+      .. ICONS[i] .. "</svg>" .. (h[3] and ('<svg class="bd" viewBox="0 0 12 12"><path d="' .. BADGES[h[3]] .. '"/></svg>') or "")
+      .. "</i><b>" .. names[i] .. "</b><span>" .. h[2] .. "</span></li>"
   end
-  return c .. '">' .. LINE .. "</span>"
+  out[5] = "</ol>"
+  return concat(out)
 end
 
--- GLYPHS are drawn inside the failing hop's mark; logo is the edge node's
--- own mark (Edgeweir's crest over the wave). The visitor's: query (the
--- request could not be read), wide (too large), lock (not encrypted).
-local GLYPHS = {
-  logo = '<path class="g" d="M-4.5 0l4.5-4.5 4.5 4.5M-5.5 4c1.4 0 1.4-1.3 2.75-1.3s1.4 1.3 2.75 1.3 1.4-1.3 2.75-1.3 1.4 1.3 2.75 1.3"/>',
-  stop = '<path class="g" d="M-4.6-4.6l9.2 9.2"/>',
-  pause = '<path class="g" d="M-2.5-4v8M2.5-4v8"/>',
-  cross = '<path class="g" d="M-2.6-2.6l5.2 5.2M2.6-2.6l-5.2 5.2"/>',
-  clock = '<path class="g" d="M0-3.5V0l2.5 1.8"/>',
-  hourglass = '<path class="g" d="M-3.5-4.5h7l-7 9h7z"/>',
-  query = '<path class="g" d="M-2.4-2.2a2.4 2.4 0 1 1 3.3 2.2c-.6.3-.9.7-.9 1.3v.6M0 4.1v.1"/>',
-  wide = '<path class="g" d="M-4.2 0h8.4M-1.9-2.3l-2.3 2.3 2.3 2.3M1.9-2.3l2.3 2.3-2.3 2.3"/>',
-  lock = '<path class="g" d="M-2.8-.6h5.6v4.4h-5.6zM-1.7-.6v-1.6a1.7 1.7 0 0 1 3.4 0v1.6"/>',
-}
-
--- marks are the three hops on the signal: the visitor, the edge node and the
--- origin, the failing one drawn in red with its glyph.
-local function marks(s)
-  local visitor = s.at == 0 and ('<g><circle class="bg" r="9.5"/>' .. GLYPHS[s.mark] .. "</g>")
-    or '<circle class="rg" r="9.5"/><circle class="dt" r="3.5"/>'
-  local edge = s.at == 1 and GLYPHS[s.mark] or GLYPHS.logo
-  local origin = s.at == 2 and GLYPHS[s.mark] or ""
-  return '<svg class="mk"><svg x="16.667%" y="28" overflow="visible" class="m1">' .. visitor .. "</svg>"
-    .. '<svg x="50%" y="28" overflow="visible" class="m2"><g><circle class="bg" r="11"/>' .. edge .. "</g></svg>"
-    .. '<svg x="83.333%" y="28" overflow="visible" class="m3"><g><rect class="bx' .. (s.void and " v" or "")
-    .. '" x="-7" y="-7" width="14" height="14" rx="3"/>' .. origin .. "</g></svg></svg>"
+-- pending is the state of a hop the request has not reached: a dash, and
+-- the words for screen readers.
+function _M.pending(words)
+  return '—<em class="sr">' .. words .. "</em>"
 end
 
 local builtins = {}
@@ -470,54 +399,31 @@ function _M.builtin(lang, kind)
   end
   local key = kind == "503-origin" and 503 or kind
   local text = TEXT[lang]
-  local s = SHAPES[kind] or SHAPES.other
+  local f = FAILS[kind] or FAILS.other
   local title = TITLES[lang][key] or (lang == "zh" and "错误" or "Error")
   local stamp, todo = text.stamp[key] or text.stamp.other, text.todo[key] or text.todo.other
-  local style, used = { STYLE, ".code{--w:", s.w, "}" }, {}
-  local function add(names)
-    for _, name in ipairs(names or {}) do
-      if not used[name] then
-        used[name] = true
-        style[#style + 1] = STYLES[name]
-      end
-    end
-  end
-  if s.at ~= 1 then
-    add({ "at" .. s.at })
-  end
-  add(RULES[s.a])
-  add(RULES[s.b])
-  if s.void then
-    add({ "void" })
-  end
-  if s.retry then
-    add({ "retry" })
-  end
   local hops = {}
   for i = 0, 2 do
-    local cls, state = "", text.ok
-    if i == s.at then
-      cls, state = ' class="x"', stamp
-    elseif i > s.at then
-      cls, state = ' class="n"', text.unreached
+    if i < f[1] then
+      hops[i + 1] = { "", text.ok, "ok" }
+    elseif i == f[1] then
+      hops[i + 1] = { "x", stamp, f.held and "held" or "x" }
+    else
+      hops[i + 1] = { "n", _M.pending(text.unreached) }
     end
-    hops[#hops + 1] = "<li" .. cls .. "><b>" .. text.hops[i + 1] .. "</b><span>" .. state .. "</span></li>"
   end
   parts = _M.compile(concat({
     '<!doctype html><html lang="', LANG[lang], '"><head><meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">',
-    "<title>{{status}} ", title, "</title><style>", concat(style), "</style></head>",
-    '<body class="at', s.at, '"><main><div class="f"><i class="d d1"></i><i class="d d2"></i><i class="d d3"></i><i class="d d4"></i>',
-    '<div class="top"><i class="d d5"></i><i class="d d6"></i><p class="code">{{status}}</p>',
-    '<div class="tr" aria-hidden="true"><svg class="df"><path id="w" d="', WAVE, '"/></svg>',
-    '<i class="cur"></i><i class="hd"></i>', seg(s.a, "a"), seg(s.b, "b"), marks(s), "</div>",
-    '<ol class="hops">', concat(hops), "</ol></div>",
-    '<div class="bot"><div><h1>', title, '</h1><p class="todo">', todo, "</p>",
-    s.retry and ('<a class="btn" href="">' .. text.reload .. "</a>") or "",
-    "</div><dl><div><dt>", REQUEST_ID[lang], '</dt><dd class="rid">{{request_id}}</dd></div>',
-    "<div><dt>", text.time, "</dt><dd>{{display_time}}</dd></div>",
+    "<title>{{status}} ", title, "</title><style>", _M.STYLE, f.retry and (_M.BUTTON .. ".ac{margin-top:24px}") or "",
+    "</style></head><body", f.held and ' class="w"' or "", "><main>", _M.BRAND,
+    '<div class="cd"><div class="st"><p class="code">{{status}}</p><span class="pl">', stamp, "</span></div>",
+    "<h1>", title, '</h1><p class="todo">', todo, "</p>", _M.hops(lang, hops),
+    "<dl><div><dt>", REQUEST_ID[lang], '</dt><dd class="rid">{{request_id}}</dd></div>',
     "<div><dt>", text.host, "</dt><dd>{{host}}</dd></div>",
-    "<div><dt>", text.ip, "</dt><dd><details><summary>", text.show, "</summary>{{client_ip}}</details></dd></div></dl></div>",
+    "<div><dt>", text.ip, "</dt><dd><details><summary>", text.show, "</summary>{{client_ip}}</details></dd></div>",
+    "<div><dt>", text.time, "</dt><dd>{{display_time}}</dd></div></dl>",
+    f.retry and ('<p class="ac"><a class="btn" href="">' .. text.reload .. "</a></p>") or "",
     "</div></main></body></html>\n",
   }), BUILTIN_NAMES)
   builtins[k] = parts
