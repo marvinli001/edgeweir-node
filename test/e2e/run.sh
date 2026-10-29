@@ -773,29 +773,34 @@ own_page() { # status code title hop (response on stdin) -> true for that built-
   r=$(cat)
   [ "$(status_of <<<"$r")" = "$1" ] && [ "$(header_of x-edgeweir-error <<<"$r")" = "$2" ] &&
     [ "$(header_of content-type <<<"$r")" = "text/html; charset=utf-8" ] && [ "$(header_of cache-control <<<"$r")" = no-store ] &&
-    grep -q "<h1>$3</h1>" <<<"$r" && grep -q "<li class=\"x\"><b>$4</b>" <<<"$r"
+    grep -q "<h1>$3</h1>" <<<"$r" && failing_hop "$4" <<<"$r"
+}
+failing_hop() { # name (page on stdin) -> true when the hop trace fails at that hop
+  local r
+  r=$(cat)
+  grep -q "<li class=\"x\"><i aria-hidden=\"true\">.*</i><b>$1</b>" <<<"${r//<\/li>/$'\n'}"
 }
 r=$(raw 'GARBAGE\r\n\r\n')
-own_page 400 bad-request "Bad request" You <<<"$r" || fail "malformed request line: $r"
+own_page 400 bad-request "Bad request" Visitor <<<"$r" || fail "malformed request line: $r"
 r=$(raw '\026\003\001\002\000\001\000\001\374\003\003')
-own_page 400 bad-request "Bad request" You <<<"$r" || fail "TLS handshake on the plain port: $r"
+own_page 400 bad-request "Bad request" Visitor <<<"$r" || fail "TLS handshake on the plain port: $r"
 r=$(raw 'GET / HTTP/1.1\r\nHost: a/b\r\n\r\n')
-own_page 400 bad-request "Bad request" You <<<"$r" && grep -q '<dt>Host</dt><dd></dd>' <<<"$r" || fail "invalid Host: $r"
+own_page 400 bad-request "Bad request" Visitor <<<"$r" && grep -q '<dt>Host</dt><dd></dd>' <<<"$r" || fail "invalid Host: $r"
 big=$(head -c 9000 /dev/zero | tr '\0' a)
 r=$(raw "GET /$big HTTP/1.1\r\nHost: demo.test\r\n\r\n")
-own_page 414 uri-too-long "URL too long" You <<<"$r" || fail "URI too long: $(head -12 <<<"$r")"
+own_page 414 uri-too-long "URL too long" Visitor <<<"$r" || fail "URI too long: $(head -12 <<<"$r")"
 r=$(curl -s -D - -X POST -H 'Host: demo.test' -H 'Content-Length: 209715200' "$NODE/upload" | tr -d '\r')
-own_page 413 body-too-large "Request too large" You <<<"$r" || fail "body too large: $r"
+own_page 413 body-too-large "Request too large" Visitor <<<"$r" || fail "body too large: $r"
 r=$(page_of demo.test / -H 'X-Request-Id: e2e-big-0001' -H "Cookie: $big")
 [ "$(head -1 <<<"$r")" = "400 header-too-large text/html; charset=utf-8 no-store" ] &&
-  grep -q '<h1>Request header too large</h1>' <<<"$r" && grep -q '<li class="x"><b>You</b>' <<<"$r" || fail "header too large: $r"
+  grep -q '<h1>Request header too large</h1>' <<<"$r" && failing_hop Visitor <<<"$r" || fail "header too large: $r"
 len=$(tr -d '\r' <"$TMPDIR_E2E/page.h" | header_of content-length)
 [ "$len" = "$(wc -c <"$TMPDIR_E2E/page.b" | tr -d ' ')" ] || fail "header too large: Content-Length $len for $(wc -c <"$TMPDIR_E2E/page.b") bytes"
 r=$(raw "HEAD / HTTP/1.1\r\nHost: demo.test\r\nX-Request-Id: e2e-big-0001\r\nCookie: $big\r\n\r\n")
 [ "$(status_of <<<"$r")" = 400 ] && [ "$(header_of content-length <<<"$r")" = "$len" ] && [ -z "$(sed '1,/^$/d' <<<"$r")" ] ||
   fail "HEAD with too large a header: $r"
 r=$(client -s -D - -H 'Host: demo.test' -H 'Accept-Language: zh-CN' http://node:8443/ | tr -d '\r')
-own_page 400 https-required "需要使用 HTTPS" 你 <<<"$r" || fail "plain HTTP on the HTTPS port: $r"
+own_page 400 https-required "需要使用 HTTPS" 访客 <<<"$r" || fail "plain HTTP on the HTTPS port: $r"
 r=$(page_of crs-block.test /api -X POST -H 'Content-Type: application/json' --data '{bad')
 [ "$(head -1 <<<"$r")" = "400 waf-blocked text/html; charset=utf-8 no-store" ] && grep -q '<h1>Bad request</h1>' <<<"$r" ||
   fail "CRS 400 (request body that does not parse): $r"
