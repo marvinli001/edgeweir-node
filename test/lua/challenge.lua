@@ -257,6 +257,26 @@ test("challenge pages: CSP with a per-response nonce, languages, escaping", func
   assert(not challenge.WORKER_JS:find("https?://"), "worker without external URL")
 end)
 
+test("challenge pages: the error pages' card, the visitor held", function()
+  local errorpages = require("edgeweir.errorpages")
+  for _, kind in ipairs({ "js", "pow", "captcha" }) do
+    local page = challenge.page({ lang = "en", kind = kind, token = "k.p.s", ret = "/", image = "iVBORw0KGgo=", difficulty = 8,
+      nonce = "N", id = "req-<1>" })
+    assert(page:find(errorpages.BRAND, 1, true) and page:find('<body class="w">', 1, true), kind .. ": the tile, held")
+    assert(page:find('<span class="pl">Security check</span>', 1, true), kind .. ": the pill")
+    assert(page:find('><b>Visitor</b><span>' .. (kind == "captcha" and "Check needed" or "Verifying") .. "</span></li>", 1, true)
+      and page:find('<li><i aria-hidden="true">', 1, true), kind .. ": the visitor held, the edge node working")
+    assert(page:find('<details class="more"><summary>Details</summary><dl><div><dt>Request ID</dt><dd class="rid">req-&lt;1&gt;</dd>', 1, true),
+      kind .. ": the request id folded")
+    eq(page:find('class="bar"', 1, true) ~= nil, kind ~= "captcha", kind .. ": the progress bar")
+    eq(page:find('<button class="btn" type="submit">Verify</button>', 1, true) ~= nil, kind == "captcha", kind .. ": verify button")
+    assert(not page:find("@font-face", 1, true) and not page:find("url(", 1, true), kind .. ": no web font")
+  end
+  local page = challenge.page({ lang = "zh", kind = "js", token = "k.p.s", ret = "/", nonce = "N" })
+  assert(page:find("<b>访客</b><span>验证中</span>", 1, true) and page:find("通常需要几秒", 1, true), "Chinese trace")
+  assert(not page:find('class="more"', 1, true), "no request id, no fold")
+end)
+
 -- A fake ngx for the request-level functions.
 local function request(opts)
   local sent = { header = {} }
