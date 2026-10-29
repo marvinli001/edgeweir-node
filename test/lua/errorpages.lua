@@ -31,6 +31,12 @@ local function render(template, values)
   return errorpages.render(errorpages.compile(template), values)
 end
 
+-- hop is a Lua pattern of a hop in the trace: its class ("" healthy), name and state words.
+local function hop(class, name, words)
+  return "<li" .. (class == "" and "" or (' class="' .. class .. '"')) .. '><i aria%-hidden="true">.-</i><b>' .. name
+    .. "</b><span>" .. words .. "</span></li>"
+end
+
 local VALUES = { status = "503", request_id = "req-1234abcd", client_ip = "203.0.113.9", host = "shop.test" }
 
 test("placeholders are replaced, everything else is sent as it is", function()
@@ -103,11 +109,11 @@ test("built-in pages: status, title and request id in Chinese or English", funct
   eq(challenge.language(nil), "en")
 end)
 
-test("built-in pages: the failing hop, what to do and a reload link where it helps", function()
+test("built-in pages: the failing hop, what to do and a retry button where it helps", function()
   local values = { status = "503", request_id = "req-1", client_ip = "203.0.113.9", host = "<shop>.test",
     display_time = "2026-10-03 03:41:28 UTC", time = "2026-10-03T03:41:28Z", path = "/<a>&b" }
   for _, case in ipairs({
-    -- kind, failing hop, its state, reload link
+    -- kind, failing hop, its state, retry button
     { "zh", 403, "边缘节点", "拦截", false }, { "zh", 429, "边缘节点", "限速", true },
     { "zh", 404, "边缘节点", "未接入", false }, { "zh", 503, "边缘节点", "暂不可用", true },
     { "zh", "503-origin", "源站", "暂不可用", true }, { "zh", 502, "源站", "无法连接", true },
@@ -116,17 +122,18 @@ test("built-in pages: the failing hop, what to do and a reload link where it hel
     { "en", 504, "Origin", "Timed out", true }, { "en", "site-disabled", "Edge", "Disabled", false },
     { "en", 500, "Edge", "Error", true }, { "zh", 500, "边缘节点", "出错", true },
     -- Requests nginx refuses fail at the visitor; reloading sends the same request.
-    { "zh", 400, "你", "格式错误", false }, { "en", 400, "You", "Malformed", false },
-    { "zh", 413, "你", "过大", false }, { "en", 414, "You", "Too long", false },
-    { "en", 494, "You", "Too large", false }, { "zh", 497, "你", "未加密", false },
-    { "en", 497, "You", "Not encrypted", false },
+    { "zh", 400, "访客", "格式错误", false }, { "en", 400, "Visitor", "Malformed", false },
+    { "zh", 413, "访客", "过大", false }, { "en", 414, "Visitor", "Too long", false },
+    { "en", 494, "Visitor", "Too large", false }, { "zh", 497, "访客", "未加密", false },
+    { "en", 497, "Visitor", "Not encrypted", false },
   }) do
     local name = case[1] .. " " .. tostring(case[2])
     local page = errorpages.render(errorpages.builtin(case[1], case[2]), values)
-    assert(page:find('<li class="x"><b>' .. case[3] .. "</b><span>" .. case[4] .. "</span></li>", 1, true),
-      name .. ": failing hop")
+    assert(page:find(hop("x", case[3], case[4])), name .. ": failing hop")
     eq(select(2, page:gsub('<li class="x">', "")), 1, name .. ": one failing hop")
-    eq(page:find('<a class="btn" href="">', 1, true) ~= nil, case[5], name .. ": reload link")
+    assert(page:find('<span class="pl">' .. case[4] .. "</span>", 1, true), name .. ": the status pill")
+    eq(page:find('<a class="btn" href="">', 1, true) ~= nil, case[5], name .. ": retry button")
+    eq(page:find(".btn{", 1, true) ~= nil, case[5], name .. ": the button's rules only with the button")
     assert(page:find("<dd>&lt;shop&gt;.test</dd>", 1, true), name .. ": escaped host")
     assert(page:find("203.0.113.9</details>", 1, true), name .. ": client address")
     assert(page:find("<dd>2026-10-03 03:41:28 UTC</dd>", 1, true), name .. ": time")
@@ -136,13 +143,15 @@ test("built-in pages: the failing hop, what to do and a reload link where it hel
   -- The origin's 503 keeps the 503 title; the hops before the failing one are fine.
   local page = errorpages.render(errorpages.builtin("en", "503-origin"), values)
   assert(page:find("<h1>Service unavailable</h1>", 1, true), "503-origin title")
-  assert(page:find('<li><b>Edge</b><span>OK</span></li>', 1, true), "edge passed")
+  assert(page:find(hop("", "Edge", "Working")), "edge passed")
   page = errorpages.render(errorpages.builtin("en", 403), values)
-  assert(page:find('<li class="n"><b>Origin</b><span>Not reached</span></li>', 1, true), "origin not reached")
-  -- A rate limit reads differently from a block: its own mark and weight.
+  assert(page:find(hop("n", "Origin", '—<em class="sr">Not reached</em>')), "origin not reached")
+  -- A rate limit holds the request at the edge node (orange, an
+  -- exclamation mark) where a block stops it (red, a cross).
   local limited = errorpages.render(errorpages.builtin("en", 429), values)
-  assert(not limited:find(".code{--w:760}", 1, true) and page:find(".code{--w:760}", 1, true), "429 weight")
-  assert(limited:find('d="M-3.5-4.5h7l-7 9h7z"', 1, true) and not page:find('d="M-3.5-4.5h7l-7 9h7z"', 1, true), "429 mark")
+  assert(limited:find('<body class="w">', 1, true) and page:find("<body>", 1, true), "429 held")
+  assert(limited:find('d="M6 3.2v3.3M6 8.6v.1"', 1, true) and not limited:find('d="M4.2 4.2l3.6 3.6m0-3.6L4.2 7.8"', 1, true), "429 badge")
+  assert(page:find('d="M4.2 4.2l3.6 3.6m0-3.6L4.2 7.8"', 1, true) and not page:find('d="M6 3.2v3.3M6 8.6v.1"', 1, true), "403 badge")
   -- Templates (rules-v3) get {{time}} in RFC 3339 and {{path}}, escaped;
   -- the built-in pages' own time is not a template placeholder.
   eq(render("{{time}} {{path}} {{status}}", values), "2026-10-03T03:41:28Z /&lt;a&gt;&amp;b 503")
@@ -179,40 +188,48 @@ test("nginx's own errors: the status sent, the page and the code", function()
   assert(own[400] and own[500], "site pages for nginx's own 400 and 500")
 end)
 
-test("built-in pages of requests nginx refuses: the signal fails at the visitor", function()
+test("built-in pages of requests nginx refuses: the request fails at the visitor", function()
   local values = { status = "400", request_id = "req-1", client_ip = "203.0.113.9", host = "", time = "t", display_time = "t" }
-  for _, case in ipairs({
-    -- kind, the visitor's glyph, the signal it sends, the rules the page must not carry
-    { 400, 'd="M-2.4-2.2a2.4', '<span class="s sa gb">', { ".sw{", ".zz{", ".fa{", ".btn{" } },
-    { 413, 'd="M-4.2 0h8.4', '<span class="s sa sw">', { ".gb{", ".zz{", ".fa{", ".btn{" } },
-    { 414, 'd="M-4.2 0h8.4', '<span class="s sa sw">', { ".gb{", ".zz{", ".fa{", ".btn{" } },
-    { 494, 'd="M-4.2 0h8.4', '<span class="s sa sw">', { ".gb{", ".zz{", ".fa{", ".btn{" } },
-    { 497, 'd="M-2.8-.6h5.6', '<span class="s sa fa">', { ".gb{", ".sw{", ".zz{", ".btn{" } },
-  }) do
+  for _, case in ipairs({ { 400, "Malformed" }, { 413, "Too large" }, { 414, "Too long" }, { 494, "Too large" }, { 497, "Not encrypted" } }) do
     local name = tostring(case[1])
     local page = errorpages.render(errorpages.builtin("en", case[1]), values)
-    assert(page:find('<body class="at0">', 1, true), name .. ": failing hop class")
-    assert(page:find(".at0 .top{--at:16.667%}", 1, true), name .. ": the readout over the visitor")
-    assert(page:find('<svg x="16.667%" y="28" overflow="visible" class="m1"><g><circle class="bg" r="9.5"/><path class="g" '
-      .. case[2], 1, true), name .. ": the visitor's mark")
-    assert(page:find(case[3], 1, true), name .. ": the signal")
-    assert(page:find('<span class="s sb hl">', 1, true), name .. ": nothing reaches the origin")
-    assert(page:find('<li class="n"><b>Edge</b><span>Not reached</span></li><li class="n"><b>Origin</b><span>Not reached</span></li>',
-      1, true), name .. ": edge node and origin not reached")
-    for _, rule in ipairs(case[4]) do
-      assert(not page:find(rule, 1, true), name .. ": carries " .. rule)
-    end
-    eq(select(2, page:gsub("%.hl line{", "")), 1, name .. ": the held line's rule once")
+    assert(page:find(hop("x", "Visitor", case[2])), name .. ": the visitor failed")
+    assert(page:find(hop("n", "Edge", '—<em class="sr">Not reached</em>') .. hop("n", "Origin", '—<em class="sr">Not reached</em>')),
+      name .. ": edge node and origin not reached")
+    eq(select(2, page:gsub('class="bd"', "")), 1, name .. ": only the visitor has a badge")
+    assert(not page:find('class="btn"', 1, true) and not page:find(".btn{", 1, true), name .. ": no retry")
+    assert(page:find("<body>", 1, true), name .. ": not held")
     assert(page:find("<dd></dd>", 1, true), name .. ": no host")
   end
-  -- The same shape, told apart by words.
+  -- The same trace, told apart by words.
   local uri, header = errorpages.builtin("en", 414), errorpages.builtin("en", 494)
   assert(errorpages.render(uri, values):find("<h1>URL too long</h1>", 1, true))
   assert(errorpages.render(header, values):find("Clear this site's cookies", 1, true))
-  -- The edge node's own failure (500) keeps the visitor's plain mark.
+  -- The edge node's own failure (500) keeps the visitor healthy.
   local page = errorpages.render(errorpages.builtin("en", 500), values)
-  assert(page:find('<body class="at1">', 1, true) and not page:find(".at0 ", 1, true), "500 at the edge node")
-  assert(page:find('class="m1"><circle class="rg" r="9.5"/><circle class="dt" r="3.5"/></svg>', 1, true), "500: visitor fine")
+  assert(page:find(hop("", "Visitor", "Working")) and page:find(hop("x", "Edge", "Error")), "500 at the edge node")
+end)
+
+test("built-in pages: the console's card, small and still", function()
+  local values = { status = "403", request_id = "7f3c9a2e5b1d4c8fa06e2b9d3c7a1f45", client_ip = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+    host = string.rep("a", 63) .. ".example.com", display_time = "2026-10-29 06:41:28 UTC" }
+  for _, lang in ipairs({ "zh", "en" }) do
+    for _, kind in ipairs({ 400, 401, 403, 404, 405, 413, 414, 429, 494, 497, 500, 502, 503, "503-origin", 504, "site-disabled", "maintenance", 418 }) do
+      local name = lang .. " " .. tostring(kind)
+      local page = errorpages.render(errorpages.builtin(lang, kind), values)
+      -- 403 and 429 are sent at attack volume.
+      assert(#page < 7168, name .. ": " .. #page .. " bytes")
+      assert(page:find(errorpages.BRAND, 1, true) and page:find('<div class="cd">', 1, true), name .. ": the tile over the card")
+      eq(select(2, page:gsub("<li", "")), 3, name .. ": three hops")
+      assert(page:find("@media (prefers-color-scheme:dark)", 1, true) and page:find("@media (prefers-reduced-motion:reduce)", 1, true),
+        name .. ": dark and reduced motion")
+      assert(not page:find("infinite", 1, true), name .. ": nothing loops")
+      assert(not page:find("@font-face", 1, true) and not page:find("url(", 1, true), name .. ": no web font, no external resource")
+      for weight in page:gmatch("font%-weight:(%d+)") do
+        assert(weight == "400" or weight == "500", name .. ": font weight " .. weight)
+      end
+    end
+  end
 end)
 
 test("{{host}}: without the port, empty without a valid host", function()
