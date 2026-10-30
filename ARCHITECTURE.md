@@ -149,7 +149,7 @@ run 启动
 
 token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenticated`）。
 
-`enroll` 不论结果都在标准输出写一行 `EDGEWEIR_RESULT <JSON>`，按失败类别给出不同的退出码（10–17，见 README「无人值守安装」），供控制台经 SSH 安装时对应到进度步骤；分类在 `enroll.Outcome`（`internal/enroll/result.go`）。
+`enroll` 不论结果都在标准输出写一行 `EDGEWEIR_RESULT <JSON>`，按失败类别给出不同的退出码（10–17，见 README「无人值守安装」），供控制台经 SSH 安装时对应到进度步骤；分类在 `enroll.Outcome`（`internal/enroll/result.go`）。`NodeInfo.machine_id`（proto v1.8.0）是 `"edgeweir-node:"` 加 `/etc/machine-id` 的 SHA-256，控制台据此发现已经是节点的机器（状态目录被重装、克隆的镜像），只作提示。
 
 ### 2.2 mTLS 通道
 
@@ -244,13 +244,14 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 
 ### 2.6 类型化任务（清缓存、预热、升级）
 
-控制台只能下发四类任务（`NodeTask` 的 `kind`）：`PurgeTask`、`PrefetchTask`、`SitemapPrefetchTask` 与 `UpgradeTask`，节点不执行其他任何操作。任务幂等；结果没送到控制台时，控制台 5 分钟后再次交出，节点再执行一次。
+控制台只能下发这几类任务（`NodeTask` 的 `kind`）：`PurgeTask`、`PrefetchTask`、`SitemapPrefetchTask`、`UpgradeTask`、`DebugLogsTask`（§ 节点日志）与 `DecommissionTask`，节点不执行其他任何操作。任务幂等；结果没送到控制台时，控制台 5 分钟后再次交出，节点再执行一次。
 
 - **拉取与顺序**：先重报之前没送到的结果和监督进程保存的升级结果，再拉取任务：每次 `PullTasks` 最多 10 个、最多 10 轮。一批里先执行所有清缓存（很快，且不能排在慢源站后面），然后是升级，最后是预热与 sitemap 预热；它们共享一个从拉取时刻算起的时间预算（`--prefetch-budget`，默认 4 分钟，小于控制台再次交出任务的 5 分钟）。清缓存另有一条通道（purges 循环，`PullTasksRequest.purge_only`，proto v0.17.0）：在同样的时机只拉取清缓存任务并立即执行，不必等已经拉取的预热或升级做完；不认识 `purge_only` 的旧控制台在这条通道上也会交出其他任务，它们就在这里照常执行。
 - **清缓存**：目标转换成标记（§3.4）：URL、前缀、全站；Host 目标是该 Host 上 `/` 的前缀标记；标签目标是标签标记，标签按控制台的规则校验（1–128 字节可打印 ASCII，不含逗号，首尾不是空格）并按小写比较。URL、前缀与 Host 目标的主机必须是主机名（`*.example.com` 之类的模式不会匹配任何请求）。非法目标（含不合规的站点 id）单独记为失败（`purge_failed`），其余照常生效。标记时间由节点在第一次执行该任务时分配：`max(当前毫秒, 上一个+1)`，按任务 id 记在 `purge.json` 里，同一任务再次交出时沿用原时间；不采用控制台的 `created_at`（事务乱序提交或多实例时钟偏差会让清除静默无效）。
 - **预热**：只经本机的本地边缘监听请求 URL（响应像客户端请求一样落进缓存），从不经公开监听：http URL 发往 unix socket `edge.sock`（`--edge-socket`），https URL 经 TLS 发往同目录的 `edge-tls.sock`（有 HTTPS 监听时才渲染），SNI 与 Host 为 URL 的主机名，不校验节点自己的证书。这两个 server 标记为本地（`$edgeweir_local`）：路由层跳过封禁、CC 计数与检查、Under Attack 与 CC 挑战、拒绝类规则（重定向照常）与 CRS，统计、采样日志与 CC 都不计入；客户端地址取 agent 给出的 `127.0.0.1`（`real_ip_header X-Edgeweir-Prefetch-Addr`，即源站看到的 X-Real-IP 与 X-Forwarded-For）。并发 4，单个 URL 超时 60 秒，`Accept-Encoding: gzip, deflate, br, zstd`（浏览器的取值：源站自己压缩的站点缓存浏览器要的那份），Host 头不带端口。2xx/3xx 算成功，源站的重定向原样缓存、不跟随；边缘自己生成的响应带 `X-Edgeweir-Edge-Response`：http URL 被边缘重定向到同一 URL 的 https 形式（强制 HTTPS）时改为预热 https 形式，边缘的其他重定向记为失败（`status`）。缓存键含 scheme：有证书的站点的 http URL 同时预热 https 形式，两者都成功才算成功。没有 HTTPS 监听时 https URL 记为失败（`https_unsupported`），握手失败（节点没有该主机的证书）记为 `other`。设备变体（`PrefetchTarget.variant`）决定 User-Agent：桌面（及未指定）为 `edgeweir-node-prefetch/<版本>`，移动为 `Mozilla/5.0 (Linux; Android 14; Mobile) edgeweir-node-prefetch/<版本>`，它匹配 `edgeweir.cachekey` 的 `MOBILE_RE`（测试从 Lua 文件读出该正则核对两个 User-Agent），缓存键区分设备的站点因此各缓存一份；本版本不认识的变体记为失败（`other`）。预算用完时，尚未开始或被中断的 URL 记为失败。
 - **sitemap 预热**（`SitemapPrefetchTask`）：经本机边缘获取 sitemap（与预热相同的连接方式，桌面 User-Agent，重定向不跟随，非 2xx 即失败），每个文档最多 30 秒、解压后最多 50 MiB：以 `1f 8b` 开头的响应体按 gzip 解压，压缩后的大小同样以 50 MiB 为限。`encoding/xml` 流式解析，元素名不看命名空间：`urlset` 取 `url/loc`，`sitemapindex` 取 `sitemap/loc` 并跟随一层（本身是索引的子 sitemap 不跟随）。只保留 Host 按当前 Plan 路由到该站点的绝对 http(s) URL（先查所有站点的精确域名，再查该站点上一级的泛域名，与边缘层选站相同；长度不超过 sitemap 协议的 2048 字节），按文档顺序去重，最多 `max_urls` 个（0 取 1000，上限 10000，够数即停止读取）；子 sitemap 也必须在该站点的 Host 上。随后每个 URL 按每个变体（缺省为桌面）以预热的并发与该批时间预算请求，`succeeded` / `failed` 按 URL × 变体计数。任务的 sitemap 无法使用时直接失败（`sitemap_failed`）；索引中某个子 sitemap 无法使用时，其他子 sitemap 与预热照常进行，结果仍为 `sitemap_failed`（计数为实际的预热）；没有该站点的 URL 时为 `sitemap_empty`；其余与预热的结果相同。
 - **升级**：`UpgradeTask` 带 `version`、`archive_url`、`sha256`、`checksums_url`、`signature_url`。执行升级需要监督进程的 socket：`edgeweir-node supervise` 启动 `run` 子进程时经环境变量 `EDGEWEIR_SUPERVISOR_SOCKET` 传入 `<state-dir>/upgrade.sock`（0600）；没有这个 socket 时任务失败（`task_unsupported`，`type=upgrade`）。`created_at` 缺失、早于 30 分钟前或晚于 5 分钟后的任务被拒绝（`upgrade_rejected`）。agent 把任务交给监督进程暂存（最多等 4 分钟）后不回报结果，由监督进程下载、验签并试运行新版本（见下方 M6 记录）：新进程 90 秒内持续健康至少 10 秒才提交（健康指 `ReportStatus` 成功、最新 revision 已应用且数据面健康；agent 每 5 秒告知一次，与心跳间隔无关），否则恢复前一版本和配置快照。监督进程拒绝比当前版本旧的任务（`--upgrade-allow-downgrade` 放行），结果为 `upgrade_rejected`。结果持久化在 `upgrades/state.json`，由之后运行的 agent 在下次拉取任务前回报，控制台确认后清除。监督进程可用（找得到 cosign；配置了 `--upgrade-public-key` 时该文件存在）时，`ReportStatus` 的能力列表带 `self-upgrade-v1`。
+- **下线**（`DecommissionTask`，proto v1.8.0，能力 `decommission-v1`）：不登录主机即可退役节点。agent 先写入标记 `decommissioned`（状态目录），再回报任务成功（之后它没有身份可用来回报）；回报失败时删除标记、照常运行，控制台会再次交出任务。回报成功后 agent 以 `ErrDecommissioned` 停止：OpenResty 与各循环停止后，删除身份（先删 `identity.json`）、LKG、证书、spool 等状态目录中的一切（保留标记与监督进程的 `upgrades/`）以及缓存目录的内容，进程以状态 2 退出，监督进程与 systemd 都不再启动它。标记存在时 agent 一启动就以同样方式退出（重启主机后也不会再服务），直到主机重新注册（`enroll` 保存身份时删除标记）。软件包仍在主机上，卸载需要 root。控制台收到成功结果后应吊销证书并删除节点。写不了标记时任务失败（`decommission_failed`，`reason=state_dir`）。
 - **结果与错误码**（v0.2.1，`message` 仍按旧格式填写，给旧控制台用）：
 
 | 错误码 | 参数 | 含义 |
@@ -261,6 +262,7 @@ token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenti
 | `purge_failed` | 无 | 目标非法或数据面不可用（标记已持久化，数据面恢复后生效） |
 | `sitemap_failed` | `url`、`reason`、`status` | 无法使用的 sitemap（任务的 sitemap，或索引中第一个失败的子 sitemap）；`reason` 同 `prefetch_failed`，另有 `invalid`（不是 sitemap：XML 错误、根元素不是 `urlset` / `sitemapindex`、gzip 损坏）与 `too_large`（超过 50 MiB）；站点不在本节点或 sitemap 不在站点的 Host 上为 `other` |
 | `sitemap_empty` | `url` | sitemap 中没有该站点的 URL |
+| `decommission_failed` | `reason` | 下线失败：`state_dir`（写不了下线标记），节点照常运行 |
 | `upgrade_rejected` | `version` | 任务过期，或监督进程没能准备新版本（下载、签名、校验和、归档内容、版本或架构校验失败） |
 | `upgrade_rolled_back` | `version` | 新版本启动失败、试运行中退出或没通过健康窗口，已恢复前一版本和配置快照 |
 | `upgrade_interrupted` | `version` | 激活前或结果确认前，基础安装（镜像或系统包）发生了变化 |

@@ -96,7 +96,7 @@ type Supervisor struct {
 
 // ErrUsage stops the supervisor when the node exits with status 2: its
 // flags or local settings are wrong, and starting it again cannot help.
-var ErrUsage = errors.New("edgeweir-node run exited with status 2 (invalid flags or local settings); not restarting it")
+var ErrUsage = errors.New("edgeweir-node run exited with status 2 (invalid flags or local settings, or the node was decommissioned); not restarting it")
 
 // usageExit reports whether a child's exit was status 2.
 func usageExit(err error) bool {

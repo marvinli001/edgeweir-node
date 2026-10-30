@@ -104,7 +104,8 @@ EDGEWEIR_RESULT {"v":1,"step":"enroll","status":"enrolled","exit":0,"retry":fals
 | 证书续期 | 到期前自动续期 |
 | 收集日志 | 警告与事件持续上报；控制台按需拉取最近的全部级别日志（`--debug-log-buffer`） |
 | 重启、重载 | 不需要：配置变化时重载 OpenResty，进程异常退出由监督进程与 systemd 重启 |
-| 仍需 SSH | 下线（停止服务并删除身份）、密钥丢失或证书在离线期间过期后的重新注册、修改本机参数（`/etc/default/edgeweir-node`、内核封禁的 drop-in）、卸载软件包 |
+| 下线 | 控制台的下线任务（`decommission-v1`）：节点回报后停止服务，删除身份、配置与缓存，此后（重启后也是）不再启动，直到重新注册；软件包保留 |
+| 仍需 SSH | 密钥丢失或证书在离线期间过期后的重新注册、修改本机参数（`/etc/default/edgeweir-node`、内核封禁的 drop-in）、卸载软件包 |
 
 ### deb / rpm
 

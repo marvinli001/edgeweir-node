@@ -9,6 +9,9 @@
 //	identity.lock  held (flock) while the console address is changed
 //	enroll.lock    held (flock) by `edgeweir-node enroll` while it enrolls
 //	enroll.key     the key of an enrollment not completed yet, mode 0600
+//	decommissioned written when the console decommissioned the node; the
+//	               agent does not start while it exists, an enrollment
+//	               removes it
 //
 // enroll.key is written before the token and CSR are sent and reused by
 // every retry until an enrollment is saved (then it is node.key): an
@@ -60,6 +63,8 @@ const (
 	EnrollLockFile = "enroll.lock"
 	// PendingKeyFile is the key of an enrollment not completed yet.
 	PendingKeyFile = "enroll.key"
+	// DecommissionedFile marks a node the console decommissioned.
+	DecommissionedFile = "decommissioned"
 
 	// The probe layout (Store.Probe).
 	ProbeKeyFile      = "probe.key"
@@ -205,9 +210,12 @@ func (s Store) Save(id Identity, keyPEM, certPEM, caPEM []byte) error {
 	if err := matchDirOwner(s.Dir, s.KeyFile(), s.CertFile(), CAFile, s.IdentityFile()); err != nil {
 		return err
 	}
-	// The pending key is node.key now.
-	if err := os.Remove(s.Path(PendingKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	// The pending key is node.key now, and a decommissioned node serves
+	// again.
+	for _, name := range []string{PendingKeyFile, DecommissionedFile} {
+		if err := os.Remove(s.Path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }

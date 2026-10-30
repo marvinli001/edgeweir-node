@@ -846,6 +846,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := a.Run(ctx); err != nil {
+		if errors.Is(err, agent.ErrDecommissioned) {
+			// Status 2: neither the supervisor nor systemd starts it again.
+			return 2
+		}
 		log.Error("agent stopped with an error", "err", err)
 		return 1
 	}

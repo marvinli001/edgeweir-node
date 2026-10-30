@@ -104,7 +104,8 @@ After the install the console manages the node through the node channel only; SS
 | Certificate renewal | Automatic, before expiry |
 | Log collection | Warnings and events are reported continuously; the console pulls the recent logs of every level on demand (`--debug-log-buffer`) |
 | Restart, reload | Not needed: configuration changes reload OpenResty, crashed processes are restarted by the supervisor and systemd |
-| Still needs SSH | Decommissioning (stop serving and delete the identity), re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
+| Decommission | The console's decommission task (`decommission-v1`): the node reports it, stops serving, deletes its identity, configuration and cache, and does not start again (also after a reboot) until it is enrolled anew; the packages stay |
+| Still needs SSH | Re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
 
 ### deb / rpm
 

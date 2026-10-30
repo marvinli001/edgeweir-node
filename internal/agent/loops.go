@@ -204,7 +204,7 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	if id := a.channel.Identity(); id != nil {
 		req.CertificateNotAfter = timestamppb.New(id.Certificate.NotAfter)
 	}
-	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, controlplane.FollowFeature)
+	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, controlplane.FollowFeature, FeatureDecommission)
 	if a.cfg.NodeLogs != nil {
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, nodelog.Feature)
 	}
