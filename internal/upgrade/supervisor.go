@@ -96,12 +96,28 @@ type Supervisor struct {
 
 // ErrUsage stops the supervisor when the node exits with status 2: its
 // flags or local settings are wrong, and starting it again cannot help.
-var ErrUsage = errors.New("edgeweir-node run exited with status 2 (invalid flags or local settings, or the node was decommissioned); not restarting it")
+var ErrUsage = errors.New("edgeweir-node run exited with status 2 (invalid flags or local settings); not restarting it")
+
+// ExitDecommissioned is the exit status of a node the console
+// decommissioned (agent.ErrDecommissioned): it must not run again until
+// it is enrolled anew. systemd counts it as a clean stop
+// (SuccessExitStatus=3, RestartPreventExitStatus=3).
+const ExitDecommissioned = 3
+
+// ErrDecommissioned stops the supervisor when the node exits with
+// ExitDecommissioned.
+var ErrDecommissioned = errors.New("edgeweir-node run exited with status 3: the console decommissioned this node; not restarting it")
 
 // usageExit reports whether a child's exit was status 2.
-func usageExit(err error) bool {
+func usageExit(err error) bool { return exitStatus(err) == 2 }
+
+// exitStatus is a child's exit status, -1 when it did not exit normally.
+func exitStatus(err error) int {
 	var exit *exec.ExitError
-	return errors.As(err, &exit) && exit.ExitCode() == 2
+	if !errors.As(err, &exit) {
+		return -1
+	}
+	return exit.ExitCode()
 }
 
 func Socket(stateDir string) string { return filepath.Join(stateDir, "upgrade.sock") }
@@ -362,6 +378,11 @@ func Run(ctx context.Context, opts Options) error {
 						s.mu.Unlock()
 						opts.Log.Error("node exited with a usage error", "err", err)
 						return ErrUsage
+					}
+					if exitStatus(err) == ExitDecommissioned {
+						s.mu.Unlock()
+						opts.Log.Info("node decommissioned by the console; stopping")
+						return ErrDecommissioned
 					}
 					// 2 s, doubling up to a minute while the node keeps
 					// failing within a minute of its start.
