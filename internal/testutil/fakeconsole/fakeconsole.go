@@ -100,6 +100,7 @@ type Console struct {
 	pendingTasks       []*nodev1.NodeTask
 	taskPulls          []bool // purge_only of every PullTasks call
 	taskResults        []*nodev1.ReportTaskResultRequest
+	failTaskResults    int
 	taskWatchers       map[chan struct{}]struct{}
 
 	// Dynamic bans: the latest state of every ban id with its sequence.
@@ -613,6 +614,14 @@ func (c *Console) AddTasks(quiet bool, tasks ...*nodev1.NodeTask) {
 	}
 }
 
+// FailTaskResults makes the next n ReportTaskResult calls fail (Unavailable)
+// without recording them.
+func (c *Console) FailTaskResults(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failTaskResults = n
+}
+
 // TaskResults returns every reported task result.
 func (c *Console) TaskResults() []*nodev1.ReportTaskResultRequest {
 	c.mu.Lock()
@@ -693,6 +702,10 @@ func (c *Console) TaskPulls() []bool {
 func (c *Console) ReportTaskResult(_ context.Context, req *connect.Request[nodev1.ReportTaskResultRequest]) (*connect.Response[nodev1.ReportTaskResultResponse], error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failTaskResults > 0 {
+		c.failTaskResults--
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("task results unavailable"))
+	}
 	c.taskResults = append(c.taskResults, proto.CloneOf(req.Msg))
 	return connect.NewResponse(&nodev1.ReportTaskResultResponse{}), nil
 }

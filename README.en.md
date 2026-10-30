@@ -36,7 +36,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement, layer-4 forwarding (stream); hot updates for sites, origins, certificates, rules and layer-4 applications over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v1.7.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v1.8.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules, ports, protocols and PROXY protocol settings of layer-4 applications) re-render `nginx.conf` and reload after `openresty -t`, the old workers serving open connections until they end; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
@@ -104,7 +104,8 @@ After the install the console manages the node through the node channel only; SS
 | Certificate renewal | Automatic, before expiry |
 | Log collection | Warnings and events are reported continuously; the console pulls the recent logs of every level on demand (`--debug-log-buffer`) |
 | Restart, reload | Not needed: configuration changes reload OpenResty, crashed processes are restarted by the supervisor and systemd |
-| Still needs SSH | Decommissioning (stop serving and delete the identity), re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
+| Decommission | The console's decommission task (`decommission-v1`): the node reports it, stops serving, deletes its identity, configuration and cache, and does not start again (also after a reboot) until it is enrolled anew; the packages stay |
+| Still needs SSH | Re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
 
 ### deb / rpm
 

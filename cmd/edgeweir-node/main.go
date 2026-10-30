@@ -772,6 +772,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		}
 		err = upgrade.Run(ctx, upgrade.Options{Trust: upgrade.Trust{StateDir: state, Source: *upgradeSource, Cosign: *cosignBin, PublicKey: key, AllowHTTP: *upgradeHTTP}, Executable: executable, LuaDir: abs(*luaDir), Version: version.Version, RunArgs: args, Log: log, Output: stderr,
 			Engine: &engineConfig, AllowDowngrade: *downgrade, Logs: nodeLogs, DebugLogs: debugLogs})
+		if errors.Is(err, upgrade.ErrDecommissioned) {
+			log.Info("supervisor stopped", "err", err)
+			return upgrade.DecommissionedExit()
+		}
 		if errors.Is(err, upgrade.ErrUsage) {
 			log.Error("supervisor stopped", "err", err)
 			return 2
@@ -846,6 +850,13 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := a.Run(ctx); err != nil {
+		if errors.Is(err, agent.ErrDecommissioned) {
+			// Neither the supervisor nor systemd starts it again; with the
+			// 1.7.0 unit systemd counts it as a clean stop (the unit is
+			// inactive, not failed), older ones stop on status 2.
+			log.Warn("agent stopped", "err", err)
+			return upgrade.DecommissionedExit()
+		}
 		log.Error("agent stopped with an error", "err", err)
 		return 1
 	}

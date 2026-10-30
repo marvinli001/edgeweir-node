@@ -52,7 +52,13 @@ ExecStart=/usr/bin/edgeweir-node supervise --manage-nginx
 Restart=always
 RestartSec=2s
 # Status 2: invalid flags or local settings; starting again cannot help.
-RestartPreventExitStatus=2
+# Status 3: the console decommissioned the node (a clean stop: the unit is
+# inactive, not failed); it serves again only once enrolled anew.
+RestartPreventExitStatus=2 3
+SuccessExitStatus=3
+# Tells the node that this unit stops on status 3; without it (units
+# before 1.7.0) a decommissioned node exits with 2 instead.
+Environment=EDGEWEIR_DECOMMISSIONED_EXIT=3
 # SIGTERM goes to the agent, which stops OpenResty gracefully; anything
 # left after the timeout is killed.
 KillMode=mixed

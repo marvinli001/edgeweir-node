@@ -20,7 +20,8 @@ import (
 
 // Typed tasks (ADR-0014): the console can ask for purges, prefetches (of
 // URLs or of the URLs a sitemap lists), upgrades and the debug log buffer
-// (debuglogs.go), nothing else. Tasks
+// (debuglogs.go) and the node's decommissioning (decommission.go), nothing
+// else. Tasks
 // are idempotent; a task whose result does not reach the console is handed
 // out again and simply runs again.
 //
@@ -227,6 +228,8 @@ func (a *Agent) executeTask(ctx context.Context, task *nodev1.NodeTask, deadline
 		return a.executeSitemap(ctx, task, kind.Sitemap, deadline)
 	case *nodev1.NodeTask_DebugLogs:
 		return a.executeDebugLogs(ctx, task, kind.DebugLogs)
+	case *nodev1.NodeTask_Decommission:
+		return a.executeDecommission(ctx, task)
 	default:
 		name := unknownKind(task)
 		return withCode(result(task, 0, 0, nodev1.TaskState_TASK_STATE_FAILED, "unsupported task type ("+name+"); upgrade edgeweir-node"),

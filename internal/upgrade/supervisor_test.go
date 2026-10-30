@@ -35,12 +35,15 @@ func TestMain(m *testing.M) {
 			_ = os.WriteFile(filepath.Join(filepath.Dir(socket), "config", "current.binpb"), []byte("bad candidate"), 0600)
 			os.Exit(42)
 		}
-		if v == "usage" || v == "crash" {
+		if v == "usage" || v == "crash" || v == "decommissioned" {
 			f, _ := os.OpenFile(filepath.Join(filepath.Dir(socket), "starts"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 			_, _ = f.WriteString("start\n")
 			_ = f.Close()
 			if v == "usage" {
 				os.Exit(2)
+			}
+			if v == "decommissioned" {
+				os.Exit(ExitDecommissioned)
 			}
 			os.Exit(1)
 		}
@@ -275,6 +278,37 @@ func TestUsageExitStopsTheSupervisor(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(filepath.Join(opts.Trust.StateDir, "starts")); strings.Count(string(raw), "start") != 1 {
 		t.Fatalf("node started %d times", strings.Count(string(raw), "start"))
+	}
+}
+
+// A decommissioned node (status 3) is not started again either; the
+// supervisor stops with ErrDecommissioned (the command exits with 3).
+func TestDecommissionedExitStopsTheSupervisor(t *testing.T) {
+	opts, _ := fixture(t)
+	_ = os.WriteFile(filepath.Join(opts.LuaDir, "version"), []byte("decommissioned"), 0600)
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), opts) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrDecommissioned) {
+			t.Fatalf("Run = %v, want ErrDecommissioned", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor kept restarting the node")
+	}
+	if raw, _ := os.ReadFile(filepath.Join(opts.Trust.StateDir, "starts")); strings.Count(string(raw), "start") != 1 {
+		t.Fatalf("node started %d times", strings.Count(string(raw), "start"))
+	}
+}
+
+// Status 3 only when the unit says it stops on it: a 1.6.x unit and
+// supervisor (upgraded in place) restart 3 and stop on 2.
+func TestDecommissionedExit(t *testing.T) {
+	for env, want := range map[string]int{"": 2, "1": 2, "3": ExitDecommissioned} {
+		t.Setenv(DecommissionedExitEnv, env)
+		if got := DecommissionedExit(); got != want {
+			t.Errorf("%s=%q: DecommissionedExit() = %d, want %d", DecommissionedExitEnv, env, got, want)
+		}
 	}
 }
 

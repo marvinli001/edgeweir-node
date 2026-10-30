@@ -271,6 +271,8 @@ type Agent struct {
 	dp         DataPlane
 	ids        identity.Store
 	lkg        configstore.Store
+	// stopRun stops Run with a cause (set while Run runs).
+	stopRun context.CancelCauseFunc
 
 	geoFeatures []string
 	// geo is set while the agent runs with GeoIP databases; locateAddress is
@@ -452,11 +454,31 @@ func kernelManager(exec nft.Executor, log *slog.Logger) *nft.Manager {
 // with the new one.
 var errIdentityChanged = errors.New("the node identity changed (re-enrolled); restarting with the new identity")
 
-// Run runs the agent until ctx is cancelled, or until the node identity
-// changes on disk (errIdentityChanged).
+// Run runs the agent until ctx is cancelled, until the node identity
+// changes on disk (errIdentityChanged), or until the console decommissions
+// the node (ErrDecommissioned, also at once when it was decommissioned
+// before).
 func (a *Agent) Run(parent context.Context) error {
+	if a.decommissioned() {
+		a.log.Error("not starting", "err", ErrDecommissioned, "marker", a.decommissionedMarker())
+		return ErrDecommissioned
+	}
+	err := a.run(parent)
+	if errors.Is(err, ErrDecommissioned) {
+		// OpenResty and every loop have stopped.
+		if werr := a.wipe(); werr != nil {
+			a.log.Error("decommissioned, but not everything could be deleted", "err", werr)
+		} else {
+			a.log.Info("decommissioned: identity, configuration and cache deleted", "state_dir", a.cfg.StateDir)
+		}
+	}
+	return err
+}
+
+func (a *Agent) run(parent context.Context) error {
 	ctx, stop := context.WithCancelCause(parent)
 	defer stop(nil)
+	a.stopRun = stop
 	if err := a.prepareDirs(); err != nil {
 		return err
 	}
@@ -620,7 +642,7 @@ func (a *Agent) Run(parent context.Context) error {
 
 	<-ctx.Done()
 	cause := context.Cause(ctx)
-	if errors.Is(cause, errIdentityChanged) {
+	if errors.Is(cause, errIdentityChanged) || errors.Is(cause, ErrDecommissioned) {
 		a.log.Error("stopping", "err", cause)
 	} else {
 		a.log.Info("shutting down")
