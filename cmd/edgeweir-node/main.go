@@ -104,6 +104,8 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdDiagnose(args[1:], stdout, stderr)
 	case "pprof":
 		return cmdPprof(args[1:], stdout, stderr)
+	case "extension":
+		return cmdExtension(args[1:], stdout, stderr)
 	case imageconv.ChildCommand:
 		// One WebP / AVIF conversion for the agent's image converter
 		// (internal; not in the usage).
@@ -138,6 +140,7 @@ Usage:
   edgeweir-node accesslog [--site ID] [--json] [--socket PATH]
   edgeweir-node diagnose [--state-dir DIR] [--control-socket PATH] [--diag-socket PATH] [--json]
   edgeweir-node pprof PROFILE [--seconds N] [--output FILE] [--diag-socket PATH]
+  edgeweir-node extension keygen|pack|sign|verify ...
   edgeweir-node version
 
 Run "edgeweir-node <command> -h" for the flags of a command. Every flag can
