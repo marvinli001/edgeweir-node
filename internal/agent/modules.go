@@ -23,7 +23,7 @@ func (a *Agent) extraFeatures() []string {
 		out = append(out, configir.FeatureImageConvert)
 	}
 	if !a.cfg.Extensions.Disabled {
-		out = append(out, configir.FeatureExtensions)
+		out = append(out, configir.FeatureExtensions, configir.FeatureExtensionsV2)
 	}
 	return out
 }

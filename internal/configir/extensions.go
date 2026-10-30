@@ -18,6 +18,10 @@ import (
 // --no-extensions.
 const FeatureExtensions = "extensions-v1"
 
+// FeatureExtensionsV2: the node runs Lua API 2 packages (extension version
+// 1.1), announced with FeatureExtensions.
+const FeatureExtensionsV2 = "extensions-v2"
+
 // Extension is an installed extension's active package and the operator's
 // settings. The agent fills in Dir, State and Message once it has the
 // package (internal/agent/extensions.go).
