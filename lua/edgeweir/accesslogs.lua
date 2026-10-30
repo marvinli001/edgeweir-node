@@ -176,6 +176,8 @@ local function record(var, site_id, geo, status)
     content_type = M.media_type(var.sent_http_content_type),
     tls_version = TLS_VERSIONS[var.ssl_protocol or ""] or "",
     block_reason = reason or "", block_rule_id = rule or "",
+    -- Node extensions' log fields and verdicts (edgeweir.ext).
+    ext = ngx.ctx.edgeweir_ext_log,
   }
 end
 

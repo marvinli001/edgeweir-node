@@ -15,7 +15,7 @@ local _M = {}
 _M.REASONS = {
   ip_banned = true, ip_blocked = true, rule = true, rate_limit = true, crs = true, cc = true,
   challenge = true, auth = true, referer = true, user_agent = true, region = true, cors = true,
-  websocket_origin = true, client_cert = true, maintenance = true,
+  websocket_origin = true, client_cert = true, maintenance = true, extension = true,
 }
 
 -- set records reason and, for reasons a rule caused, the rule's id (custom

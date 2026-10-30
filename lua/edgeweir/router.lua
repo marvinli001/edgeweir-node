@@ -115,6 +115,7 @@ local reasons = require("edgeweir.reasons")
 local geoip = require("edgeweir.geoip")
 local accesslogs = require("edgeweir.accesslogs")
 local uripath = require("edgeweir.uripath")
+local ext = require("edgeweir.ext")
 
 local _M = {}
 
@@ -542,6 +543,11 @@ local function access()
       reasons.set("cc")
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
     end
+    -- Node extensions' assets and endpoints (edgeweir.ext): bans and CC
+    -- apply, access control, rules and challenges do not.
+    if sub(original_path, 1, 15) == ext.PREFIX then
+      return ext.endpoint(site, original_path)
+    end
     -- Failed answers count towards the site's failure ban, but not for
     -- these clients (nor on the local listeners).
     local uncounted = is_local or site_allowed or _M.platform_allowed(site, var.remote_addr) or store.trusted_proxy(site, var.remote_addr)
@@ -551,6 +557,18 @@ local function access()
       return deny(503, "challenge-unavailable", "challenge unavailable")
     end
     return
+  end
+  -- Node extensions' access hooks (edgeweir.ext), before access control,
+  -- rules and challenges: a verdict answers, an allow verdict skips Under
+  -- Attack and CC challenges.
+  local ext_allowed = false
+  if site._ext and not is_local then
+    local r = ext.access(site, run_challenge, deny)
+    if r == "allow" then
+      ext_allowed = true
+    elseif r then
+      return
+    end
   end
   local ok, result = pcall(policy.access, site, headers, acme, site_allowed)
   if not ok then
@@ -595,7 +613,7 @@ local function access()
     end
   end
   local under_attack = pctx and pctx.under_attack
-  if (site._guard or under_attack == true) and not exempt and not is_local and not acme then
+  if (site._guard or under_attack == true) and not exempt and not ext_allowed and not is_local and not acme then
     local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
     local level, kind = challenge.required(site, cc_level, under_attack)
     local glevel, gkind = _M.greylist_level(grey, exempt, 0, nil)
@@ -617,6 +635,11 @@ local function access()
     if challenge.pass_level(site) < level then
       return run_challenge(site, kind, level)
     end
+  end
+  -- Node extensions' late access hooks (edgeweir.ext): after the rules and
+  -- challenges, before the CRS, the cache and the origin.
+  if site._ext and not is_local and ext.access_late(site, run_challenge, deny) then
+    return
   end
   -- The client certificate towards the origin (after the rules: they
   -- never overwrite it).
@@ -1062,6 +1085,10 @@ function _M.header_filter(waf_location)
       local ok = pcall(policy.response, site)
       if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
     end
+    -- Node extensions' header filters and HTML injection (edgeweir.ext).
+    if site._ext then
+      ext.header_filter(site)
+    end
     -- The gRPC location compresses nothing.
     if not ngx.ctx.edgeweir_grpc then
       compress.header_filter(site)
@@ -1070,9 +1097,11 @@ function _M.header_filter(waf_location)
 end
 
 -- body_filter sends the error page header_filter prepared (CRS locations
--- only: the edge layer's location / has no body filter).
+-- only: the edge layer's location / has no body filter but node
+-- extensions'), then node extensions' body filters (edgeweir.ext).
 function _M.body_filter()
-  return errorpages.body_filter()
+  errorpages.body_filter()
+  return ext.body_filter()
 end
 
 -- error_page answers nginx's own errors (content phase of @edgeweir_error,

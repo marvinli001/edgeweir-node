@@ -45,6 +45,8 @@ type sampledLog struct {
 	Query   string            `json:"query"`
 	Headers map[string]string `json:"headers"`
 	PeerIP  string            `json:"peer_ip"`
+	// Ext are node extensions' log fields and verdicts (extensions-v1).
+	Ext map[string]string `json:"ext"`
 }
 
 // logFields are the fields of proto v0.30.0 (ADR-0041 §1) every line and
@@ -93,7 +95,7 @@ const (
 // BlockReasons are the block reasons of AccessLog.block_reason and
 // MinuteStats.block_reasons (ADR-0041 §3, the console's BLOCK_REASONS).
 var BlockReasons = []string{"ip_banned", "ip_blocked", "rule", "rate_limit", "crs", "cc", "challenge", "auth", "referer",
-	"user_agent", "region", "cors", "websocket_origin", "client_cert", "maintenance"}
+	"user_agent", "region", "cors", "websocket_origin", "client_cert", "maintenance", "extension"}
 
 var (
 	countryRE    = regexp.MustCompile(`^[A-Z]{2}$`)
@@ -182,7 +184,7 @@ func (f logFields) bounded() logFields {
 	if !blockReasons[f.BlockReason] {
 		f.BlockReason = ""
 	}
-	if f.BlockReason == "" || !configir.ValidID(f.BlockRuleID) {
+	if f.BlockReason == "" || !(configir.ValidID(f.BlockRuleID) || f.BlockReason == "extension" && configir.ValidExtensionRuleID(f.BlockRuleID)) {
 		f.BlockRuleID = ""
 	}
 	return f
@@ -206,6 +208,32 @@ func logHeaders(in map[string]string) map[string]string {
 	out := make(map[string]string, min(len(names), configir.MaxLogHeaders))
 	for _, name := range names[:min(len(names), configir.MaxLogHeaders)] {
 		out[name] = Text(in[name], maxHeaderValue)
+	}
+	return out
+}
+
+// maxExtLogFields bounds AccessLog.ext; maxExtLogValue each value.
+const (
+	maxExtLogFields = 32
+	maxExtLogValue  = 256
+)
+
+// extLogFields keeps node extensions' log fields with valid names
+// ("ext.<id>.<name>"), at most maxExtLogFields (the first by name).
+func extLogFields(in map[string]string) map[string]string {
+	names := make([]string, 0, len(in))
+	for name := range in {
+		if configir.ValidExtensionName(name) {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	slices.Sort(names)
+	out := make(map[string]string, min(len(names), maxExtLogFields))
+	for _, name := range names[:min(len(names), maxExtLogFields)] {
+		out[name] = Text(in[name], maxExtLogValue)
 	}
 	return out
 }
@@ -251,6 +279,7 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 			RequestBytes: f.RequestBytes, ContentType: f.ContentType, TlsVersion: f.TLSVersion,
 			BlockReason: f.BlockReason, BlockRuleId: f.BlockRuleID,
 			Query: Text(l.Query, maxQuery), Headers: logHeaders(l.Headers), PeerIp: peerIP(l.PeerIP),
+			Ext: extLogFields(l.Ext),
 		})
 	}
 	return logs, nil

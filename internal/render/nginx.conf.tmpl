@@ -553,6 +553,9 @@ http {
             access_by_lua_block { require("edgeweir.router").body_access() }
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+{{- if $.Extensions }}
+            body_filter_by_lua_block { require("edgeweir.ext").body_filter() }
+{{- end }}
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 {{- end }}

@@ -225,6 +225,9 @@ type MinuteStats struct {
 	// ImageBytesSaved is what WebP / AVIF variants saved against their
 	// originals on complete 200 answers to GETs (feature image-convert-v1).
 	ImageBytesSaved uint64 `json:"image_bytes_saved"`
+	// ExtCounters are node extensions' counters and faults by
+	// "ext.<id>.<name>" (feature extensions-v1).
+	ExtCounters map[string]uint64 `json:"ext_counters"`
 	// The bounded dimensions (feature stats-dims-v1, ADR-0041): requests
 	// and bytes sent per country ("" unknown, at most 250), the heaviest 50
 	// networks (by AS number, with names) and referring hosts, requests per

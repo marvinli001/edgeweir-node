@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
@@ -62,6 +63,17 @@ var (
 	extensionField = regexp.MustCompile(`^ext\.[a-z][a-z0-9-]{1,38}[a-z0-9]\.[a-z][a-z0-9_]{0,31}$`)
 	sha256Hex      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
+
+// ValidExtensionName reports whether s names an extension's rule field,
+// log field or counter ("ext.<id>.<name>").
+func ValidExtensionName(s string) bool { return extensionField.MatchString(s) }
+
+// ValidExtensionRuleID reports whether s is the block rule id of an
+// extension's deny verdict ("ext:<id>").
+func ValidExtensionRuleID(s string) bool {
+	id, ok := strings.CutPrefix(s, "ext:")
+	return ok && extensionIDRE.MatchString(id)
+}
 
 // jsonObject reports whether s is a JSON object (at most 64 KiB).
 func jsonObject(s string) (json.RawMessage, bool) {
