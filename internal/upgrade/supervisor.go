@@ -104,6 +104,23 @@ var ErrUsage = errors.New("edgeweir-node run exited with status 2 (invalid flags
 // (SuccessExitStatus=3, RestartPreventExitStatus=3).
 const ExitDecommissioned = 3
 
+// DecommissionedExitEnv set to "3" tells the command that its parent (the
+// unit, and through it the supervisor) stops on ExitDecommissioned. The
+// unit of 1.7.0 sets it. Without it a decommissioned node exits with 2:
+// a node upgraded in place by the console keeps its 1.6.x unit and 1.6.x
+// supervisor, which restart status 3 but stop on 2 (since 1.4.0).
+const DecommissionedExitEnv = "EDGEWEIR_DECOMMISSIONED_EXIT"
+
+// DecommissionedExit is the exit status of a decommissioned node:
+// ExitDecommissioned when DecommissionedExitEnv says the parent stops on
+// it, else 2.
+func DecommissionedExit() int {
+	if os.Getenv(DecommissionedExitEnv) == "3" {
+		return ExitDecommissioned
+	}
+	return 2
+}
+
 // ErrDecommissioned stops the supervisor when the node exits with
 // ExitDecommissioned.
 var ErrDecommissioned = errors.New("edgeweir-node run exited with status 3: the console decommissioned this node; not restarting it")

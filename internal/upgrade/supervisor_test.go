@@ -301,6 +301,17 @@ func TestDecommissionedExitStopsTheSupervisor(t *testing.T) {
 	}
 }
 
+// Status 3 only when the unit says it stops on it: a 1.6.x unit and
+// supervisor (upgraded in place) restart 3 and stop on 2.
+func TestDecommissionedExit(t *testing.T) {
+	for env, want := range map[string]int{"": 2, "1": 2, "3": ExitDecommissioned} {
+		t.Setenv(DecommissionedExitEnv, env)
+		if got := DecommissionedExit(); got != want {
+			t.Errorf("%s=%q: DecommissionedExit() = %d, want %d", DecommissionedExitEnv, env, got, want)
+		}
+	}
+}
+
 // TestCrashingNodeIsRestartedWithBackoff (P1-62): a node that keeps exiting
 // right after its start is restarted after 2 s, then 4 s, ... (at most a
 // minute), not every 2 s.

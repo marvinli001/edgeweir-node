@@ -36,7 +36,8 @@ const codeDecommissionFailed = "decommission_failed" // reason
 // ErrDecommissioned is returned by Run when the console decommissioned the
 // node, now or before this start. The command exits with status 3
 // (upgrade.ExitDecommissioned), which neither the supervisor nor systemd
-// restarts; systemd counts it as a clean stop.
+// restarts and systemd counts as a clean stop, or with 2 under a unit
+// older than 1.7.0 (upgrade.DecommissionedExit).
 var ErrDecommissioned = errors.New("this node was decommissioned by the console: it serves nothing and has no identity; " +
 	"enroll it again (edgeweir-node enroll) or remove the edgeweir-node package")
 
