@@ -43,6 +43,7 @@ local access = require("edgeweir.access")
 local policy = require("edgeweir.policy")
 local ratelimit = require("edgeweir.ratelimit")
 local cc = require("edgeweir.cc")
+local aicrawl = require("edgeweir.aicrawl")
 local errorpages = require("edgeweir.errorpages")
 local expressions = require("edgeweir.expressions")
 local probehealth = require("edgeweir.probehealth")
@@ -367,6 +368,8 @@ function _M.prepare(s, cfg)
     end
   end
   cc.prepare(s)
+  -- AI crawl control (ai-crawlers-v1): actions, robots.txt, pay per crawl.
+  aicrawl.prepare(s)
   -- _guard: Under Attack (platform or site) or CC may challenge requests.
   local pp = s._config.platform_protection
   s._guard = (type(pp) == "table" and pp.under_attack == true)
@@ -539,6 +542,8 @@ function _M.replace(doc)
   end
   if #patterns > 0 then cfg.patterns = patterns end
   if type(doc.unknown_hosts) == "table" then cfg.unknown_hosts = doc.unknown_hosts end
+  -- The AI crawler catalogue (ai-crawlers-v1).
+  if type(doc.ai_crawlers) == "table" and #doc.ai_crawlers > 0 then cfg.ai_crawlers = doc.ai_crawlers end
   -- The trusted proxies of the client address setting (client-ip-v1):
   -- never banned, not counted per address by CC.
   local ca = doc.client_address
@@ -711,6 +716,7 @@ function _M.config(version)
       health_certificate = probehealth.material(doc),
       trusted = type(doc.trusted_proxies) == "table" and #doc.trusted_proxies > 0 and expressions.ip_set(doc.trusted_proxies) or nil,
       unknown = unknown_hosts(doc.unknown_hosts),
+      ai_crawlers = aicrawl.prepare_catalogue(doc.ai_crawlers),
     }
     if type(doc.patterns) == "table" and #doc.patterns > 0 then
       cfg.patterns = {}

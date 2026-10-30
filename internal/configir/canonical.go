@@ -138,6 +138,7 @@ func Canonicalize(c *nodev1.NodeConfig) {
 		a.BlockListIds = slices.Compact(a.BlockListIds)
 	}
 	canonicalizeRules(c.PlatformRules)
+	canonicalizeAICrawlers(c.AiCrawlers)
 	for _, s := range c.Sites {
 		CanonicalizeSite(s)
 	}
@@ -151,6 +152,11 @@ func CanonicalizeSite(s *nodev1.Site) {
 	slices.Sort(s.Ports)
 	s.Ports = slices.Compact(s.Ports)
 	s.LogHeaders = sortedSet(s.LogHeaders)
+	if s.AiCrawl != nil {
+		slices.SortStableFunc(s.AiCrawl.Actions, func(a, b *nodev1.AiCrawlerAction) int {
+			return cmp.Compare(a.GetCrawler(), b.GetCrawler())
+		})
+	}
 	s.AuthIdentityHeaders = sortedSet(s.AuthIdentityHeaders)
 	slices.SortStableFunc(s.EncodedPathExemptions, func(a, b *nodev1.EncodedPathExemption) int {
 		return cmp.Compare(a.GetPrefix(), b.GetPrefix())

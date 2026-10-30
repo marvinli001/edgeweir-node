@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
@@ -177,4 +178,55 @@ func applyDimensions(out *nodev1.MinuteStats, m dataplane.MinuteStats) {
 	out.ChallengesIssued = m.ChallengesIssued
 	out.ChallengesPassed = m.ChallengesPassed
 	out.Origins = statsOrigins(m.Origins)
+	out.Crawlers, out.CrawlerPaths = statsCrawlers(m.Crawlers, m.CrawlerPaths)
+}
+
+// Bounds of MinuteStats.crawlers and crawler_paths (the data plane keeps
+// the same).
+const (
+	maxStatsCrawlers     = 256
+	maxStatsCrawlerPaths = 64
+)
+
+var (
+	statsCrawlerRE       = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	statsVerifications   = []string{"verified", "failed", "unverifiable", "pending"}
+)
+
+// statsCrawlers converts the crawler counters of a minute (ADR-0070):
+// known verification results and valid ids with requests, the heaviest
+// first (ties: crawler, verification, path), paths of at most 256 bytes.
+func statsCrawlers(in []dataplane.CrawlerCount, paths []dataplane.CrawlerPathCount) ([]*nodev1.CrawlerCounter, []*nodev1.CrawlerPathCounter) {
+	var out []*nodev1.CrawlerCounter
+	for _, c := range in {
+		if !statsCrawlerRE.MatchString(c.Crawler) || !slices.Contains(statsVerifications, c.Verification) || c.Requests == 0 {
+			continue
+		}
+		out = append(out, &nodev1.CrawlerCounter{
+			Crawler: c.Crawler, Verification: c.Verification, Requests: c.Requests,
+			Status_2Xx: c.Status2xx, Status_3Xx: c.Status3xx, Status_4Xx: c.Status4xx, Status_5Xx: c.Status5xx,
+			Blocked: c.Blocked, Bytes: c.Bytes, Charged: c.Charged, ChargedMicros: c.ChargedMicros,
+			Robots: c.Robots, Allowed: c.Allowed,
+		})
+	}
+	slices.SortFunc(out, func(a, b *nodev1.CrawlerCounter) int {
+		return cmp.Or(cmp.Compare(b.Requests, a.Requests), strings.Compare(a.Crawler, b.Crawler), strings.Compare(a.Verification, b.Verification))
+	})
+	if len(out) > maxStatsCrawlers {
+		out = out[:maxStatsCrawlers]
+	}
+	var top []*nodev1.CrawlerPathCounter
+	for _, p := range paths {
+		if !statsCrawlerRE.MatchString(p.Crawler) || p.Requests == 0 || len(p.Path) > 256 || !strings.HasPrefix(p.Path, "/") || !utf8.ValidString(p.Path) {
+			continue
+		}
+		top = append(top, &nodev1.CrawlerPathCounter{Crawler: p.Crawler, Path: p.Path, Requests: p.Requests, Bytes: p.Bytes})
+	}
+	slices.SortFunc(top, func(a, b *nodev1.CrawlerPathCounter) int {
+		return cmp.Or(cmp.Compare(b.Requests, a.Requests), strings.Compare(a.Crawler, b.Crawler), strings.Compare(a.Path, b.Path))
+	})
+	if len(top) > maxStatsCrawlerPaths {
+		top = top[:maxStatsCrawlerPaths]
+	}
+	return out, top
 }

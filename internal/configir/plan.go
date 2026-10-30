@@ -168,6 +168,9 @@ type Plan struct {
 	// ConnectionLimits are the per-client TCP connection limits the agent
 	// writes into nftables (nil: none; proto v1.6.0).
 	ConnectionLimits *ConnectionLimits
+	// AICrawlers is the AI crawler catalogue (nil: none; proto vNEXT,
+	// ADR-0070): requests are tagged with the crawler they claim.
+	AICrawlers []AICrawler
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -313,6 +316,9 @@ type Site struct {
 	// ImageConvert is the site's WebP / AVIF conversion (nil: off; feature
 	// image-convert-v1, ADR-0043).
 	ImageConvert *ImageConvert `json:"image_convert,omitempty"`
+	// AICrawl is the site's AI crawl control (nil: crawlers are only
+	// tagged; feature ai-crawlers-v1, ADR-0070).
+	AICrawl *AICrawl `json:"ai_crawl,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -388,7 +394,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureAICrawlers}
 
 // FeatureActiveHealthGRPC (proto v1.6.0): ActiveHealthCheck.type GRPC,
 // grpc.health.v1 probes. FeatureOriginProxyProtocol (proto v1.6.0):
@@ -731,6 +737,13 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	if p.OriginCA, err = buildOriginCA(c, time.Now()); err != nil {
 		return nil, err
 	}
+	if p.AICrawlers, err = buildAICrawlers(c.GetAiCrawlers()); err != nil {
+		return nil, err
+	}
+	crawlerIDs := make(map[string]bool, len(p.AICrawlers))
+	for _, cr := range p.AICrawlers {
+		crawlerIDs[cr.ID] = true
+	}
 	// Every site's protection, CRS setting, error pages, active health
 	// check, session affinity and origin protocol are checked, disabled
 	// sites included: an unknown challenge type, CRS mode or error page
@@ -750,6 +763,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	bodyLimits := map[string]uint32{}
 	logHeaders := map[string][]string{}
 	images := map[string]*ImageConvert{}
+	aiCrawls := map[string]*AICrawl{}
 	trusts := map[string]string{}
 	originClientCerts := map[string]string{}
 	ipLists := map[string]bool{}
@@ -805,6 +819,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if images[id], err = buildImageConvert(s, opts.ExtraFeatures); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if aiCrawls[id], err = buildAICrawl(s, crawlerIDs); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if trusts[id], originClientCerts[id], err = buildOriginTLS(s, p.OriginClientCertificates, p.OriginCA); err != nil {
@@ -966,6 +983,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.LogBlocked, site.LogQuery, site.LogPeer = s.GetLogBlocked(), s.GetLogQuery(), s.GetLogPeer()
 		site.LogHeaders = logHeaders[id]
 		site.ImageConvert = images[id]
+		site.AICrawl = aiCrawls[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)

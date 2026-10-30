@@ -133,6 +133,52 @@ function _M.origin(site, origin_id, outcome, header_ms)
   end
 end
 
+-- Crawler pairs (crawler and verification) per site and minute, and the
+-- candidates of their paths (ai-crawlers-v1, ADR-0070).
+_M.MAX_CRAWLERS = 256
+_M.CRAWLER_PATH_CAPACITY = 64
+
+-- crawler counts a request of site in minute that claimed crawler id with
+-- verification: its status, bytes sent, whether AI crawl control refused
+-- it, the price charged (millionths of a US dollar, nil: none), whether it
+-- asked for /robots.txt, and its path (nil: not counted).
+function _M.crawler(site, minute, id, verification, status, bytes, blocked, charged, robots, path)
+  local bucket = bucket_for(site, minute)
+  if not bucket then return end
+  local crawlers = bucket.crawlers
+  if not crawlers then
+    crawlers = {}
+    bucket.crawlers, bucket.crawler_count, bucket.crawler_paths = crawlers, 0, {}
+  end
+  local key = id .. "|" .. verification
+  local c = crawlers[key]
+  if not c then
+    if bucket.crawler_count >= _M.MAX_CRAWLERS then return end
+    c = { n = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, b = 0, by = 0, c = 0, cm = 0, r = 0, a = 0 }
+    crawlers[key] = c
+    bucket.crawler_count = bucket.crawler_count + 1
+  end
+  c.n = c.n + 1
+  local class = math.floor(status / 100)
+  if class >= 2 and class <= 5 then
+    local f = "s" .. class
+    c[f] = c[f] + 1
+  end
+  if blocked then
+    c.b = c.b + 1
+  elseif status < 400 then
+    c.a = c.a + 1
+  end
+  c.by = c.by + (bytes or 0)
+  if charged and charged > 0 then
+    c.c, c.cm = c.c + 1, c.cm + charged
+  end
+  if robots then c.r = c.r + 1 end
+  if path and #path <= 256 and not path:find("?", 1, true) and not path:find("[%c]") then
+    observe(bucket.crawler_paths, id .. "|" .. path, _M.CRAWLER_PATH_CAPACITY)
+  end
+end
+
 function _M.flush(now)
   local current = math.floor((now or ngx.time()) / 60) * 60
   local dict = ngx.shared.edgeweir_topstats
