@@ -384,9 +384,9 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			AuthFailures:      m.AuthFailures,
 			ImageBytesSaved:   m.ImageBytesSaved,
 			MarkdownResponses: m.MarkdownResponses,
-			TierFetches:     tierCounters(m.TierFetches),
-			TierServed:      tierCounters(m.TierServed),
-			ExtCounters:     extCounters(m.ExtCounters),
+			TierFetches:       tierCounters(m.TierFetches),
+			TierServed:        tierCounters(m.TierServed),
+			ExtCounters:       extCounters(m.ExtCounters),
 		}
 		applyDimensions(ms, m)
 		out = append(out, ms)

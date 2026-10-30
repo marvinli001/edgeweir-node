@@ -49,7 +49,7 @@ type sampledLog struct {
 	Crawler              string `json:"crawler"`
 	CrawlerVerification  string `json:"crawler_verification"`
 	CrawlerChargedMicros uint64 `json:"crawler_charged_micros"`
-	PeerIP  string            `json:"peer_ip"`
+	PeerIP               string `json:"peer_ip"`
 	// Ext are node extensions' log fields and verdicts (extensions-v1).
 	Ext map[string]string `json:"ext"`
 }
@@ -111,13 +111,13 @@ var BlockReasons = []string{"ip_banned", "ip_blocked", "rule", "rate_limit", "cr
 var (
 	crawlerRE            = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 	crawlerVerifications = []string{"verified", "failed", "unverifiable", "pending"}
-	countryRE    = regexp.MustCompile(`^[A-Z]{2}$`)
-	mediaTypeRE  = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
-	logHeaderRE  = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
-	blockReasons = setOf(BlockReasons...)
-	httpVersions = setOf("1.0", "1.1", "2", "3")
-	tlsVersions  = setOf("1.2", "1.3")
-	forbidden    = setOf("authorization", "cookie", "proxy-authorization")
+	countryRE            = regexp.MustCompile(`^[A-Z]{2}$`)
+	mediaTypeRE          = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
+	logHeaderRE          = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+	blockReasons         = setOf(BlockReasons...)
+	httpVersions         = setOf("1.0", "1.1", "2", "3")
+	tlsVersions          = setOf("1.2", "1.3")
+	forbidden            = setOf("authorization", "cookie", "proxy-authorization")
 )
 
 func setOf(keys ...string) map[string]bool {

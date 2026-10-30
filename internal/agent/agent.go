@@ -283,7 +283,7 @@ type Agent struct {
 	// tierLatency holds the round trip times to the tiered cache's latency
 	// targets (tierLatencyLoop).
 	tierLatency tierLatencies
-	lkg        configstore.Store
+	lkg         configstore.Store
 	// stopRun stops Run with a cause (set while Run runs).
 	stopRun context.CancelCauseFunc
 

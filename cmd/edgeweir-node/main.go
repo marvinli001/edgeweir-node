@@ -882,8 +882,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 			Disabled: *noExtensions, KeysFile: *extensionKeys,
 			SidecarMode: *sidecarMode, SidecarUser: *sidecarUser, SidecarDir: *sidecarDir,
 		},
-		NodeLogs:            nodeLogs,
-		DebugLogs:           debugLogs,
+		NodeLogs:  nodeLogs,
+		DebugLogs: debugLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

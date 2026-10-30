@@ -204,8 +204,8 @@ const (
 )
 
 var (
-	statsCrawlerRE       = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
-	statsVerifications   = []string{"verified", "failed", "unverifiable", "pending"}
+	statsCrawlerRE     = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	statsVerifications = []string{"verified", "failed", "unverifiable", "pending"}
 )
 
 // statsCrawlers converts the crawler counters of a minute (ADR-0070):
