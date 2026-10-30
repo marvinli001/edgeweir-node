@@ -10,6 +10,8 @@
 #
 # Kernel bans (nftables) need an image built with
 # --build-arg NFT_CAPABILITY=true and `docker run --cap-add NET_ADMIN`.
+# Extension sidecars need an image built with
+# --build-arg SIDECAR_CAPABILITY=true and `-e EDGEWEIR_SIDECAR_USER=edgeweir-sidecar`.
 #
 # `-e EDGEWEIR_TOKEN` without a value passes the variable from the current
 # environment, so the token never appears on a command line (--token would
@@ -157,11 +159,18 @@ RUN set -eu; \
 # Agent, nginx master and workers all run as uid 10001. Docker lets
 # unprivileged processes bind :80 inside the container network namespace
 # (net.ipv4.ip_unprivileged_port_start=0).
+# Extension sidecars run as uid 10002; the agent is in its group to hand
+# it data and share the socket directories.
 RUN groupadd --system --gid 10001 edgeweir \
  && useradd --system --uid 10001 --gid edgeweir --home-dir /var/lib/edgeweir-node \
       --no-create-home --shell /usr/sbin/nologin edgeweir \
+ && groupadd --system --gid 10002 edgeweir-sidecar \
+ && useradd --system --uid 10002 --gid edgeweir-sidecar --home-dir /nonexistent \
+      --no-create-home --shell /usr/sbin/nologin edgeweir-sidecar \
+ && usermod -aG edgeweir-sidecar edgeweir \
  && install -d -o edgeweir -g edgeweir -m 0700 /var/lib/edgeweir-node /var/lib/edgeweir-probe \
- && install -d -o edgeweir -g edgeweir -m 0750 /run/edgeweir-node /var/cache/edgeweir-node
+ && install -d -o edgeweir -g edgeweir -m 0750 /run/edgeweir-node /var/cache/edgeweir-node \
+ && install -d -o edgeweir -g edgeweir -m 0755 /var/lib/edgeweir-node-sidecar /run/edgeweir-node-ext
 
 # The same tree as the edgeweir-openresty and edgeweir-openresty-modsecurity
 # packages: OpenResty, the ModSecurity module and the OWASP CRS.
@@ -169,6 +178,21 @@ COPY --from=openresty-build /out/tree/usr/lib/edgeweir-openresty/ /usr/lib/edgew
 COPY --from=openresty-build /out/tree/usr/share/edgeweir-openresty/ /usr/share/edgeweir-openresty/
 COPY --from=openresty-build /out/tree/usr/share/doc/edgeweir-openresty/ /usr/share/doc/edgeweir-openresty/
 COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
+# Extension sidecars: the agent (uid 10001) starts them as edgeweir-sidecar,
+# which needs CAP_SETUID and CAP_SETGID on its binary (Docker's default
+# capability set includes both). nginx, exec'd without file capabilities,
+# and the sidecars keep none.
+ARG SIDECAR_CAPABILITY=false
+RUN set -eu; \
+    case "$SIDECAR_CAPABILITY" in \
+      true) apt-get update; \
+            apt-get install -y --no-install-recommends libcap2-bin; \
+            setcap cap_setuid,cap_setgid+ep /usr/local/bin/edgeweir-node; \
+            apt-get purge -y --auto-remove libcap2-bin; \
+            rm -rf /var/lib/apt/lists/* ;; \
+      false) ;; \
+      *) echo "SIDECAR_CAPABILITY must be true or false" >&2; exit 1 ;; \
+    esac
 COPY LICENSE NOTICE /usr/share/doc/edgeweir-node/
 COPY --from=verifier /cosign /usr/local/bin/cosign
 COPY lua/ /usr/share/edgeweir-node/lua/
