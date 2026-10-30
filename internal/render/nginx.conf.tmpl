@@ -434,6 +434,9 @@ http {
             access_by_lua_block { require("edgeweir.tier").access() }
             proxy_pass https://edgeweir_tier_balancer;
             proxy_http_version 1.1;
+            # The client's Host: the upper tier hands it to its origin layer
+            # (nginx would send the upstream's name).
+            proxy_set_header Host $host;
             proxy_set_header Connection "";
             proxy_set_header X-Edgeweir-Tier-Fallback "";
             proxy_ssl_certificate {{ .Tier.CertFile }};
@@ -465,6 +468,7 @@ http {
             access_by_lua_block { require("edgeweir.tier").fallback_access() }
             proxy_pass http://$edgeweir_tier_fallback;
             proxy_http_version 1.1;
+            proxy_set_header Host $host;
             proxy_set_header Connection "";
             proxy_set_header X-Edgeweir-Tier-Key "";
             proxy_set_header X-Edgeweir-Tier-Url "";
