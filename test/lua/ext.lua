@@ -83,7 +83,8 @@ function M.access(ew)
   if mode == "slow" then local t = os.clock() while os.clock() - t < 0.03 do end end
   if mode == "headers" then
     ew.ctx.hdr = { (pcall(ew.respond, 403, "x", { ["X-Edgeweir-Challenge"] = "session" })),
-      (pcall(ew.respond, 403, "x", { ["X-Edgeweir-Error"] = "x" })) }
+      (pcall(ew.respond, 403, "x", { ["X-Edgeweir-Error"] = "x" })),
+      (pcall(ew.respond, 200, "x", { ["X-Edgeweir-Ext-Note"] = "x" })) }
   end
   ew.ctx.seen = (ew.ctx.seen or 0) + 1
 end
@@ -266,6 +267,7 @@ test("challenge and allow verdicts", function()
   local hdr = ngx.ctx.edgeweir_ext["t-verdict"].ctx.hdr
   eq(hdr[1], true, "ew.respond may mark its page X-Edgeweir-Challenge")
   eq(hdr[2], false, "other X-Edgeweir- headers are the node's")
+  eq(hdr[3], true, "X-Edgeweir-Ext- headers are the extensions'")
 end)
 
 test("verdicts need the capability; fields are type-checked and declared", function()

@@ -450,6 +450,10 @@ func (a *Agent) ensureDataItem(ctx context.Context, extID, siteID string, d conf
 // mkdirOwned makes dir the agent's, in group gid, with mode (the agent
 // needs root, CAP_CHOWN or membership in the group).
 func mkdirOwned(dir string, mode os.FileMode, gid int) error {
+	// Parents (the extension's directory) stay traversable for the sidecar.
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, mode); err != nil {
 		return err
 	}
@@ -581,6 +585,9 @@ func (a *Agent) runSidecar(ctx context.Context, p *sidecarProc, e configir.Exten
 	dataDir := filepath.Join(root, "data")
 	_, sock, origin := a.cfg.Render.ExtensionSidecarSockets(e.ID)
 	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	if err := os.Chmod(root, 0o755); err != nil {
 		return err
 	}
 	// The sidecar writes its state through the group (setgid: its files

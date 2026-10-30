@@ -313,14 +313,15 @@ local NODE_SIDECAR_HEADERS = {
   ["x-edgeweir-ext-scheme"] = true, ["x-edgeweir-ext-host"] = true,
 }
 
--- valid_header checks a header an extension sets; X-Edgeweir- names are
--- the node's, except X-Edgeweir-Challenge on an ew.respond page
--- (challenge, an interstitial of the extension's own).
+-- valid_header checks a header an extension sets or clears; X-Edgeweir-
+-- names are the node's, except X-Edgeweir-Ext- (the extensions' own, such
+-- as a sidecar's response headers) and X-Edgeweir-Challenge on an
+-- ew.respond page (a challenge or interstitial of the extension's own).
 local function valid_header(name, value, respond)
   if type(name) ~= "string" or not name:match("^[%w!#$%%&'*+.^_`|~-]+$") then error("invalid header name", 3) end
   if value ~= nil and (type(value) ~= "string" or find(value, "[\r\n%z]")) then error("invalid header value", 3) end
   local l = lower(name)
-  if respond and l == "x-edgeweir-challenge" then return end
+  if sub(l, 1, 15) == "x-edgeweir-ext-" or (respond and l == "x-edgeweir-challenge") then return end
   if sub(l, 1, 11) == "x-edgeweir-" or l == "content-length" or l == "transfer-encoding" or l == "connection" then
     error("header " .. name .. " is reserved", 3)
   end
