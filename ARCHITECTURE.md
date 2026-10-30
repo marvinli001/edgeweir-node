@@ -989,6 +989,16 @@ proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origi
 - **主动健康检查**：探测出示同一张客户端证书（读取上述文件），信任 Origin CA 的池只以它为根并在 `VerifyConnection` 中拒绝 CRL 列出的序列号；吊销随 `Update` 立即生效。
 - **Origin CA 轮换**（proto v1.6.0，`origin-ca-rotation-v1`）：控制台轮换 Origin CA 期间配置另带 `origin_ca_previous`（旧 CA 与它自己的 CRL），只能与 `origin_ca` 同时出现，校验与 `origin_ca` 相同，且主题不能与新 CA 相同（OpenSSL 按主题找签发者与 CRL）。`.pem` 依次放新旧两张 CA 证书，`.crl` 依次放两份 CRL；nginx 两者都读，每张证书按自己的签发者检查 CRL。健康检查以两张 CA 为根，吊销按签发者区分（`OriginCA.IsRevoked` 先找签发它的 CA，再查该 CA 的 CRL）。运营者退役旧 CA 后的新版本不再带它，文件名随内容变化并 reload。回源客户端证书的轮换不需要节点变化：节点只出示控制台当前签发的证书。
 
+### 3.34 分层缓存（`tiered-cache-v1`、`tier-upper-v1`）
+
+proto PROTO_NEXT，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `NodeConfig.tiered_cache`：端口 1–65535 且不是监听端口；节点 id 有效、排序、不重复，地址为 IP（不带 zone、非未指定地址）；计划 id 排序、不重复，每跳 1–3 个上层、上层不是自己、不重复且有地址；按计划算出的链不成环、最多两跳；站点引用的计划必须存在；测量目标最多 1024 个，主机为 IP 或主机名。不合格时整份配置被拒绝。只有被站点引用的计划决定本节点的角色：是某跳的上层时 `Listen`（`tier_clients` 为这些下层），自己有上层时 `Lower`；两者都不是且没有测量目标时不渲染。
+
+- **下层**：边缘层在缓存判断之后，对会被缓存的请求（非图片变体）调用 `edgeweir.tier.route`：把回源层换成 `edgeweir_tier`（`tier.sock`），原回源层记为兜底，并以 `X-Edgeweir-Tier-Key`、`-Url`、`-Hops`、`-Fallback` 把缓存键、清缓存标记匹配的 URL、跳数与兜底层带给 tier 层。tier 层 `access()` 按计划顺序取上层（跳过 `CDN-Loop` 已含的节点与被标记为不可用的节点），`balance()` 逐个 `set_current_peer`（`proxy_ssl_name` 为上层节点 id，`proxy_next_upstream error timeout`，最多 3 次）；与上层之间是双向 TLS 1.3，双方出示节点证书、以节点 CA 校验（`ssl_verify_depth 1`）。上层的回答由 `header_filter()` 像源站回答一样交给边缘缓存（`edgeweir.origin.edge_cache_headers`；上层 5xx 且边缘可用旧副本时断开连接）。nginx 的 502 / 504 进入 `@edgeweir_tier_fallback`，经原回源层回源；连续 2 次失败的上层 15 秒内跳过（`edgeweir_health` 的 `tier|f|<id>` / `tier|d|<id>`）。
+- **上层**：tier 监听 `ssl_verify_client on`，`upper_access()` 只接受 `O=Edgeweir Node`、CN 在 `tier_clients` 中的客户端，去掉其他 `X-Edgeweir-*` 头，追加 `CDN-Loop`。缓存键用下层的，缓存代取两者中较新的、清缓存时间戳取两者中较晚的（本节点的由 `purge.epoch` 与 Cache-Tag 的 `key_epoch` 给出），任一方先执行的清缓存都不会让另一方拿到被清的对象。不再执行封禁、规则、挑战与 CRS（下层已执行）。`upper_header_filter()` 返回源站原样的回答（Cache-Control、Cache-Tag、取回时的 Set-Cookie、会话保持标记），缓存状态放在 `X-Edgeweir-Tier-Cache`。自己也有上层的节点（区域层）把请求继续交给自己的上层，最多两跳。
+- **证书**：agent 把节点证书、私钥与 CA 复制到 `<prefix>/conf/tier/`（文件名带指纹，续期后重新应用）；证书没有 serverAuth 时不监听、不上报 `tier-upper-v1`，读不到身份时去掉分层并告警。
+- **测量**：`tierlatency` 循环每 60 秒对每个测量目标做 3 次 TCP 连接（每次 3 秒超时，最多 16 个并行，遵守源站地址策略），取最小值经 `ReportStatusRequest.tier_latencies` 上报。
+- **统计与日志**：tier 层按上层的缓存状态计数 `tf<状态>`（无上层回答为 `origin`），上层按自己的缓存状态计数 `tv<状态>`，经 `MinuteStats.tier_fetches` / `tier_served` 上报；访问日志字段 `tier` 为 `<节点 id> <状态>` 或 `origin`。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
