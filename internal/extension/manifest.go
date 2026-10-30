@@ -20,7 +20,7 @@ import (
 const Format = "edgeweir-node-extension-v1"
 
 // LuaAPI is the Lua API version the node provides.
-const LuaAPI = 1
+const LuaAPI = 2
 
 // Limits of a package (docs/reference/extensions.md).
 const (
@@ -30,7 +30,15 @@ const (
 	MaxFileBytes     = 4 << 20
 	MaxManifestBytes = 64 << 10
 	MaxPathBytes     = 200
+	// Packages with a sidecar (extension version 1.1).
+	MaxSidecarArchiveBytes  = 64 << 20
+	MaxSidecarUnpackedBytes = 192 << 20
+	MaxSidecarFileBytes     = 96 << 20
 )
+
+// SidecarArchs are the architectures a sidecar binary may be shipped for
+// (sidecar/<arch>/<binary>).
+var SidecarArchs = []string{"linux-amd64", "linux-arm64"}
 
 var (
 	idRE        = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}[a-z0-9]$`)
@@ -39,14 +47,16 @@ var (
 	nameRE      = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	shortNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,15}$`)
 	endpointRE  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	binaryRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	envNameRE   = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 )
 
 var reservedIDs = []string{"edgeweir", "core", "challenge", "session", "health", "ext", "settings", "verify"}
 
-// Hooks and capabilities of Lua API 1.
+// Hooks and capabilities (sidecar: Lua API 2).
 var (
 	Hooks        = []string{"init", "access", "access_late", "header_filter", "body_filter", "log", "endpoint"}
-	Capabilities = []string{"verdicts", "request_headers", "request_body", "response_headers", "html_inject", "body_rewrite", "http_client", "timers"}
+	Capabilities = []string{"verdicts", "request_headers", "request_body", "response_headers", "html_inject", "body_rewrite", "http_client", "timers", "sidecar"}
 	methods      = []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
 	fieldTypes   = []string{"string", "number", "boolean"}
 )
@@ -71,6 +81,51 @@ type Manifest struct {
 	Counters     []string          `json:"counters,omitempty"`
 	Endpoints    []Endpoint        `json:"endpoints,omitempty"`
 	SharedDicts  []SharedDict      `json:"shared_dicts,omitempty"`
+	// Extension version 1.1 (Lua API 2).
+	Secret  bool        `json:"secret,omitempty"`
+	Sidecar *Sidecar    `json:"sidecar,omitempty"`
+	Data    *DataLimits `json:"data,omitempty"`
+}
+
+// Sidecar is a native helper process the agent runs for the extension.
+type Sidecar struct {
+	Binary           string            `json:"binary"`
+	Args             []string          `json:"args,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	MemoryMB         int               `json:"memory_mb"`
+	TasksMax         int               `json:"tasks_max,omitempty"`
+	CPUPercent       int               `json:"cpu_percent,omitempty"`
+	HealthPath       string            `json:"health_path,omitempty"`
+	ConnectTimeoutMS int               `json:"connect_timeout_ms,omitempty"`
+	TimeoutS         int               `json:"timeout_s,omitempty"`
+	MaxBody          *int              `json:"max_body,omitempty"`
+}
+
+// Defaults of a sidecar's optional fields.
+func (s *Sidecar) Normalize() {
+	if s.TasksMax == 0 {
+		s.TasksMax = 256
+	}
+	if s.HealthPath == "" {
+		s.HealthPath = "/healthz"
+	}
+	if s.ConnectTimeoutMS == 0 {
+		s.ConnectTimeoutMS = 1000
+	}
+	if s.TimeoutS == 0 {
+		s.TimeoutS = 30
+	}
+	if s.MaxBody == nil {
+		n := 10 << 20
+		s.MaxBody = &n
+	}
+}
+
+// DataLimits bounds an extension's per-site data items.
+type DataLimits struct {
+	MaxBytes      int64 `json:"max_bytes"`
+	MaxItems      int   `json:"max_items"`
+	MaxTotalBytes int64 `json:"max_total_bytes"`
 }
 
 // Requires names the Lua API and, optionally, a node version range.
@@ -149,8 +204,26 @@ func (m *Manifest) validate() error {
 		return errors.New("hooks must be a non-empty set")
 	case !unique(m.Capabilities):
 		return errors.New("duplicate capability")
-	case len(m.Fields) > 16 || len(m.LogFields) > 8 || len(m.Counters) > 8 || len(m.Endpoints) > 8 || len(m.SharedDicts) > 4:
-		return errors.New("too many fields, log fields, counters, endpoints or shared dicts")
+	case len(m.Fields) > 16 || len(m.Endpoints) > 8 || len(m.SharedDicts) > 4:
+		return errors.New("too many fields, endpoints or shared dicts")
+	case m.Requires.LuaAPI == 1 && (len(m.LogFields) > 8 || len(m.Counters) > 8):
+		return errors.New("too many log fields or counters")
+	case len(m.LogFields) > 16 || len(m.Counters) > 32:
+		return errors.New("too many log fields or counters")
+	case m.Requires.LuaAPI < 2 && (m.Secret || m.Sidecar != nil || m.Data != nil || m.Has("sidecar")):
+		return errors.New("secret, sidecar and data need lua_api 2")
+	case (m.Sidecar != nil) != m.Has("sidecar"):
+		return errors.New("sidecar and the sidecar capability go together")
+	case m.Data != nil && m.Sidecar == nil:
+		return errors.New("data needs a sidecar")
+	}
+	if m.Sidecar != nil {
+		if err := m.Sidecar.validate(); err != nil {
+			return fmt.Errorf("sidecar: %w", err)
+		}
+	}
+	if d := m.Data; d != nil && (d.MaxBytes < 1 || d.MaxBytes > 24<<20 || d.MaxItems < 1 || d.MaxItems > 32 || d.MaxTotalBytes < 1 || d.MaxTotalBytes > 256<<20) {
+		return errors.New("invalid data limits")
 	}
 	for k, v := range m.Name {
 		if (k != "en" && k != "zh-CN") || len([]rune(v)) > 64 || v == "" {
@@ -219,6 +292,40 @@ func (m *Manifest) validate() error {
 	}
 	if total > 32768 {
 		return errors.New("shared dicts larger than 32 MiB")
+	}
+	return nil
+}
+
+func (s *Sidecar) validate() error {
+	switch {
+	case !binaryRE.MatchString(s.Binary):
+		return errors.New("invalid binary name")
+	case len(s.Args) > 16 || len(s.Env) > 16:
+		return errors.New("too many args or env variables")
+	case s.MemoryMB < 16 || s.MemoryMB > 8192:
+		return errors.New("memory_mb must be 16-8192")
+	case s.TasksMax != 0 && (s.TasksMax < 16 || s.TasksMax > 4096):
+		return errors.New("tasks_max must be 16-4096")
+	case s.CPUPercent != 0 && (s.CPUPercent < 10 || s.CPUPercent > 800):
+		return errors.New("cpu_percent must be 10-800")
+	case s.HealthPath != "" && (!strings.HasPrefix(s.HealthPath, "/") || len(s.HealthPath) > 256 || strings.ContainsAny(s.HealthPath, " \t\r\n")):
+		return errors.New("invalid health_path")
+	case s.ConnectTimeoutMS != 0 && (s.ConnectTimeoutMS < 100 || s.ConnectTimeoutMS > 10000):
+		return errors.New("connect_timeout_ms must be 100-10000")
+	case s.TimeoutS != 0 && (s.TimeoutS < 1 || s.TimeoutS > 60):
+		return errors.New("timeout_s must be 1-60")
+	case s.MaxBody != nil && (*s.MaxBody < 0 || *s.MaxBody > 100<<20):
+		return errors.New("max_body must be 0-104857600")
+	}
+	for _, a := range s.Args {
+		if len(a) > 256 || strings.ContainsRune(a, 0) {
+			return errors.New("invalid arg")
+		}
+	}
+	for k, v := range s.Env {
+		if !envNameRE.MatchString(k) || strings.HasPrefix(k, "EDGEWEIR_") || len(v) > 1024 || strings.ContainsRune(v, 0) {
+			return fmt.Errorf("invalid env variable %q", k)
+		}
 	}
 	return nil
 }

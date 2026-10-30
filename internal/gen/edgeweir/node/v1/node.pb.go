@@ -6142,6 +6142,8 @@ func (x *GetExtensionSecretsRequest) GetIds() []string {
 	return nil
 }
 
+// GetExtensionSecretsResponse carries the secrets of the extensions the
+// node's cluster gets with `secret: true`.
 type GetExtensionSecretsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Secrets       []*ExtensionSecret     `protobuf:"bytes,1,rep,name=secrets,proto3" json:"secrets,omitempty"`

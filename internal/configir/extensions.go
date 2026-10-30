@@ -42,6 +42,27 @@ type Extension struct {
 	// State is loaded, failed, incompatible or disabled (see ExtensionStatus).
 	State   string `json:"state"`
 	Message string `json:"-"`
+	// SecretVersion is the console secret's version (0: none, extension
+	// version 1.1); the agent fetches the secret when it changes.
+	SecretVersion uint32 `json:"-"`
+	// Sidecar is the package's sidecar (set by the agent from the verified
+	// manifest), DataLimits its data limits.
+	Sidecar *ExtensionSidecar `json:"-"`
+}
+
+// ExtensionSidecar is what nginx.conf and the supervisor need of a
+// package's sidecar.
+type ExtensionSidecar struct {
+	Binary           string
+	Args             []string
+	Env              map[string]string
+	MemoryMB         int
+	TasksMax         int
+	CPUPercent       int
+	HealthPath       string
+	ConnectTimeoutMS int
+	TimeoutS         int
+	MaxBody          int
 }
 
 // ExtensionSharedDict is a lua_shared_dict of an extension.
@@ -59,12 +80,23 @@ func (d ExtensionSharedDict) DictName(id string) string {
 type SiteExtension struct {
 	ID     string          `json:"id"`
 	Config json.RawMessage `json:"config"`
+	// Data are the site's data items (extension version 1.1); the agent
+	// keeps them for the extension's sidecar.
+	Data []ExtensionDataItem `json:"-"`
+}
+
+// ExtensionDataItem is a per-site data item of an extension.
+type ExtensionDataItem struct {
+	Name   string
+	SHA256 string
+	Size   int64
 }
 
 var (
 	extensionIDRE  = regexp.MustCompile(`^[a-z][a-z0-9-]{1,38}[a-z0-9]$`)
 	extensionDict  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,15}$`)
 	extensionField = regexp.MustCompile(`^ext\.[a-z][a-z0-9-]{1,38}[a-z0-9]\.[a-z][a-z0-9_]{0,31}$`)
+	extensionData  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	sha256Hex      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
@@ -106,7 +138,7 @@ func buildExtensions(c *nodev1.NodeConfig) ([]Extension, error) {
 		switch {
 		case !extensionIDRE.MatchString(e.GetId()) || seen[e.GetId()]:
 			return nil, bad("id")
-		case !sha256Hex.MatchString(e.GetSha256()) || e.GetSize() == 0 || e.GetSize() > 4<<20:
+		case !sha256Hex.MatchString(e.GetSha256()) || e.GetSize() == 0 || e.GetSize() > 64<<20:
 			return nil, bad("digest")
 		case e.GetFailureMode() != "open" && e.GetFailureMode() != "closed":
 			return nil, bad("failure mode")
@@ -124,6 +156,7 @@ func buildExtensions(c *nodev1.NodeConfig) ([]Extension, error) {
 			ID: e.GetId(), Version: e.GetVersion(), Publisher: e.GetPublisher(), SHA256: e.GetSha256(),
 			Size: int(e.GetSize()), Signature: e.GetSignature(), PublicKey: e.GetPublicKey(),
 			Enabled: e.GetEnabled(), FailureMode: e.GetFailureMode(), Config: config,
+			SecretVersion: e.GetSecretVersion(),
 		}
 		total := 0
 		names := map[string]bool{}
@@ -155,7 +188,20 @@ func buildSiteExtensions(s *nodev1.Site, exts []Extension) ([]SiteExtension, err
 		if !ok {
 			return nil, fmt.Errorf("%w: invalid configuration of extension %q", ErrRejected, e.GetId())
 		}
-		out = append(out, SiteExtension{ID: e.GetId(), Config: config})
+		x := SiteExtension{ID: e.GetId(), Config: config}
+		var total uint64
+		for _, d := range e.GetData() {
+			if !extensionData.MatchString(d.GetName()) || !sha256Hex.MatchString(d.GetSha256()) || d.GetSize() > 24<<20 ||
+				slices.ContainsFunc(x.Data, func(y ExtensionDataItem) bool { return y.Name == d.GetName() }) {
+				return nil, fmt.Errorf("%w: invalid data item of extension %q", ErrRejected, e.GetId())
+			}
+			total += d.GetSize()
+			x.Data = append(x.Data, ExtensionDataItem{Name: d.GetName(), SHA256: d.GetSha256(), Size: int64(d.GetSize())})
+		}
+		if len(x.Data) > 32 || total > 256<<20 {
+			return nil, fmt.Errorf("%w: too much data for extension %q", ErrRejected, e.GetId())
+		}
+		out = append(out, x)
 	}
 	return out, nil
 }

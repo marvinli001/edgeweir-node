@@ -14,6 +14,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -60,6 +61,14 @@ func checkPath(p string) error {
 		return err
 	}
 	segments := strings.Split(p, "/")
+	if segments[0] == "sidecar" {
+		// sidecar/<arch>/<binary>: the only native code a package may hold
+		// (ReadManifest checks it against the manifest).
+		if len(segments) != 3 || !slices.Contains(SidecarArchs, segments[1]) || !binaryRE.MatchString(segments[2]) {
+			return fmt.Errorf("unexpected sidecar file %q", p)
+		}
+		return nil
+	}
 	switch {
 	case len(segments) == 1:
 		if p != "manifest.json" && !topFileRE.MatchString(p) {
@@ -79,14 +88,16 @@ func checkPath(p string) error {
 // ReadArchive parses a package: gzip, then a ustar stream of regular files
 // and directories only.
 func ReadArchive(archive []byte) ([]File, error) {
-	if len(archive) > MaxArchiveBytes {
-		return nil, errors.New("archive larger than 4 MiB")
+	if len(archive) > MaxSidecarArchiveBytes {
+		return nil, errors.New("archive larger than 64 MiB")
 	}
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, errNotGzip
 	}
-	tr := tar.NewReader(io.LimitReader(gz, MaxUnpackedBytes+(1<<20)))
+	// The limits of packages with a sidecar here; ReadManifest applies the
+	// smaller ones to the others.
+	tr := tar.NewReader(io.LimitReader(gz, MaxSidecarUnpackedBytes+(1<<20)))
 	var (
 		files   []File
 		seen    = map[string]bool{}
@@ -122,7 +133,7 @@ func ReadArchive(archive []byte) ([]File, error) {
 			if err := checkSegments(name); err != nil {
 				return nil, err
 			}
-			if top := strings.SplitN(name, "/", 2)[0]; top != "lua" && top != "assets" {
+			if top := strings.SplitN(name, "/", 2)[0]; top != "lua" && top != "assets" && top != "sidecar" {
 				return nil, fmt.Errorf("unexpected directory %q", top)
 			}
 			continue
@@ -137,11 +148,15 @@ func ReadArchive(archive []byte) ([]File, error) {
 			return nil, fmt.Errorf("duplicate entry %q", name)
 		}
 		seen[name] = true
-		if h.Size > MaxFileBytes {
-			return nil, fmt.Errorf("file larger than 4 MiB: %q", name)
+		limit := int64(MaxFileBytes)
+		if strings.HasPrefix(name, "sidecar/") {
+			limit = MaxSidecarFileBytes
 		}
-		if total += h.Size; total > MaxUnpackedBytes {
-			return nil, errors.New("unpacked size larger than 16 MiB")
+		if h.Size > limit {
+			return nil, fmt.Errorf("file larger than %d MiB: %q", limit>>20, name)
+		}
+		if total += h.Size; total > MaxSidecarUnpackedBytes {
+			return nil, errors.New("unpacked size larger than 192 MiB")
 		}
 		data, err := io.ReadAll(io.LimitReader(tr, h.Size))
 		if err != nil || int64(len(data)) != h.Size {
@@ -182,7 +197,60 @@ func ReadManifest(files []File) (*Manifest, error) {
 	if !hasMain {
 		return nil, errors.New("lua/main.lua missing")
 	}
+	if err := checkSidecarFiles(manifest, files); err != nil {
+		return nil, err
+	}
 	return manifest, nil
+}
+
+// ELF machine numbers of the sidecar architectures.
+var elfMachines = map[string]uint16{"linux-amd64": 62, "linux-arm64": 183}
+
+// checkSidecarFiles allows sidecar/<arch>/<binary> only for a manifest with
+// a sidecar (64-bit little-endian ELF executables of that architecture, at
+// least one) and keeps the version 1 size limits for every other package.
+func checkSidecarFiles(m *Manifest, files []File) error {
+	var total int64
+	archs := 0
+	for _, f := range files {
+		total += int64(len(f.Data))
+		if !strings.HasPrefix(f.Path, "sidecar/") {
+			continue
+		}
+		parts := strings.Split(f.Path, "/")
+		if m.Sidecar == nil || parts[2] != m.Sidecar.Binary {
+			return fmt.Errorf("unexpected sidecar file %q", f.Path)
+		}
+		d := f.Data
+		if len(d) < 20 || string(d[:4]) != "\x7fELF" || d[4] != 2 || d[5] != 1 || uint16(d[18])|uint16(d[19])<<8 != elfMachines[parts[1]] {
+			return fmt.Errorf("not a 64-bit ELF executable for %s: %q", parts[1], f.Path)
+		}
+		archs++
+	}
+	if m.Sidecar == nil {
+		if total > MaxUnpackedBytes {
+			return errors.New("unpacked size larger than 16 MiB")
+		}
+		for _, f := range files {
+			if len(f.Data) > MaxFileBytes {
+				return fmt.Errorf("file larger than 4 MiB: %q", f.Path)
+			}
+		}
+		return nil
+	}
+	if archs == 0 {
+		return errors.New("the sidecar has no binary")
+	}
+	return nil
+}
+
+// SidecarBinary returns the path of the sidecar binary for this machine's
+// architecture inside an unpacked package ("" without one).
+func SidecarBinary(m *Manifest, goarch string) string {
+	if m.Sidecar == nil {
+		return ""
+	}
+	return "sidecar/linux-" + goarch + "/" + m.Sidecar.Binary
 }
 
 // Payload is the JWS payload of a package signature.
@@ -259,8 +327,8 @@ func ParseSignature(jws string) (kid string, payload Payload, signingInput strin
 // signature, digest, size and identity, then the archive and manifest.
 // publisher, when set, must be the key's publisher.
 func Verify(archive []byte, jws string, key JWK, publisher string) (*Package, error) {
-	if len(archive) > MaxArchiveBytes {
-		return nil, errors.New("archive larger than 4 MiB")
+	if len(archive) > MaxSidecarArchiveBytes {
+		return nil, errors.New("archive larger than 64 MiB")
 	}
 	kid, payload, input, sig, err := ParseSignature(jws)
 	if err != nil {
@@ -294,6 +362,9 @@ func Verify(archive []byte, jws string, key JWK, publisher string) (*Package, er
 	}
 	if manifest.ID != payload.ID || manifest.Version != payload.Version || manifest.Publisher != payload.Publisher {
 		return nil, errors.New("signature: identity does not match the manifest")
+	}
+	if manifest.Sidecar == nil && len(archive) > MaxArchiveBytes {
+		return nil, errors.New("archive larger than 4 MiB")
 	}
 	return &Package{Manifest: manifest, SHA256: digest, Size: len(archive), KID: kid, Files: files}, nil
 }
@@ -366,11 +437,12 @@ func Pack(files []File) ([]byte, error) {
 	if err := gz.Close(); err != nil {
 		return nil, err
 	}
-	if buf.Len() > MaxArchiveBytes {
-		return nil, errors.New("archive larger than 4 MiB")
-	}
-	if _, err := ReadManifest(files); err != nil {
+	m, err := ReadManifest(files)
+	if err != nil {
 		return nil, err
+	}
+	if limit := MaxArchiveBytes; buf.Len() > limit && (m.Sidecar == nil || buf.Len() > MaxSidecarArchiveBytes) {
+		return nil, errors.New("archive too large")
 	}
 	return buf.Bytes(), nil
 }

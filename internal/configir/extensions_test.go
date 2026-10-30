@@ -62,7 +62,7 @@ func TestExtensionsRejected(t *testing.T) {
 	cases := map[string]func(c *nodev1.NodeConfig, e *nodev1.Extension, a *nodev1.Site){
 		"id":           func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.Id = "Hello" },
 		"digest":       func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.Sha256 = "abc" },
-		"size":         func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.Size = 5 << 20 },
+		"size":         func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.Size = 65 << 20 },
 		"failure mode": func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.FailureMode = "maybe" },
 		"signature":    func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.Signature = "" },
 		"config":       func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { e.ConfigJson = `[1]` },
@@ -70,7 +70,9 @@ func TestExtensionsRejected(t *testing.T) {
 		"dict size": func(_ *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) {
 			e.SharedDicts = []*nodev1.ExtensionSharedDict{{Name: "a", SizeKb: 16384}, {Name: "b", SizeKb: 16384}, {Name: "c", SizeKb: 16}}
 		},
-		"repeated": func(c *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) { c.Extensions = append(c.Extensions, e) },
+		"repeated": func(c *nodev1.NodeConfig, e *nodev1.Extension, _ *nodev1.Site) {
+			c.Extensions = append(c.Extensions, e)
+		},
 		"unknown on site": func(_ *nodev1.NodeConfig, _ *nodev1.Extension, a *nodev1.Site) {
 			a.Extensions[0].Id = "other-one"
 		},
@@ -95,6 +97,46 @@ func TestExtensionNames(t *testing.T) {
 	for s, want := range map[string]bool{"ext:hello-header": true, "ext:Hello": false, "hello-header": false, "ext:": false} {
 		if ValidExtensionRuleID(s) != want {
 			t.Errorf("ValidExtensionRuleID(%q) = %v", s, !want)
+		}
+	}
+}
+
+// TestExtensionData: per-site data items and the secret version
+// (extension version 1.1).
+func TestExtensionData(t *testing.T) {
+	item := func(name string, size uint64) *nodev1.ExtensionDataItem {
+		return &nodev1.ExtensionDataItem{Name: name, Sha256: strings.Repeat("cd", 32), Size: size}
+	}
+	p, err := Build(extensionConfig(t, func(_ *nodev1.NodeConfig, e *nodev1.Extension, a *nodev1.Site) {
+		e.SecretVersion = 3
+		a.Extensions[0].Data = []*nodev1.ExtensionDataItem{item("fn-main.wasm", 1024), item("deploy.json", 10)}
+	}), withExtensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Extensions[0].SecretVersion != 3 {
+		t.Fatalf("secret version %d", p.Extensions[0].SecretVersion)
+	}
+	var data []ExtensionDataItem
+	for _, s := range p.Sites {
+		if s.ID == "a" {
+			data = s.Extensions[0].Data
+		}
+	}
+	if len(data) != 2 || data[0].Name != "fn-main.wasm" || data[0].Size != 1024 {
+		t.Fatalf("data %+v", data)
+	}
+	for name, items := range map[string][]*nodev1.ExtensionDataItem{
+		"name":      {item("../x", 1)},
+		"repeated":  {item("a", 1), item("a", 1)},
+		"too large": {item("a", 25<<20)},
+		"digest":    {{Name: "a", Sha256: "x", Size: 1}},
+	} {
+		_, err := Build(extensionConfig(t, func(_ *nodev1.NodeConfig, _ *nodev1.Extension, a *nodev1.Site) {
+			a.Extensions[0].Data = items
+		}), withExtensions)
+		if !errors.Is(err, ErrRejected) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

@@ -177,3 +177,78 @@ func TestManifestRules(t *testing.T) {
 		}
 	}
 }
+
+// TestVersion11Manifest checks the members of extension version 1.1.
+func TestVersion11Manifest(t *testing.T) {
+	base := `{"format":"edgeweir-node-extension-v1","id":"a-b","version":"1.0.0","publisher":"example.org","name":{"en":"A"},"hooks":["access_late"]%s}`
+	sidecar := `"capabilities":["sidecar"],"sidecar":{"binary":"run","memory_mb":256}`
+	for _, ok := range []string{
+		`,"requires":{"lua_api":2},"secret":true`,
+		`,"requires":{"lua_api":2},"counters":["a","b","c","d","e","f","g","h","i"]`,
+		`,"requires":{"lua_api":2},` + sidecar,
+		`,"requires":{"lua_api":2},` + sidecar + `,"data":{"max_bytes":1024,"max_items":2,"max_total_bytes":2048}`,
+	} {
+		if _, err := ParseManifest([]byte(strings.Replace(base, "%s", ok, 1))); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		`,"requires":{"lua_api":1},"secret":true`,
+		`,"requires":{"lua_api":1},"counters":["a","b","c","d","e","f","g","h","i"]`,
+		`,"requires":{"lua_api":2},"sidecar":{"binary":"run","memory_mb":256}`,
+		`,"requires":{"lua_api":2},"capabilities":["sidecar"]`,
+		`,"requires":{"lua_api":2},"data":{"max_bytes":1024,"max_items":2,"max_total_bytes":2048}`,
+		`,"requires":{"lua_api":2},"capabilities":["sidecar"],"sidecar":{"binary":"run","memory_mb":8}`,
+		`,"requires":{"lua_api":2},"capabilities":["sidecar"],"sidecar":{"binary":"run","memory_mb":256,"timeout_s":61}`,
+		`,"requires":{"lua_api":2},"capabilities":["sidecar"],"sidecar":{"binary":"run","memory_mb":256,"env":{"EDGEWEIR_X":"1"}}`,
+		`,"requires":{"lua_api":2},"capabilities":["sidecar"],"sidecar":{"binary":"../run","memory_mb":256}`,
+	} {
+		if _, err := ParseManifest([]byte(strings.Replace(base, "%s", bad, 1))); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}
+
+// elf returns the start of a 64-bit little-endian ELF executable for an
+// e_machine.
+func elf(machine uint16) []byte {
+	b := make([]byte, 64)
+	copy(b, "\x7fELF")
+	b[4], b[5] = 2, 1
+	b[18], b[19] = byte(machine), byte(machine>>8)
+	return b
+}
+
+// TestSidecarPackages: sidecar binaries only with a manifest sidecar and
+// for their architecture.
+func TestSidecarPackages(t *testing.T) {
+	manifest := func(sidecar bool) File {
+		m := `{"format":"edgeweir-node-extension-v1","id":"a-b","version":"1.0.0","publisher":"example.org","name":{"en":"A"},"requires":{"lua_api":2},"hooks":["access_late"]`
+		if sidecar {
+			m += `,"capabilities":["sidecar"],"sidecar":{"binary":"run","memory_mb":256}`
+		}
+		return File{Path: "manifest.json", Data: []byte(m + "}")}
+	}
+	main := File{Path: "lua/main.lua", Data: []byte("return {}")}
+	pkg := func(files ...File) error {
+		_, err := Pack(files)
+		return err
+	}
+	if err := pkg(manifest(true), main, File{Path: "sidecar/linux-amd64/run", Data: elf(62)}, File{Path: "sidecar/linux-arm64/run", Data: elf(183)}); err != nil {
+		t.Fatal(err)
+	}
+	for name, files := range map[string][]File{
+		"no binary":       {manifest(true), main},
+		"no sidecar":      {manifest(false), main, {Path: "sidecar/linux-amd64/run", Data: elf(62)}},
+		"other binary":    {manifest(true), main, {Path: "sidecar/linux-amd64/other", Data: elf(62)}},
+		"wrong machine":   {manifest(true), main, {Path: "sidecar/linux-amd64/run", Data: elf(183)}},
+		"not elf":         {manifest(true), main, {Path: "sidecar/linux-amd64/run", Data: []byte("#!/bin/sh\n")}},
+		"other arch":      {manifest(true), main, {Path: "sidecar/linux-riscv64/run", Data: elf(243)}},
+		"nested":          {manifest(true), main, {Path: "sidecar/linux-amd64/x/run", Data: elf(62)}},
+		"big without one": {manifest(false), main, {Path: "assets/big", Data: make([]byte, MaxFileBytes+1)}},
+	} {
+		if err := pkg(files...); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
