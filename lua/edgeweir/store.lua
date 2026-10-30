@@ -539,6 +539,8 @@ function _M.replace(doc)
   end
   if #patterns > 0 then cfg.patterns = patterns end
   if type(doc.unknown_hosts) == "table" then cfg.unknown_hosts = doc.unknown_hosts end
+  -- The node ids the tier listener serves as lower tiers (tiered-cache-v1).
+  if type(doc.tier_clients) == "table" and #doc.tier_clients > 0 then cfg.tier_clients = doc.tier_clients end
   -- The trusted proxies of the client address setting (client-ip-v1):
   -- never banned, not counted per address by CC.
   local ca = doc.client_address
@@ -681,7 +683,8 @@ end
 --   cdn_id = CDN-Loop identifier or "", tag_ttl = lifetime of Cache-Tag
 --   index entries, platform_pages = compiled platform error pages,
 --   offline = offline hosts (nil without any), health_certificate = the
---   node's health certificate (nil without one) }.
+--   node's health certificate (nil without one), tier_clients = the node
+--   ids the tier listener serves (nil without any) }.
 local EMPTY_CONFIG = { allowed = {}, cdn_id = "", tag_ttl = _M.DEFAULT_TAG_TTL, platform_pages = {} }
 
 function _M.config(version)
@@ -711,6 +714,7 @@ function _M.config(version)
       health_certificate = probehealth.material(doc),
       trusted = type(doc.trusted_proxies) == "table" and #doc.trusted_proxies > 0 and expressions.ip_set(doc.trusted_proxies) or nil,
       unknown = unknown_hosts(doc.unknown_hosts),
+      tier_clients = type(doc.tier_clients) == "table" and doc.tier_clients or nil,
     }
     if type(doc.patterns) == "table" and #doc.patterns > 0 then
       cfg.patterns = {}

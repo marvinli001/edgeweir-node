@@ -82,6 +82,17 @@ test("only node certificates name a client", function()
   eq(tier.client_node(nil), nil)
 end)
 
+test("the site table keeps the tier listener's clients", function()
+  local store = require("edgeweir.store")
+  assert(store.replace({ revision = "t1", sites = {}, tier_clients = { "n1", "n2" } }))
+  local clients = store.config().tier_clients
+  eq(type(clients), "table", "tier_clients")
+  eq(clients[1], "n1")
+  eq(clients[2], "n2")
+  assert(store.replace({ revision = "t2", sites = {} }))
+  eq(store.config().tier_clients, nil, "without a tier listener")
+end)
+
 test("upper tiers the request passed or that are down are skipped", function()
   local peers = {
     { id = "u1", cdn_id = "edgeweir-aaaa" },
