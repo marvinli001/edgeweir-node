@@ -11,6 +11,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/challengeverify"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
+	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
 // TestServeChallengeVerify: the agent verifies an answer with the provider and
@@ -74,5 +75,29 @@ func TestServeChallengeVerify(t *testing.T) {
 	delete(a.creds, "cp-1")
 	if got := ask(`{"site_id":"site-p","answer":{"token":"good-token"}}`); got.Outcome != challengeverify.Unavailable {
 		t.Fatalf("no secret: %+v", got)
+	}
+}
+
+// TestPruneKeepsProviderSecret: the secret of a site's interactive provider
+// outlives the prune after an apply (the agent reads it at verify time).
+func TestPruneKeepsProviderSecret(t *testing.T) {
+	a := &Agent{
+		cfg: Config{StateDir: t.TempDir()},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		creds: map[string]configir.Credential{
+			"cp-1":   {Version: 1, SecretKey: `{"secret":"fake-turnstile-secret"}`},
+			"unused": {Version: 1, SecretKey: "{}"},
+		},
+	}
+	cfg := &nodev1.NodeConfig{ClusterId: "c", Sites: []*nodev1.Site{{
+		Id:         "site-p",
+		Protection: &nodev1.SiteProtection{Interactive: &nodev1.ChallengeProvider{Kind: "turnstile", CredentialId: "cp-1", CredentialVersion: 1}},
+	}}}
+	a.pruneSecrets(cfg, nil)
+	if _, ok := a.creds["cp-1"]; !ok {
+		t.Fatal("provider secret pruned")
+	}
+	if _, ok := a.creds["unused"]; ok {
+		t.Fatal("unreferenced credential kept")
 	}
 }

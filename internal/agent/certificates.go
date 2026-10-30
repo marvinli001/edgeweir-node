@@ -461,6 +461,10 @@ func (a *Agent) pruneSecrets(current, previous *nodev1.NodeConfig) {
 			if purge := site.GetPurge(); purge != nil {
 				credentials[purge.GetCredentialId()] = true
 			}
+			// So do the secrets of interactive challenge providers, read at verify time.
+			if provider := site.GetProtection().GetInteractive(); provider.GetCredentialId() != "" {
+				credentials[provider.GetCredentialId()] = true
+			}
 			for _, origin := range site.GetOriginPool().GetOrigins() {
 				if s3 := origin.GetS3(); s3 != nil {
 					credentials[s3.GetCredentialId()] = true
