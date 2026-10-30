@@ -55,7 +55,9 @@ check() { # check NAME CONDITION...
 echo "== build (edgeweir-node ${VERSION}, test console, stub packages)"
 mkdir -p "$WORK/bin" "$WORK/keys" "$WORK/mirror/v${VERSION}" "$WORK/deb/DEBIAN" \
   "$WORK/deb/usr/lib/edgeweir-openresty/nginx/sbin"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags nodynamic,wasm2go \
+# Default build tags: the release's nodynamic,wasm2go image converter takes
+# gigabytes to compile and plays no part here.
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
   -ldflags "-X github.com/marvinli001/edgeweir-node/internal/version.Version=${VERSION}" \
   -o "$WORK/bin/edgeweir-node" ./cmd/edgeweir-node
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$WORK/bin/console" ./test/sshinstall/console
