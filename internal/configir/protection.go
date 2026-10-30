@@ -20,7 +20,7 @@ var ChallengeTypes = []string{"cookie302", "js", "pow", "captcha"}
 var ChallengeKinds = append(slices.Clone(ChallengeTypes), "managed")
 
 // FeatureChallengeV3: the managed challenge and third-party interactive
-// providers (SiteProtection.interactive, proto PROTO_NEXT).
+// providers (SiteProtection.interactive, proto v1.9.0).
 const FeatureChallengeV3 = "challenge-v3"
 
 // ProviderKinds are the third-party widgets of the interactive challenge.

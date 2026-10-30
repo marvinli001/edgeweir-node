@@ -6,7 +6,7 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
-// FeatureDevelopmentMode (proto/vX.Y.Z-dev-mode): Site.development_mode,
+// FeatureDevelopmentMode (proto/v1.9.0): Site.development_mode,
 // the edge cache of the site bypassed until a deadline on the node's clock
 // (edgeweir.router). Required while a site has it.
 const FeatureDevelopmentMode = "development-mode-v1"

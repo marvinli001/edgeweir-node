@@ -11,7 +11,7 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
-// FeatureAICrawlers is AI crawl control (proto vNEXT, ADR-0070):
+// FeatureAICrawlers is AI crawl control (proto v1.9.0, ADR-0070):
 // Site.ai_crawl (crawler actions, the managed robots.txt, pay per crawl),
 // the crawler tagging of access logs and MinuteStats.crawlers /
 // crawler_paths. The catalogue (NodeConfig.ai_crawlers) alone needs no

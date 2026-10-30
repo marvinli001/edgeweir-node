@@ -168,7 +168,7 @@ type Plan struct {
 	// ConnectionLimits are the per-client TCP connection limits the agent
 	// writes into nftables (nil: none; proto v1.6.0).
 	ConnectionLimits *ConnectionLimits
-	// AICrawlers is the AI crawler catalogue (nil: none; proto vNEXT,
+	// AICrawlers is the AI crawler catalogue (nil: none; proto v1.9.0,
 	// ADR-0070): requests are tagged with the crawler they claim.
 	AICrawlers []AICrawler
 	// Tier is this node's part in the tiered cache (nil: none; feature

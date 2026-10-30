@@ -10,7 +10,7 @@ import (
 
 // FeatureMarkdown is Markdown for Agents: HTML responses converted to
 // Markdown for requests that ask for it (Site.markdown, proto
-// vX.Y.Z-markdown) and the responses counted in
+// v1.9.0) and the responses counted in
 // MinuteStats.markdown_responses. Nodes announce it while their converter
 // runs (--markdown-workers above 0), as an extra feature; the console
 // requires it when a served site converts.

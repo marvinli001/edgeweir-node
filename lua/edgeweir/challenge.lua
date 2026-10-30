@@ -39,7 +39,7 @@
 -- redirects count as challenges issued, passes signed after a verified
 -- answer as challenges passed (edgeweir.topstats, per site and minute).
 --
--- Since proto PROTO_NEXT (feature challenge-v3):
+-- Since proto v1.9.0 (feature challenge-v3):
 --   * "managed" asks for level 3 and is not a level of its own. The page is
 --     a proof of work that also posts the browser's signals (s, a bitmask:
 --     1 navigator.webdriver, 2 no languages, 4 a headless User-Agent, 8 an

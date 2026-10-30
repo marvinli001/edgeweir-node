@@ -12,7 +12,7 @@ import (
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
-// FeatureExtensions (proto PROTO_NEXT): node extensions, signed Lua packages
+// FeatureExtensions (proto v1.9.0): node extensions, signed Lua packages
 // (docs/reference/extensions.md in the console repository). The agent
 // announces it through Options.ExtraFeatures unless it runs with
 // --no-extensions.

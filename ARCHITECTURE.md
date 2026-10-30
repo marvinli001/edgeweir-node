@@ -1,6 +1,6 @@
 # edgeweir-node 架构
 
-本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v1.8.0`）里的 `edgeweir.node.v1`。
+本文描述节点的实现。节点和控制面之间唯一的契约是 `edgeweir/proto`（当前 `proto/v1.9.0`）里的 `edgeweir.node.v1`。
 
 ## 1. 组件
 
@@ -995,7 +995,7 @@ proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origi
 
 ### 3.34 面向代理的 Markdown（`markdown-v1`）
 
-proto 占位 `vX.Y.Z-markdown`（核心 ADR-0074）。`Site.markdown`（`include_prefixes`、`exclude_prefixes`）经 `configir.buildMarkdown` 校验（各 ≤ 32 个、每个 ≤ 256 字节、以 `/` 开头的 ASCII 可见字符、已排序且不重复）；节点没有转换器（`--markdown-workers 0`）时任何开启的配置都被拒绝。
+proto `v1.9.0`（核心 ADR-0074）。`Site.markdown`（`include_prefixes`、`exclude_prefixes`）经 `configir.buildMarkdown` 校验（各 ≤ 32 个、每个 ≤ 256 字节、以 `/` 开头的 ASCII 可见字符、已排序且不重复）；节点没有转换器（`--markdown-workers 0`）时任何开启的配置都被拒绝。
 
 - **边缘层**（`edgeweir.markdown`）：`router.route` 在缓存判断之前对 GET / HEAD 调用 `markdown.route`：路径最后一段没有扩展名或是 HTML 类扩展名（`EXTENSIONS`），以某个包含前缀开头（没有时为全部）且不以排除前缀开头时设 `ngx.ctx.edgeweir_markdown_vary`；`Accept` 明确列出 `text/markdown` 且 q > 0（同一类型出现多次取最低）时 `$edgeweir_range_mode` 置空、`$edgeweir_markdown` 设为 `up=<原回源层>`、`$edgeweir_origin_layer` 改为 `edgeweir_markdown`，被缓存的请求在缓存键末尾加 `|m=md`（`cachekey.build` 的 `req.markdown`，在清缓存时间戳 `#` 之前），此时不做图片协商。header filter 对有资格的请求的 `text/html`、`application/xhtml+xml`、`text/markdown` 响应在 `Vary` 中加 `Accept`，转换后的响应不做字符集改写；缓存对象本身不带 `Vary: Accept`。
 - **转换器**（`internal/mdconv`，agent 的 `markdown.sock`，0600、属 nginx 用户）：以 GET（HEAD 同样）向 `up` 指定的回源层转发原始 URI 与请求头，去掉 `X-Edgeweir-Markdown`、逐跳头、条件头、`Range` 与 `Accept-Encoding`（源站回答 identity，gzip 也接受并解码）。候选：2xx 且不是 204 / 205 / 206、`text/html`、编码为 identity 或 gzip、长度不超过 `MaxInput`（6 MiB，解码后）；其余原样转发。读取的 HTML 先占用缓冲预算（`--markdown-memory-mb`，gzip 时加倍，以便原样转发），再按 `Estimate`（24 × 字节 + 48 MiB）取转换名额；等 1 秒拿不到或源站在 `--markdown-timeout` 内没传完时原样转发并把 `X-Accel-Expires` 限到 60 秒。转换后的响应：`Content-Type: text/markdown; charset=utf-8`、`Content-Length`、`X-Markdown-Tokens`（ASCII 字节 / 4 加非 ASCII 字符数）、源站没有时 `Content-Signal: ai-train=yes, search=yes, ai-input=yes`、内部头 `X-Edgeweir-Markdown-Converted: 1`（边缘层 `proxy_hide_header`，源站自带的被 `origin.lua` 去掉）；去掉 `ETag`、`Last-Modified`、`Content-Encoding`、`Content-Range`、`Accept-Ranges`，其余源站头保留。回源层断开时转换器以 `http.ErrAbortHandler` 断开。
@@ -1003,7 +1003,7 @@ proto 占位 `vX.Y.Z-markdown`（核心 ADR-0074）。`Site.markdown`（`include
 - **统计**：log 阶段对带 `$upstream_http_x_edgeweir_markdown_converted`（命中时来自缓存）的完整 200 GET 响应计数到分钟指标 `md`，`drain` 报为 `markdown_responses`（`MinuteStats` 27）。
 ### 3.35 分层缓存（`tiered-cache-v1`、`tier-upper-v1`）
 
-proto PROTO_NEXT，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `NodeConfig.tiered_cache`：端口 1–65535 且不是监听端口；节点 id 有效、排序、不重复，地址为 IP（不带 zone、非未指定地址）；计划 id 排序、不重复，每跳 1–3 个上层、上层不是自己、不重复且有地址；按计划算出的链不成环、最多两跳；站点引用的计划必须存在；测量目标最多 1024 个，主机为 IP 或主机名。不合格时整份配置被拒绝。只有被站点引用的计划决定本节点的角色：是某跳的上层时 `Listen`（`tier_clients` 为这些下层），自己有上层时 `Lower`；两者都不是且没有测量目标时不渲染。
+proto v1.9.0，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `NodeConfig.tiered_cache`：端口 1–65535 且不是监听端口；节点 id 有效、排序、不重复，地址为 IP（不带 zone、非未指定地址）；计划 id 排序、不重复，每跳 1–3 个上层、上层不是自己、不重复且有地址；按计划算出的链不成环、最多两跳；站点引用的计划必须存在；测量目标最多 1024 个，主机为 IP 或主机名。不合格时整份配置被拒绝。只有被站点引用的计划决定本节点的角色：是某跳的上层时 `Listen`（`tier_clients` 为这些下层），自己有上层时 `Lower`；两者都不是且没有测量目标时不渲染。
 
 - **下层**：边缘层在缓存判断之后，对会被缓存的请求（非图片变体）调用 `edgeweir.tier.route`：把回源层换成 `edgeweir_tier`（`tier.sock`），原回源层记为兜底，并以 `X-Edgeweir-Tier-Key`、`-Url`、`-Hops`、`-Fallback` 把缓存键、清缓存标记匹配的 URL、跳数与兜底层带给 tier 层。tier 层 `access()` 按计划顺序取上层（跳过 `CDN-Loop` 已含的节点与被标记为不可用的节点），`balance()` 逐个 `set_current_peer`（`proxy_ssl_name` 为上层节点 id，`proxy_next_upstream error timeout`，最多 3 次）；与上层之间是双向 TLS 1.3，双方出示节点证书、以节点 CA 校验（`ssl_verify_depth 1`）。上层的回答由 `header_filter()` 像源站回答一样交给边缘缓存（`edgeweir.origin.edge_cache_headers`；上层 5xx 且边缘可用旧副本时断开连接）。nginx 的 502 / 504 进入 `@edgeweir_tier_fallback`，经原回源层回源；连续 2 次失败的上层 15 秒内跳过（`edgeweir_health` 的 `tier|f|<id>` / `tier|d|<id>`）。
 - **上层**：tier 监听 `ssl_verify_client on`，`upper_access()` 只接受 `O=Edgeweir Node`、CN 在 `tier_clients` 中的客户端，去掉其他 `X-Edgeweir-*` 头，追加 `CDN-Loop`。缓存键用下层的，缓存代取两者中较新的、清缓存时间戳取两者中较晚的（本节点的由 `purge.epoch` 与 Cache-Tag 的 `key_epoch` 给出），任一方先执行的清缓存都不会让另一方拿到被清的对象。不再执行封禁、规则、挑战与 CRS（下层已执行）。`upper_header_filter()` 返回源站原样的回答（Cache-Control、Cache-Tag、取回时的 Set-Cookie、会话保持标记），缓存状态放在 `X-Edgeweir-Tier-Cache`。自己也有上层的节点（区域层）把请求继续交给自己的上层，最多两跳。

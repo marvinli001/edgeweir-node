@@ -1,4 +1,4 @@
--- edgeweir.aicrawl: AI crawl control (proto vNEXT, feature ai-crawlers-v1,
+-- edgeweir.aicrawl: AI crawl control (proto v1.9.0, feature ai-crawlers-v1,
 -- ADR-0070).
 --
 -- The console ships the crawler catalogue (NodeConfig.ai_crawlers, site

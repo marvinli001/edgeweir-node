@@ -16,7 +16,7 @@ import (
 )
 
 // aiCrawlVector reads testdata/content_hash_vector_ai_crawl.json, a copy
-// of the console's fixture (proto vNEXT, ADR-0070): a catalogue of three
+// of the console's fixture (proto v1.9.0, ADR-0070): a catalogue of three
 // crawlers; site a blocks GPTBot with a 402 and its own text, charges
 // ClaudeBot USD 0.01 with dynamic pricing, blocks impersonators and
 // manages robots.txt; site b only manages robots.txt; site c has no

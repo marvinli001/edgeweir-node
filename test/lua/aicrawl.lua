@@ -1,4 +1,4 @@
--- AI crawl control (proto vNEXT, feature ai-crawlers-v1, ADR-0070): the
+-- AI crawl control (proto v1.9.0, feature ai-crawlers-v1, ADR-0070): the
 -- catalogue's claims (longest token first), verification by published
 -- ranges and by reverse DNS through a fake resolver, the price headers, a
 -- site's policy and the crawler counters of the minute summaries.
