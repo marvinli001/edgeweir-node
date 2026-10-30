@@ -307,6 +307,12 @@ local function header_value(v)
   return v
 end
 
+-- Request headers the node sets for a sidecar (edgeweir.router).
+local NODE_SIDECAR_HEADERS = {
+  ["x-edgeweir-ext-site"] = true, ["x-edgeweir-ext-request-id"] = true, ["x-edgeweir-ext-client-ip"] = true,
+  ["x-edgeweir-ext-scheme"] = true, ["x-edgeweir-ext-host"] = true,
+}
+
 local function valid_header(name, value)
   if type(name) ~= "string" or not name:match("^[%w!#$%%&'*+.^_`|~-]+$") then error("invalid header name", 3) end
   if value ~= nil and (type(value) ~= "string" or find(value, "[\r\n%z]")) then error("invalid header value", 3) end
@@ -477,10 +483,11 @@ local function api2(e, a)
       if opts.headers ~= nil then
         if type(opts.headers) ~= "table" then error("headers must be a table", 2) end
         for k, v in pairs(opts.headers) do
-          if type(k) ~= "string" or lower(sub(k, 1, 15)) ~= "x-edgeweir-ext-" then
+          if type(k) ~= "string" or lower(sub(k, 1, 15)) ~= "x-edgeweir-ext-" or not k:match("^[%w-]+$") then
             error("sidecar headers must start with X-Edgeweir-Ext-", 2)
           end
-          valid_header(k, v)
+          if NODE_SIDECAR_HEADERS[lower(k)] then error("header " .. k .. " is set by the node", 2) end
+          if type(v) ~= "string" or find(v, "[\r\n%z]") then error("invalid header value", 2) end
           headers[k] = v
         end
       end
