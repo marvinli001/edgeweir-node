@@ -2,9 +2,9 @@
 -- heavy hitters (URLs and client addresses, 32 candidates each; networks
 -- and referring hosts, 64 each) and the bounded dimensions of ADR-0041
 -- (countries with requests and bytes, user agent classes, HTTP and TLS
--- versions, block reasons, challenges issued and passed) and the fetches
--- from each origin (ADR-0052). At most
--- MAX_BUCKETS sites per worker and minute. Only completed minute summaries
+-- versions, block reasons, challenges issued and passed, bot score bands)
+-- and the fetches from each origin (ADR-0052). At most MAX_BUCKETS sites
+-- per worker and minute. Only completed minute summaries
 -- cross into shared memory (edgeweir_topstats, once per minute and
 -- worker); raw request headers and query strings never do.
 local cjson = require("cjson.safe")
@@ -69,6 +69,11 @@ local function dimensions(b, d)
   add(b.browsers, d.browser); add(b.oses, d.os); add(b.devices, d.device)
   add(b.http, d.http); add(b.tls, d.tls)
   if d.reason then add(b.reasons, d.reason) end
+  -- Bot score bands of sites with session detection (edgeweir.session).
+  if d.bot then
+    b.bots = b.bots or {}
+    add(b.bots, d.bot)
+  end
 end
 
 -- log counts a request of site in minute: its original path, client

@@ -1,0 +1,408 @@
+{
+  "description": "Bot score vectors (edgeweir.botscore.compute, ADR-0068): request signals of real browsers, headless browsers, automation frameworks and scripted clients, and the expected score (1 automated .. 99 a person) and whether a hard signal decided it.",
+  "cases": [
+    {
+      "name": "real Chrome 130 over HTTPS, first page",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0
+      },
+      "score": 50,
+      "hard": false
+    },
+    {
+      "name": "real Chrome after the session script saw input, with a js pass",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 2,
+        "session": {
+          "flags": 32,
+          "stale": false
+        }
+      },
+      "score": 99,
+      "hard": false
+    },
+    {
+      "name": "real Firefox 131 over HTTPS with a session",
+      "signals": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:131.0) Gecko/20100101 Firefox/131.0",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": false,
+        "ja4": "t13d1715h2_5b57614c22b0_3d5424432f57",
+        "pass": 0,
+        "session": {
+          "flags": 0,
+          "stale": false
+        }
+      },
+      "score": 70,
+      "hard": false
+    },
+    {
+      "name": "real Safari 17.5 over HTTPS",
+      "signals": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": false,
+        "ja4": "t13d2014h2_a09f3c656075_14788d8d241b",
+        "pass": 0
+      },
+      "score": 50,
+      "hard": false
+    },
+    {
+      "name": "Chrome over plain HTTP sends no Sec-Fetch",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": false,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "",
+        "pass": 0
+      },
+      "score": 50,
+      "hard": false
+    },
+    {
+      "name": "Chrome 70 predates Sec-Fetch",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0
+      },
+      "score": 50,
+      "hard": false
+    },
+    {
+      "name": "iOS 16.3 Safari predates Sec-Fetch",
+      "signals": {
+        "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Mobile/15E148 Safari/604.1",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d2014h2_a09f3c656075_14788d8d241b",
+        "pass": 0
+      },
+      "score": 50,
+      "hard": false
+    },
+    {
+      "name": "iOS 17 Safari without Sec-Fetch",
+      "signals": {
+        "ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d2014h2_a09f3c656075_14788d8d241b",
+        "pass": 0
+      },
+      "score": 30,
+      "hard": false
+    },
+    {
+      "name": "headless Chrome's own User-Agent",
+      "signals": {
+        "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/130.0.6723.31 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "Playwright Chromium with a real User-Agent: webdriver",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0,
+        "session": {
+          "flags": 1,
+          "stale": false
+        }
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "Puppeteer globals",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0,
+        "session": {
+          "flags": 2,
+          "stale": false
+        }
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "headless traits (zero outer window)",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0,
+        "session": {
+          "flags": 36,
+          "stale": false
+        }
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "curl",
+      "signals": {
+        "ua": "curl/8.5.0",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": false,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d3112h2_e8f1e7e78f70_6bebaf5329ac",
+        "pass": 0
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "python-requests",
+      "signals": {
+        "ua": "python-requests/2.31.0",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d1812h1_85036bcba153_375ca2c5e164",
+        "pass": 0
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "Go's HTTP client",
+      "signals": {
+        "ua": "Go-http-client/2.0",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d1312h2_f57a46bbacb6_e7c285222651",
+        "pass": 0
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "unverified Googlebot",
+      "signals": {
+        "ua": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "",
+        "pass": 0
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "empty User-Agent",
+      "signals": {
+        "ua": "",
+        "https": false,
+        "accept_language": false,
+        "accept_encoding": false,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "",
+        "pass": 0
+      },
+      "score": 1,
+      "hard": true
+    },
+    {
+      "name": "curl claiming Chrome",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": false,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d3112h2_e8f1e7e78f70_6bebaf5329ac",
+        "pass": 0
+      },
+      "score": 2,
+      "hard": false
+    },
+    {
+      "name": "Python claiming Chrome over HTTP/1.1 ALPN",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": true,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d1812h1_85036bcba153_375ca2c5e164",
+        "pass": 0
+      },
+      "score": 2,
+      "hard": false
+    },
+    {
+      "name": "Chrome User-Agent on TLS 1.2",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t12d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0
+      },
+      "score": 40,
+      "hard": false
+    },
+    {
+      "name": "Chrome User-Agent offering HTTP/1.1 only",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h1_8daaf6152771_02713d6af862",
+        "pass": 0
+      },
+      "score": 35,
+      "hard": false
+    },
+    {
+      "name": "replayed cookie: the script stopped, synthetic events",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0,
+        "session": {
+          "flags": 16,
+          "stale": true
+        }
+      },
+      "score": 10,
+      "hard": false
+    },
+    {
+      "name": "session without navigator.languages",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 0,
+        "session": {
+          "flags": 8,
+          "stale": false
+        }
+      },
+      "score": 55,
+      "hard": false
+    },
+    {
+      "name": "captcha pass",
+      "signals": {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "https": true,
+        "accept_language": true,
+        "accept_encoding": true,
+        "sec_fetch": true,
+        "sec_ch_ua": true,
+        "ja4": "t13d1516h2_8daaf6152771_02713d6af862",
+        "pass": 4
+      },
+      "score": 70,
+      "hard": false
+    },
+    {
+      "name": "unknown client",
+      "signals": {
+        "ua": "ShopApp/4.12 (iOS)",
+        "https": true,
+        "accept_language": false,
+        "accept_encoding": false,
+        "sec_fetch": false,
+        "sec_ch_ua": false,
+        "ja4": "t13d1312h2_f57a46bbacb6_e7c285222651",
+        "pass": 0
+      },
+      "score": 30,
+      "hard": false
+    }
+  ]
+}

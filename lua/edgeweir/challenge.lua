@@ -318,6 +318,9 @@ local function prefix_of(addr)
   end
   return p
 end
+-- prefix_of and ua_of are the cached client_prefix and ua_hash
+-- (edgeweir.session binds its tokens and cookies like passes).
+_M.prefix_of = prefix_of
 
 local function ua_of(ua)
   if type(ua) == "table" then ua = ua[1] end
@@ -330,6 +333,7 @@ local function ua_of(ua)
   end
   return h
 end
+_M.ua_of = ua_of
 
 -- ---------------------------------------------------------------------
 -- Passes
@@ -369,11 +373,17 @@ end
 
 -- pass_level returns the level of the request's valid pass for site (0
 -- without one). Verified passes are cached per worker for up to a minute;
--- the result is kept in ngx.ctx for the rest of the request.
+-- the result is kept in ngx.ctx for the rest of the request. A pass below
+-- ngx.ctx.edgeweir_pass_floor counts as none (an automated session,
+-- edgeweir.session).
 function _M.pass_level(site)
   local ctx = ngx.ctx
   local level = rawget(ctx, "edgeweir_pass")
-  if level then return level end
+  if level then
+    local floor = rawget(ctx, "edgeweir_pass_floor")
+    if floor and level < floor then return 0 end
+    return level
+  end
   level = 0
   local var = ngx.var
   local cookie = var["cookie_" .. _M.COOKIE]
@@ -392,6 +402,8 @@ function _M.pass_level(site)
     end
   end
   ctx.edgeweir_pass = level
+  local floor = rawget(ctx, "edgeweir_pass_floor")
+  if floor and level < floor then return 0 end
   return level
 end
 
@@ -400,6 +412,7 @@ local function pass_ttl(site)
   local p = site.protection
   return p and tonumber(p.pass_ttl) or _M.DEFAULT_PASS_TTL
 end
+_M.pass_ttl = pass_ttl
 
 -- pass_cookie returns the Set-Cookie value of a new pass.
 function _M.pass_cookie(value, ttl, https)
@@ -601,6 +614,9 @@ local TEXT = {
     details = "Details", id = "Request ID",
   },
 }
+-- The challenge page's style, texts and SHA-256 script, for the
+-- interstitial of edgeweir.session.
+_M.PAGE_STYLE, _M.TEXT, _M.SHA_JS = STYLE, TEXT, SHA
 
 local ESCAPES = { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&#39;" }
 local function esc(s)

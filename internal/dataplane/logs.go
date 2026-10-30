@@ -45,6 +45,9 @@ type sampledLog struct {
 	Query   string            `json:"query"`
 	Headers map[string]string `json:"headers"`
 	PeerIP  string            `json:"peer_ip"`
+	// BotScore is the request's bot score of sites with session detection,
+	// 1-99 (0 without; feature session-detection-v1).
+	BotScore uint32 `json:"bot_score"`
 }
 
 // logFields are the fields of proto v0.30.0 (ADR-0041 §1) every line and
@@ -251,7 +254,16 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 			RequestBytes: f.RequestBytes, ContentType: f.ContentType, TlsVersion: f.TLSVersion,
 			BlockReason: f.BlockReason, BlockRuleId: f.BlockRuleID,
 			Query: Text(l.Query, maxQuery), Headers: logHeaders(l.Headers), PeerIp: peerIP(l.PeerIP),
+			BotScore: botScore(l.BotScore),
 		})
 	}
 	return logs, nil
+}
+
+// botScore keeps a bot score of 1-99 (0 otherwise).
+func botScore(n uint32) uint32 {
+	if n < 1 || n > 99 {
+		return 0
+	}
+	return n
 }

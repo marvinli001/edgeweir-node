@@ -471,6 +471,8 @@ http {
             access_by_lua_block { require("edgeweir.router").access() }
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            # Session detection's script in HTML responses (edgeweir.session).
+            body_filter_by_lua_block { require("edgeweir.router").body_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 
@@ -542,6 +544,8 @@ http {
             access_by_lua_block { require("edgeweir.router").body_access() }
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            # Session detection's script in HTML responses (edgeweir.session).
+            body_filter_by_lua_block { require("edgeweir.router").body_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 {{- end }}

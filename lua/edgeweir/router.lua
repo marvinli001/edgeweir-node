@@ -115,6 +115,7 @@ local reasons = require("edgeweir.reasons")
 local geoip = require("edgeweir.geoip")
 local accesslogs = require("edgeweir.accesslogs")
 local uripath = require("edgeweir.uripath")
+local session = require("edgeweir.session")
 
 local _M = {}
 
@@ -207,6 +208,14 @@ end
 function _M.verified_crawler(site)
   local p = site.protection
   if not (p and p.allow_verified_bots) then return false end
+  local ok, verified = pcall(bots.request)
+  return ok and verified == true
+end
+
+-- verified_crawler_any reports whether the request comes from a search
+-- engine crawler the node verified, whatever the site's
+-- allow_verified_bots (session detection exempts them).
+function _M.verified_crawler_any()
   local ok, verified = pcall(bots.request)
   return ok and verified == true
 end
@@ -538,6 +547,15 @@ local function access()
   end
   -- The reserved prefix is answered here and never reaches the origin.
   if sub(original_path, 1, 11) == "/.edgeweir/" then
+    -- Session detection's script and reports (edgeweir.session).
+    if site._session and sub(original_path, 1, 19) == session.PREFIX then
+      local sok, serr = pcall(session.reserved, site)
+      if not sok then
+        ngx.log(ngx.ERR, "edgeweir: session endpoint failed site=", site.id, ": ", serr)
+        return deny(503, "challenge-unavailable", "challenge unavailable")
+      end
+      return
+    end
     if cc_n and not site_allowed and not _M.platform_allowed(site, var.remote_addr) and cc.check_ip(site, cc_addr, cc_n, cc_w, cc_now) then
       reasons.set("cc")
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
@@ -551,6 +569,13 @@ local function access()
       return deny(503, "challenge-unavailable", "challenge unavailable")
     end
     return
+  end
+  -- Session detection scores the request before the rules (they may read
+  -- the score) and, in enforce mode, makes the low passes of an automated
+  -- session count as none.
+  if site._session and not is_local then
+    local sok, serr = pcall(session.prepare, site)
+    if not sok then ngx.log(ngx.ERR, "edgeweir: session detection failed site=", site.id, ": ", serr) end
   end
   local ok, result = pcall(policy.access, site, headers, acme, site_allowed)
   if not ok then
@@ -592,6 +617,26 @@ local function access()
       reasons.set("rate_limit")
       ngx.header["Retry-After"] = tostring(retry)
       return deny(429, "ip-greylisted", "rate limited")
+    end
+  end
+  -- Session detection in enforce mode: the interstitial for clients
+  -- without a session where it applies, a captcha for automated sessions;
+  -- not for exempt clients or verified crawlers.
+  if site._session_enforce and not exempt and not is_local and not acme then
+    local sok, action = pcall(session.decide, site)
+    if sok and action and not _M.verified_crawler_any() then
+      if action == "interstitial" then
+        local iok, ierr = pcall(session.interstitial, site)
+        if not iok then
+          ngx.log(ngx.ERR, "edgeweir: interstitial failed site=", site.id, ": ", ierr)
+          return deny(503, "challenge-unavailable", "challenge unavailable")
+        end
+        return
+      end
+      return run_challenge(site, challenge.kind_for(4, site.protection ~= nil and site.protection.cc ~= nil
+        and site.protection.cc.high_pow == true), 4)
+    elseif not sok then
+      ngx.log(ngx.ERR, "edgeweir: session enforcement failed site=", site.id, ": ", action)
     end
   end
   local under_attack = pctx and pctx.under_attack
@@ -1064,14 +1109,22 @@ function _M.header_filter(waf_location)
     end
     -- The gRPC location compresses nothing.
     if not ngx.ctx.edgeweir_grpc then
+      -- Session detection's script goes into HTML (edgeweir.session),
+      -- before the compression filters run.
+      if site._session then
+        local sok, serr = pcall(session.header_filter, site)
+        if not sok then ngx.log(ngx.ERR, "edgeweir: session script failed site=", site.id, ": ", serr) end
+      end
       compress.header_filter(site)
     end
   end
 end
 
--- body_filter sends the error page header_filter prepared (CRS locations
--- only: the edge layer's location / has no body filter).
+-- body_filter adds session detection's script to the HTML responses
+-- header_filter prepared (edgeweir.session) and sends the error page it
+-- prepared for CRS blocks (CRS locations).
 function _M.body_filter()
+  if ngx.ctx.edgeweir_inject then session.body_filter() end
   return errorpages.body_filter()
 end
 

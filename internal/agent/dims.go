@@ -30,6 +30,7 @@ var (
 	statsHTTPVersions = setOf("1.0", "1.1", "2", "3", "other")
 	statsTLSVersions  = setOf("1.2", "1.3", "none", "other")
 	statsBlockReasons = setOf(dataplane.BlockReasons...)
+	statsBotScores    = setOf("1", "10", "20", "30", "40", "50", "60", "70", "80", "90")
 
 	statsCountryRE = regexp.MustCompile(`^[A-Z]{2}$`)
 	hostLabelRE    = regexp.MustCompile(`^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$`)
@@ -163,7 +164,8 @@ func statsOrigins(in map[string]dataplane.OriginCount) []*nodev1.OriginCounter {
 	return out
 }
 
-// applyDimensions sets the dimensions of m on out (MinuteStats 14-24 and 26).
+// applyDimensions sets the dimensions of m on out (MinuteStats 14-24, 26
+// and bot_scores).
 func applyDimensions(out *nodev1.MinuteStats, m dataplane.MinuteStats) {
 	out.Countries = statsCountries(m.Countries)
 	out.Asns = statsASNs(m.ASNs)
@@ -176,5 +178,6 @@ func applyDimensions(out *nodev1.MinuteStats, m dataplane.MinuteStats) {
 	out.BlockReasons = statsKeyed(m.BlockReasons, statsBlockReasons)
 	out.ChallengesIssued = m.ChallengesIssued
 	out.ChallengesPassed = m.ChallengesPassed
+	out.BotScores = statsKeyed(m.BotScores, statsBotScores)
 	out.Origins = statsOrigins(m.Origins)
 }

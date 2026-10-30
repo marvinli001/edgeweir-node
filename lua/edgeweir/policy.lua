@@ -391,14 +391,16 @@ function _M.request(site, headers)
     values["ip.geoip.country"], values["ip.geoip.subdivision"], values["ip.geoip.asnum"] = geo.country or "", geo.subdivision or "", geo.asnum or 0
     values["ip.geoip.as_name"] = geo.as_name or ""
   end
-  if site._body or site._bots then _M.lazy_values(values, site) end
+  if site._body or site._bots or site._bot_score then _M.lazy_values(values, site) end
   return values
 end
 
 local BOT_VERIFIED, BOT_NAME = "http.request.bot.verified", "http.request.bot.name"
+local BOT_SCORE, BOT_AUTOMATED = "http.request.bot.score", "http.request.bot.automated"
 
 -- lazy_values makes the request body fields (sites whose rules read the
--- body, site._body) and the crawler fields (site._bots) of values lazy:
+-- body, site._body), the crawler fields (site._bots) and the bot score
+-- fields (site._bot_score, edgeweir.session.score) of values lazy:
 -- computed when an expression reads them, from state shared by the copies
 -- writable makes (the body is read once, each parse is cached). Returns
 -- values and the state ({site, raw, truncated} once read).
@@ -418,6 +420,11 @@ function _M.lazy_values(values, site)
       local verified, name = require("edgeweir.bots").request()
       if k == BOT_VERIFIED then return verified end
       return name
+    end
+    if site._bot_score and (k == BOT_SCORE or k == BOT_AUTOMATED) then
+      local score = require("edgeweir.session").score(site)
+      if k == BOT_SCORE then return score end
+      return score < require("edgeweir.botscore").AUTOMATED_BELOW
     end
     return nil
   end

@@ -228,6 +228,9 @@ type MinuteStats struct {
 	BlockReasons     map[string]uint64       `json:"block_reasons"`
 	ChallengesIssued uint64                  `json:"challenges_issued"`
 	ChallengesPassed uint64                  `json:"challenges_passed"`
+	// BotScores counts the requests of sites with session detection per
+	// bot score band ("1", "10" ... "90"; feature session-detection-v1).
+	BotScores map[string]uint64 `json:"bot_scores"`
 	// Origins counts the fetches from each origin, by origin id (feature
 	// origin-stats-v1, ADR-0052; at most 64).
 	Origins map[string]OriginCount `json:"origins"`

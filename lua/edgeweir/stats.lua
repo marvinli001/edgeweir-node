@@ -54,10 +54,11 @@ local KEYS = {
   browsers = set(uaclass.BROWSERS), operating_systems = set(uaclass.OSES), devices = set(uaclass.DEVICES),
   http_versions = set({ "1.0", "1.1", "2", "3", "other" }), tls_versions = set({ "1.2", "1.3", "none", "other" }),
   block_reasons = reasons.REASONS,
+  bot_scores = set({ "1", "10", "20", "30", "40", "50", "60", "70", "80", "90" }),
 }
 -- The worker summary's field of each map.
 local SOURCES = { browsers = "browsers", operating_systems = "oses", devices = "devices", http_versions = "http",
-  tls_versions = "tls", block_reasons = "reasons" }
+  tls_versions = "tls", block_reasons = "reasons", bot_scores = "bots" }
 
 -- referer_host returns the Referer's host for the statistics: a host name
 -- (labels of [a-z0-9_-]) or IPv4 address of at most 253 bytes, lowercase,
@@ -84,6 +85,7 @@ function _M.dimensions(var, geo, bytes)
     http = HTTP_KEYS[var.server_protocol] or "other",
     tls = (tls == nil or tls == "") and "none" or TLS_KEYS[tls] or "other",
     reason = (reasons.get()),
+    bot = ngx.ctx.edgeweir_bot_score and require("edgeweir.botscore").band_of(ngx.ctx.edgeweir_bot_score) or nil,
   }
 end
 

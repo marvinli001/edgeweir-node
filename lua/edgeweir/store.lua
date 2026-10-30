@@ -261,6 +261,8 @@ local BODY_FIELDS = { ["http.request.body.size"] = true, ["http.request.body.raw
 local BODY_FUNCTIONS = { form_value = true, json_value = true }
 local function is_body(field) return BODY_FIELDS[field] == true end
 local function is_bot(field) return field == "http.request.bot.verified" or field == "http.request.bot.name" end
+-- session-detection-v1: the bot score fields (edgeweir.botscore).
+local function is_bot_score(field) return field == "http.request.bot.score" or field == "http.request.bot.automated" end
 
 -- unhex decodes a hex string of n bytes (nil when it is not one).
 local function unhex(s, n)
@@ -355,6 +357,18 @@ function _M.prepare(s, cfg)
   s._body = (reads_field(rule_lists, s.cache_rules, is_body)
     or rule_expressions(rule_lists, s.cache_rules, function(e) return expressions.calls(e, BODY_FUNCTIONS) end)) or nil
   s._bots = reads_field(rule_lists, s.cache_rules, is_bot) or nil
+  -- Session detection (edgeweir.session): _session for monitor and
+  -- enforce, _session_enforce for enforce; the score reads JA4. Rules may
+  -- read the score on any site (_bot_score, computed when evaluated).
+  local sd = s.session_detection
+  if type(sd) ~= "table" or (sd.mode ~= "monitor" and sd.mode ~= "enforce") then
+    s.session_detection = nil
+  else
+    s._session = true
+    s._session_enforce = sd.mode == "enforce" or nil
+    s._ja4 = true
+  end
+  s._bot_score = reads_field(rule_lists, s.cache_rules, is_bot_score) or nil
   prepare_tls(s)
   s._cookies = field_names(rule_lists, s.cache_rules, "http.request.cookies.")
   s._args = field_names(rule_lists, s.cache_rules, "http.request.uri.args.")

@@ -240,6 +240,8 @@ function M.log(waf_ids, waf_blocked, site_id, geo, tap_only)
     local peer = var.realip_remote_addr
     if peer and peer ~= "unix:" and peer ~= var.remote_addr then entry.peer_ip = clean(peer, 64) end
   end
+  -- The bot score of sites with session detection (edgeweir.session).
+  entry.bot_score = ctx.edgeweir_bot_score
   local raw = json.encode(entry)
   if not raw or not dict:rpush("pending", raw) then dict:incr("dropped", 1, 0) end
 end
