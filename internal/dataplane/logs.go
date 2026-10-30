@@ -44,6 +44,11 @@ type sampledLog struct {
 	// The site's optional fields (proto v0.30.0, feature access-logs-v2).
 	Query   string            `json:"query"`
 	Headers map[string]string `json:"headers"`
+	// The AI crawler the request claimed, its verification and the price
+	// charged in millionths of a US dollar (feature ai-crawlers-v1).
+	Crawler              string `json:"crawler"`
+	CrawlerVerification  string `json:"crawler_verification"`
+	CrawlerChargedMicros uint64 `json:"crawler_charged_micros"`
 	PeerIP  string            `json:"peer_ip"`
 }
 
@@ -93,9 +98,11 @@ const (
 // BlockReasons are the block reasons of AccessLog.block_reason and
 // MinuteStats.block_reasons (ADR-0041 §3, the console's BLOCK_REASONS).
 var BlockReasons = []string{"ip_banned", "ip_blocked", "rule", "rate_limit", "crs", "cc", "challenge", "auth", "referer",
-	"user_agent", "region", "cors", "websocket_origin", "client_cert", "maintenance"}
+	"user_agent", "region", "cors", "websocket_origin", "client_cert", "maintenance", "ai_crawler", "pay_per_crawl"}
 
 var (
+	crawlerRE            = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	crawlerVerifications = []string{"verified", "failed", "unverifiable", "pending"}
 	countryRE    = regexp.MustCompile(`^[A-Z]{2}$`)
 	mediaTypeRE  = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
 	logHeaderRE  = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
@@ -252,6 +259,12 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 			BlockReason: f.BlockReason, BlockRuleId: f.BlockRuleID,
 			Query: Text(l.Query, maxQuery), Headers: logHeaders(l.Headers), PeerIp: peerIP(l.PeerIP),
 		})
+		if c := logs[len(logs)-1]; crawlerRE.MatchString(l.Crawler) && slices.Contains(crawlerVerifications, l.CrawlerVerification) {
+			c.Crawler, c.CrawlerVerification = l.Crawler, l.CrawlerVerification
+			if l.CrawlerChargedMicros <= maxSafeInteger {
+				c.CrawlerChargedMicros = l.CrawlerChargedMicros
+			}
+		}
 	}
 	return logs, nil
 }

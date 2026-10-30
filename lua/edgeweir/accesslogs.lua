@@ -158,7 +158,7 @@ local function record(var, site_id, geo, status)
   local upstream_addr, upstream_status, upstream_ms = M.upstream(var)
   local reason, rule = reasons.get()
   local scheme = var.scheme
-  return {
+  local out = {
     time = ngx.now(), site_id = site_id, client_ip = clean(var.remote_addr, 64),
     method = clean(var.request_method, 32), host = clean(var.host, 253),
     path = clean((M.path(ngx.ctx, var) or ""):match("^[^?#]*"), 2048),
@@ -177,6 +177,14 @@ local function record(var, site_id, geo, status)
     tls_version = TLS_VERSIONS[var.ssl_protocol or ""] or "",
     block_reason = reason or "", block_rule_id = rule or "",
   }
+  -- The AI crawler the request claimed (ai-crawlers-v1).
+  local ctx = ngx.ctx
+  local crawler = ctx.edgeweir_crawler
+  if crawler then
+    out.crawler, out.crawler_verification = crawler.id, crawler.verification
+    out.crawler_charged_micros = ctx.edgeweir_charged
+  end
+  return out
 end
 
 -- decide returns whether the request of site gets a line and its sample

@@ -25,6 +25,7 @@ local access = require("edgeweir.access")
 local geoip = require("edgeweir.geoip")
 local imageconv = require("edgeweir.imageconv")
 local markdown = require("edgeweir.markdown")
+local aicrawl = require("edgeweir.aicrawl")
 
 local _M = {}
 
@@ -162,6 +163,10 @@ function _M.log(waf_location)
     end
   end
   local geo = _M.geo(ctx, var.remote_addr)
+  -- AI crawlers (ai-crawlers-v1): verified in the access phase, else only
+  -- claimed here (requests refused before it).
+  local crawler = ctx.edgeweir_crawler
+  if crawler == nil and ctx_site then crawler = aicrawl.request(ctx_site, true) end
   accesslogs.log(waf_ids, waf_blocked, site, geo)
   if ctx_site and ctx_site._cc then require("edgeweir.cc").log(ctx_site) end
   local dict = ngx.shared.edgeweir_stats
@@ -169,7 +174,13 @@ function _M.log(waf_location)
   local p = minute .. "|" .. site .. "|"
   dict:incr(p .. "req", 1, 0, TTL)
   local out = tonumber(var.bytes_sent)
-  top.log(site, minute, accesslogs.path(ctx, var), var.remote_addr, _M.dimensions(var, geo, out or 0))
+  local path = accesslogs.path(ctx, var)
+  top.log(site, minute, path, var.remote_addr, _M.dimensions(var, geo, out or 0))
+  if crawler then
+    local clean = path and path:match("^[^?#]*")
+    top.crawler(site, minute, crawler.id, crawler.verification, ngx.status, out or 0,
+      ctx.edgeweir_crawler_blocked == true, ctx.edgeweir_charged, clean == "/robots.txt", clean)
+  end
   if out and out > 0 then
     dict:incr(p .. "out", out, 0, TTL)
   end
@@ -216,6 +227,11 @@ local ORIGIN_FIELDS = { "n", "cf", "to", "tls", "inv", "e5", "ms" }
 local ORIGIN_NAMES = { n = "requests", cf = "connect_failures", to = "timeouts", tls = "tls_failures",
   inv = "invalid_responses", e5 = "server_errors", ms = "header_time_ms_sum" }
 local HEADER_TIME_BUCKETS = #top.HEADER_TIME_BOUNDS + 1
+-- Counters of a crawler pair in the worker summaries and their
+-- MinuteStats.crawlers names.
+local CRAWLER_FIELDS = { "n", "s2", "s3", "s4", "s5", "b", "by", "c", "cm", "r", "a" }
+local CRAWLER_NAMES = { n = "requests", s2 = "status_2xx", s3 = "status_3xx", s4 = "status_4xx", s5 = "status_5xx",
+  b = "blocked", by = "bytes", c = "charged", cm = "charged_micros", r = "robots", a = "allowed" }
 
 -- merge_dimensions adds a worker's minute summary's dimensions to the
 -- site's bucket (in the fields _countries, _asns, _asn_names, _referers).
@@ -260,6 +276,28 @@ local function merge_dimensions(bucket, record)
   for field, source in pairs({ challenges_issued = "ch_issued", challenges_passed = "ch_passed" }) do
     local n = count(record[source])
     if n > 0 then bucket[field] = (bucket[field] or 0) + n end
+  end
+  if type(record.crawlers) == "table" then
+    local into = bucket._crawlers or {}
+    bucket._crawlers = into
+    for key, c in pairs(record.crawlers) do
+      if type(key) == "string" and type(c) == "table" then
+        local t = into[key]
+        if not t then
+          t = {}
+          for _, f in ipairs(CRAWLER_FIELDS) do t[f] = 0 end
+          into[key] = t
+        end
+        for _, f in ipairs(CRAWLER_FIELDS) do t[f] = t[f] + count(c[f]) end
+      end
+    end
+  end
+  if type(record.crawler_paths) == "table" then
+    local into = bucket._crawler_paths or {}
+    bucket._crawler_paths = into
+    for k, v in pairs(record.crawler_paths) do
+      if type(k) == "string" then into[k] = (into[k] or 0) + count(v) end
+    end
   end
   if type(record.origins) == "table" then
     local into = bucket._origins or {}
@@ -338,8 +376,30 @@ local function finish_dimensions(bucket)
     end
     if next(out) then bucket.origins = out end
   end
+  local crawlers = bucket._crawlers
+  if crawlers then
+    local out = {}
+    for _, k in ipairs(heaviest(crawlers, top.MAX_CRAWLERS, function(c) return c.n end)) do
+      local id, verification = k:match("^([^|]+)|(.+)$")
+      if id then
+        local c, entry = crawlers[k], { crawler = id, verification = verification }
+        for _, f in ipairs(CRAWLER_FIELDS) do entry[CRAWLER_NAMES[f]] = c[f] end
+        out[#out + 1] = entry
+      end
+    end
+    if #out > 0 then bucket.crawlers = out end
+  end
+  local paths = bucket._crawler_paths
+  if paths then
+    local out = {}
+    for _, k in ipairs(heaviest(paths, top.CRAWLER_PATH_CAPACITY, function(n) return n end)) do
+      local id, path = k:match("^([^|]+)|(.*)$")
+      if id then out[#out + 1] = { crawler = id, path = path, requests = paths[k] } end
+    end
+    if #out > 0 then bucket.crawler_paths = out end
+  end
   bucket._countries, bucket._asns, bucket._asn_names, bucket._referers = nil, nil, nil, nil
-  bucket._origins = nil
+  bucket._origins, bucket._crawlers, bucket._crawler_paths = nil, nil, nil
 end
 
 -- drain collects completed minutes (strictly before the minute containing

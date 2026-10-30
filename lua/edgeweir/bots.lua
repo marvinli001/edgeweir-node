@@ -145,17 +145,22 @@ function _M.lookup(c, bytes, text)
   return false
 end
 
--- verify reports whether addr is crawler name's (cached, see above).
-function _M.verify(name, addr)
-  local c = by_name[name]
+-- check verifies addr for crawler c (a table with domains) under name,
+-- the cache key: "verified", "failed" (no matching reverse and forward
+-- name), or "pending" (another request is looking the address up, or the
+-- lookup failed); cached as described above. edgeweir.aicrawl uses it for
+-- the AI crawlers of the catalogue that publish reverse DNS domains.
+function _M.check(name, c, addr)
   local bytes, text = client(addr)
-  if not c or not bytes then return false end
+  if not c or not bytes then return "failed" end
   local d = dict()
   local key = "v|" .. text .. "|" .. name
   local cached = d:get(key)
-  if cached ~= nil then return cached == 1 end
+  if cached ~= nil then
+    return cached == 1 and "verified" or cached == 0 and "failed" or "pending"
+  end
   local flight = "f|" .. text
-  if not d:add(flight, true, _M.FLIGHT_TTL) then return false end
+  if not d:add(flight, true, _M.FLIGHT_TTL) then return "pending" end
   local ok, result, err = pcall(_M.lookup, c, bytes, text)
   d:delete(flight)
   local value, ttl
@@ -170,7 +175,12 @@ function _M.verify(name, addr)
     end
   end
   d:set(key, value, ttl)
-  return value == 1
+  return value == 1 and "verified" or value == 0 and "failed" or "pending"
+end
+
+-- verify reports whether addr is crawler name's (cached, see above).
+function _M.verify(name, addr)
+  return _M.check(name, by_name[name], addr) == "verified"
 end
 
 -- request returns whether the request comes from a verified crawler and

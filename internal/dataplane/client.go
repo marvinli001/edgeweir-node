@@ -55,6 +55,8 @@ type SiteTable struct {
 	// UnknownHosts is the cluster's handling of unknown hosts and node IP
 	// access, and scan protection (unknown-host-v1).
 	UnknownHosts *configir.UnknownHosts `json:"unknown_hosts,omitempty"`
+	// AICrawlers is the AI crawler catalogue (ADR-0070).
+	AICrawlers []configir.AICrawler `json:"ai_crawlers,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -68,6 +70,7 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.OfflineHosts = p.OfflineHosts
 	t.ClientAddress = p.ClientAddress
 	t.UnknownHosts = p.UnknownHosts
+	t.AICrawlers = p.AICrawlers
 	for _, z := range p.CacheZones {
 		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
 	}
@@ -237,6 +240,37 @@ type MinuteStats struct {
 	// Origins counts the fetches from each origin, by origin id (feature
 	// origin-stats-v1, ADR-0052; at most 64).
 	Origins map[string]OriginCount `json:"origins"`
+	// Crawlers counts the requests that claimed an AI crawler, per crawler
+	// and verification; CrawlerPaths the paths they requested most
+	// (feature ai-crawlers-v1, ADR-0070).
+	Crawlers     []CrawlerCount     `json:"crawlers"`
+	CrawlerPaths []CrawlerPathCount `json:"crawler_paths"`
+}
+
+// CrawlerCount is a minute of one crawler's requests with one verification
+// result (nodev1.CrawlerCounter).
+type CrawlerCount struct {
+	Crawler       string `json:"crawler"`
+	Verification  string `json:"verification"`
+	Requests      uint64 `json:"requests"`
+	Status2xx     uint64 `json:"status_2xx"`
+	Status3xx     uint64 `json:"status_3xx"`
+	Status4xx     uint64 `json:"status_4xx"`
+	Status5xx     uint64 `json:"status_5xx"`
+	Blocked       uint64 `json:"blocked"`
+	Bytes         uint64 `json:"bytes"`
+	Charged       uint64 `json:"charged"`
+	ChargedMicros uint64 `json:"charged_micros"`
+	Robots        uint64 `json:"robots"`
+	Allowed       uint64 `json:"allowed"`
+}
+
+// CrawlerPathCount is a minute of one crawler's requests for one path.
+type CrawlerPathCount struct {
+	Crawler  string `json:"crawler"`
+	Path     string `json:"path"`
+	Requests uint64 `json:"requests"`
+	Bytes    uint64 `json:"bytes"`
 }
 
 // OriginCount is a minute of an origin's fetches: attempts, failed attempts

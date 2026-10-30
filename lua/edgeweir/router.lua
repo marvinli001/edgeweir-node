@@ -112,6 +112,7 @@ local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
 local accesscontrol = require("edgeweir.access")
 local bots = require("edgeweir.bots")
+local aicrawl = require("edgeweir.aicrawl")
 local reasons = require("edgeweir.reasons")
 local geoip = require("edgeweir.geoip")
 local accesslogs = require("edgeweir.accesslogs")
@@ -577,6 +578,10 @@ local function access()
     end
     return
   end
+  -- The AI crawler the request claims, verified once (ai-crawlers-v1):
+  -- the access logs and statistics carry it, rules refusals included.
+  local crawler_ok, crawler_err = pcall(aicrawl.request, site)
+  if not crawler_ok then ngx.log(ngx.ERR, "edgeweir: AI crawler check failed site=", site.id, ": ", crawler_err) end
   local ok, result = pcall(policy.access, site, headers, acme, site_allowed)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)
@@ -608,6 +613,21 @@ local function access()
     if result.retry_after then ngx.header["Retry-After"] = tostring(result.retry_after) end
     return deny(result.status, result.code or "policy-denied", result.message or "request denied")
   end
+  -- AI crawl control (ai-crawlers-v1, ADR-0070): after the rules, before
+  -- the greylist, Under Attack and CC; what exempts from those exempts
+  -- from it.
+  if site._ai then
+    local aok, outcome, level, kind = pcall(aicrawl.access, site, exempt or is_local or acme, original_path)
+    if not aok then
+      ngx.log(ngx.ERR, "edgeweir: AI crawl control failed site=", site.id, ": ", outcome)
+    elseif outcome == "done" then
+      return
+    elseif outcome == "challenge" and challenge.pass_level(site) < level then
+      reasons.set("ai_crawler")
+      ngx.ctx.edgeweir_crawler_blocked = true
+      return run_challenge(site, kind, level)
+    end
+  end
   -- A greylist entry's rate limit, after the rules (their own outcome
   -- comes first) and with the CC ban's exemptions (allow rules, the
   -- platform allow lists) plus skip actions with rate_limits.
@@ -625,9 +645,10 @@ local function access()
     local level, kind = challenge.required(site, cc_level, under_attack)
     local glevel, gkind = _M.greylist_level(grey, exempt, 0, nil)
     local pass = (level > 0 or glevel > 0) and challenge.pass_level(site) or 0
-    -- Verified crawlers skip Under Attack and CC challenges, not a
+    -- Verified crawlers skip Under Attack and CC challenges (the site's
+    -- allow_verified_bots, or an AI crawler the site allows), not a
     -- greylist entry's.
-    if level > 0 and (pass >= level or _M.verified_crawler(site)) then
+    if level > 0 and (pass >= level or _M.verified_crawler(site) or aicrawl.allowed()) then
       level = 0
     end
     if glevel > level then
@@ -714,7 +735,9 @@ local function access()
 end
 
 -- proceed hands a request that passed the access phase on: gRPC requests to
--- @edgeweir_grpc, CRS sites' to their CRS location.
+-- @edgeweir_grpc, CRS sites' to their CRS location, responses AI crawl
+-- control rewrites to @edgeweir_aicrawl (location / has no body filter;
+-- the CRS and body limit locations have one).
 local function proceed()
   local ctx = ngx.ctx
   if ctx.edgeweir_grpc then
@@ -723,6 +746,10 @@ local function proceed()
   local site = ctx.edgeweir_site
   if site and site.waf and ngx.var.edgeweir_local ~= "1" then
     return waf.enter(site)
+  end
+  if aicrawl.rewrites() and not ctx.edgeweir_body_tier then
+    ngx.var.edgeweir_ctx_ref = waf.stash_ctx(ctx)
+    return ngx.exec("@edgeweir_aicrawl")
   end
 end
 
@@ -760,6 +787,7 @@ end
 function _M.body_access()
   waf.restore()
   local ctx = ngx.ctx
+  ctx.edgeweir_body_tier = true
   local site = ctx.edgeweir_site
   if not site then
     -- The stashed context is gone (swept after minutes).
@@ -934,8 +962,8 @@ function _M.grpc_enter()
   return ngx.exec("@edgeweir_grpc")
 end
 
--- grpc_access runs in @edgeweir_grpc's access phase: the request context
--- comes back.
+-- grpc_access runs in @edgeweir_grpc's (and @edgeweir_aicrawl's) access
+-- phase: the request context comes back.
 function _M.grpc_access()
   waf.restore()
 end
@@ -1093,6 +1121,11 @@ function _M.header_filter(waf_location)
       local ok = pcall(policy.response, site)
       if not ok then ngx.log(ngx.ERR, "edgeweir: response policy failed site=", site.id); ngx.status = 503 end
     end
+    -- Pay per crawl and the managed robots.txt (ai-crawlers-v1).
+    if site._ai and not ngx.is_subrequest then
+      local aok, err = pcall(aicrawl.header_filter, site)
+      if not aok then ngx.log(ngx.ERR, "edgeweir: AI crawl response failed site=", site.id, ": ", err) end
+    end
     -- The gRPC location compresses nothing.
     if not ngx.ctx.edgeweir_grpc then
       compress.header_filter(site)
@@ -1100,9 +1133,11 @@ function _M.header_filter(waf_location)
   end
 end
 
--- body_filter sends the error page header_filter prepared (CRS locations
--- only: the edge layer's location / has no body filter).
+-- body_filter sends the error page header_filter prepared (CRS
+-- locations), and the bodies AI crawl control replaces or prepends to
+-- (edgeweir.aicrawl: pay per crawl's 402, the managed robots.txt).
 function _M.body_filter()
+  if aicrawl.filtering() then return aicrawl.body_filter() end
   return errorpages.body_filter()
 end
 

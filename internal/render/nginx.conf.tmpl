@@ -486,6 +486,18 @@ http {
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 
+        # Responses AI crawl control rewrites (edgeweir.aicrawl: the managed
+        # robots.txt, pay per crawl's 402 from the origin's price):
+        # edgeweir.router hands them here at the end of its access phase, so
+        # location / keeps no body filter.
+        location @edgeweir_aicrawl {
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+{{ template "edge_proxy" $ }}
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            body_filter_by_lua_block { require("edgeweir.router").body_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
         # Forward authentication (edgeweir.auth): the subrequest goes through
         # the origin layer (TLS verification, origin address policy), which
         # sends it to the rule's service with the forwarded request headers
@@ -554,6 +566,8 @@ http {
             access_by_lua_block { require("edgeweir.router").body_access() }
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            # Bodies AI crawl control replaces or prepends to (edgeweir.aicrawl).
+            body_filter_by_lua_block { require("edgeweir.router").body_filter() }
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 {{- end }}

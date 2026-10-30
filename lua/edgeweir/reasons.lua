@@ -16,6 +16,9 @@ _M.REASONS = {
   ip_banned = true, ip_blocked = true, rule = true, rate_limit = true, crs = true, cc = true,
   challenge = true, auth = true, referer = true, user_agent = true, region = true, cors = true,
   websocket_origin = true, client_cert = true, maintenance = true,
+  -- AI crawl control (ai-crawlers-v1, ADR-0070): a crawler's block or
+  -- challenge action; pay per crawl's 402 and 400 answers.
+  ai_crawler = true, pay_per_crawl = true,
 }
 
 -- set records reason and, for reasons a rule caused, the rule's id (custom

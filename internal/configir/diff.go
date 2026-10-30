@@ -85,6 +85,9 @@ func ApplyDiff(base *nodev1.NodeConfig, d *nodev1.NodeConfigDiff) (*nodev1.NodeC
 	if l := d.GetConnectionLimits(); l != nil {
 		out.ConnectionLimits = proto.CloneOf(l)
 	}
+	if a := d.GetAiCrawlers(); a != nil {
+		out.AiCrawlers = proto.CloneOf(a)
+	}
 	removed := make(map[string]bool, len(d.GetRemovedSiteIds()))
 	for _, id := range d.GetRemovedSiteIds() {
 		removed[id] = true
@@ -162,6 +165,9 @@ func Diff(base, target *nodev1.NodeConfig) *nodev1.NodeConfigDiff {
 	}
 	if l := target.GetConnectionLimits(); l != nil {
 		d.ConnectionLimits = proto.CloneOf(l)
+	}
+	if a := target.GetAiCrawlers(); a != nil {
+		d.AiCrawlers = proto.CloneOf(a)
 	}
 	old := make(map[string]*nodev1.Site, len(base.GetSites()))
 	for _, s := range base.GetSites() {
