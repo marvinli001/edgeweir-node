@@ -1169,7 +1169,8 @@ end
 
 -- log runs the log hooks (edgeweir.stats, before the access log).
 function _M.log(site)
-  if ngx.is_subrequest then return end
+  -- ngx.is_subrequest raises outside a request (the Lua tests' timers).
+  if ngx.get_phase() ~= "timer" and ngx.is_subrequest then return end
   each(site, function(e, set)
     if e.hooks.log then call(e, set, site, "log") end
     return nil
