@@ -247,6 +247,9 @@ func serveTestOrigin(addr string) {
 		if serveImages(w, r) {
 			return
 		}
+		if serveMarkdown(w, r) {
+			return
+		}
 		if doc, ok := sitemaps[r.URL.Path]; ok {
 			_, _ = w.Write(doc)
 			return
@@ -396,7 +399,7 @@ var challengeKeys = []*nodev1.ChallengeKeyRef{
 func config(sites ...*nodev1.Site) *nodev1.NodeConfig {
 	return &nodev1.NodeConfig{
 		ChallengeKeys:    challengeKeys,
-		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3, configir.FeatureEdgePorts, configir.FeatureClientIP, configir.FeatureL4V2, configir.FeatureSiteContent, configir.FeatureImageConvert},
+		RequiredFeatures: []string{"challenge-v1", "brotli-v1", "zstd-v1", "modsecurity-v1", "error-pages-v1", "session-affinity-v1", "active-health-v1", configir.FeatureRulesV2, configir.FeatureL4, configir.FeatureOriginHTTP2, configir.FeatureRulesV3, configir.FeatureEdgePorts, configir.FeatureClientIP, configir.FeatureL4V2, configir.FeatureSiteContent, configir.FeatureImageConvert, configir.FeatureMarkdown},
 		OfflineHosts: []*nodev1.OfflineHost{
 			{Name: "gone.test", Wildcard: true, Reason: "disabled"},
 			{Name: "old.test", Reason: "disabled"},
@@ -467,7 +470,7 @@ func baseSites(origin string) []*nodev1.Site {
 		activeSite(),
 		rulesSite(origin),
 		v3Site(origin),
-	}, append(append(append(h2Sites(), edgePortSites(origin)...), contentSites(origin)...), imageSites()...)...)
+	}, append(append(append(h2Sites(), edgePortSites(origin)...), contentSites(origin)...), append(imageSites(), markdownSites()...)...)...)
 }
 
 // Expression IR helpers for the rules-v2 sites.
@@ -826,6 +829,7 @@ func main() {
 	mux.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, c.CA.Pin()) })
 	contentHelpers(mux, c, c.Publish, func() *nodev1.NodeConfig { return config(baseSites(*origin)...) })
 	imageHelpers(mux, c)
+	markdownHelpers(mux, c)
 	g10Handlers(mux, c, *origin)
 	g11Handlers(mux, c, *origin, clientCA)
 	g12Handlers(mux, c, *origin)

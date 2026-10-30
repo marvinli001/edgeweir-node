@@ -253,6 +253,15 @@ http {
         keepalive 0;
     }
 
+    # Edge -> the agent's Markdown converter (Markdown for Agents): requests
+    # whose Accept names text/markdown (edgeweir.markdown). The agent passes
+    # them on to the origin layer named in X-Edgeweir-Markdown and converts
+    # an HTML answer; no keep-alive, as for the image converter.
+    upstream edgeweir_markdown {
+        server unix:{{ .MarkdownSocket }};
+        keepalive 0;
+    }
+
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools
     # (keyed by address, port and SNI) are chosen per request in Lua.
     # nginx >= 1.29.7 caches upstream connections by default
@@ -452,6 +461,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -708,6 +720,7 @@ stream {
             proxy_set_header X-Edgeweir-Conn "$remote_addr $remote_port $edgeweir_conn_dst $edgeweir_conn_dport";
 {{- end }}
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -747,6 +760,9 @@ stream {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -795,6 +811,7 @@ stream {
             {{ .P }}_set_header X-Edgeweir-Origin "";
             {{ .P }}_set_header X-Edgeweir-Auth "";
             {{ .P }}_set_header X-Edgeweir-Image "";
+            {{ .P }}_set_header X-Edgeweir-Markdown "";
 {{- if .Root.OriginProxyProtocol }}
             {{ .P }}_set_header X-Edgeweir-Conn "";
 {{- end }}

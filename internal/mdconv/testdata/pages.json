@@ -1,0 +1,10 @@
+{
+  "cloudflare-docs": {"url": "https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/", "content_type": "text/html"},
+  "edge-cases": {"url": "https://example.com/docs/page", "content_type": "text/html; charset=utf-8"},
+  "gbk": {"url": "http://example.cn/guide/index.html", "content_type": "text/html"},
+  "go-tutorial": {"url": "https://go.dev/doc/tutorial/getting-started", "content_type": "text/html; charset=utf-8"},
+  "mdn-accept": {"url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Accept", "content_type": "text/html"},
+  "python-json": {"url": "https://docs.python.org/3/library/json.html", "content_type": "text/html"},
+  "wikipedia-en": {"url": "https://en.wikipedia.org/wiki/Markdown", "content_type": "text/html; charset=UTF-8"},
+  "wikipedia-zh": {"url": "https://zh.wikipedia.org/zh-cn/Markdown", "content_type": "text/html; charset=UTF-8"}
+}

@@ -1834,6 +1834,67 @@ pass "G18: purges clear every variant of a URL"
 WAIT_SECS=180 wait_for "saved bytes uploaded" sh -c "[ \"\$(curl -fsS $HELPER/g18/saved)\" -gt 0 ]"
 pass "G18: saved bytes reach the console ($(curl -fsS "$HELPER/g18/saved") bytes)"
 
+# Markdown for Agents (markdown-v1): md.test converts every path but
+# /md/private/ and caches everything; mdlive.test caches nothing.
+grep -qx markdown-v1 <<<"$(curl -fsS "$HELPER/features")" || fail "feature markdown-v1 not reported"
+md() { # host path [accept] [method] -> "<x-cache|-> <content-type> <vary|->", the body in $TMPDIR_E2E/md
+  curl -s -o "$TMPDIR_E2E/md" -D "$TMPDIR_E2E/md.h" ${4:+-X "$4"} -H "Host: $1" ${3:+-H "Accept: $3"} "$NODE$2" >/dev/null
+  tr -d '\r' <"$TMPDIR_E2E/md.h" | awk -F': ' '
+    tolower($1)=="x-cache" {c=$2} tolower($1)=="content-type" {t=$2}
+    tolower($1)=="vary" {n=split(tolower($2), v, / *, */); for (i=1; i<=n; i++) if (v[i]=="accept") a="vary"}
+    END {print (c ? c : "-"), t, (a ? a : "-")}'
+}
+mdh() { tr -d '\r' <"$TMPDIR_E2E/md.h" | awk -F': ' -v k="$1" 'tolower($1)==k {print $2}'; }
+AGENT='text/markdown, text/html;q=0.9, */*;q=0.8'
+BROWSER='text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+MDTYPE='text/markdown; charset=utf-8'
+got=$(md md.test /md/page "$BROWSER")
+[ "$got" = "MISS text/html; charset=utf-8 vary" ] || fail "a browser does not get the HTML: $got"
+grep -q '<h1>Converted page</h1>' "$TMPDIR_E2E/md" || fail "the HTML body changed"
+got=$(md md.test /md/page "$AGENT")
+[ "$got" = "MISS $MDTYPE vary" ] || fail "Accept: text/markdown does not get Markdown: $got"
+head -1 "$TMPDIR_E2E/md" | grep -qx -- '---' || fail "the Markdown has no frontmatter"
+grep -qx 'description: Markdown for Agents end to end' "$TMPDIR_E2E/md" || fail "frontmatter description missing"
+grep -qx '# Converted page' "$TMPDIR_E2E/md" || fail "the heading is not Markdown"
+grep -qF 'Read the [next page](http://md.test/md/next).' "$TMPDIR_E2E/md" || fail "links are not absolute"
+grep -qF '| Key | Value |' "$TMPDIR_E2E/md" || fail "the table is not Markdown"
+grep -qF '{"@type":"WebPage","name":"E2E"}' "$TMPDIR_E2E/md" || fail "the JSON-LD block is missing"
+grep -qE 'Home|Footer text|tracking' "$TMPDIR_E2E/md" && fail "navigation, footer or scripts survived"
+[ "$(mdh x-markdown-tokens)" -gt 0 ] 2>/dev/null || fail "no x-markdown-tokens"
+[ "$(mdh content-signal)" = "ai-train=yes, search=yes, ai-input=yes" ] || fail "no default content-signal"
+[ -z "$(mdh etag)" ] || fail "the Markdown keeps the HTML's ETag"
+grep -qi '^x-edgeweir-' "$TMPDIR_E2E/md.h" && fail "the converter's headers reach the client"
+md_size=$(wc -c <"$TMPDIR_E2E/md" | tr -d " ")
+[ "$(md md.test /md/page "$AGENT")" = "HIT $MDTYPE vary" ] || fail "the Markdown variant is not a HIT the second time"
+[ "$(md md.test /md/page "$BROWSER")" = "HIT text/html; charset=utf-8 vary" ] || fail "the HTML is not a HIT after the Markdown"
+[ "$(md md.test /md/page)" = "HIT text/html; charset=utf-8 vary" ] || fail "no Accept does not share the HTML's key"
+[ "$(curl -fsS -H 'Host: md.test' "$NODE/md/count")" = 2 ] || fail "the origin served /md/page $(curl -fsS -H 'Host: md.test' "$NODE/md/count") times, not once per variant"
+pass "Markdown: the same URL is HTML for browsers and Markdown for agents, each cached once and HIT, Vary: Accept"
+[ "$(md md.test /md/page "$AGENT" HEAD)" = "HIT $MDTYPE vary" ] || fail "HEAD of the Markdown variant"
+[ "$(mdh content-length)" = "$md_size" ] || fail "HEAD of the Markdown does not tell its length"
+[ "$(md md.test /md/gz "$AGENT")" = "MISS $MDTYPE vary" ] || fail "gzip-encoded HTML is not converted"
+[ -z "$(mdh content-encoding)" ] || fail "the converted gzip page keeps Content-Encoding"
+[ "$(md md.test /md/data.json "$AGENT")" = "MISS application/json -" ] || fail "a JSON path is handled as Markdown"
+[ "$(md md.test /md/private/page "$AGENT")" = "MISS text/html; charset=utf-8 -" ] || fail "an excluded path is converted"
+own=$(md md.test /md/own "$AGENT")
+[ "$own" = "MISS text/markdown vary" ] || fail "the origin's own Markdown does not pass: $own"
+grep -qx "# Origin's own Markdown" "$TMPDIR_E2E/md" || fail "the origin's own Markdown changed"
+[ "$(md mdlive.test /md/page "$AGENT" | cut -d' ' -f2-)" = "$MDTYPE vary" ] || fail "an uncached site is not converted"
+[ "$(md mdlive.test /md/page "$AGENT" | cut -d' ' -f1)" != HIT ] || fail "an uncached site cached the Markdown"
+[ "$(md mdlive.test /other "$AGENT" | cut -d' ' -f3)" = - ] || fail "a path outside the include prefixes is converted"
+pass "Markdown: HEAD, gzip origins, other types, excluded paths, the origin's own Markdown, uncached sites and include prefixes"
+task=$(curl -fsS -X POST "$HELPER/purge-prefix?site=site-md&host=md.test&path=/md/")
+wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
+[ "$(md md.test /md/page "$AGENT")" = "MISS $MDTYPE vary" ] || fail "a prefix purge left the Markdown variant"
+[ "$(md md.test /md/page "$BROWSER")" = "MISS text/html; charset=utf-8 vary" ] || fail "a prefix purge left the HTML"
+task=$(curl -fsS -X POST "$HELPER/purge-tag?site=site-md&tag=mdpage")
+wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
+[ "$(md md.test /md/page "$AGENT")" = "MISS $MDTYPE vary" ] || fail "a tag purge left the Markdown variant"
+[ "$(md md.test /md/page "$BROWSER")" = "MISS text/html; charset=utf-8 vary" ] || fail "a tag purge left the HTML"
+pass "Markdown: prefix and tag purges clear both variants"
+WAIT_SECS=180 wait_for "Markdown responses uploaded" sh -c "[ \"\$(curl -fsS $HELPER/md/responses)\" -gt 0 ]"
+pass "Markdown: converted responses reach the console ($(curl -fsS "$HELPER/md/responses"))"
+
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"

@@ -364,20 +364,21 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			}
 		}
 		ms := &nodev1.MinuteStats{
-			Minute:          timestamppb.New(time.Unix(m.Minute, 0).UTC()),
-			SiteId:          m.SiteID,
-			Requests:        m.Requests,
-			BytesSent:       m.BytesSent,
-			BytesReceived:   m.BytesReceived,
-			CacheHits:       m.CacheHits,
-			CacheMisses:     m.CacheMisses,
-			StatusCodes:     codes,
-			TopUrls:         topCounters(m.TopURLs),
-			TopIps:          topCounters(m.TopIPs),
-			WafRules:        wafRules(m.WAFRules),
-			LoggedRules:     loggedRules(m.LoggedRules),
-			AuthFailures:    m.AuthFailures,
-			ImageBytesSaved: m.ImageBytesSaved,
+			Minute:            timestamppb.New(time.Unix(m.Minute, 0).UTC()),
+			SiteId:            m.SiteID,
+			Requests:          m.Requests,
+			BytesSent:         m.BytesSent,
+			BytesReceived:     m.BytesReceived,
+			CacheHits:         m.CacheHits,
+			CacheMisses:       m.CacheMisses,
+			StatusCodes:       codes,
+			TopUrls:           topCounters(m.TopURLs),
+			TopIps:            topCounters(m.TopIPs),
+			WafRules:          wafRules(m.WAFRules),
+			LoggedRules:       loggedRules(m.LoggedRules),
+			AuthFailures:      m.AuthFailures,
+			ImageBytesSaved:   m.ImageBytesSaved,
+			MarkdownResponses: m.MarkdownResponses,
 		}
 		applyDimensions(ms, m)
 		out = append(out, ms)

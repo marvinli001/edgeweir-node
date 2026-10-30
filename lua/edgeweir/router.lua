@@ -99,6 +99,7 @@ local cc = require("edgeweir.cc")
 local challenge = require("edgeweir.challenge")
 local compress = require("edgeweir.compress")
 local imageconv = require("edgeweir.imageconv")
+local markdown = require("edgeweir.markdown")
 local waf = require("edgeweir.waf")
 local errorpages = require("edgeweir.errorpages")
 local unknownhost = require("edgeweir.unknownhost")
@@ -300,6 +301,12 @@ local function route(site, pctx, headers, host, original_path, acme)
   var.edgeweir_origin_layer = _M.origin_layer(site)
 
   local method = ngx.req.get_method()
+  -- Markdown for Agents: a request that asks for Markdown goes through the
+  -- agent's converter whether or not it is cached.
+  local md
+  if site.markdown and (method == "GET" or method == "HEAD") and not acme then
+    md = markdown.route(site, var, ngx.ctx, headers, original_path)
+  end
   -- An ambiguous path may be another path at the origin than the key's
   -- (edgeweir.uripath): never stored or served from the cache.
   if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous(site) then
@@ -351,9 +358,12 @@ local function route(site, pctx, headers, host, original_path, acme)
   if site.slice then
     var.edgeweir_range_mode = "slice"
   end
-  -- WebP / AVIF variants (ADR-0043): the class joins the key; a variant
-  -- goes through the agent's image converter and is never sliced.
-  if site.image_convert then
+  -- The Markdown variant joins the key and is never sliced; WebP / AVIF
+  -- variants (ADR-0043) likewise, through the agent's image converter.
+  if md then
+    var.edgeweir_range_mode = ""
+    req.markdown = md
+  elseif site.image_convert then
     req.image = imageconv.route(site, var, ngx.ctx, headers, path)
   end
 
@@ -1060,7 +1070,8 @@ function _M.header_filter(waf_location)
     -- the site's charset: what the node makes itself (challenge pages and
     -- scripts, PURGE answers, error pages) keeps its own.
     local proxied = (cs ~= nil and cs ~= "") or (var.upstream_status or "") ~= ""
-    if site.charset and proxied and not h["X-Edgeweir-Error"] then
+    -- Converted Markdown is UTF-8 whatever the site's charset says.
+    if site.charset and proxied and not h["X-Edgeweir-Error"] and not var.upstream_http_x_edgeweir_markdown_converted then
       charset.apply(h, site.charset)
     end
     -- Access control's CORS and security headers (edgeweir.access) on
@@ -1072,6 +1083,11 @@ function _M.header_filter(waf_location)
     -- by Accept, the original's included (edgeweir.imageconv).
     if ngx.ctx.edgeweir_image_vary then
       imageconv.vary(h)
+    end
+    -- HTML and Markdown responses of requests eligible for Markdown vary
+    -- by Accept (edgeweir.markdown).
+    if ngx.ctx.edgeweir_markdown_vary then
+      markdown.vary(h)
     end
     if site._response_rules then
       local ok = pcall(policy.response, site)

@@ -212,6 +212,9 @@ type MinuteStats struct {
 	// ImageBytesSaved is what WebP / AVIF variants saved against their
 	// originals on complete 200 answers to GETs (feature image-convert-v1).
 	ImageBytesSaved uint64 `json:"image_bytes_saved"`
+	// MarkdownResponses counts complete 200 answers to GETs served as
+	// Markdown converted from HTML (feature markdown-v1).
+	MarkdownResponses uint64 `json:"markdown_responses"`
 	// The bounded dimensions (feature stats-dims-v1, ADR-0041): requests
 	// and bytes sent per country ("" unknown, at most 250), the heaviest 50
 	// networks (by AS number, with names) and referring hosts, requests per

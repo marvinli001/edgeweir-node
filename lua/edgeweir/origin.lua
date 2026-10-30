@@ -709,11 +709,13 @@ function _M.header_filter()
   end
   -- Only this layer may set the stash header the edge restores, the
   -- carrier of cached Set-Cookie lines and the origin address; only the
-  -- image converter the bytes a variant saved.
+  -- image converter the bytes a variant saved, only the Markdown converter
+  -- the mark of a converted response.
   h["X-Edgeweir-CC"] = nil
   h[setcookie.HEADER] = nil
   h[_M.UPSTREAM] = nil
   h["X-Edgeweir-Image-Saved"] = nil
+  h["X-Edgeweir-Markdown-Converted"] = nil
   local site = ctx.site
   if not site then
     return

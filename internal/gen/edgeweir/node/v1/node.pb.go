@@ -2630,9 +2630,13 @@ type MinuteStats struct {
 	// Fetches from each origin of the site (every attempt, cache-lock,
 	// background and prefetch fetches included; active health checks and cache
 	// hits not), at most 64 origins. Added in v1.4.0 (feature origin-stats-v1).
-	Origins       []*OriginCounter `protobuf:"bytes,26,rep,name=origins,proto3" json:"origins,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Origins []*OriginCounter `protobuf:"bytes,26,rep,name=origins,proto3" json:"origins,omitempty"`
+	// Complete 200 responses to GETs served as Markdown converted from HTML
+	// (Site.markdown; cache hits included). Added in proto/vX.Y.Z-markdown
+	// (feature markdown-v1).
+	MarkdownResponses uint64 `protobuf:"varint,27,opt,name=markdown_responses,json=markdownResponses,proto3" json:"markdown_responses,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *MinuteStats) Reset() {
@@ -2845,6 +2849,13 @@ func (x *MinuteStats) GetOrigins() []*OriginCounter {
 		return x.Origins
 	}
 	return nil
+}
+
+func (x *MinuteStats) GetMarkdownResponses() uint64 {
+	if x != nil {
+		return x.MarkdownResponses
+	}
+	return 0
 }
 
 // OriginCounter is a minute of one origin's fetches on a node.
@@ -6195,7 +6206,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x05probe\x18\x05 \x01(\bR\x05probe\x12:\n" +
 	"\achannel\x18\x06 \x01(\v2 .edgeweir.node.v1.ChannelAddressR\achannel\x12=\n" +
 	"\fconsole_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vconsoleTime\x12%\n" +
-	"\x0elocate_address\x18\b \x01(\tR\rlocateAddress\"\xff\x0e\n" +
+	"\x0elocate_address\x18\b \x01(\tR\rlocateAddress\"\xae\x0f\n" +
 	"\vMinuteStats\x122\n" +
 	"\x06minute\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x06minute\x12\x17\n" +
 	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x1a\n" +
@@ -6225,7 +6236,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x11challenges_issued\x18\x17 \x01(\x04R\x10challengesIssued\x12+\n" +
 	"\x11challenges_passed\x18\x18 \x01(\x04R\x10challengesPassed\x12*\n" +
 	"\x11image_bytes_saved\x18\x19 \x01(\x04R\x0fimageBytesSaved\x129\n" +
-	"\aorigins\x18\x1a \x03(\v2\x1f.edgeweir.node.v1.OriginCounterR\aorigins\x1a>\n" +
+	"\aorigins\x18\x1a \x03(\v2\x1f.edgeweir.node.v1.OriginCounterR\aorigins\x12-\n" +
+	"\x12markdown_responses\x18\x1b \x01(\x04R\x11markdownResponses\x1a>\n" +
 	"\x10StatusCodesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1a;\n" +

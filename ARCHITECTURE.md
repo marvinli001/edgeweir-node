@@ -993,6 +993,15 @@ proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origi
 - **主动健康检查**：探测出示同一张客户端证书（读取上述文件），信任 Origin CA 的池只以它为根并在 `VerifyConnection` 中拒绝 CRL 列出的序列号；吊销随 `Update` 立即生效。
 - **Origin CA 轮换**（proto v1.6.0，`origin-ca-rotation-v1`）：控制台轮换 Origin CA 期间配置另带 `origin_ca_previous`（旧 CA 与它自己的 CRL），只能与 `origin_ca` 同时出现，校验与 `origin_ca` 相同，且主题不能与新 CA 相同（OpenSSL 按主题找签发者与 CRL）。`.pem` 依次放新旧两张 CA 证书，`.crl` 依次放两份 CRL；nginx 两者都读，每张证书按自己的签发者检查 CRL。健康检查以两张 CA 为根，吊销按签发者区分（`OriginCA.IsRevoked` 先找签发它的 CA，再查该 CA 的 CRL）。运营者退役旧 CA 后的新版本不再带它，文件名随内容变化并 reload。回源客户端证书的轮换不需要节点变化：节点只出示控制台当前签发的证书。
 
+### 3.34 面向代理的 Markdown（`markdown-v1`）
+
+proto 占位 `vX.Y.Z-markdown`（核心 ADR-0074）。`Site.markdown`（`include_prefixes`、`exclude_prefixes`）经 `configir.buildMarkdown` 校验（各 ≤ 32 个、每个 ≤ 256 字节、以 `/` 开头的 ASCII 可见字符、已排序且不重复）；节点没有转换器（`--markdown-workers 0`）时任何开启的配置都被拒绝。
+
+- **边缘层**（`edgeweir.markdown`）：`router.route` 在缓存判断之前对 GET / HEAD 调用 `markdown.route`：路径最后一段没有扩展名或是 HTML 类扩展名（`EXTENSIONS`），以某个包含前缀开头（没有时为全部）且不以排除前缀开头时设 `ngx.ctx.edgeweir_markdown_vary`；`Accept` 明确列出 `text/markdown` 且 q > 0（同一类型出现多次取最低）时 `$edgeweir_range_mode` 置空、`$edgeweir_markdown` 设为 `up=<原回源层>`、`$edgeweir_origin_layer` 改为 `edgeweir_markdown`，被缓存的请求在缓存键末尾加 `|m=md`（`cachekey.build` 的 `req.markdown`，在清缓存时间戳 `#` 之前），此时不做图片协商。header filter 对有资格的请求的 `text/html`、`application/xhtml+xml`、`text/markdown` 响应在 `Vary` 中加 `Accept`，转换后的响应不做字符集改写；缓存对象本身不带 `Vary: Accept`。
+- **转换器**（`internal/mdconv`，agent 的 `markdown.sock`，0600、属 nginx 用户）：以 GET（HEAD 同样）向 `up` 指定的回源层转发原始 URI 与请求头，去掉 `X-Edgeweir-Markdown`、逐跳头、条件头、`Range` 与 `Accept-Encoding`（源站回答 identity，gzip 也接受并解码）。候选：2xx 且不是 204 / 205 / 206、`text/html`、编码为 identity 或 gzip、长度不超过 `MaxInput`（6 MiB，解码后）；其余原样转发。读取的 HTML 先占用缓冲预算（`--markdown-memory-mb`，gzip 时加倍，以便原样转发），再按 `Estimate`（24 × 字节 + 48 MiB）取转换名额；等 1 秒拿不到或源站在 `--markdown-timeout` 内没传完时原样转发并把 `X-Accel-Expires` 限到 60 秒。转换后的响应：`Content-Type: text/markdown; charset=utf-8`、`Content-Length`、`X-Markdown-Tokens`（ASCII 字节 / 4 加非 ASCII 字符数）、源站没有时 `Content-Signal: ai-train=yes, search=yes, ai-input=yes`、内部头 `X-Edgeweir-Markdown-Converted: 1`（边缘层 `proxy_hide_header`，源站自带的被 `origin.lua` 去掉）；去掉 `ETag`、`Last-Modified`、`Content-Encoding`、`Content-Range`、`Accept-Ranges`，其余源站头保留。回源层断开时转换器以 `http.ErrAbortHandler` 断开。
+- **子进程**（`edgeweir-node mdconv`）：限制与 §3.32 相同（`internal/sandbox`：`RLIMIT_DATA` = 数据段 + 估算 + 256 MiB、不能写文件、清空能力集、`PR_SET_NO_NEW_PRIVS`、`GOMAXPROCS=1`、超时即杀），输出以 4 × 输入 + 64 KiB 为界。`Convert`：按 `Content-Type` 的 charset、其次文档声明（`x/net/html/charset`）转为 UTF-8，解析（`x/net/html`），从 `<head>` 取 title / description / image（`name` 优先于 `og:`，最后取 `<title>`）与 JSON-LD；正文根为唯一可见的 `<main>` / `role=main`，否则 `<body>`；删去脚本、样式、表单控件、`<nav>`、`hidden` / `aria-hidden` / `display:none`、导航类 role、不在 article / section 内的 header / footer / aside、空链接与 hreflang 语言切换；`JohannesKaufmann/html-to-markdown` v2（commonmark、table、strikethrough 插件）按 `<base href>` 与页面 URL 生成绝对链接。结果为空时退出码 3（原样转发）。黄金测试：`internal/mdconv/testdata/pages`（来源与许可见其 README）。每次转换一行日志 `Markdown converted`（输入、输出字节、耗时、CPU 时间）。
+- **统计**：log 阶段对带 `$upstream_http_x_edgeweir_markdown_converted`（命中时来自缓存）的完整 200 GET 响应计数到分钟指标 `md`，`drain` 报为 `markdown_responses`（`MinuteStats` 27）。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |
@@ -1015,7 +1024,7 @@ proto v1.3.0。`configir.buildOriginClientCertificates` 校验 `NodeConfig.origi
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`；配置带会话票据密钥时还有 `conf/tls-tickets/<id>.key`（80 字节，0600，目录 0700，只保留 `nginx.conf` 列出的）；有站点运行 OWASP CRS 时还有 `conf/modsecurity-<哈希>.conf`）、`logs/nginx.pid`、`tmp/` |
 | `/var/lib/edgeweir-probe/probe.key`、`probe.crt`、`ca.crt`、`probe.json` | 探针模式的身份（私钥 0600；`probe.json`：probe_id、probe_name、region_id、server_url、server_name、ca_sha256、enrolled_at），目录 0700 |
 | `/var/cache/edgeweir-node/<zone>/` | proxy_cache 数据 |
-| `/run/edgeweir-node/control.sock`、`control.sock.geo`、`edge.sock`、`edge-tls.sock`、`origin.sock`、`origin-noverify.sock`、`l4.sock`、`agent.sock`、`image.sock` | 控制 API、GeoIP 查询（agent 提供）、预热专用的本地边缘监听（明文；TLS，有 HTTPS 监听时）、回源层（校验 / 不校验证书）、stream 子系统的控制中继（有四层应用时）、agent 的 PURGE 方法与图片转换器（§3.32） |
+| `/run/edgeweir-node/control.sock`、`control.sock.geo`、`edge.sock`、`edge-tls.sock`、`origin.sock`、`origin-noverify.sock`、`l4.sock`、`agent.sock`、`image.sock`、`markdown.sock` | 控制 API、GeoIP 查询（agent 提供）、预热专用的本地边缘监听（明文；TLS，有 HTTPS 监听时）、回源层（校验 / 不校验证书）、stream 子系统的控制中继（有四层应用时）、agent 的 PURGE 方法、图片转换器（§3.32）与 Markdown 转换器（§3.34） |
 | `/usr/share/edgeweir-node/lua/edgeweir/` | Lua 模块 |
 | `/usr/lib/edgeweir-openresty/` | edgeweir-openresty：`nginx/sbin/nginx`、`luajit/`、`lualib/`、`bin/`；edgeweir-openresty-modsecurity 另装 `modules/ngx_http_modsecurity_module.so` 与 `lib/libmodsecurity.so.3` |
 | `/usr/share/edgeweir-openresty/` | OWASP CRS（`crs/`：`crs-setup.conf`、`rules/`、`plugins/`、`LICENSE`）与 `modsecurity/unicode.mapping` |

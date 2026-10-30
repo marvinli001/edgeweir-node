@@ -15,12 +15,15 @@ import (
 
 // extraFeatures are the features that depend on this node's files or
 // flags rather than on the agent version: GeoIP databases, OpenResty
-// modules and the image converter. Sites may use them
+// modules and the image and Markdown converters. Sites may use them
 // (configir.Options.ExtraFeatures) and ReportStatus announces them.
 func (a *Agent) extraFeatures() []string {
 	out := append(slices.Clone(a.geoFeatures), a.moduleFeatures...)
 	if a.cfg.Image.Workers > 0 {
 		out = append(out, configir.FeatureImageConvert)
+	}
+	if a.cfg.Markdown.Workers > 0 {
+		out = append(out, configir.FeatureMarkdown)
 	}
 	return out
 }

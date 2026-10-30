@@ -70,6 +70,10 @@ type Params struct {
 	// origin layer (upstream edgeweir_image, ADR-0043; default: image.sock
 	// next to ControlSocket).
 	ImageSocket string
+	// MarkdownSocket is the agent's Markdown converter between the edge and
+	// the origin layer (upstream edgeweir_markdown; default: markdown.sock
+	// next to ControlSocket).
+	MarkdownSocket string
 	// OriginSocket is the unix socket of the internal origin layer.
 	OriginSocket string
 	// OriginSocketNoVerify is the unix socket of the origin layer for sites
@@ -241,6 +245,9 @@ func (p Params) WithDefaults() Params {
 	if p.ImageSocket == "" && p.ControlSocket != "" {
 		p.ImageSocket = filepath.Join(filepath.Dir(p.ControlSocket), "image.sock")
 	}
+	if p.MarkdownSocket == "" && p.ControlSocket != "" {
+		p.MarkdownSocket = filepath.Join(filepath.Dir(p.ControlSocket), "markdown.sock")
+	}
 	if p.EdgeSocket == "" && p.ControlSocket != "" {
 		p.EdgeSocket = filepath.Join(filepath.Dir(p.ControlSocket), "edge.sock")
 	}
@@ -304,6 +311,7 @@ func (p Params) Validate() error {
 		"GeoIP socket":                              p.GeoIPSocket,
 		"agent socket":                              p.AgentSocket,
 		"image converter socket":                    p.ImageSocket,
+		"Markdown converter socket":                 p.MarkdownSocket,
 		"layer-4 control socket":                    p.L4Socket,
 	} {
 		if !safePath.MatchString(v) {

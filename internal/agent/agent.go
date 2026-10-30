@@ -173,6 +173,9 @@ type Config struct {
 	// Image configures the WebP / AVIF converter (ADR-0043); Workers 0
 	// turns it off (the node does not announce image-convert-v1).
 	Image ImageOptions
+	// Markdown configures the Markdown converter (Markdown for Agents);
+	// Workers 0 turns it off (the node does not announce markdown-v1).
+	Markdown MarkdownOptions
 	// AutoBanInterval: the node's own bans are drained and reported this
 	// often (default 5s).
 	AutoBanInterval time.Duration
@@ -568,6 +571,9 @@ func (a *Agent) run(parent context.Context) error {
 		return err
 	}
 	if err := a.serveImageSocket(ctx, spawn); err != nil {
+		return err
+	}
+	if err := a.serveMarkdownSocket(ctx, spawn); err != nil {
 		return err
 	}
 	if err := a.serveDiagSocket(ctx); err != nil {

@@ -253,7 +253,8 @@ end
 -- value or list, e.g. ngx.req.get_headers(0)), cookie (name -> value, see
 -- key_cookies), handed (the request was handed to the site as the default
 -- site, unknown-host-v1), image (a WebP / AVIF variant's class,
--- edgeweir.imageconv) }. A handed request keeps its host in the key
+-- edgeweir.imageconv), markdown (the Markdown variant's class,
+-- edgeweir.markdown) }. A handed request keeps its host in the key
 -- even where the site's key leaves the host out: any Host reaches the
 -- default site, and its origin may answer by Host.
 function _M.build(site, req, epoch)
@@ -287,6 +288,11 @@ function _M.build(site, req, epoch)
   -- original's key has no class.
   if req.image then
     parts[#parts + 1] = "|i=" .. req.image
+  end
+  -- The Markdown variant (edgeweir.markdown): "md"; the HTML's key has
+  -- no class.
+  if req.markdown then
+    parts[#parts + 1] = "|m=" .. req.markdown
   end
   return _M.with_epoch(concat(parts), epoch)
 end

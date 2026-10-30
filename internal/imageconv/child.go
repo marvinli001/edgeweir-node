@@ -1,15 +1,13 @@
 package imageconv
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"runtime"
 	"strconv"
+
+	"github.com/marvinli001/edgeweir-node/internal/sandbox"
 )
 
 // Exit codes of the child (edgeweir-node imgconv).
@@ -60,7 +58,7 @@ func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "imgconv: invalid arguments")
 		return exitUsage
 	}
-	if err := limitSelf(*memory); err != nil {
+	if err := sandbox.Limit(*memory); err != nil {
 		fmt.Fprintln(stderr, "imgconv: limits:", err)
 		return exitFailed
 	}
@@ -86,30 +84,4 @@ func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitFailed
 	}
 	return exitOK
-}
-
-// SelfExecutable is the binary conversions run: this process's own
-// (/proc/self/exe on Linux, so a replaced binary on disk changes nothing
-// until the agent restarts).
-func SelfExecutable() string {
-	if runtime.GOOS == "linux" {
-		return "/proc/self/exe"
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return os.Args[0]
-	}
-	return exe
-}
-
-// SelfCommand returns Config.Command for exe: the child gets no
-// environment but GOMAXPROCS=1 (one CPU per conversion; the agent's
-// environment may hold secrets) and dies with the agent.
-func SelfCommand(exe string) func(ctx context.Context, args []string) *exec.Cmd {
-	return func(ctx context.Context, args []string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, exe, args...)
-		cmd.Env = []string{"GOMAXPROCS=1"}
-		childProcess(cmd)
-		return cmd
-	}
 }

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Document title: ignored while meta tags exist</title>
+<meta property="og:title" content="Open Graph title">
+<meta name="title" content="Edge cases: the standard title wins">
+<meta property="og:description" content="Open Graph description">
+<meta property="og:image" content="/images/card.png">
+<base href="/docs/guide/">
+<style>body { color: red }</style>
+<script>window.tracking = true;</script>
+<script type="application/ld+json">
+{ "@context": "https://schema.org", "@type": "Article",
+  "headline": "Edge cases" }
+</script>
+<script type="application/ld+json">{"@type": "BreadcrumbList", "itemListElement": []}</script>
+<script type="application/ld+json">{ not json </script>
+</head>
+<body>
+<header><a href="/">Logo</a><nav><a href="/a">Menu A</a></nav></header>
+<div role="navigation"><a href="/b">Menu B</a></div>
+<aside>Sidebar ads</aside>
+<article>
+<header><h1>Article title</h1><p>By someone</p></header>
+<p>Relative <a href="intro.html">link</a>, rooted <a href="/about">link</a>, absolute <a href="https://example.org/x?a=1&amp;b=2">link</a> and an <a href="#top">anchor</a>.</p>
+<h2 id="setup">Setup<a href="#setup" aria-label="permalink"></a></h2>
+<p><img src="diagram.png" alt="Diagram"> <em>emphasis</em>, <strong>strong</strong>, <del>gone</del>, <code>inline</code>.</p>
+<pre><code class="language-go">package main
+
+func main() {}
+</code></pre>
+<table>
+<thead><tr><th>Name</th><th>Value</th></tr></thead>
+<tbody><tr><td>a</td><td>1</td></tr><tr><td>b | c</td><td>2</td></tr></tbody>
+</table>
+<ul><li>one</li><li>two<ul><li>nested</li></ul></li></ul>
+<ol><li>first</li><li>second</li></ol>
+<blockquote><p>Quoted text.</p></blockquote>
+<p hidden>Hidden paragraph.</p>
+<p aria-hidden="true">Decorative text.</p>
+<p style="display: none">Invisible text.</p>
+<form><label>Search <input name="q"></label><button>Go</button></form>
+<svg><title>icon</title><path d="M0 0"/></svg>
+<iframe src="/embed"></iframe>
+<!-- a comment -->
+<footer><p>Article footer stays.</p></footer>
+</article>
+<ul class="languages"><li><a href="/de/" hreflang="de">Deutsch</a></li><li><a href="/fr/" hreflang="fr">Français</a></li></ul>
+<footer>Site footer © Example</footer>
+<template><p>Template content.</p></template>
+<noscript>Enable JavaScript.</noscript>
+</body>
+</html>
