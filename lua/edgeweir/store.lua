@@ -400,6 +400,10 @@ function _M.prepare(s, cfg)
   -- body limit and origin tries.
   s.purge = s.purge == true
   s.hide_x_cache = s.hide_x_cache == true
+  -- Development mode (feature development-mode-v1): the Unix second it
+  -- ends, nil when off (edgeweir.router.development_mode).
+  local dev = tonumber(s.development_mode_until)
+  s.development_mode_until = (dev and dev > 0) and dev or nil
   s.no_status_retry = s.no_status_retry == true
   s.tries = tonumber(s.tries) or 3
   if type(s.maintenance) == "table" then

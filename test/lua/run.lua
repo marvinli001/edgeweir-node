@@ -1071,6 +1071,20 @@ test("store keeps the allow list and cdn-id per table", function()
   eq(#store.config().allowed, 0)
 end)
 
+test("router development mode ends at its deadline", function()
+  eq(router.development_mode({}, 1000), false, "off")
+  eq(router.development_mode({ development_mode_until = 2000 }, 1000), true)
+  eq(router.development_mode({ development_mode_until = 2000 }, 1999), true)
+  eq(router.development_mode({ development_mode_until = 2000 }, 2000), false, "ends at the deadline")
+  eq(router.development_mode({ development_mode_until = 2000 }, 9000), false, "a past deadline is off")
+  assert(store.replace({ revision = "32", content_hash = "dev", sites = {
+    site("dev", { { name = "dev.test" } }, { development_mode_until = 4102444800 }),
+    site("nodev", { { name = "nodev.test" } }, { development_mode_until = 0 }) } }))
+  eq(store.site_current("dev").development_mode_until, 4102444800)
+  eq(store.site_current("nodev").development_mode_until, nil, "0 is off")
+  eq(router.development_mode(store.site_current("dev"), ngx.time()), true)
+end)
+
 test("router CDN-Loop detection and header value", function()
   local id = "edgeweir-0123456789abcdef"
   eq(router.cdn_loop_contains(nil, id), false)

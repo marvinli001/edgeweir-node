@@ -288,6 +288,10 @@ type Site struct {
 	// and / or ";" as they are (feature encoded-path-exemptions-v1,
 	// edgeweir.uripath), sorted by prefix.
 	EncodedPathExemptions []EncodedPathExemption `json:"encoded_path_exemptions,omitempty"`
+	// DevelopmentModeUntil is the Unix second development mode ends (0:
+	// off; feature development-mode-v1): until then edgeweir.router neither
+	// looks up nor stores the site's requests in the cache.
+	DevelopmentModeUntil int64 `json:"development_mode_until,omitempty"`
 	// AccessControl is the site's access control (nil: none; feature
 	// access-control-v1, ADR-0039).
 	AccessControl *AccessControl `json:"access_control,omitempty"`
@@ -388,7 +392,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureDevelopmentMode}
 
 // FeatureActiveHealthGRPC (proto v1.6.0): ActiveHealthCheck.type GRPC,
 // grpc.health.v1 probes. FeatureOriginProxyProtocol (proto v1.6.0):
@@ -795,6 +799,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		if _, err = buildEncodedPathExemptions(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
+		if _, err = buildDevelopmentMode(s); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if access[id], err = buildAccessControl(s, ipLists, opts.ExtraFeatures); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
@@ -959,6 +966,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if site.EncodedPathExemptions, err = buildEncodedPathExemptions(s); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if site.DevelopmentModeUntil, err = buildDevelopmentMode(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		site.AccessControl = access[id]
