@@ -70,7 +70,7 @@ http {
             ipv6 = true,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "c6633901034f0083",
+            conf_id = "c129706ac4f7010d",
             -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
             geoip_socket = "",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
@@ -1222,6 +1222,84 @@ http {
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 
+        # Responses AI crawl control rewrites (edgeweir.aicrawl: the managed
+        # robots.txt, pay per crawl's 402 from the origin's price):
+        # edgeweir.router hands them here at the end of its access phase, so
+        # location / keeps no body filter.
+        location @edgeweir_aicrawl {
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
+            # The origin address that answered (edgeweir.origin), for the
+            # access log only (edgeweir.accesslogs), cache hits included.
+            proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
+
+            add_header X-Cache $edgeweir_x_cache always;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            body_filter_by_lua_block { require("edgeweir.router").body_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
         # Forward authentication (edgeweir.auth): the subrequest goes through
         # the origin layer (TLS verification, origin address policy), which
         # sends it to the rule's service with the forwarded request headers
@@ -1428,6 +1506,84 @@ http {
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 
+        # Responses AI crawl control rewrites (edgeweir.aicrawl: the managed
+        # robots.txt, pay per crawl's 402 from the origin's price):
+        # edgeweir.router hands them here at the end of its access phase, so
+        # location / keeps no body filter.
+        location @edgeweir_aicrawl {
+            access_by_lua_block { require("edgeweir.router").grpc_access() }
+
+            slice 1m;
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection $edgeweir_connection;
+            proxy_set_header Upgrade $edgeweir_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
+            # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
+            # layer forwards it to the origin unchanged.
+            proxy_set_header CDN-Loop $edgeweir_cdn_loop;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Rules $edgeweir_rules;
+            proxy_set_header X-Edgeweir-Cache-Status $upstream_cache_status;
+            # Origin rules' group, Host, SNI and port and config rules'
+            # timeouts (edgeweir.policy.origin_header).
+            proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
+            proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
+            proxy_set_header Range $edgeweir_range;
+            proxy_set_header If-Range $edgeweir_if_range;
+            # One request id for the client, the origin layer and the origin.
+            proxy_set_header X-Request-Id $edgeweir_request_id;
+            # Timeouts towards origins are per site in the origin layer, which
+            # always answers within its own; these only bound the local hop
+            # (as long as the longest WebSocket idle timeout a site may set).
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
+
+            proxy_cache $edgeweir_cache_zone;
+            proxy_cache_key $edgeweir_cache_key$edgeweir_slice_key;
+            proxy_cache_bypass $edgeweir_cache_bypass;
+            proxy_no_cache $edgeweir_no_cache;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 10s;
+            # Stale serving follows the stale-while-revalidate and
+            # stale-if-error extensions the origin layer sets per rule.
+            proxy_cache_background_update on;
+            proxy_cache_revalidate on;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # Never sent to clients (cache hits included): the origin's own
+            # request id, Cache-Tag (edgeweir.router puts it back for sites
+            # that keep it) and the origin layer's affinity announcement.
+            proxy_hide_header X-Request-Id;
+            proxy_hide_header Cache-Tag;
+            proxy_hide_header X-Edgeweir-Affinity;
+            # Set-Cookie lines of responses cached with their cookies
+            # (CacheRule.cache_set_cookie): never sent as they are, cache hits
+            # included; edgeweir.router turns them back into Set-Cookie only
+            # on the response fetched for the request.
+            proxy_hide_header X-Edgeweir-Set-Cookie;
+            # The origin address that answered (edgeweir.origin), for the
+            # access log only (edgeweir.accesslogs), cache hits included.
+            proxy_hide_header X-Edgeweir-Upstream;
+            # The bytes a WebP / AVIF variant saved (the image converter), for
+            # the statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
+
+            add_header X-Cache $edgeweir_x_cache always;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            body_filter_by_lua_block { require("edgeweir.router").body_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+
         # Forward authentication (edgeweir.auth): the subrequest goes through
         # the origin layer (TLS verification, origin address policy), which
         # sends it to the rule's service with the forwarded request headers
@@ -1530,7 +1686,7 @@ stream {
         require("edgeweir.l4").init({
             resolvers = {"127.0.0.11"},
             ipv6 = true,
-            conf_id = "c6633901034f0083",
+            conf_id = "c129706ac4f7010d",
         })
     }
     init_worker_by_lua_block { require("edgeweir.l4").init_worker() }
