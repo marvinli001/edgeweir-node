@@ -281,6 +281,14 @@ local function unknown(cfg, host, var, is_local)
   return nil, errorpages.unknown_host(cfg, host)
 end
 
+-- development_mode: whether the site's development mode is on at Unix
+-- time now (the node's clock): it ends at development_mode_until on its
+-- own, whether or not the console's configuration without it arrives.
+function _M.development_mode(site, now)
+  local ends = site.development_mode_until
+  return ends ~= nil and now < ends
+end
+
 -- route is the end of the access phase of a request that passed the checks
 -- and the body limit: the origin layer, and for requests the edge may
 -- cache, the cache key and the rules that decide. headers are the request
@@ -295,6 +303,13 @@ local function route(site, pctx, headers, host, original_path, acme)
   -- An ambiguous path may be another path at the origin than the key's
   -- (edgeweir.uripath): never stored or served from the cache.
   if (method ~= "GET" and method ~= "HEAD") or acme or uripath.request_ambiguous(site) then
+    var.edgeweir_range_mode = "pass"
+    return true
+  end
+  -- Development mode: no cache lookup and nothing stored (X-Cache: BYPASS),
+  -- so no cache rule, browser TTL, stale copy or WebP / AVIF variant
+  -- applies; what is cached stays for afterwards.
+  if _M.development_mode(site, ngx.time()) then
     var.edgeweir_range_mode = "pass"
     return true
   end
