@@ -61,6 +61,51 @@
 
 控制台为每个节点生成安装命令。`install.sh` 校验发布物 SHA-256 与 cosign 签名后安装 `edgeweir-openresty`、`edgeweir-openresty-modsecurity` 与 `edgeweir-node`，以固定 CA 指纹注册并启动服务；一次性 token 经 `EDGEWEIR_TOKEN` 传递。`--allow-unsigned` 仅用于开发：跳过签名校验，保留 SHA-256 校验。
 
+### 无人值守安装（SSH）
+
+控制台经 SSH 运行 `install.sh` 时没有终端：`edgeweir-node enroll` 不交互，日志只写标准错误，并在标准输出写且只写一行结果（`-h` 除外），供调用方解析：
+
+```text
+EDGEWEIR_RESULT {"v":1,"step":"enroll","status":"enrolled","exit":0,"retry":false,"node_id":"…","node_name":"…","cluster_id":"…","not_after":"2027-01-02T03:04:05Z"}
+```
+
+前缀之后是同一行的 JSON；未知字段应忽略，`message` 是英文说明，按 `status` 判断。`retry` 表示原样重试（同一个 token）可能成功。
+
+| 退出码 | `status` | 含义 | `retry` |
+| --- | --- | --- | --- |
+| 0 | `enrolled` | 已注册，身份已保存 | |
+| 0 | `already_enrolled` | 带 `--if-not-enrolled`：已用同一控制台注册（带 `node_id`） | |
+| 1 | `error` | 其他错误；被 SIGINT/SIGTERM 中断时 `retry` 为真 | |
+| 2 | `usage` | 参数错误，缺少地址、token 或指纹 | 否 |
+| 10 | `already_enrolled` | 已注册（带 `node_id`），未给 `--force` 或 `--if-not-enrolled` | 否 |
+| 11 | `enrolled_elsewhere` | 带 `--if-not-enrolled`：身份属于固定了另一个 CA 的控制台（带 `node_id`、`ca_sha256`） | 否 |
+| 12 | `token_rejected` | 控制台拒绝 token（不存在、过期或已用） | 否 |
+| 13 | `unreachable` | 连不上控制台（DNS、连接、超时、TLS），或控制台答 Unavailable | 是 |
+| 14 | `ca_mismatch` | 对端不是 `--ca-sha256` 的控制台（代理或 CDN 终止了 TLS、地址错误、证书不含该主机名）；token 未发出 | 否 |
+| 15 | `state_dir` | 状态目录无法创建或写入，身份保存失败 | 否 |
+| 16 | `busy` | 另一个 `enroll` 正在使用该状态目录（`retry` 为真）；或 `--force` 时 agent 在运行 | 视情况 |
+| 17 | `console_error` | 控制台答了其他错误或无法使用的应答；内部错误时 `retry` 为真 | 视情况 |
+
+重复执行与中断：
+
+- 同一状态目录同时只有一个 `enroll`（`enroll.lock`）：批量安装重试时，前一次尚未结束的注册不会和新一次各用一个 token。
+- 密钥在发出 token 前写入 `enroll.key`（0600），直到某次注册成功（成为 `node.key`）之前每次重试都用它。控制台已签发证书但应答丢失（SSH 断开、超时）时，重试发送的是同一个公钥，控制台据此可以返回已建的节点而不是再建一个。
+- SSH 会话断开（标准输出/错误的管道关闭、SIGHUP）不会中止进行中的注册：证书可能已经签发，身份仍会保存；SIGINT、SIGTERM 仍会中止。
+- 已注册的主机：`--if-not-enrolled` 成功并给出节点 ID，属于其他控制台时失败（11），不会悄悄换身份；`--force` 才重新注册。
+
+### 无需 SSH 的运维
+
+安装后控制台只经节点通道管理节点，SSH 凭据不保存：
+
+| 操作 | 方式 |
+| --- | --- |
+| 升级 | 控制台的升级任务（`supervise` 下载、验签、试运行、失败回滚） |
+| 更换控制台地址 | 节点自动跟随控制台给出的地址（[控制台地址](#控制台地址)） |
+| 证书续期 | 到期前自动续期 |
+| 收集日志 | 警告与事件持续上报；控制台按需拉取最近的全部级别日志（`--debug-log-buffer`） |
+| 重启、重载 | 不需要：配置变化时重载 OpenResty，进程异常退出由监督进程与 systemd 重启 |
+| 仍需 SSH | 下线（停止服务并删除身份）、密钥丢失或证书在离线期间过期后的重新注册、修改本机参数（`/etc/default/edgeweir-node`、内核封禁的 drop-in）、卸载软件包 |
+
 ### deb / rpm
 
 系统要求：glibc 2.34 及以上（RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新版本），amd64 或 arm64。OpenResty 由 agent 以子进程运行；若装有 OpenResty 官方包，停用其服务（`sudo systemctl disable --now openresty`）。
@@ -194,7 +239,7 @@ sudo systemctl enable --now edgeweir-probe
 ## 命令行
 
 ```text
-EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force]
+EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force | --if-not-enrolled]
 edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...
 edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
                   [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80]
@@ -231,6 +276,7 @@ edgeweir-node version
 | `--server-name` | `--server` 的主机名 | 校验的 TLS 服务器名 |
 | `--state-dir` | `/var/lib/edgeweir-node` | 状态目录 |
 | `--force` | 关 | 替换已有身份（重新注册）；`run` 运行时拒绝，先停止节点（如 `systemctl stop edgeweir-node`） |
+| `--if-not-enrolled` | 关 | 已用 `--ca-sha256` 的控制台注册时直接成功（不需要 token，不发请求）；身份属于其他控制台时退出码 11。与 `--force` 互斥 |
 | `--timeout` | `30s` | 注册 RPC 超时 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |

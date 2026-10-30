@@ -140,14 +140,16 @@ run 启动
 ### 2.1 注册（`enroll`）
 
 1. token 来源：`EDGEWEIR_TOKEN` 环境变量（`install.sh` 用这种方式）、`--token-file PATH`（或 `EDGEWEIR_TOKEN_FILE`），或 `--token`（会出现在 `ps` 里，使用时打印警告）。命令行参数优先于环境变量；同一层同时给出 token 和 token 文件时报错；文件内容去掉首尾空白，为空则报错。读取后从环境中删除 `EDGEWEIR_TOKEN`，子进程（`openresty -v`）看不到它。
-2. 校验参数：`--server` 必须是 `https://`（节点通道端口）、`wss://` 或 `ws://`（控制台 Web 端口上的 WebSocket 入口，地址不带路径）；`--ca-sha256` 为 64 位十六进制（也接受 `sha256:` 前缀和冒号分隔）；已有身份时除非 `--force` 否则拒绝。`--force` 替换已有身份时取状态目录的运行锁：`run` 正在运行就拒绝（先停止节点），成功后持锁到新身份写完。首次注册不受影响（等待注册的 `run` 本就持锁）。先确认状态目录可写，避免白白消耗一次性 token。
-3. 本地生成 ECDSA P-256 私钥，CSR 的 CN 为主机名（控制台会改成 node id）。
+2. 校验参数：`--server` 必须是 `https://`（节点通道端口）、`wss://` 或 `ws://`（控制台 Web 端口上的 WebSocket 入口，地址不带路径）；`--ca-sha256` 为 64 位十六进制（也接受 `sha256:` 前缀和冒号分隔）；已有身份时除非 `--force` 否则拒绝（`--if-not-enrolled`：身份固定的 CA 与 `--ca-sha256` 相同则不发请求直接成功，不同则失败，见 README「无人值守安装」）。先确认状态目录可写，避免白白消耗一次性 token。然后取注册锁 `enroll.lock`（flock，不等待）：同一主机同时只有一个注册，第二个立即失败（`busy`），不会各用一个 token；取锁后再检查一次是否已注册。`--force` 替换已有身份时再取状态目录的运行锁：`run` 正在运行就拒绝（先停止节点），成功后持锁到新身份写完。首次注册不受影响（等待注册的 `run` 本就持锁）。
+3. 私钥（ECDSA P-256）在发出 token 之前写入 `enroll.key`（0600）；之后的每次尝试都沿用它，直到某次注册保存成功（它成为 `node.key`，`enroll.key` 删除）。控制台已签发证书而应答丢失时（SSH 断开、超时），重试带的是同一个公钥，控制台可据此答以已建的节点而不再建一个。CSR 的 CN 为主机名（控制台会改成 node id）。`enroll` 忽略 SIGPIPE 与 SIGHUP：SSH 会话断开不会在签发与保存之间杀死它（RPC 受 `--timeout` 限制）。
 4. 用 pin 通道调用 `Enroll`（`wss://` / `ws://` 地址下每个连接先与 `<地址>/node-channel` 完成 WebSocket 握手，子协议 `edgeweir-node-channel`，握手遵循 `HTTPS_PROXY` 等代理变量，`wss://` 本身的证书按系统根证书校验；下面的 TLS 在 WebSocket 内运行，由控制台终结，mTLS 通道同样如此）：`tls.Config` 设置 `InsecureSkipVerify`，由 `VerifyConnection` 做完整校验：服务端证书链中必须有一张证书的 DER SHA-256 等于 pin；以这张证书为唯一根，校验 leaf 的证书链、主机名（默认取 URL 的 host，`--server-name` 可覆盖）和 ServerAuth 用途。校验通过后才发送 token。
 5. 校验响应：`ca_certificate_pem` 的哈希必须等于 pin；节点证书必须由该 CA 签发、用于 ClientAuth、公钥与本地私钥一致；CN 与 node_id 不一致时只告警。
 6. 原子写入 `node.key`（0600）、`node.crt`、`ca.crt`，最后写 `identity.json`（它是"已注册"的标记）。以 root 执行且状态目录属于服务用户时，文件会交给该用户。`--force` 会先删除旧身份和旧 LKG。
 7. 运行中的 agent 只在启动时加载身份；`identity.json` 换成另一个身份时（旧版本的 `enroll --force`、复制来的状态目录）它退出并以新身份重启，续期在交换密钥对前也会核对，绝不把旧节点的证书写到新身份旁。
 
 token 用过即失效，重复注册返回 `permission_denied`（或 `unauthenticated`）。
+
+`enroll` 不论结果都在标准输出写一行 `EDGEWEIR_RESULT <JSON>`，按失败类别给出不同的退出码（10–17，见 README「无人值守安装」），供控制台经 SSH 安装时对应到进度步骤；分类在 `enroll.Outcome`（`internal/enroll/result.go`）。
 
 ### 2.2 mTLS 通道
 

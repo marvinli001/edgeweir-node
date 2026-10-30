@@ -61,6 +61,51 @@ Details: [ARCHITECTURE.md](ARCHITECTURE.md) (Chinese).
 
 The console generates an install command per node. `install.sh` verifies the SHA-256 and cosign signature of the release artifacts, installs `edgeweir-openresty`, `edgeweir-openresty-modsecurity` and `edgeweir-node`, enrolls with the pinned CA fingerprint and starts the service; the one-time token is passed in `EDGEWEIR_TOKEN`. `--allow-unsigned` is for development only: it skips the signature check and keeps the SHA-256 check.
 
+### Unattended installs (SSH)
+
+When the console runs `install.sh` over SSH there is no terminal: `edgeweir-node enroll` never prompts, logs go to stderr only, and it writes exactly one result line to stdout (except for `-h`) for the caller to parse:
+
+```text
+EDGEWEIR_RESULT {"v":1,"step":"enroll","status":"enrolled","exit":0,"retry":false,"node_id":"…","node_name":"…","cluster_id":"…","not_after":"2027-01-02T03:04:05Z"}
+```
+
+The prefix is followed by JSON on the same line; ignore unknown fields, `message` is English detail, decide by `status`. `retry` tells whether running the same command again (same token) may succeed.
+
+| Exit | `status` | Meaning | `retry` |
+| --- | --- | --- | --- |
+| 0 | `enrolled` | Enrolled, identity saved | |
+| 0 | `already_enrolled` | With `--if-not-enrolled`: already enrolled with the same console (with `node_id`) | |
+| 1 | `error` | Anything else; `retry` is true when interrupted by SIGINT/SIGTERM | |
+| 2 | `usage` | Invalid flags, missing address, token or fingerprint | no |
+| 10 | `already_enrolled` | Already enrolled (with `node_id`), neither `--force` nor `--if-not-enrolled` | no |
+| 11 | `enrolled_elsewhere` | With `--if-not-enrolled`: the identity belongs to a console that pins another CA (with `node_id`, `ca_sha256`) | no |
+| 12 | `token_rejected` | The console refused the token (unknown, expired or used) | no |
+| 13 | `unreachable` | Console not reachable (DNS, connect, timeout, TLS) or it answered Unavailable | yes |
+| 14 | `ca_mismatch` | The peer is not the console of `--ca-sha256` (a proxy or CDN terminates TLS, wrong address, certificate without that host name); the token was not sent | no |
+| 15 | `state_dir` | The state directory cannot be created or written, saving the identity failed | no |
+| 16 | `busy` | Another `enroll` uses the state directory (`retry` true), or `--force` while the agent runs | depends |
+| 17 | `console_error` | The console answered with another error or an unusable answer; `retry` true for internal errors | depends |
+
+Re-runs and interruptions:
+
+- One `enroll` per state directory at a time (`enroll.lock`): a retried batch install does not spend a second token while the first attempt still runs.
+- The key is written to `enroll.key` (0600) before the token is sent and reused by every retry until an enrollment succeeds (it becomes `node.key`). When the console issued the certificate but the answer was lost (SSH dropped, timeout), the retry sends the same public key, so the console can answer with the node it already created instead of a second one.
+- A dropped SSH session (closed stdout/stderr pipes, SIGHUP) does not abort a running enrollment: the certificate may already be issued, so the identity is still saved; SIGINT and SIGTERM still abort it.
+- Enrolled hosts: `--if-not-enrolled` succeeds with the node id and fails (11) when the host belongs to another console, never switching identities silently; only `--force` enrolls again.
+
+### Operations without SSH
+
+After the install the console manages the node through the node channel only; SSH credentials are not kept:
+
+| Operation | How |
+| --- | --- |
+| Upgrade | The console's upgrade task (`supervise` downloads, verifies, trial-runs, rolls back on failure) |
+| Console address change | The node follows the address the console names ([Console URL](#console-url)) |
+| Certificate renewal | Automatic, before expiry |
+| Log collection | Warnings and events are reported continuously; the console pulls the recent logs of every level on demand (`--debug-log-buffer`) |
+| Restart, reload | Not needed: configuration changes reload OpenResty, crashed processes are restarted by the supervisor and systemd |
+| Still needs SSH | Decommissioning (stop serving and delete the identity), re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
+
 ### deb / rpm
 
 Requirements: glibc 2.34 or later (RHEL / Rocky / AlmaLinux 9, Debian 12, Ubuntu 22.04 and newer), amd64 or arm64. The agent runs OpenResty as a child process; if OpenResty's own packages are installed, disable their service (`sudo systemctl disable --now openresty`).
@@ -194,7 +239,7 @@ Nodes and probes reach the console at the URL in `identity.json` (`probe.json`) 
 ## Command line
 
 ```text
-EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force]
+EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name NAME] [--state-dir DIR] [--force | --if-not-enrolled]
 edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...
 edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
                   [--lua-dir DIR] [--cache-dir DIR] [--control-socket PATH] [--default-port 80]
@@ -231,6 +276,7 @@ edgeweir-node version
 | `--server-name` | host of `--server` | TLS server name to verify |
 | `--state-dir` | `/var/lib/edgeweir-node` | State directory |
 | `--force` | off | Replace an existing identity (re-enroll); refused while `run` runs, stop the node first (e.g. `systemctl stop edgeweir-node`) |
+| `--if-not-enrolled` | off | Succeed when already enrolled with the console of `--ca-sha256` (no token needed, nothing sent); exit 11 when the identity belongs to another console. Excludes `--force` |
 | `--timeout` | `30s` | Enrollment RPC timeout |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |

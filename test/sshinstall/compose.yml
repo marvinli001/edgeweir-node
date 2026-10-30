@@ -1,0 +1,25 @@
+# SSH install test: the console's one-shot install over a non-tty SSH
+# session, against fresh hosts with sshd (test/sshinstall/run.sh).
+# Nothing is published on the machine's ports.
+services:
+  console:
+    image: ${SSH_TEST_IMAGE:-edgeweir-node:ssh-host}
+    command: ["/work/bin/console", "--mirror", "/work/mirror"]
+    volumes:
+      - ${SSH_TEST_WORK:?}:/work:ro
+
+  host1:
+    image: ${SSH_TEST_IMAGE:-edgeweir-node:ssh-host}
+    volumes:
+      - ${SSH_TEST_WORK:?}/keys:/keys:ro
+
+  host2:
+    image: ${SSH_TEST_IMAGE:-edgeweir-node:ssh-host}
+    volumes:
+      - ${SSH_TEST_WORK:?}/keys:/keys:ro
+
+  client:
+    image: ${SSH_TEST_IMAGE:-edgeweir-node:ssh-host}
+    command: ["sleep", "infinity"]
+    volumes:
+      - ${SSH_TEST_WORK:?}:/work:ro
