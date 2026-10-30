@@ -4,6 +4,8 @@
 package hostinfo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"net"
 	"os"
@@ -89,7 +91,41 @@ func Collect(engineVersion string) *nodev1.NodeInfo {
 		Engine:            Engine,
 		EngineVersion:     engineVersion,
 		IpAddresses:       IPAddresses(),
+		MachineId:         MachineID(),
 	}
+}
+
+// machineIDFiles hold the host's machine id (systemd, then D-Bus).
+var machineIDFiles = []string{"/etc/machine-id", "/var/lib/dbus/machine-id"}
+
+// MachineID is the app-specific machine id the console uses to notice a
+// host that already is a node (NodeInfo.machine_id): the hex SHA-256 of
+// "edgeweir-node:" and the host's machine id, so that the id itself is
+// not disclosed. Empty when the host has none (containers).
+func MachineID() string {
+	for _, p := range machineIDFiles {
+		if id := machineIDFrom(p); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func machineIDFrom(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(raw))
+	// 32 lowercase hex characters; "uninitialized" and empty files are none.
+	if len(id) != 32 {
+		return ""
+	}
+	if _, err := hex.DecodeString(id); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("edgeweir-node:" + strings.ToLower(id)))
+	return hex.EncodeToString(sum[:])
 }
 
 // OnlineCPUs is an upper bound of the CPUs nginx counts for
