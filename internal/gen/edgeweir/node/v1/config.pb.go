@@ -850,8 +850,16 @@ type NodeConfig struct {
 	// origin_ca. Changing it is a structural change. Added in v1.6.0
 	// (feature origin-ca-rotation-v1).
 	OriginCaPrevious *OriginCa `protobuf:"bytes,24,opt,name=origin_ca_previous,json=originCaPrevious,proto3" json:"origin_ca_previous,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Node extensions (docs/reference/extensions.md), sorted by install
+	// order then id: each installed extension's active package. Changing the
+	// set of packages (or their shared dicts) is a structural change; the rest
+	// is hot-updated. Added in PROTO_NEXT (feature extensions-v1).
+	Extensions []*Extension `protobuf:"bytes,60,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	// Kill switch: nodes load no extension code paths while set (packages stay
+	// on disk). Added in PROTO_NEXT.
+	ExtensionsDisabled bool `protobuf:"varint,61,opt,name=extensions_disabled,json=extensionsDisabled,proto3" json:"extensions_disabled,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *NodeConfig) Reset() {
@@ -1050,6 +1058,20 @@ func (x *NodeConfig) GetOriginCaPrevious() *OriginCa {
 		return x.OriginCaPrevious
 	}
 	return nil
+}
+
+func (x *NodeConfig) GetExtensions() []*Extension {
+	if x != nil {
+		return x.Extensions
+	}
+	return nil
+}
+
+func (x *NodeConfig) GetExtensionsDisabled() bool {
+	if x != nil {
+		return x.ExtensionsDisabled
+	}
+	return false
 }
 
 // ConnectionLimits limits each client's TCP connections to ports in the
@@ -1505,8 +1527,11 @@ type NodeConfigDiff struct {
 	ConnectionLimits *ConnectionLimits `protobuf:"bytes,25,opt,name=connection_limits,json=connectionLimits,proto3" json:"connection_limits,omitempty"`
 	// Always sent in full (NodeConfig field 24). Added in v1.6.0.
 	OriginCaPrevious *OriginCa `protobuf:"bytes,26,opt,name=origin_ca_previous,json=originCaPrevious,proto3" json:"origin_ca_previous,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Always sent in full (NodeConfig fields 60 and 61). Added in PROTO_NEXT.
+	Extensions         []*Extension `protobuf:"bytes,60,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	ExtensionsDisabled bool         `protobuf:"varint,61,opt,name=extensions_disabled,json=extensionsDisabled,proto3" json:"extensions_disabled,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *NodeConfigDiff) Reset() {
@@ -1719,6 +1744,20 @@ func (x *NodeConfigDiff) GetOriginCaPrevious() *OriginCa {
 		return x.OriginCaPrevious
 	}
 	return nil
+}
+
+func (x *NodeConfigDiff) GetExtensions() []*Extension {
+	if x != nil {
+		return x.Extensions
+	}
+	return nil
+}
+
+func (x *NodeConfigDiff) GetExtensionsDisabled() bool {
+	if x != nil {
+		return x.ExtensionsDisabled
+	}
+	return false
 }
 
 // L4App forwards a TCP or UDP port of every node to its origins.
@@ -2355,8 +2394,12 @@ type Site struct {
 	// Added in v1.6.0; nodes without feature encoded-path-exemptions-v1 keep
 	// treating every such path as ambiguous (no feature required).
 	EncodedPathExemptions []*EncodedPathExemption `protobuf:"bytes,38,rep,name=encoded_path_exemptions,json=encodedPathExemptions,proto3" json:"encoded_path_exemptions,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Extensions the site turns on, in NodeConfig.extensions order, with the
+	// site's configuration. Only ids present in NodeConfig.extensions.
+	// Added in PROTO_NEXT (feature extensions-v1).
+	Extensions    []*SiteExtension `protobuf:"bytes,60,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Site) Reset() {
@@ -2651,6 +2694,13 @@ func (x *Site) GetAuthIdentityHeaders() []string {
 func (x *Site) GetEncodedPathExemptions() []*EncodedPathExemption {
 	if x != nil {
 		return x.EncodedPathExemptions
+	}
+	return nil
+}
+
+func (x *Site) GetExtensions() []*SiteExtension {
+	if x != nil {
+		return x.Extensions
 	}
 	return nil
 }
@@ -7668,11 +7718,256 @@ func (x *CertificateRef) GetNotAfter() *timestamppb.Timestamp {
 	return nil
 }
 
+// Extension is one installed node extension (format
+// edgeweir-node-extension-v1): the active package, fetched by digest with
+// NodeService.GetExtensionPackage, verified against signature and
+// public_key, and its operator settings. Added in PROTO_NEXT.
+type Extension struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Manifest id ([a-z][a-z0-9-]{1,38}[a-z0-9]).
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Active version (semver) and its publisher.
+	Version   string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	Publisher string `protobuf:"bytes,3,opt,name=publisher,proto3" json:"publisher,omitempty"`
+	// Lowercase hex SHA-256 and size of the .ewx package bytes.
+	Sha256 string `protobuf:"bytes,4,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Size   uint64 `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`
+	// Compact JWS (EdDSA) over the package identity and digest.
+	Signature string `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
+	// The signing key as an OKP / Ed25519 JWK (JSON).
+	PublicKey string `protobuf:"bytes,7,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	// Globally enabled; disabled extensions stay loaded but run no hook.
+	Enabled bool `protobuf:"varint,8,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// "open" (default) or "closed".
+	FailureMode string `protobuf:"bytes,9,opt,name=failure_mode,json=failureMode,proto3" json:"failure_mode,omitempty"`
+	// Global configuration (JSON object, defaults filled in by the console).
+	ConfigJson string `protobuf:"bytes,10,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	// Shared dicts of the manifest (name, size in KiB), so nodes can render
+	// nginx.conf before unpacking.
+	SharedDicts   []*ExtensionSharedDict `protobuf:"bytes,11,rep,name=shared_dicts,json=sharedDicts,proto3" json:"shared_dicts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Extension) Reset() {
+	*x = Extension{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Extension) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Extension) ProtoMessage() {}
+
+func (x *Extension) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Extension.ProtoReflect.Descriptor instead.
+func (*Extension) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *Extension) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Extension) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *Extension) GetPublisher() string {
+	if x != nil {
+		return x.Publisher
+	}
+	return ""
+}
+
+func (x *Extension) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *Extension) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *Extension) GetSignature() string {
+	if x != nil {
+		return x.Signature
+	}
+	return ""
+}
+
+func (x *Extension) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *Extension) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *Extension) GetFailureMode() string {
+	if x != nil {
+		return x.FailureMode
+	}
+	return ""
+}
+
+func (x *Extension) GetConfigJson() string {
+	if x != nil {
+		return x.ConfigJson
+	}
+	return ""
+}
+
+func (x *Extension) GetSharedDicts() []*ExtensionSharedDict {
+	if x != nil {
+		return x.SharedDicts
+	}
+	return nil
+}
+
+// ExtensionSharedDict is one lua_shared_dict of an extension.
+type ExtensionSharedDict struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	SizeKb        uint32                 `protobuf:"varint,2,opt,name=size_kb,json=sizeKb,proto3" json:"size_kb,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExtensionSharedDict) Reset() {
+	*x = ExtensionSharedDict{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExtensionSharedDict) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExtensionSharedDict) ProtoMessage() {}
+
+func (x *ExtensionSharedDict) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExtensionSharedDict.ProtoReflect.Descriptor instead.
+func (*ExtensionSharedDict) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *ExtensionSharedDict) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ExtensionSharedDict) GetSizeKb() uint32 {
+	if x != nil {
+		return x.SizeKb
+	}
+	return 0
+}
+
+// SiteExtension turns an extension on for one site.
+type SiteExtension struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Site configuration (JSON object, defaults filled in by the console).
+	ConfigJson    string `protobuf:"bytes,2,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SiteExtension) Reset() {
+	*x = SiteExtension{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SiteExtension) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SiteExtension) ProtoMessage() {}
+
+func (x *SiteExtension) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SiteExtension.ProtoReflect.Descriptor instead.
+func (*SiteExtension) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *SiteExtension) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SiteExtension) GetConfigJson() string {
+	if x != nil {
+		return x.ConfigJson
+	}
+	return ""
+}
+
 var File_edgeweir_node_v1_config_proto protoreflect.FileDescriptor
 
 const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1dedgeweir/node/v1/config.proto\x12\x10edgeweir.node.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfe\v\n" +
+	"\x1dedgeweir/node/v1/config.proto\x12\x10edgeweir.node.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xec\f\n" +
 	"\n" +
 	"NodeConfig\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x04R\brevision\x12!\n" +
@@ -7701,7 +7996,11 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x1aorigin_client_certificates\x18\x15 \x03(\v2 .edgeweir.node.v1.CertificateRefR\x18originClientCertificates\x127\n" +
 	"\torigin_ca\x18\x16 \x01(\v2\x1a.edgeweir.node.v1.OriginCaR\boriginCa\x12O\n" +
 	"\x11connection_limits\x18\x17 \x01(\v2\".edgeweir.node.v1.ConnectionLimitsR\x10connectionLimits\x12H\n" +
-	"\x12origin_ca_previous\x18\x18 \x01(\v2\x1a.edgeweir.node.v1.OriginCaR\x10originCaPrevious\"\xaf\x01\n" +
+	"\x12origin_ca_previous\x18\x18 \x01(\v2\x1a.edgeweir.node.v1.OriginCaR\x10originCaPrevious\x12;\n" +
+	"\n" +
+	"extensions\x18< \x03(\v2\x1b.edgeweir.node.v1.ExtensionR\n" +
+	"extensions\x12/\n" +
+	"\x13extensions_disabled\x18= \x01(\bR\x12extensionsDisabled\"\xaf\x01\n" +
 	"\x10ConnectionLimits\x12,\n" +
 	"\x12per_ip_connections\x18\x01 \x01(\rR\x10perIpConnections\x12$\n" +
 	"\x0enew_per_second\x18\x02 \x01(\rR\fnewPerSecond\x12\x14\n" +
@@ -7724,7 +8023,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12#\n" +
 	"\rtrusted_cidrs\x18\x02 \x03(\tR\ftrustedCidrs\x12\x16\n" +
 	"\x06header\x18\x03 \x01(\tR\x06header\x12,\n" +
-	"\x12drop_forwarded_for\x18\x04 \x01(\bR\x10dropForwardedFor\"\xe2\f\n" +
+	"\x12drop_forwarded_for\x18\x04 \x01(\bR\x10dropForwardedFor\"\xd0\r\n" +
 	"\x0eNodeConfigDiff\x12#\n" +
 	"\rbase_revision\x18\x01 \x01(\x04R\fbaseRevision\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x04R\brevision\x12!\n" +
@@ -7754,7 +8053,11 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x1aorigin_client_certificates\x18\x17 \x03(\v2 .edgeweir.node.v1.CertificateRefR\x18originClientCertificates\x127\n" +
 	"\torigin_ca\x18\x18 \x01(\v2\x1a.edgeweir.node.v1.OriginCaR\boriginCa\x12O\n" +
 	"\x11connection_limits\x18\x19 \x01(\v2\".edgeweir.node.v1.ConnectionLimitsR\x10connectionLimits\x12H\n" +
-	"\x12origin_ca_previous\x18\x1a \x01(\v2\x1a.edgeweir.node.v1.OriginCaR\x10originCaPrevious\"\xd8\x05\n" +
+	"\x12origin_ca_previous\x18\x1a \x01(\v2\x1a.edgeweir.node.v1.OriginCaR\x10originCaPrevious\x12;\n" +
+	"\n" +
+	"extensions\x18< \x03(\v2\x1b.edgeweir.node.v1.ExtensionR\n" +
+	"extensions\x12/\n" +
+	"\x13extensions_disabled\x18= \x01(\bR\x12extensionsDisabled\"\xd8\x05\n" +
 	"\x05L4App\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x128\n" +
 	"\bprotocol\x18\x02 \x01(\x0e2\x1c.edgeweir.node.v1.L4ProtocolR\bprotocol\x12\x12\n" +
@@ -7798,7 +8101,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1e\n" +
 	"\vmax_size_mb\x18\x02 \x01(\x04R\tmaxSizeMb\x12 \n" +
 	"\fkeys_zone_mb\x18\x03 \x01(\rR\n" +
-	"keysZoneMb\"\xdd\x0e\n" +
+	"keysZoneMb\"\x9e\x0f\n" +
 	"\x04Site\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -7849,7 +8152,10 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\blog_peer\x18# \x01(\bR\alogPeer\x12C\n" +
 	"\rimage_convert\x18$ \x01(\v2\x1e.edgeweir.node.v1.ImageConvertR\fimageConvert\x122\n" +
 	"\x15auth_identity_headers\x18% \x03(\tR\x13authIdentityHeaders\x12^\n" +
-	"\x17encoded_path_exemptions\x18& \x03(\v2&.edgeweir.node.v1.EncodedPathExemptionR\x15encodedPathExemptionsB\x15\n" +
+	"\x17encoded_path_exemptions\x18& \x03(\v2&.edgeweir.node.v1.EncodedPathExemptionR\x15encodedPathExemptions\x12?\n" +
+	"\n" +
+	"extensions\x18< \x03(\v2\x1f.edgeweir.node.v1.SiteExtensionR\n" +
+	"extensionsB\x15\n" +
 	"\x13_request_body_limit\"q\n" +
 	"\x14EncodedPathExemption\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12#\n" +
@@ -8304,7 +8610,29 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05names\x18\x02 \x03(\tR\x05names\x12-\n" +
 	"\x12sha256_fingerprint\x18\x03 \x01(\tR\x11sha256Fingerprint\x127\n" +
-	"\tnot_after\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter*S\n" +
+	"\tnot_after\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"\xe4\x02\n" +
+	"\tExtension\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1c\n" +
+	"\tpublisher\x18\x03 \x01(\tR\tpublisher\x12\x16\n" +
+	"\x06sha256\x18\x04 \x01(\tR\x06sha256\x12\x12\n" +
+	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x1c\n" +
+	"\tsignature\x18\x06 \x01(\tR\tsignature\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\a \x01(\tR\tpublicKey\x12\x18\n" +
+	"\aenabled\x18\b \x01(\bR\aenabled\x12!\n" +
+	"\ffailure_mode\x18\t \x01(\tR\vfailureMode\x12\x1f\n" +
+	"\vconfig_json\x18\n" +
+	" \x01(\tR\n" +
+	"configJson\x12H\n" +
+	"\fshared_dicts\x18\v \x03(\v2%.edgeweir.node.v1.ExtensionSharedDictR\vsharedDicts\"B\n" +
+	"\x13ExtensionSharedDict\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
+	"\asize_kb\x18\x02 \x01(\rR\x06sizeKb\"@\n" +
+	"\rSiteExtension\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
+	"\vconfig_json\x18\x02 \x01(\tR\n" +
+	"configJson*S\n" +
 	"\n" +
 	"L4Protocol\x12\x1b\n" +
 	"\x17L4_PROTOCOL_UNSPECIFIED\x10\x00\x12\x13\n" +
@@ -8380,7 +8708,7 @@ func file_edgeweir_node_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
+var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
 var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(L4Protocol)(0),               // 0: edgeweir.node.v1.L4Protocol
 	(ListenerProtocol)(0),         // 1: edgeweir.node.v1.ListenerProtocol
@@ -8458,7 +8786,10 @@ var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(*CacheRule)(nil),             // 73: edgeweir.node.v1.CacheRule
 	(*CacheRuleMatch)(nil),        // 74: edgeweir.node.v1.CacheRuleMatch
 	(*CertificateRef)(nil),        // 75: edgeweir.node.v1.CertificateRef
-	(*timestamppb.Timestamp)(nil), // 76: google.protobuf.Timestamp
+	(*Extension)(nil),             // 76: edgeweir.node.v1.Extension
+	(*ExtensionSharedDict)(nil),   // 77: edgeweir.node.v1.ExtensionSharedDict
+	(*SiteExtension)(nil),         // 78: edgeweir.node.v1.SiteExtension
+	(*timestamppb.Timestamp)(nil), // 79: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	22,  // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
@@ -8480,95 +8811,99 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	16,  // 16: edgeweir.node.v1.NodeConfig.origin_ca:type_name -> edgeweir.node.v1.OriginCa
 	14,  // 17: edgeweir.node.v1.NodeConfig.connection_limits:type_name -> edgeweir.node.v1.ConnectionLimits
 	16,  // 18: edgeweir.node.v1.NodeConfig.origin_ca_previous:type_name -> edgeweir.node.v1.OriginCa
-	15,  // 19: edgeweir.node.v1.ConnectionLimits.ports:type_name -> edgeweir.node.v1.PortRange
-	22,  // 20: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
-	23,  // 21: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
-	25,  // 22: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
-	75,  // 23: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
-	63,  // 24: edgeweir.node.v1.NodeConfigDiff.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
-	61,  // 25: edgeweir.node.v1.NodeConfigDiff.ip_lists:type_name -> edgeweir.node.v1.IpList
-	60,  // 26: edgeweir.node.v1.NodeConfigDiff.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
-	54,  // 27: edgeweir.node.v1.NodeConfigDiff.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
-	56,  // 28: edgeweir.node.v1.NodeConfigDiff.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
-	47,  // 29: edgeweir.node.v1.NodeConfigDiff.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
-	48,  // 30: edgeweir.node.v1.NodeConfigDiff.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
-	20,  // 31: edgeweir.node.v1.NodeConfigDiff.l4_apps:type_name -> edgeweir.node.v1.L4App
-	18,  // 32: edgeweir.node.v1.NodeConfigDiff.client_address:type_name -> edgeweir.node.v1.ClientAddress
-	17,  // 33: edgeweir.node.v1.NodeConfigDiff.unknown_hosts:type_name -> edgeweir.node.v1.UnknownHosts
-	55,  // 34: edgeweir.node.v1.NodeConfigDiff.session_ticket_keys:type_name -> edgeweir.node.v1.SessionTicketKeyRef
-	75,  // 35: edgeweir.node.v1.NodeConfigDiff.origin_client_certificates:type_name -> edgeweir.node.v1.CertificateRef
-	16,  // 36: edgeweir.node.v1.NodeConfigDiff.origin_ca:type_name -> edgeweir.node.v1.OriginCa
-	14,  // 37: edgeweir.node.v1.NodeConfigDiff.connection_limits:type_name -> edgeweir.node.v1.ConnectionLimits
-	16,  // 38: edgeweir.node.v1.NodeConfigDiff.origin_ca_previous:type_name -> edgeweir.node.v1.OriginCa
-	0,   // 39: edgeweir.node.v1.L4App.protocol:type_name -> edgeweir.node.v1.L4Protocol
-	21,  // 40: edgeweir.node.v1.L4App.origins:type_name -> edgeweir.node.v1.L4Origin
-	1,   // 41: edgeweir.node.v1.Listener.protocol:type_name -> edgeweir.node.v1.ListenerProtocol
-	24,  // 42: edgeweir.node.v1.CacheZone.node_sizes:type_name -> edgeweir.node.v1.CacheZoneNodeSize
-	65,  // 43: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
-	66,  // 44: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
-	73,  // 45: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
-	64,  // 46: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
-	62,  // 47: edgeweir.node.v1.Site.tls:type_name -> edgeweir.node.v1.TlsOptions
-	60,  // 48: edgeweir.node.v1.Site.rules:type_name -> edgeweir.node.v1.EdgeRule
-	51,  // 49: edgeweir.node.v1.Site.protection:type_name -> edgeweir.node.v1.SiteProtection
-	49,  // 50: edgeweir.node.v1.Site.waf:type_name -> edgeweir.node.v1.SiteWaf
-	45,  // 51: edgeweir.node.v1.Site.error_pages:type_name -> edgeweir.node.v1.SiteErrorPages
-	44,  // 52: edgeweir.node.v1.Site.bulk_redirects:type_name -> edgeweir.node.v1.BulkRedirect
-	41,  // 53: edgeweir.node.v1.Site.purge:type_name -> edgeweir.node.v1.PurgeMethod
-	42,  // 54: edgeweir.node.v1.Site.maintenance:type_name -> edgeweir.node.v1.Maintenance
-	43,  // 55: edgeweir.node.v1.Site.charset:type_name -> edgeweir.node.v1.Charset
-	40,  // 56: edgeweir.node.v1.Site.client_certificate:type_name -> edgeweir.node.v1.ClientCertificate
-	28,  // 57: edgeweir.node.v1.Site.auth_rules:type_name -> edgeweir.node.v1.AuthRule
-	32,  // 58: edgeweir.node.v1.Site.access_control:type_name -> edgeweir.node.v1.AccessControl
-	27,  // 59: edgeweir.node.v1.Site.image_convert:type_name -> edgeweir.node.v1.ImageConvert
-	26,  // 60: edgeweir.node.v1.Site.encoded_path_exemptions:type_name -> edgeweir.node.v1.EncodedPathExemption
-	2,   // 61: edgeweir.node.v1.AuthRule.kind:type_name -> edgeweir.node.v1.AuthKind
-	29,  // 62: edgeweir.node.v1.AuthRule.basic:type_name -> edgeweir.node.v1.BasicAuth
-	30,  // 63: edgeweir.node.v1.AuthRule.forward:type_name -> edgeweir.node.v1.ForwardAuth
-	31,  // 64: edgeweir.node.v1.AuthRule.url:type_name -> edgeweir.node.v1.UrlAuth
-	33,  // 65: edgeweir.node.v1.AccessControl.hotlink:type_name -> edgeweir.node.v1.Hotlink
-	35,  // 66: edgeweir.node.v1.AccessControl.user_agents:type_name -> edgeweir.node.v1.UserAgentRules
-	36,  // 67: edgeweir.node.v1.AccessControl.cors:type_name -> edgeweir.node.v1.Cors
-	37,  // 68: edgeweir.node.v1.AccessControl.geo:type_name -> edgeweir.node.v1.GeoAccess
-	38,  // 69: edgeweir.node.v1.AccessControl.websocket:type_name -> edgeweir.node.v1.WebSocketAccess
-	39,  // 70: edgeweir.node.v1.AccessControl.security_headers:type_name -> edgeweir.node.v1.SecurityHeaders
-	34,  // 71: edgeweir.node.v1.UserAgentRules.rules:type_name -> edgeweir.node.v1.UserAgentRule
-	3,   // 72: edgeweir.node.v1.ClientCertificate.mode:type_name -> edgeweir.node.v1.ClientCertificateMode
-	46,  // 73: edgeweir.node.v1.SiteErrorPages.pages:type_name -> edgeweir.node.v1.ErrorPage
-	5,   // 74: edgeweir.node.v1.OfflineHost.match:type_name -> edgeweir.node.v1.DomainMatch
-	50,  // 75: edgeweir.node.v1.SiteWaf.exclusions:type_name -> edgeweir.node.v1.WafExclusion
-	53,  // 76: edgeweir.node.v1.SiteProtection.cc:type_name -> edgeweir.node.v1.CcPolicy
-	52,  // 77: edgeweir.node.v1.SiteProtection.challenge_text:type_name -> edgeweir.node.v1.ChallengeText
-	57,  // 78: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
-	57,  // 79: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
-	59,  // 80: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
-	57,  // 81: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
-	57,  // 82: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
-	58,  // 83: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
-	76,  // 84: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	4,   // 85: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
-	5,   // 86: edgeweir.node.v1.Domain.match:type_name -> edgeweir.node.v1.DomainMatch
-	6,   // 87: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
-	71,  // 88: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
-	69,  // 89: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
-	70,  // 90: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
-	67,  // 91: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
-	68,  // 92: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
-	8,   // 93: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
-	7,   // 94: edgeweir.node.v1.OriginPool.tls_trust:type_name -> edgeweir.node.v1.OriginTlsTrust
-	9,   // 95: edgeweir.node.v1.ActiveHealthCheck.type:type_name -> edgeweir.node.v1.ActiveHealthCheckType
-	10,  // 96: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
-	72,  // 97: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
-	74,  // 98: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
-	11,  // 99: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
-	12,  // 100: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
-	57,  // 101: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
-	76,  // 102: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
-	103, // [103:103] is the sub-list for method output_type
-	103, // [103:103] is the sub-list for method input_type
-	103, // [103:103] is the sub-list for extension type_name
-	103, // [103:103] is the sub-list for extension extendee
-	0,   // [0:103] is the sub-list for field type_name
+	76,  // 19: edgeweir.node.v1.NodeConfig.extensions:type_name -> edgeweir.node.v1.Extension
+	15,  // 20: edgeweir.node.v1.ConnectionLimits.ports:type_name -> edgeweir.node.v1.PortRange
+	22,  // 21: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
+	23,  // 22: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
+	25,  // 23: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
+	75,  // 24: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	63,  // 25: edgeweir.node.v1.NodeConfigDiff.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
+	61,  // 26: edgeweir.node.v1.NodeConfigDiff.ip_lists:type_name -> edgeweir.node.v1.IpList
+	60,  // 27: edgeweir.node.v1.NodeConfigDiff.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
+	54,  // 28: edgeweir.node.v1.NodeConfigDiff.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
+	56,  // 29: edgeweir.node.v1.NodeConfigDiff.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
+	47,  // 30: edgeweir.node.v1.NodeConfigDiff.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
+	48,  // 31: edgeweir.node.v1.NodeConfigDiff.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
+	20,  // 32: edgeweir.node.v1.NodeConfigDiff.l4_apps:type_name -> edgeweir.node.v1.L4App
+	18,  // 33: edgeweir.node.v1.NodeConfigDiff.client_address:type_name -> edgeweir.node.v1.ClientAddress
+	17,  // 34: edgeweir.node.v1.NodeConfigDiff.unknown_hosts:type_name -> edgeweir.node.v1.UnknownHosts
+	55,  // 35: edgeweir.node.v1.NodeConfigDiff.session_ticket_keys:type_name -> edgeweir.node.v1.SessionTicketKeyRef
+	75,  // 36: edgeweir.node.v1.NodeConfigDiff.origin_client_certificates:type_name -> edgeweir.node.v1.CertificateRef
+	16,  // 37: edgeweir.node.v1.NodeConfigDiff.origin_ca:type_name -> edgeweir.node.v1.OriginCa
+	14,  // 38: edgeweir.node.v1.NodeConfigDiff.connection_limits:type_name -> edgeweir.node.v1.ConnectionLimits
+	16,  // 39: edgeweir.node.v1.NodeConfigDiff.origin_ca_previous:type_name -> edgeweir.node.v1.OriginCa
+	76,  // 40: edgeweir.node.v1.NodeConfigDiff.extensions:type_name -> edgeweir.node.v1.Extension
+	0,   // 41: edgeweir.node.v1.L4App.protocol:type_name -> edgeweir.node.v1.L4Protocol
+	21,  // 42: edgeweir.node.v1.L4App.origins:type_name -> edgeweir.node.v1.L4Origin
+	1,   // 43: edgeweir.node.v1.Listener.protocol:type_name -> edgeweir.node.v1.ListenerProtocol
+	24,  // 44: edgeweir.node.v1.CacheZone.node_sizes:type_name -> edgeweir.node.v1.CacheZoneNodeSize
+	65,  // 45: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
+	66,  // 46: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
+	73,  // 47: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
+	64,  // 48: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
+	62,  // 49: edgeweir.node.v1.Site.tls:type_name -> edgeweir.node.v1.TlsOptions
+	60,  // 50: edgeweir.node.v1.Site.rules:type_name -> edgeweir.node.v1.EdgeRule
+	51,  // 51: edgeweir.node.v1.Site.protection:type_name -> edgeweir.node.v1.SiteProtection
+	49,  // 52: edgeweir.node.v1.Site.waf:type_name -> edgeweir.node.v1.SiteWaf
+	45,  // 53: edgeweir.node.v1.Site.error_pages:type_name -> edgeweir.node.v1.SiteErrorPages
+	44,  // 54: edgeweir.node.v1.Site.bulk_redirects:type_name -> edgeweir.node.v1.BulkRedirect
+	41,  // 55: edgeweir.node.v1.Site.purge:type_name -> edgeweir.node.v1.PurgeMethod
+	42,  // 56: edgeweir.node.v1.Site.maintenance:type_name -> edgeweir.node.v1.Maintenance
+	43,  // 57: edgeweir.node.v1.Site.charset:type_name -> edgeweir.node.v1.Charset
+	40,  // 58: edgeweir.node.v1.Site.client_certificate:type_name -> edgeweir.node.v1.ClientCertificate
+	28,  // 59: edgeweir.node.v1.Site.auth_rules:type_name -> edgeweir.node.v1.AuthRule
+	32,  // 60: edgeweir.node.v1.Site.access_control:type_name -> edgeweir.node.v1.AccessControl
+	27,  // 61: edgeweir.node.v1.Site.image_convert:type_name -> edgeweir.node.v1.ImageConvert
+	26,  // 62: edgeweir.node.v1.Site.encoded_path_exemptions:type_name -> edgeweir.node.v1.EncodedPathExemption
+	78,  // 63: edgeweir.node.v1.Site.extensions:type_name -> edgeweir.node.v1.SiteExtension
+	2,   // 64: edgeweir.node.v1.AuthRule.kind:type_name -> edgeweir.node.v1.AuthKind
+	29,  // 65: edgeweir.node.v1.AuthRule.basic:type_name -> edgeweir.node.v1.BasicAuth
+	30,  // 66: edgeweir.node.v1.AuthRule.forward:type_name -> edgeweir.node.v1.ForwardAuth
+	31,  // 67: edgeweir.node.v1.AuthRule.url:type_name -> edgeweir.node.v1.UrlAuth
+	33,  // 68: edgeweir.node.v1.AccessControl.hotlink:type_name -> edgeweir.node.v1.Hotlink
+	35,  // 69: edgeweir.node.v1.AccessControl.user_agents:type_name -> edgeweir.node.v1.UserAgentRules
+	36,  // 70: edgeweir.node.v1.AccessControl.cors:type_name -> edgeweir.node.v1.Cors
+	37,  // 71: edgeweir.node.v1.AccessControl.geo:type_name -> edgeweir.node.v1.GeoAccess
+	38,  // 72: edgeweir.node.v1.AccessControl.websocket:type_name -> edgeweir.node.v1.WebSocketAccess
+	39,  // 73: edgeweir.node.v1.AccessControl.security_headers:type_name -> edgeweir.node.v1.SecurityHeaders
+	34,  // 74: edgeweir.node.v1.UserAgentRules.rules:type_name -> edgeweir.node.v1.UserAgentRule
+	3,   // 75: edgeweir.node.v1.ClientCertificate.mode:type_name -> edgeweir.node.v1.ClientCertificateMode
+	46,  // 76: edgeweir.node.v1.SiteErrorPages.pages:type_name -> edgeweir.node.v1.ErrorPage
+	5,   // 77: edgeweir.node.v1.OfflineHost.match:type_name -> edgeweir.node.v1.DomainMatch
+	50,  // 78: edgeweir.node.v1.SiteWaf.exclusions:type_name -> edgeweir.node.v1.WafExclusion
+	53,  // 79: edgeweir.node.v1.SiteProtection.cc:type_name -> edgeweir.node.v1.CcPolicy
+	52,  // 80: edgeweir.node.v1.SiteProtection.challenge_text:type_name -> edgeweir.node.v1.ChallengeText
+	57,  // 81: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
+	57,  // 82: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
+	59,  // 83: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
+	57,  // 84: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
+	57,  // 85: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
+	58,  // 86: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
+	79,  // 87: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	4,   // 88: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
+	5,   // 89: edgeweir.node.v1.Domain.match:type_name -> edgeweir.node.v1.DomainMatch
+	6,   // 90: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
+	71,  // 91: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
+	69,  // 92: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
+	70,  // 93: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
+	67,  // 94: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
+	68,  // 95: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
+	8,   // 96: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
+	7,   // 97: edgeweir.node.v1.OriginPool.tls_trust:type_name -> edgeweir.node.v1.OriginTlsTrust
+	9,   // 98: edgeweir.node.v1.ActiveHealthCheck.type:type_name -> edgeweir.node.v1.ActiveHealthCheckType
+	10,  // 99: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
+	72,  // 100: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
+	74,  // 101: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
+	11,  // 102: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
+	12,  // 103: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
+	57,  // 104: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
+	79,  // 105: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	77,  // 106: edgeweir.node.v1.Extension.shared_dicts:type_name -> edgeweir.node.v1.ExtensionSharedDict
+	107, // [107:107] is the sub-list for method output_type
+	107, // [107:107] is the sub-list for method input_type
+	107, // [107:107] is the sub-list for extension type_name
+	107, // [107:107] is the sub-list for extension extendee
+	0,   // [0:107] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
@@ -8584,7 +8919,7 @@ func file_edgeweir_node_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_config_proto_rawDesc), len(file_edgeweir_node_v1_config_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   63,
+			NumMessages:   66,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

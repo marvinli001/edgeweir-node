@@ -87,6 +87,9 @@ const (
 	// NodeServiceUploadDebugLogsProcedure is the fully-qualified name of the NodeService's
 	// UploadDebugLogs RPC.
 	NodeServiceUploadDebugLogsProcedure = "/edgeweir.node.v1.NodeService/UploadDebugLogs"
+	// NodeServiceGetExtensionPackageProcedure is the fully-qualified name of the NodeService's
+	// GetExtensionPackage RPC.
+	NodeServiceGetExtensionPackageProcedure = "/edgeweir.node.v1.NodeService/GetExtensionPackage"
 )
 
 // NodeServiceClient is a client for the edgeweir.node.v1.NodeService service.
@@ -160,6 +163,10 @@ type NodeServiceClient interface {
 	// buffer; ReportTaskResult follows. Added in v1.6.0 (feature
 	// debug-logs-v1).
 	UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error)
+	// GetExtensionPackage returns an extension package (.ewx) that the
+	// node's current configuration references, by digest. Added in PROTO_NEXT
+	// (feature extensions-v1).
+	GetExtensionPackage(context.Context, *connect.Request[v1.GetExtensionPackageRequest]) (*connect.Response[v1.GetExtensionPackageResponse], error)
 }
 
 // NewNodeServiceClient constructs a client for the edgeweir.node.v1.NodeService service. By
@@ -299,6 +306,12 @@ func NewNodeServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(nodeServiceMethods.ByName("UploadDebugLogs")),
 			connect.WithClientOptions(opts...),
 		),
+		getExtensionPackage: connect.NewClient[v1.GetExtensionPackageRequest, v1.GetExtensionPackageResponse](
+			httpClient,
+			baseURL+NodeServiceGetExtensionPackageProcedure,
+			connect.WithSchema(nodeServiceMethods.ByName("GetExtensionPackage")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -325,6 +338,7 @@ type nodeServiceClient struct {
 	checkChannel         *connect.Client[v1.CheckChannelRequest, v1.CheckChannelResponse]
 	reportNodeLogs       *connect.Client[v1.ReportNodeLogsRequest, v1.ReportNodeLogsResponse]
 	uploadDebugLogs      *connect.Client[v1.UploadDebugLogsRequest, v1.UploadDebugLogsResponse]
+	getExtensionPackage  *connect.Client[v1.GetExtensionPackageRequest, v1.GetExtensionPackageResponse]
 }
 
 // Enroll calls edgeweir.node.v1.NodeService.Enroll.
@@ -432,6 +446,11 @@ func (c *nodeServiceClient) UploadDebugLogs(ctx context.Context, req *connect.Re
 	return c.uploadDebugLogs.CallUnary(ctx, req)
 }
 
+// GetExtensionPackage calls edgeweir.node.v1.NodeService.GetExtensionPackage.
+func (c *nodeServiceClient) GetExtensionPackage(ctx context.Context, req *connect.Request[v1.GetExtensionPackageRequest]) (*connect.Response[v1.GetExtensionPackageResponse], error) {
+	return c.getExtensionPackage.CallUnary(ctx, req)
+}
+
 // NodeServiceHandler is an implementation of the edgeweir.node.v1.NodeService service.
 type NodeServiceHandler interface {
 	// Enroll exchanges a single-use token and a CSR for a node certificate.
@@ -503,6 +522,10 @@ type NodeServiceHandler interface {
 	// buffer; ReportTaskResult follows. Added in v1.6.0 (feature
 	// debug-logs-v1).
 	UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error)
+	// GetExtensionPackage returns an extension package (.ewx) that the
+	// node's current configuration references, by digest. Added in PROTO_NEXT
+	// (feature extensions-v1).
+	GetExtensionPackage(context.Context, *connect.Request[v1.GetExtensionPackageRequest]) (*connect.Response[v1.GetExtensionPackageResponse], error)
 }
 
 // NewNodeServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -638,6 +661,12 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(nodeServiceMethods.ByName("UploadDebugLogs")),
 		connect.WithHandlerOptions(opts...),
 	)
+	nodeServiceGetExtensionPackageHandler := connect.NewUnaryHandler(
+		NodeServiceGetExtensionPackageProcedure,
+		svc.GetExtensionPackage,
+		connect.WithSchema(nodeServiceMethods.ByName("GetExtensionPackage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/edgeweir.node.v1.NodeService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case NodeServiceEnrollProcedure:
@@ -682,6 +711,8 @@ func NewNodeServiceHandler(svc NodeServiceHandler, opts ...connect.HandlerOption
 			nodeServiceReportNodeLogsHandler.ServeHTTP(w, r)
 		case NodeServiceUploadDebugLogsProcedure:
 			nodeServiceUploadDebugLogsHandler.ServeHTTP(w, r)
+		case NodeServiceGetExtensionPackageProcedure:
+			nodeServiceGetExtensionPackageHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -773,4 +804,8 @@ func (UnimplementedNodeServiceHandler) ReportNodeLogs(context.Context, *connect.
 
 func (UnimplementedNodeServiceHandler) UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.UploadDebugLogs is not implemented"))
+}
+
+func (UnimplementedNodeServiceHandler) GetExtensionPackage(context.Context, *connect.Request[v1.GetExtensionPackageRequest]) (*connect.Response[v1.GetExtensionPackageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("edgeweir.node.v1.NodeService.GetExtensionPackage is not implemented"))
 }
