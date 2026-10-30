@@ -359,6 +359,7 @@ edgeweir-node version
 | `--markdown-memory-mb` | `512` | Memory the running Markdown conversions may use together, in MiB; each conversion's need is estimated from the HTML's size, larger documents stay HTML |
 | `--markdown-timeout` | `5s` | Longest Markdown conversion: the child is killed and the HTML kept |
 | `--debug-log-buffer` | `5000` | Recent log entries of every level kept in memory (at most 4 MiB) for the console to pull from the node's Logs tab; `0` turns it off (the node does not announce `debug-logs-v1`), at most 100000 |
+| `--challenge-verify-endpoints` | empty | Replace CAPTCHA providers' verification URLs, comma-separated `kind=URL` (`turnstile`, `recaptcha`, `recaptcha_enterprise`, `tencent`, `aliyun`, `geetest`); for tests against a mock provider only |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
 

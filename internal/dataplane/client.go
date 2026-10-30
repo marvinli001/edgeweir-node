@@ -231,6 +231,9 @@ type MinuteStats struct {
 	BlockReasons     map[string]uint64       `json:"block_reasons"`
 	ChallengesIssued uint64                  `json:"challenges_issued"`
 	ChallengesPassed uint64                  `json:"challenges_passed"`
+	// ChallengeOutcomes counts challenges by "<kind>:<outcome>" (feature
+	// challenge-v3).
+	ChallengeOutcomes map[string]uint64 `json:"challenge_outcomes"`
 	// Origins counts the fetches from each origin, by origin id (feature
 	// origin-stats-v1, ADR-0052; at most 64).
 	Origins map[string]OriginCount `json:"origins"`

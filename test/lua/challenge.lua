@@ -577,6 +577,205 @@ test("failed answers count per site and client network and ban at the threshold"
   eq(d:ttl("f|site-f|2001:db8:1:2::/64") <= 600, true, "the window runs from the first failure")
 end)
 
+
+-- challenge-v3: the managed challenge, interactive providers and outcomes.
+local topstats = require("edgeweir.topstats")
+local real_outcome = topstats.outcome
+local outcomes
+local function count_outcomes()
+  outcomes = {}
+  topstats.outcome = function(_, kind, what)
+    local k = kind .. ":" .. what
+    outcomes[k] = (outcomes[k] or 0) + 1
+  end
+end
+local real_ask = challenge.ask_agent
+
+local function solve(token, difficulty)
+  local n = 0
+  while not challenge.pow_ok(token, tostring(n), difficulty) do n = n + 1 end
+  return tostring(n)
+end
+
+local BROWSER = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
+
+test("required level: Under Attack may ask for managed (level 3)", function()
+  local site = { id = "s", _config = {}, protection = { under_attack = true, under_attack_challenge = "managed" } }
+  local level, kind = challenge.required(site, 0)
+  eq(level, 3); eq(kind, "managed")
+  site._config.platform_protection = { under_attack = true, challenge = "managed" }
+  site.protection.under_attack = false
+  level, kind = challenge.required(site, 0)
+  eq(level, 3); eq(kind, "managed")
+  -- A CC level above it wins.
+  site.protection.cc = {}
+  level, kind = challenge.required(site, 4)
+  eq(level, 4); eq(kind, "captcha")
+end)
+
+test("managed: non-interactive for a browser, a pass of level 3", function()
+  count_outcomes()
+  local keys = install("a", { a = SECRET_A })
+  local site = { id = "site-m", protection = { pass_ttl = 900, pow = 8, pow_high = 8 } }
+  local var = { request_uri = "/", remote_addr = "198.51.100.7", http_user_agent = BROWSER, scheme = "http", http_host = "demo.test" }
+  local sent = request({ var = var })
+  challenge.respond(site, "managed", 3)
+  eq(sent.header["X-Edgeweir-Challenge"], "managed")
+  assert(sent.body:find('name="s" value=""', 1, true), "signals field")
+  assert(sent.body:find("navigator", 1, true), "signals script")
+  local token = sent.body:match('name="t" value="([^"]+)"')
+  local f = assert(challenge.parse_token(keys, token))
+  eq(f.type, "managed"); eq(f.level, 3); eq(f.difficulty, 8)
+  local post = { uri = "/.edgeweir/challenge/verify", remote_addr = "198.51.100.7", http_user_agent = BROWSER, scheme = "http", http_host = "demo.test" }
+  sent = request({ method = "POST", var = post, args = { t = token, a = solve(token, 8), s = "0", r = "/" } })
+  challenge.reserved(site)
+  eq(sent.status, 303)
+  eq(assert(challenge.parse_pass(keys, sent.header["Set-Cookie"]:match("^__ew_pass=([^;]+)"))).level, 3)
+  eq(outcomes["managed:issued"], 1); eq(outcomes["managed:passed"], 1)
+  topstats.outcome = real_outcome
+end)
+
+test("managed: escalates to interactive for automation, failures, loops and signals", function()
+  count_outcomes()
+  local keys = install("a", { a = SECRET_A })
+  assert(challenge.replace_captchas({ id = "p", images = { { answer = "K7PXQ", png = "iVBORw0KGgo=" } } }))
+  local site = { id = "site-m", protection = { pass_ttl = 900, pow = 8, pow_high = 8 } }
+  local function page(addr, ua)
+    local sent = request({ var = { request_uri = "/", remote_addr = addr, http_user_agent = ua, scheme = "http", http_host = "demo.test" } })
+    challenge.respond(site, "managed", 3)
+    return sent
+  end
+  -- An automation tool's User-Agent, or none.
+  eq(page("198.51.100.7", "python-requests/2.32").header["X-Edgeweir-Challenge"], "captcha")
+  eq(page("198.51.100.7", nil).header["X-Edgeweir-Challenge"], "captcha")
+  eq(outcomes["managed:escalated"], 2)
+  -- A browser gets the non-interactive page MANAGED_LOOP times, then the
+  -- interactive one until it passes.
+  for i = 1, challenge.MANAGED_LOOP do
+    eq(page("203.0.113.5", BROWSER).header["X-Edgeweir-Challenge"], "managed", "page " .. i)
+  end
+  eq(page("203.0.113.5", BROWSER).header["X-Edgeweir-Challenge"], "captcha", "loop")
+  -- A failed answer from the network escalates its next managed pages.
+  local post = { uri = "/.edgeweir/challenge/verify", remote_addr = "192.0.2.10", http_user_agent = BROWSER, scheme = "http", http_host = "demo.test" }
+  local sent = page("192.0.2.10", BROWSER)
+  local token = sent.body:match('name="t" value="([^"]+)"')
+  sent = request({ method = "POST", var = post, args = { t = token, a = "1", s = "0", r = "/" } })
+  challenge.reserved(site)
+  eq(outcomes["managed:failed"], 1)
+  eq(page("192.0.2.10", BROWSER).header["X-Edgeweir-Challenge"], "captcha", "after a failure")
+  -- Signals of an automated browser turn a solved page interactive, without a pass.
+  sent = page("192.0.2.77", BROWSER)
+  token = sent.body:match('name="t" value="([^"]+)"')
+  post.remote_addr = "192.0.2.77"
+  sent = request({ method = "POST", var = post, args = { t = token, a = solve(token, 8), s = "1", r = "/" } })
+  challenge.reserved(site)
+  eq(sent.header["Set-Cookie"], nil, "no pass")
+  eq(sent.header["X-Edgeweir-Challenge"], "captcha")
+  local f = assert(challenge.parse_token(keys, sent.body:match('name="t" value="([^"]+)"')))
+  eq(f.level, 4, "the interactive challenge's level")
+  topstats.outcome = real_outcome
+end)
+
+local TURNSTILE = { kind = "turnstile", site_key = "0x4AAAA-site_key", credential_id = "cred-1" }
+
+test("provider pages: the widget, a CSP of the provider's origins, the built-in fallback", function()
+  count_outcomes()
+  local keys = install("a", { a = SECRET_A })
+  local site = { id = "site-p", protection = { pass_ttl = 900, pow = 8, pow_high = 8, interactive = TURNSTILE } }
+  local sent = request({ var = { request_uri = "/x", remote_addr = "198.51.100.7", http_user_agent = BROWSER, scheme = "https", http_host = "demo.test" } })
+  challenge.respond(site, "captcha", 4)
+  local h = sent.header
+  eq(h["X-Edgeweir-Challenge"], "captcha"); eq(h["X-Edgeweir-Challenge-Provider"], "turnstile")
+  local csp = h["Content-Security-Policy"]
+  assert(csp:find("'strict-dynamic' https://challenges.cloudflare.com", 1, true), csp)
+  assert(csp:find("frame-src https://challenges.cloudflare.com", 1, true), csp)
+  assert(not csp:find("google", 1, true), "only the chosen provider: " .. csp)
+  local nonce = csp:match("'nonce%-([^']+)'")
+  assert(sent.body:find('<script nonce="' .. nonce .. '">', 1, true), "nonce script")
+  assert(sent.body:find("turnstile/v0/api.js?render=explicit", 1, true), "widget script")
+  assert(sent.body:find('var K="0x4AAAA-site_key"', 1, true), "site key")
+  assert(sent.body:find('id="fb" method="post" action="/.edgeweir/challenge/verify" hidden', 1, true), "fallback form")
+  assert(sent.body:find('<noscript><form', 1, true), "built-in check without JavaScript")
+  local f = assert(challenge.parse_token(keys, sent.body:match('name="t" value="([^"]+)"')))
+  eq(f.answer, "p:turnstile"); eq(challenge.stat_kind(f), "turnstile")
+  eq(outcomes["turnstile:issued"], 1)
+  -- Every provider has a widget and its own origins.
+  for _, kind in ipairs({ "recaptcha_v2", "recaptcha_v3", "recaptcha_enterprise", "tencent", "aliyun", "geetest" }) do
+    local js = challenge.provider_script({ kind = kind, site_key = "k1", region = "cn", prefix = "p1" }, "zh")
+    assert(js and #js > 100, kind)
+    assert(challenge.csp("n", kind):find("strict-dynamic", 1, true), kind)
+  end
+  assert(challenge.provider_script({ kind = "aliyun", site_key = "k", region = "sgp", prefix = "abc" }, "en"):find('R="sgp",P="abc"', 1, true))
+  -- A site key cannot break out of the script.
+  assert(challenge.provider_script({ kind = "turnstile", site_key = "</script><b>" }, "en"):find('"<\\/script><b>"', 1, true)
+    or not challenge.provider_script({ kind = "turnstile", site_key = "</script><b>" }, "en"):find("</script>", 1, true))
+  topstats.outcome = real_outcome
+end)
+
+test("provider answers: the agent's pass, fail and unavailable (the built-in captcha stands in)", function()
+  count_outcomes()
+  local keys = install("a", { a = SECRET_A })
+  assert(challenge.replace_captchas({ id = "p", images = { { answer = "K7PXQ", png = "iVBORw0KGgo=" } } }))
+  local site = { id = "site-p", protection = { pass_ttl = 900, pow = 8, pow_high = 8, interactive = TURNSTILE } }
+  local var = { request_uri = "/", remote_addr = "198.51.100.7", http_user_agent = BROWSER, scheme = "http", http_host = "demo.test", host = "demo.test" }
+  local post = { uri = "/.edgeweir/challenge/verify", remote_addr = "198.51.100.7", http_user_agent = BROWSER, scheme = "http", http_host = "demo.test", host = "demo.test" }
+  local asked
+  local function provider_token()
+    local sent = request({ var = var })
+    challenge.respond(site, "captcha", 4)
+    return sent.body:match('name="t" value="([^"]+)"'), sent
+  end
+  -- pass: a pass of level 4; the agent got the widget's token and the client.
+  challenge.ask_agent = function(body) asked = body; return "pass" end
+  local token = provider_token()
+  local sent = request({ method = "POST", var = post, args = { t = token, p_token = "XXXX.widget", r = "/" } })
+  challenge.reserved(site)
+  eq(sent.status, 303)
+  eq(assert(challenge.parse_pass(keys, sent.header["Set-Cookie"]:match("^__ew_pass=([^;]+)"))).level, 4)
+  eq(asked.site_id, "site-p"); eq(asked.answer.token, "XXXX.widget"); eq(asked.remote_ip, "198.51.100.7"); eq(asked.host, "demo.test")
+  eq(outcomes["turnstile:passed"], 1)
+  -- fail: the provider page again with an error, counted as a failure.
+  challenge.ask_agent = function() return "fail", "timeout-or-duplicate" end
+  token = provider_token()
+  sent = request({ method = "POST", var = post, args = { t = token, p_token = "bad", r = "/" } })
+  challenge.reserved(site)
+  eq(sent.header["X-Edgeweir-Challenge-Provider"], "turnstile")
+  assert(sent.body:find('role="alert"', 1, true))
+  eq(outcomes["turnstile:failed"], 1)
+  -- unavailable (or no answer): the built-in image now, and for PROVIDER_DOWN seconds.
+  challenge.ask_agent = function() return "unavailable", "timeout" end
+  token = provider_token()
+  sent = request({ method = "POST", var = post, args = { t = token, p_token = "t", r = "/" } })
+  challenge.reserved(site)
+  eq(sent.header["X-Edgeweir-Challenge"], "captcha"); eq(sent.header["X-Edgeweir-Challenge-Provider"], nil)
+  assert(sent.body:find("data:image/png;base64,", 1, true), "built-in image")
+  eq(outcomes["turnstile:fallback"], 1)
+  local _, page = provider_token()
+  eq(page.header["X-Edgeweir-Challenge-Provider"], nil, "marked down")
+  eq(outcomes["turnstile:fallback"], 2)
+  -- The built-in answer passes at level 4.
+  token = page.body:match('name="t" value="([^"]+)"')
+  sent = request({ method = "POST", var = post, args = { t = token, a = "K7PXQ", r = "/" } })
+  challenge.reserved(site)
+  eq(assert(challenge.parse_pass(keys, sent.header["Set-Cookie"]:match("^__ew_pass=([^;]+)"))).level, 4)
+  eq(outcomes["captcha:passed"], 1)
+  -- The visitor's own fallback (alt=builtin) once the mark is gone.
+  dict:delete("pd|cred-1")
+  challenge.ask_agent = function() error("not asked") end
+  token = provider_token()
+  sent = request({ method = "POST", var = post, args = { t = token, alt = "builtin", r = "/" } })
+  challenge.reserved(site)
+  assert(sent.body:find("data:image/png;base64,", 1, true), "built-in image on request")
+  -- No agent at all: unavailable.
+  challenge.ask_agent = function() return nil end
+  token = provider_token()
+  sent = request({ method = "POST", var = post, args = { t = token, p_token = "t", r = "/" } })
+  challenge.reserved(site)
+  eq(sent.header["X-Edgeweir-Challenge-Provider"], nil)
+  challenge.ask_agent = real_ask
+  topstats.outcome = real_outcome
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then
   os.exit(1)

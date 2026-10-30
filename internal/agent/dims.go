@@ -25,11 +25,12 @@ const (
 var (
 	statsBrowsers = setOf("chrome", "edge", "firefox", "safari", "opera", "samsung", "uc", "qq", "wechat", "yandex", "ie",
 		"crawler", "tool", "other")
-	statsOSes         = setOf("windows", "macos", "ios", "android", "linux", "chromeos", "harmonyos", "other")
-	statsDevices      = setOf("desktop", "mobile", "tablet", "crawler", "other")
-	statsHTTPVersions = setOf("1.0", "1.1", "2", "3", "other")
-	statsTLSVersions  = setOf("1.2", "1.3", "none", "other")
-	statsBlockReasons = setOf(dataplane.BlockReasons...)
+	statsOSes              = setOf("windows", "macos", "ios", "android", "linux", "chromeos", "harmonyos", "other")
+	statsDevices           = setOf("desktop", "mobile", "tablet", "crawler", "other")
+	statsHTTPVersions      = setOf("1.0", "1.1", "2", "3", "other")
+	statsTLSVersions       = setOf("1.2", "1.3", "none", "other")
+	statsBlockReasons      = setOf(dataplane.BlockReasons...)
+	statsChallengeOutcomes = challengeOutcomeKeys()
 
 	statsCountryRE = regexp.MustCompile(`^[A-Z]{2}$`)
 	hostLabelRE    = regexp.MustCompile(`^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$`)
@@ -177,4 +178,18 @@ func applyDimensions(out *nodev1.MinuteStats, m dataplane.MinuteStats) {
 	out.ChallengesIssued = m.ChallengesIssued
 	out.ChallengesPassed = m.ChallengesPassed
 	out.Origins = statsOrigins(m.Origins)
+	out.ChallengeOutcomes = statsKeyed(m.ChallengeOutcomes, statsChallengeOutcomes)
+}
+
+// challengeOutcomeKeys are the keys of MinuteStats.challenge_outcomes:
+// "<kind>:<outcome>" (feature challenge-v3).
+func challengeOutcomeKeys() map[string]bool {
+	out := map[string]bool{}
+	for _, kind := range []string{"cookie302", "js", "pow", "managed", "captcha", "turnstile", "recaptcha_v2", "recaptcha_v3",
+		"recaptcha_enterprise", "tencent", "aliyun", "geetest"} {
+		for _, outcome := range []string{"issued", "passed", "failed", "escalated", "fallback"} {
+			out[kind+":"+outcome] = true
+		}
+	}
+	return out
 }

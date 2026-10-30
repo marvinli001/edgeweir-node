@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/bans"
+	"github.com/marvinli001/edgeweir-node/internal/challengeverify"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	"github.com/marvinli001/edgeweir-node/internal/configstore"
 	"github.com/marvinli001/edgeweir-node/internal/controlplane"
@@ -193,6 +194,10 @@ type Config struct {
 	// ChallengeKeyRetry: challenge keys the configuration names but the
 	// console did not hand out are asked for again this often (default 30s).
 	ChallengeKeyRetry time.Duration
+	// ChallengeVerify checks the answers of interactive challenge providers
+	// (agent socket POST /v1/challenge/verify, feature challenge-v3); nil
+	// uses the providers' own endpoints.
+	ChallengeVerify *challengeverify.Verifier
 
 	// ActiveHealth configures the active health checker; the agent sets
 	// the trust store (unless RootCAs is set), IPv6 and OnChange. Tests

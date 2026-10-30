@@ -1000,7 +1000,7 @@ func validAction(a *nodev1.RuleAction, phase string, features []string, platform
 	case "skip":
 		return phase == "waf-custom" && validSkipAction(a)
 	case "challenge":
-		return phase == "waf-custom" && slices.Contains(ChallengeTypes, a.Challenge)
+		return phase == "waf-custom" && slices.Contains(ChallengeKinds, a.Challenge)
 	case "redirect":
 		return phase == "redirect" && slices.Contains(redirectStatuses, a.StatusCode) && validQueryEdits(a, phase, features) &&
 			validTarget(a, phase, features, validRedirectLocation)

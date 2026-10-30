@@ -2,6 +2,7 @@ package configir
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"unicode/utf8"
 
@@ -11,6 +12,23 @@ import (
 // Challenge types, in rising strength; the level of a type is its index + 1
 // (lua/edgeweir/challenge.lua uses the same order).
 var ChallengeTypes = []string{"cookie302", "js", "pow", "captcha"}
+
+// ChallengeKinds are what Under Attack and challenge rules may ask for
+// (feature challenge-v3): the types and "managed", which asks for the pow
+// level and escalates to the interactive challenge (captcha) for clients
+// the data plane judges suspicious. CC levels and bans keep the types.
+var ChallengeKinds = append(slices.Clone(ChallengeTypes), "managed")
+
+// FeatureChallengeV3: the managed challenge and third-party interactive
+// providers (SiteProtection.interactive, proto PROTO_NEXT).
+const FeatureChallengeV3 = "challenge-v3"
+
+// ProviderKinds are the third-party widgets of the interactive challenge.
+var ProviderKinds = []string{"turnstile", "recaptcha_v2", "recaptcha_v3", "recaptcha_enterprise", "tencent", "aliyun", "geetest"}
+
+// DefaultMinScore is the lowest passing reCAPTCHA v3 / Enterprise score in
+// hundredths when the configuration sets none.
+const DefaultMinScore = 50
 
 // Defaults and bounds of SiteProtection and CcPolicy. A zero value takes the
 // default; any other value outside its range rejects the configuration.
@@ -79,6 +97,68 @@ type Protection struct {
 	ChallengeText     *ChallengeText `json:"challenge_text,omitempty"`
 	FailureThreshold  uint32         `json:"failure_threshold,omitempty"`
 	FailureBanSeconds uint32         `json:"failure_ban_seconds,omitempty"`
+	// Feature challenge-v3: the third-party widget of the interactive
+	// challenge (nil: the built-in image captcha).
+	Interactive *ChallengeProvider `json:"interactive,omitempty"`
+}
+
+// ChallengeProvider is a site's interactive challenge widget. The secret is
+// the origin credential CredentialID (a JSON document the agent holds);
+// the data plane only knows the public fields.
+type ChallengeProvider struct {
+	Kind              string `json:"kind"`
+	SiteKey           string `json:"site_key"`
+	CredentialID      string `json:"credential_id"`
+	CredentialVersion uint64 `json:"-"`
+	// MinScore is in hundredths (recaptcha_v3, recaptcha_enterprise).
+	MinScore  uint32 `json:"min_score,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+	Region    string `json:"region,omitempty"`
+	Prefix    string `json:"prefix,omitempty"`
+}
+
+var (
+	providerKeyRE  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	projectIDRE    = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+	aliyunPrefixRE = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
+)
+
+// buildChallengeProvider validates the interactive provider; nil stays nil.
+func buildChallengeProvider(p *nodev1.ChallengeProvider) (*ChallengeProvider, error) {
+	if p == nil {
+		return nil, nil
+	}
+	out := &ChallengeProvider{Kind: p.GetKind(), SiteKey: p.GetSiteKey(), CredentialID: p.GetCredentialId(), CredentialVersion: p.GetCredentialVersion()}
+	switch {
+	case !slices.Contains(ProviderKinds, out.Kind):
+		return nil, fmt.Errorf("%w: unsupported interactive provider %q", ErrRejected, out.Kind)
+	case !providerKeyRE.MatchString(out.SiteKey):
+		return nil, fmt.Errorf("%w: invalid %s site key", ErrRejected, out.Kind)
+	case !idRE.MatchString(out.CredentialID) || out.CredentialVersion == 0:
+		return nil, fmt.Errorf("%w: invalid %s credential reference", ErrRejected, out.Kind)
+	}
+	switch out.Kind {
+	case "recaptcha_v3", "recaptcha_enterprise":
+		var err error
+		if out.MinScore, err = ranged(p.GetMinScore(), DefaultMinScore, 1, 100, "minimum score"); err != nil {
+			return nil, err
+		}
+	}
+	if out.Kind == "recaptcha_enterprise" {
+		if out.ProjectID = p.GetProjectId(); !projectIDRE.MatchString(out.ProjectID) {
+			return nil, fmt.Errorf("%w: invalid reCAPTCHA Enterprise project id", ErrRejected)
+		}
+	}
+	if out.Kind == "aliyun" {
+		out.Region, out.Prefix = p.GetRegion(), p.GetPrefix()
+		if out.Region == "" {
+			out.Region = "cn"
+		}
+		if (out.Region != "cn" && out.Region != "sgp") || !aliyunPrefixRE.MatchString(out.Prefix) {
+			return nil, fmt.Errorf("%w: invalid Alibaba Cloud captcha region or prefix", ErrRejected)
+		}
+	}
+	return out, nil
 }
 
 // ChallengeText is the title and hint of a site's challenge pages per
@@ -159,10 +239,19 @@ type ChallengeKeyRef struct {
 
 // challengeType validates a challenge type; "" takes def.
 func challengeType(v, def, what string) (string, error) {
+	return challengeIn(ChallengeTypes, v, def, what)
+}
+
+// challengeKind validates a challenge type or "managed"; "" takes def.
+func challengeKind(v, def, what string) (string, error) {
+	return challengeIn(ChallengeKinds, v, def, what)
+}
+
+func challengeIn(list []string, v, def, what string) (string, error) {
 	if v == "" {
 		return def, nil
 	}
-	if !slices.Contains(ChallengeTypes, v) {
+	if !slices.Contains(list, v) {
 		return "", fmt.Errorf("%w: unsupported %s %q", ErrRejected, what, v)
 	}
 	return v, nil
@@ -192,7 +281,10 @@ func buildProtection(p *nodev1.SiteProtection) (*Protection, error) {
 	if err = buildFailureBan(p, out); err != nil {
 		return nil, err
 	}
-	if out.UnderAttackChallenge, err = challengeType(p.GetUnderAttackChallenge(), "js", "Under Attack challenge"); err != nil {
+	if out.UnderAttackChallenge, err = challengeKind(p.GetUnderAttackChallenge(), "js", "Under Attack challenge"); err != nil {
+		return nil, err
+	}
+	if out.Interactive, err = buildChallengeProvider(p.GetInteractive()); err != nil {
 		return nil, err
 	}
 	if out.PassTTL, err = ranged(p.GetPassTtlSeconds(), DefaultPassTTL, MinPassTTL, MaxPassTTL, "pass lifetime"); err != nil {
@@ -253,7 +345,7 @@ func buildPlatformProtection(p *nodev1.PlatformProtection) (*PlatformProtection,
 	if p == nil {
 		return nil, nil
 	}
-	challenge, err := challengeType(p.GetUnderAttackChallenge(), "js", "platform Under Attack challenge")
+	challenge, err := challengeKind(p.GetUnderAttackChallenge(), "js", "platform Under Attack challenge")
 	if err != nil {
 		return nil, err
 	}

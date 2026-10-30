@@ -359,6 +359,7 @@ edgeweir-node version
 | `--markdown-memory-mb` | `512` | 正在进行的 Markdown 转换合计可用的内存（MiB）；按 HTML 大小估算每次转换的需要，超过时返回 HTML |
 | `--markdown-timeout` | `5s` | 单次 Markdown 转换的最长时间，超时杀掉子进程并返回 HTML |
 | `--debug-log-buffer` | `5000` | 内存中保留的最近日志条数（所有级别，最多 4 MiB），控制台在节点「日志」页签按需拉取；`0` 关闭（节点不上报 `debug-logs-v1`），最多 100000 |
+| `--challenge-verify-endpoints` | 空 | 替换第三方验证码的校验地址，逗号分隔的 `类型=URL`（`turnstile`、`recaptcha`、`recaptcha_enterprise`、`tencent`、`aliyun`、`geetest`）；只用于对接模拟服务的测试 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
 

@@ -51,14 +51,22 @@ local function set(list)
   for _, k in ipairs(list) do out[k] = true end
   return out
 end
+-- Challenge outcomes (challenge-v3): "<kind>:<outcome>".
+local OUTCOME_KEYS = {}
+for _, kind in ipairs({ "cookie302", "js", "pow", "managed", "captcha", "turnstile", "recaptcha_v2", "recaptcha_v3",
+  "recaptcha_enterprise", "tencent", "aliyun", "geetest" }) do
+  for _, outcome in ipairs({ "issued", "passed", "failed", "escalated", "fallback" }) do
+    OUTCOME_KEYS[kind .. ":" .. outcome] = true
+  end
+end
 local KEYS = {
   browsers = set(uaclass.BROWSERS), operating_systems = set(uaclass.OSES), devices = set(uaclass.DEVICES),
   http_versions = set({ "1.0", "1.1", "2", "3", "other" }), tls_versions = set({ "1.2", "1.3", "none", "other" }),
-  block_reasons = reasons.REASONS,
+  block_reasons = reasons.REASONS, challenge_outcomes = OUTCOME_KEYS,
 }
 -- The worker summary's field of each map.
 local SOURCES = { browsers = "browsers", operating_systems = "oses", devices = "devices", http_versions = "http",
-  tls_versions = "tls", block_reasons = "reasons" }
+  tls_versions = "tls", block_reasons = "reasons", challenge_outcomes = "ch_out" }
 
 -- referer_host returns the Referer's host for the statistics: a host name
 -- (labels of [a-z0-9_-]) or IPv4 address of at most 253 bytes, lowercase,

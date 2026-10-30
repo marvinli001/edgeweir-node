@@ -39,9 +39,35 @@
 -- redirects count as challenges issued, passes signed after a verified
 -- answer as challenges passed (edgeweir.topstats, per site and minute).
 --
+-- Since proto PROTO_NEXT (feature challenge-v3):
+--   * "managed" asks for level 3 and is not a level of its own. The page is
+--     a proof of work that also posts the browser's signals (s, a bitmask:
+--     1 navigator.webdriver, 2 no languages, 4 a headless User-Agent, 8 an
+--     empty screen). It escalates to the interactive challenge (a pass of
+--     level 4) when the client looks automated: before the page, for a
+--     User-Agent of an automation tool or none, a client network that
+--     failed a challenge of the site in the last 600 seconds or was sent
+--     MANAGED_LOOP managed pages there without passing; after the answer,
+--     for any signal.
+--   * The interactive challenge (captcha) uses the site's provider
+--     (site.protection.interactive: Turnstile, reCAPTCHA v2 / v3 /
+--     Enterprise, Tencent Cloud, Alibaba Cloud, GeeTest) when it has one.
+--     The page loads the provider's widget under a nonce CSP that allows
+--     only that provider's origins; the widget's answer (p_* fields) goes
+--     to the agent over its socket (POST /v1/challenge/verify), which asks
+--     the provider. When the agent reports the provider unavailable (or
+--     does not answer), the provider is marked down for PROVIDER_DOWN
+--     seconds on this node and the built-in image captcha stands in; the
+--     page offers the built-in check (alt=builtin) when the widget does
+--     not load within 10 seconds, without JavaScript, or on its error.
+--   * Outcomes per kind (issued, passed, failed, escalated, fallback) are
+--     counted for MinuteStats.challenge_outcomes (edgeweir.topstats).
+--
 -- Reserved prefix /.edgeweir/ (never proxied):
 --   POST /.edgeweir/challenge/verify     t (token), a (answer), r (return
---        path), alt=pow (captcha token: switch to the proof of work)
+--        path), alt=pow (captcha token: switch to the proof of work),
+--        alt=builtin (provider token: the built-in captcha), s (managed
+--        signals), p_* (a provider's answer)
 --   GET  /.edgeweir/challenge/worker.js  proof-of-work Web Worker
 --   anything else                        404 not-found
 local bit = require("bit")
@@ -64,7 +90,20 @@ local floor, max = math.floor, math.max
 local tonumber, tostring, type = tonumber, tostring, type
 
 _M.TYPES = { "cookie302", "js", "pow", "captcha" }
-_M.LEVELS = { cookie302 = 1, js = 2, pow = 3, captcha = 4 }
+-- managed asks for level 3 (challenge-v3); it is not a level of its own.
+_M.LEVELS = { cookie302 = 1, js = 2, pow = 3, captcha = 4, managed = 3 }
+_M.PROVIDERS = { turnstile = true, recaptcha_v2 = true, recaptcha_v3 = true, recaptcha_enterprise = true,
+  tencent = true, aliyun = true, geetest = true }
+-- Seconds a provider stays marked down after it was unavailable.
+_M.PROVIDER_DOWN = 60
+-- Managed pages a client network may be sent within FAILURE_WINDOW without
+-- passing before it gets the interactive challenge.
+_M.MANAGED_LOOP = 4
+-- Milliseconds the data plane waits for the agent's verification (the
+-- agent bounds each provider call to 3 seconds).
+_M.VERIFY_TIMEOUT = 5000
+-- The agent socket (init.lua: opts.agent_socket).
+_M.agent_socket = ""
 _M.COOKIE = "__ew_pass"
 _M.PREFIX = "/.edgeweir/"
 _M.VERIFY = "/.edgeweir/challenge/verify"
@@ -582,6 +621,7 @@ local STYLE = errorpages.STYLE .. errorpages.BUTTON
   .. [=[.err{margin-top:8px;font-size:12px;line-height:20px;color:var(--err-ink)}]=]
   .. [=[.alt{display:block;margin-top:12px;padding:0;border:0;background:none;color:var(--ink);font:13px/20px var(--sa);cursor:pointer}.alt:hover{text-decoration:underline}]=]
   .. [=[.more{margin-top:24px}.more dl{margin-top:8px}@media (prefers-reduced-motion:reduce){.bar i{width:100%;opacity:.45}}]=]
+  .. [=[[hidden]{display:none!important}#ld .bar{margin-top:16px}#w:empty{display:none}]=]
 
 local TEXT = {
   zh = {
@@ -590,6 +630,8 @@ local TEXT = {
     noscript = "请启用 JavaScript 后刷新页面。", wrong = "验证码不正确，请重试。", failed = "验证未通过，请重试。",
     ok = "正常", checking = "验证中", needed = "需要验证", waiting = "等待中", seconds = "通常需要几秒",
     details = "详情", id = "请求 ID",
+    interactive = "完成人机验证", builtin = "改用内置验证", loading = "正在加载验证组件",
+    widget_failed = "验证组件未能加载。", provider_failed = "验证未通过，请重试。",
   },
   en = {
     lang = "en", title = "Security check", verify = "Verifying your browser", captcha = "Enter the characters shown",
@@ -599,6 +641,8 @@ local TEXT = {
     failed = "Verification failed. Try again.",
     ok = "Working", checking = "Verifying", needed = "Check needed", waiting = "Waiting", seconds = "Usually takes a few seconds",
     details = "Details", id = "Request ID",
+    interactive = "Complete the check", builtin = "Use the built-in check", loading = "Loading the check",
+    widget_failed = "The check could not load.", provider_failed = "The check did not pass. Try again.",
   },
 }
 
@@ -608,14 +652,83 @@ local function esc(s)
 end
 _M.escape = esc
 
--- csp is the Content-Security-Policy of a challenge page.
-function _M.csp(nonce)
+-- ORIGINS are the origins a provider's widget loads from (scripts, frames,
+-- images, styles and its own requests): the vendors' documented hosts and,
+-- where the documentation lists none, the hosts their loaders use.
+_M.ORIGINS = {
+  turnstile = "https://challenges.cloudflare.com",
+  recaptcha = "https://www.recaptcha.net https://www.google.com https://www.gstatic.com https://recaptcha.google.com",
+  tencent = "https://turing.captcha.qcloud.com https://*.captcha.qcloud.com https://*.gtimg.com https://*.qq.com",
+  aliyun = "https://o.alicdn.com https://g.alicdn.com https://*.alicdn.com https://*.aliyuncs.com https://*.aliyun.com https://*.aliapp.org",
+  geetest = "https://static.geetest.com https://*.geetest.com https://*.geevisit.com https://*.gsensebot.com",
+}
+local function origins_of(kind)
+  if kind == "recaptcha_v2" or kind == "recaptcha_v3" or kind == "recaptcha_enterprise" then
+    return _M.ORIGINS.recaptcha
+  end
+  return _M.ORIGINS[kind]
+end
+
+-- csp is the Content-Security-Policy of a challenge page. A provider's page
+-- (provider: its kind) lets the nonce script load the widget
+-- ('strict-dynamic', with the provider's origins for older browsers) and
+-- allows the provider's origins for frames, requests, images, fonts and
+-- the inline styles widgets set; nothing else.
+function _M.csp(nonce, provider)
+  local hosts = provider and origins_of(provider)
+  if hosts then
+    return "default-src 'none'; script-src 'nonce-" .. nonce .. "' 'strict-dynamic' " .. hosts
+      .. "; style-src 'unsafe-inline' " .. hosts .. "; img-src data: blob: " .. hosts .. "; font-src " .. hosts
+      .. "; frame-src " .. hosts .. "; connect-src 'self' " .. hosts .. "; worker-src 'self' blob:"
+      .. "; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+  end
   return "default-src 'none'; script-src 'nonce-" .. nonce .. "'; style-src 'nonce-" .. nonce
     .. "'; img-src data:; connect-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 end
 
 local function hidden(name, value)
   return '<input type="hidden" name="' .. name .. '" value="' .. esc(value) .. '">'
+end
+
+-- SIGNALS sets the managed challenge's signals (the form's s) before the
+-- proof of work starts: 1 navigator.webdriver, 2 no languages, 4 a
+-- headless browser's User-Agent, 8 an empty screen.
+local SIGNALS = [[(function(){var n=navigator,s=0;try{if(n.webdriver)s|=1;if(!n.languages||!n.languages.length)s|=2;if(/HeadlessChrome|PhantomJS/.test(n.userAgent))s|=4;if(!screen.width||!screen.height)s|=8}catch(e){}document.getElementById('f').s.value=s})();
+]]
+
+-- PROVIDER_JS is the start of a provider page's script: done() posts the
+-- widget's answer as p_* fields, fail() offers the built-in check (also
+-- when the widget has not shown within 10 seconds), shown() hides the
+-- loading bar, load() adds the widget's script.
+local PROVIDER_JS = [[(function(){var f=document.getElementById('f'),fb=document.getElementById('fb'),ld=document.getElementById('ld'),b=document.getElementById('b'),ok=false,sent=false;
+function done(o){if(sent)return;sent=true;for(var k in o){var i=document.createElement('input');i.type='hidden';i.name='p_'+k;i.value=o[k]||'';f.appendChild(i)}f.submit()}
+function fail(){if(sent)return;fb.hidden=false;if(ld)ld.hidden=true}
+function shown(){ok=true;if(ld)ld.hidden=true;if(b)b.hidden=false}
+setTimeout(function(){if(!ok)fail()},10000);
+function load(u,cb){var s=document.createElement('script');s.src=u;s.async=true;if(cb)s.onload=cb;s.onerror=fail;document.head.appendChild(s)}
+]]
+
+-- WIDGETS start each provider's widget (K: the site key, L: the page
+-- language, R and P: Alibaba Cloud's region and prefix).
+local WIDGETS = {
+  turnstile = [[window.ewLoad=function(){try{turnstile.render('#w',{sitekey:K,action:'edgeweir_challenge',language:L=='zh'?'zh-cn':'en',callback:function(t){done({token:t})},'error-callback':fail});shown()}catch(e){fail()}};load('https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=ewLoad');]],
+  recaptcha_v2 = [[window.ewLoad=function(){try{grecaptcha.render('w',{sitekey:K,callback:function(t){done({token:t})},'error-callback':fail});shown()}catch(e){fail()}};load('https://www.recaptcha.net/recaptcha/api.js?render=explicit&onload=ewLoad&hl='+(L=='zh'?'zh-CN':'en'));]],
+  recaptcha_v3 = [[window.ewLoad=function(){grecaptcha.ready(function(){grecaptcha.execute(K,{action:'edgeweir_challenge'}).then(function(t){shown();done({token:t})},fail)})};load('https://www.recaptcha.net/recaptcha/api.js?render='+encodeURIComponent(K)+'&onload=ewLoad');]],
+  recaptcha_enterprise = [[window.ewLoad=function(){grecaptcha.enterprise.ready(function(){grecaptcha.enterprise.execute(K,{action:'edgeweir_challenge'}).then(function(t){shown();done({token:t})},fail)})};load('https://www.recaptcha.net/recaptcha/enterprise.js?render='+encodeURIComponent(K)+'&onload=ewLoad');]],
+  tencent = [[load('https://turing.captcha.qcloud.com/TJCaptcha.js',function(){try{var c=new TencentCaptcha(K,function(r){if(r&&r.ret===0&&r.ticket&&r.ticket.indexOf('trerror_')!==0)done({ticket:r.ticket,randstr:r.randstr});else if(!r||r.ret!==2)fail()},{userLanguage:L=='zh'?'zh-cn':'en'});b.onclick=function(){c.show()};shown();c.show()}catch(e){fail()}});]],
+  aliyun = [[window.AliyunCaptchaConfig={region:R,prefix:P};load('https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js',function(){try{window.initAliyunCaptcha({SceneId:K,mode:'popup',element:'#w',button:'#b',language:L=='zh'?'cn':'en',success:function(p){done({param:p})},fail:function(){},getInstance:function(){shown()}})}catch(e){fail()}});]],
+  geetest = [[load('https://static.geetest.com/v4/gt4.js',function(){try{initGeetest4({captchaId:K,product:'bind',language:L=='zh'?'zho':'eng'},function(c){shown();c.onReady(function(){c.showCaptcha()}).onSuccess(function(){var v=c.getValidate();if(v)done({lot_number:v.lot_number,captcha_output:v.captcha_output,pass_token:v.pass_token,gen_time:v.gen_time})}).onError(fail);b.onclick=function(){c.showCaptcha()}})}catch(e){fail()}});]],
+}
+-- Widgets that open on a button (the page shows "Verify" to reopen them).
+local POPUP = { tencent = true, aliyun = true, geetest = true }
+
+-- provider_script returns the script of a provider page.
+function _M.provider_script(provider, lang)
+  local js = WIDGETS[provider.kind]
+  if not js then return nil end
+  local vars = "var K=" .. cjson.encode(provider.site_key or "") .. ",L=" .. cjson.encode(lang)
+    .. ",R=" .. cjson.encode(provider.region or "cn") .. ",P=" .. cjson.encode(provider.prefix or "") .. ";"
+  return PROVIDER_JS .. vars .. js .. "})();"
 end
 
 -- custom_text returns the site's title and hint of lang ("zh", "en"):
@@ -644,15 +757,31 @@ function _M.page(o)
     '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">',
     "<title>", custom or t.title, '</title><style nonce="', o.nonce, '">', STYLE, '</style></head><body class="w"><main>',
     errorpages.BRAND, '<div class="cd"><div class="st"><span class="pl">', t.title, "</span></div>",
-    "<h1>", custom or (o.kind == "captcha" and t.captcha or t.verify), "</h1>", hint,
-    errorpages.hops(lang, { { "x", o.kind == "captcha" and t.needed or t.checking, "held" }, { "", t.ok, "ok" },
+    "<h1>", custom or (o.kind == "captcha" and t.captcha or o.kind == "provider" and t.interactive or t.verify), "</h1>", hint,
+    errorpages.hops(lang, { { "x", (o.kind == "captcha" or o.kind == "provider") and t.needed or t.checking, "held" }, { "", t.ok, "ok" },
       { "n", errorpages.pending(t.waiting) } }),
   }
   local function add(...)
     for _, s in ipairs({ ... }) do out[#out + 1] = s end
   end
   local script
-  if o.kind == "captcha" then
+  if o.kind == "provider" then
+    local popup = POPUP[o.provider.kind]
+    add('<div class="cap" id="w">')
+    if popup then add('<button class="btn" id="b" type="button" hidden>', t.submit, "</button>") end
+    add("</div>")
+    if o.error then add('<p class="err" role="alert">', t.provider_failed, "</p>") end
+    add('<div id="ld"><div class="bar" role="progressbar" aria-label="', t.loading, '"><i></i></div><p class="note">',
+      t.loading, "</p></div>",
+      '<form id="f" method="post" action="', _M.VERIFY, '">', hidden("t", o.token), hidden("r", o.ret), "</form>",
+      '<form id="fb" method="post" action="', _M.VERIFY, '" hidden><p class="note">', t.widget_failed, "</p>",
+      hidden("t", o.token), hidden("r", o.ret), hidden("alt", "builtin"),
+      '<button class="alt" type="submit">', t.builtin, "</button></form>",
+      '<noscript><form method="post" action="', _M.VERIFY, '"><p class="err">', t.noscript, "</p>",
+      hidden("t", o.token), hidden("r", o.ret), hidden("alt", "builtin"),
+      '<button class="alt" type="submit">', t.builtin, "</button></form></noscript>")
+    script = _M.provider_script(o.provider, lang)
+  elseif o.kind == "captcha" then
     add('<form method="post" action="', _M.VERIFY, '"><div class="cap">',
       '<img src="data:image/png;base64,', o.image, '" alt="', esc(t.image), '" width="160" height="60"></div>',
       '<label for="a">', t.code, '</label><div class="row">',
@@ -666,10 +795,12 @@ function _M.page(o)
     if o.error then add('<p class="err" role="alert">', t.failed, "</p>") end
     add('<div class="bar" role="progressbar" aria-label="', t.verify, '"><i></i></div><p class="note">', t.seconds, "</p>",
       '<form id="f" method="post" action="', _M.VERIFY, '"')
-    if o.kind == "pow" then add(' data-d="', tostring(o.difficulty), '"') end
-    add(">", hidden("t", o.token), hidden("r", o.ret), hidden("a", ""), "</form>",
-      '<noscript><p class="err">', t.noscript, "</p></noscript>")
-    script = SHA .. (o.kind == "pow" and POW_MAIN or JS_MAIN)
+    local pow = o.kind == "pow" or o.kind == "managed"
+    if pow then add(' data-d="', tostring(o.difficulty), '"') end
+    add(">", hidden("t", o.token), hidden("r", o.ret), hidden("a", ""))
+    if o.kind == "managed" then add(hidden("s", "")) end
+    add("</form>", '<noscript><p class="err">', t.noscript, "</p></noscript>")
+    script = SHA .. (o.kind == "managed" and SIGNALS or "") .. (pow and POW_MAIN or JS_MAIN)
   end
   if o.id and o.id ~= "" then
     add('<details class="more"><summary>', t.details, "</summary><dl><div><dt>", t.id, '</dt><dd class="rid">', esc(o.id),
@@ -722,10 +853,66 @@ local function difficulty(site, high)
   return p and tonumber(p.pow) or _M.DEFAULT_POW
 end
 
--- render answers with a challenge page of kind (js, pow, pow_high,
--- captcha) at level for the return path ret (rule_id: the rule that asked
--- for it).
-local function render(site, keys, kind, level, ret, failed, rule_id)
+-- provider_of returns the site's interactive provider (site.protection.
+-- interactive), or nil for the built-in image captcha.
+function _M.provider_of(site)
+  local p = site.protection
+  local provider = type(p) == "table" and p.interactive or nil
+  if type(provider) ~= "table" or not _M.PROVIDERS[provider.kind] then return nil end
+  return provider
+end
+
+local function provider_down(provider)
+  return dict():get("pd|" .. tostring(provider.credential_id)) ~= nil
+end
+
+-- mark_down marks a provider down for PROVIDER_DOWN seconds.
+function _M.mark_down(provider)
+  dict():safe_set("pd|" .. tostring(provider.credential_id), true, _M.PROVIDER_DOWN)
+end
+
+local function outcome(site, kind, what)
+  topstats.outcome(site.id, kind, what)
+end
+
+-- network_key returns the dict key of a counter of the client network of
+-- addr on site.
+local function network_key(prefix, site, addr)
+  local network = ipaddr.client_network(addr)
+  return network and (prefix .. "|" .. site.id .. "|" .. network) or nil
+end
+
+-- AUTOMATION are User-Agent fragments of automation tools and headless
+-- browsers (lowercase): the managed challenge turns interactive for them.
+_M.AUTOMATION = { "headlesschrome", "phantomjs", "selenium", "puppeteer", "playwright", "python-requests",
+  "python-urllib", "aiohttp", "curl/", "wget/", "go-http-client", "okhttp", "java/", "libwww-perl", "scrapy",
+  "httpclient", "node-fetch", "axios/" }
+
+-- managed_escalate returns why the managed challenge of a client should be
+-- interactive (nil: non-interactive): an automation User-Agent or none, a
+-- failed challenge of the client network on the site in the last
+-- FAILURE_WINDOW seconds, or MANAGED_LOOP managed pages sent to it there
+-- without a pass.
+function _M.managed_escalate(site, addr, ua)
+  if type(ua) == "table" then ua = ua[1] end
+  if type(ua) ~= "string" or ua == "" then return "user agent" end
+  local lower = sub(ua, 1, 512):lower()
+  for _, needle in ipairs(_M.AUTOMATION) do
+    if find(lower, needle, 1, true) then return "user agent" end
+  end
+  local d = dict()
+  local fkey = network_key("mf", site, addr)
+  if fkey and d:get(fkey) then return "failures" end
+  local ikey = network_key("mi", site, addr)
+  if ikey and (d:get(ikey) or 0) >= _M.MANAGED_LOOP then return "loop" end
+  return nil
+end
+
+-- render answers with a challenge page of kind (js, pow, pow_high, captcha,
+-- managed) at level for the return path ret (rule_id: the rule that asked
+-- for it). captcha uses the site's provider unless it is marked down or
+-- builtin is set; managed pages count towards the client network's loop.
+local function render(site, keys, kind, level, ret, failed, rule_id, builtin)
   reasons.set("challenge", rule_id)
   topstats.challenge(site.id, "issued")
   local var = ngx.var
@@ -735,37 +922,53 @@ local function render(site, keys, kind, level, ret, failed, rule_id)
     ua = ua_of(var.http_user_agent), iat = now, exp = now + _M.TOKEN_TTL,
     nonce = b64.encode_base64url(assert(rand.bytes(12))), difficulty = 0, answer = "",
   }
-  local image
+  local image, provider
+  local stat = kind == "pow_high" and "captcha" or kind
   if kind == "captcha" then
-    local answer
-    answer, image = _M.pick_captcha()
-    if answer then
-      f.answer = _M.captcha_answer(keys.current, f.nonce, answer)
+    provider = not builtin and _M.provider_of(site) or nil
+    if provider and provider_down(provider) then
+      outcome(site, provider.kind, "fallback")
+      provider = nil
+    end
+    if provider then
+      f.answer, stat = "p:" .. provider.kind, provider.kind
     else
-      kind = "pow_high" -- no pool yet: the accessible alternative
+      local answer
+      answer, image = _M.pick_captcha()
+      if answer then
+        f.answer = _M.captcha_answer(keys.current, f.nonce, answer)
+      else
+        kind = "pow_high" -- no pool yet: the accessible alternative
+      end
     end
   end
   if kind == "pow_high" then
     f.type, f.difficulty = "pow", difficulty(site, true)
-  elseif kind == "pow" then
+  elseif kind == "pow" or kind == "managed" then
     f.difficulty = difficulty(site, false)
   end
+  if kind == "managed" then
+    local key = network_key("mi", site, var.remote_addr)
+    if key then dict():incr(key, 1, 0, _M.FAILURE_WINDOW) end
+  end
+  outcome(site, stat, "issued")
   local nonce = ngx.encode_base64(assert(rand.bytes(16)))
   local h = ngx.header
   ngx.status = 403
   h["Content-Type"] = "text/html; charset=utf-8"
   h["Cache-Control"] = "no-store, private"
-  h["Content-Security-Policy"] = _M.csp(nonce)
+  h["Content-Security-Policy"] = _M.csp(nonce, provider and provider.kind)
   h["X-Content-Type-Options"] = "nosniff"
   h["Referrer-Policy"] = "same-origin"
   h["X-Edgeweir-Challenge"] = f.type
+  if provider then h["X-Edgeweir-Challenge-Provider"] = provider.kind end
   if ngx.req.get_method() ~= "HEAD" then
     local lang = _M.language(var.http_accept_language)
     local title, hint = _M.custom_text(site, lang)
     ngx.print(_M.page({
-      lang = lang, kind = f.type, token = _M.sign_token(keys.current, f),
+      lang = lang, kind = provider and "provider" or f.type, token = _M.sign_token(keys.current, f),
       ret = ret, difficulty = f.difficulty, image = image, nonce = nonce, error = failed,
-      id = var.edgeweir_request_id or var.request_id, title = title, hint = hint,
+      id = var.edgeweir_request_id or var.request_id, title = title, hint = hint, provider = provider,
     }))
   end
   return ngx.exit(ngx.HTTP_OK)
@@ -779,10 +982,11 @@ function _M.kind_for(level, high_pow)
 end
 
 -- respond challenges the request at level with kind (cookie302, js, pow,
--- pow_high or captcha). Requests other than GET and HEAD get a plain-text
--- 403 with X-Edgeweir-Challenge: required (no page: an API client cannot
--- solve one); without keys 503 (the site's error page). rule_id: the rule
--- that asked for the challenge.
+-- pow_high, managed or captcha). Requests other than GET and HEAD get a
+-- plain-text 403 with X-Edgeweir-Challenge: required (no page: an API
+-- client cannot solve one); without keys 503 (the site's error page).
+-- rule_id: the rule that asked for the challenge. A managed challenge of a
+-- client managed_escalate finds suspicious is interactive (level 4).
 function _M.respond(site, kind, level, rule_id)
   local keys = _M.keys()
   if not keys or not keys.current then return unavailable(site) end
@@ -801,7 +1005,12 @@ function _M.respond(site, kind, level, rule_id)
     ngx.header["X-Edgeweir-Challenge"] = "cookie302"
     reasons.set("challenge", rule_id)
     topstats.challenge(site.id, "issued")
+    outcome(site, "cookie302", "issued")
     return redirect(302, ret, _M.pass_cookie(value, ttl, var.scheme == "https"))
+  end
+  if kind == "managed" and _M.managed_escalate(site, var.remote_addr, var.http_user_agent) then
+    outcome(site, "managed", "escalated")
+    return render(site, keys, "captcha", max(level, 4), ret, false, rule_id)
   end
   return render(site, keys, kind, level, ret, false, rule_id)
 end
@@ -813,20 +1022,66 @@ local function field(args, name)
   return v
 end
 
+-- PROVIDER_FIELDS are the widget answers a provider page may post (p_<name>).
+_M.PROVIDER_FIELDS = { "token", "ticket", "randstr", "param", "lot_number", "captcha_output", "pass_token", "gen_time" }
+
+-- ask_agent sends a provider answer to the agent; returns its outcome
+-- (pass, fail, unavailable) and reason, or nil when the agent does not
+-- answer.
+function _M.ask_agent(body)
+  if _M.agent_socket == "" then return nil end
+  local payload = cjson.encode(body)
+  local sock = ngx.socket.tcp()
+  sock:settimeout(_M.VERIFY_TIMEOUT)
+  local ok = sock:connect("unix:" .. _M.agent_socket)
+  if not ok then
+    sock:close()
+    return nil
+  end
+  ok = sock:send("POST /v1/challenge/verify HTTP/1.0\r\nHost: agent\r\nContent-Type: application/json\r\nContent-Length: "
+    .. #payload .. "\r\nConnection: close\r\n\r\n" .. payload)
+  if not ok then
+    sock:close()
+    return nil
+  end
+  local status_line = sock:receive("*l")
+  if not (status_line and status_line:match("^HTTP/1%.[01] 200")) then
+    sock:close()
+    return nil
+  end
+  for _ = 1, 32 do
+    local line = sock:receive("*l")
+    if not line then
+      sock:close()
+      return nil
+    end
+    if line == "" then break end
+  end
+  local data = sock:receive("*a")
+  sock:close()
+  local decoded = data and cjson.decode(data)
+  if type(decoded) ~= "table" or type(decoded.outcome) ~= "string" then return nil end
+  return decoded.outcome, decoded.reason
+end
+
 _M.FAILURE_WINDOW = 600
 
--- failed counts a failed answer of the client addr on site (challenge-v2):
--- at the site's failure_threshold within FAILURE_WINDOW seconds of the
--- first failure, the client network is banned at site scope and the count
--- starts over. Returns the count (nil when the site does not count).
+-- failed counts a failed answer of the client addr on site: the managed
+-- challenge escalates for the client network for FAILURE_WINDOW seconds,
+-- and (challenge-v2) at the site's failure_threshold within FAILURE_WINDOW
+-- seconds of the first failure, the client network is banned at site scope
+-- and the count starts over. Returns the count (nil when the site does not
+-- count).
 function _M.failed(site, addr)
+  local d = dict()
+  local mkey = network_key("mf", site, addr)
+  if mkey then d:safe_set(mkey, true, _M.FAILURE_WINDOW) end
   local p = site.protection
   local threshold = p and tonumber(p.failure_threshold) or 0
   local seconds = p and tonumber(p.failure_ban_seconds) or 0
   if threshold <= 0 or seconds <= 0 then return nil end
   local network = ipaddr.client_network(addr)
   if not network then return nil end
-  local d = dict()
   local key = "f|" .. site.id .. "|" .. network
   local n = d:incr(key, 1, 0, _M.FAILURE_WINDOW)
   if n and n >= threshold then
@@ -842,22 +1097,28 @@ function _M.failed(site, addr)
   return n
 end
 
+-- stat_kind returns the outcome kind of a token: the provider of a
+-- provider token, captcha for the built-in image and the high-difficulty
+-- proof of work, else the type.
+function _M.stat_kind(f)
+  if f.type == "captcha" and sub(f.answer or "", 1, 2) == "p:" then return sub(f.answer, 3) end
+  if f.type == "pow" and f.level >= 4 then return "captcha" end
+  return f.type
+end
+
 -- verify redeems a challenge token (POST /.edgeweir/challenge/verify);
 -- uncounted: failures do not count towards the failure ban.
 local function verify(site, uncounted)
-  local function failure()
-    if not uncounted then _M.failed(site, ngx.var.remote_addr) end
-  end
   local var = ngx.var
   if ngx.req.get_method() ~= "POST" then
     return text(405, { Allow = "POST", ["X-Edgeweir-Error"] = "method-not-allowed" }, "method not allowed")
   end
   local length = tonumber(var.content_length)
-  if length and length > 4096 then
+  if length and length > 16384 then
     return text(413, { ["X-Edgeweir-Error"] = "too-large" }, "request too large")
   end
   ngx.req.read_body()
-  local args = ngx.req.get_post_args(8) or {}
+  local args = ngx.req.get_post_args(16) or {}
   local token, answer = field(args, "t"), field(args, "a")
   local ret = _M.return_url(field(args, "r")) or "/"
   local keys = _M.keys()
@@ -865,34 +1126,75 @@ local function verify(site, uncounted)
   local now = _M.clock()
   local prefix, uah = prefix_of(var.remote_addr), ua_of(var.http_user_agent)
   local f = _M.parse_token(keys, token)
+  local function failure(kind)
+    if kind then outcome(site, kind, "failed") end
+    if not uncounted then _M.failed(site, var.remote_addr) end
+  end
   if not f or not _M.check_token(f, site.id, prefix, uah, now) then
-    failure()
+    failure(f and _M.stat_kind(f))
     return redirect(303, ret) -- a new challenge on the page itself
   end
+  local stat = _M.stat_kind(f)
   local kind = (f.type == "pow" and f.level >= 4) and "pow_high" or f.type
-  if field(args, "alt") == "pow" and f.type == "captcha" then
+  local alt = field(args, "alt")
+  if alt == "pow" and f.type == "captcha" then
     return render(site, keys, "pow_high", f.level, ret, false)
   end
+  local provider = f.type == "captcha" and sub(f.answer or "", 1, 2) == "p:"
+  if alt == "builtin" and provider then
+    outcome(site, stat, "fallback")
+    return render(site, keys, "captcha", f.level, ret, false, nil, true)
+  end
   if not _M.consume(f.nonce, f.exp, now) then
-    failure()
+    failure(stat)
     return redirect(303, ret)
   end
   local ok
   if f.type == "js" then
     ok = equal(answer, _M.sha256_hex(token))
-  elseif f.type == "pow" then
+  elseif f.type == "pow" or f.type == "managed" then
     ok = _M.pow_ok(token, answer, f.difficulty)
+  elseif provider then
+    local current = _M.provider_of(site)
+    local widget = {}
+    for _, name in ipairs(_M.PROVIDER_FIELDS) do
+      local v = field(args, "p_" .. name)
+      if v and #v <= 8192 then widget[name] = v end
+    end
+    local result
+    if current and current.kind == stat then
+      result = _M.ask_agent({ site_id = site.id, answer = widget, remote_ip = var.remote_addr,
+        user_agent = type(var.http_user_agent) == "string" and sub(var.http_user_agent, 1, 512) or "", host = var.host })
+    end
+    if result ~= "pass" and result ~= "fail" then
+      -- Unavailable, no answer from the agent, or another provider by now:
+      -- the built-in image captcha stands in.
+      if current and current.kind == stat then _M.mark_down(current) end
+      outcome(site, stat, "fallback")
+      return render(site, keys, "captcha", f.level, ret, false, nil, true)
+    end
+    ok = result == "pass"
   elseif f.type == "captcha" then
     ok = _M.captcha_ok(keys.by_id[f.kid], f, answer)
   end
   if not ok then
-    failure()
+    failure(stat)
     return render(site, keys, kind, f.level, ret, true)
+  end
+  if f.type == "managed" then
+    local signals = tonumber(field(args, "s") or "") or 0
+    if signals ~= 0 then
+      outcome(site, "managed", "escalated")
+      return render(site, keys, "captcha", max(f.level, 4), ret, false)
+    end
+    local key = network_key("mi", site, var.remote_addr)
+    if key then dict():delete(key) end
   end
   local level = max(f.level, _M.pass_level(site))
   local ttl = pass_ttl(site)
   local value = _M.sign_pass(keys.current, site.id, level, prefix, uah, now, now + ttl)
   topstats.challenge(site.id, "passed")
+  outcome(site, stat, "passed")
   return redirect(303, ret, _M.pass_cookie(value, ttl, var.scheme == "https"))
 end
 
@@ -923,7 +1225,7 @@ end
 -- without a sufficient pass (platform and site Under Attack, CC levels
 -- from cc_level(site)); 0 when none. under_attack, when not nil, turns the
 -- site's Under Attack on or off for this request (config rules); the
--- platform's is not affected.
+-- platform's is not affected. Under Attack may ask for managed (level 3).
 function _M.required(site, cc_level, under_attack)
   local level, kind = 0, nil
   local cfg = site._config
@@ -935,8 +1237,9 @@ function _M.required(site, cc_level, under_attack)
   local ua = p ~= nil and p.under_attack == true
   if under_attack ~= nil then ua = under_attack end
   if ua then
-    local l = _M.LEVELS[p and p.under_attack_challenge] or 2
-    if l > level then level, kind = l, _M.TYPES[l] end
+    local k = p and p.under_attack_challenge
+    local l = _M.LEVELS[k] or 2
+    if l > level then level, kind = l, _M.LEVELS[k] and k or "js" end
   end
   if p and p.cc and cc_level and cc_level > level then
     level, kind = cc_level, _M.kind_for(cc_level, p.cc.high_pow == true)
