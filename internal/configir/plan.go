@@ -853,6 +853,8 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if markdowns[id], err = buildMarkdown(s, opts.ExtraFeatures); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if aiCrawls[id], err = buildAICrawl(s, crawlerIDs); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
