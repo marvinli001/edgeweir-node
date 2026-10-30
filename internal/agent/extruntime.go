@@ -236,8 +236,8 @@ func (a *Agent) sidecarIDs() (uid, gid int, why string) {
 		return 0, 0, "sidecars need Linux on amd64 or arm64"
 	case cfg.SidecarMode == "systemd":
 		return 0, 0, "--sidecar-mode systemd is not available in this build"
-	case cfg.SidecarUser == "" || (os.Geteuid() != 0 && !hasSetIDCaps()):
-		return 0, 0, "sidecars need --sidecar-user and an agent that may switch users (root, or CAP_SETUID and CAP_SETGID)"
+	case cfg.SidecarUser == "" || (os.Geteuid() != 0 && !hasSidecarCaps()):
+		return 0, 0, "sidecars need --sidecar-user and an agent that may switch users (root, or CAP_SETUID, CAP_SETGID and CAP_KILL)"
 	}
 	uid, gid, err := lookupUser(cfg.SidecarUser)
 	if err != nil {
@@ -249,9 +249,10 @@ func (a *Agent) sidecarIDs() (uid, gid int, why string) {
 	return uid, gid, ""
 }
 
-// hasSetIDCaps reports whether the agent holds CAP_SETUID and CAP_SETGID
-// (a container image built with them as file capabilities).
-func hasSetIDCaps() bool {
+// hasSidecarCaps reports whether the agent holds CAP_SETUID and CAP_SETGID
+// (to start a sidecar as its user) and CAP_KILL (to signal and stop it): a
+// container image built with them as file capabilities.
+func hasSidecarCaps() bool {
 	raw, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		return false
@@ -259,7 +260,8 @@ func hasSetIDCaps() bool {
 	for _, line := range strings.Split(string(raw), "\n") {
 		if v, ok := strings.CutPrefix(line, "CapEff:"); ok {
 			caps, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
-			return err == nil && caps&(1<<6) != 0 && caps&(1<<7) != 0
+			const kill, setgid, setuid = 1 << 5, 1 << 6, 1 << 7
+			return err == nil && caps&(kill|setgid|setuid) == kill|setgid|setuid
 		}
 	}
 	return false
@@ -707,11 +709,17 @@ func (a *Agent) runSidecar(ctx context.Context, p *sidecarProc, e configir.Exten
 		case err := <-exited:
 			return err
 		case <-ctx.Done():
-			_ = syscall.Kill(-pid, syscall.SIGTERM)
+			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+				a.log.Warn("extension sidecar not signalled", "extension", e.ID, "err", err)
+			}
 			select {
 			case <-exited:
 			case <-time.After(10 * time.Second):
-				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+					// Waiting would block the extension runtime for good.
+					a.log.Error("extension sidecar could not be stopped", "extension", e.ID, "pid", pid, "err", err)
+					return nil
+				}
 				<-exited
 			}
 			return nil

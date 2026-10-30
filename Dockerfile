@@ -178,16 +178,16 @@ COPY --from=openresty-build /out/tree/usr/lib/edgeweir-openresty/ /usr/lib/edgew
 COPY --from=openresty-build /out/tree/usr/share/edgeweir-openresty/ /usr/share/edgeweir-openresty/
 COPY --from=openresty-build /out/tree/usr/share/doc/edgeweir-openresty/ /usr/share/doc/edgeweir-openresty/
 COPY --from=build /out/edgeweir-node /usr/local/bin/edgeweir-node
-# Extension sidecars: the agent (uid 10001) starts them as edgeweir-sidecar,
-# which needs CAP_SETUID and CAP_SETGID on its binary (Docker's default
-# capability set includes both). nginx, exec'd without file capabilities,
-# and the sidecars keep none.
+# Extension sidecars: the agent (uid 10001) starts them as edgeweir-sidecar
+# and signals them, which needs CAP_SETUID, CAP_SETGID and CAP_KILL on its
+# binary (Docker's default capability set includes all three). nginx,
+# exec'd without file capabilities, and the sidecars keep none.
 ARG SIDECAR_CAPABILITY=false
 RUN set -eu; \
     case "$SIDECAR_CAPABILITY" in \
       true) apt-get update; \
             apt-get install -y --no-install-recommends libcap2-bin; \
-            setcap cap_setuid,cap_setgid+ep /usr/local/bin/edgeweir-node; \
+            setcap cap_kill,cap_setuid,cap_setgid+ep /usr/local/bin/edgeweir-node; \
             apt-get purge -y --auto-remove libcap2-bin; \
             rm -rf /var/lib/apt/lists/* ;; \
       false) ;; \
