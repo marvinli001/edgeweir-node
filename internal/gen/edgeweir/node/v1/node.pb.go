@@ -5990,7 +5990,10 @@ func (x *ReportSecurityEventsResponse) GetAccepted() uint32 {
 type GetExtensionPackageRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Lowercase hex SHA-256 of the package.
-	Sha256        string `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Sha256 string `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	// Where the answer starts (extension version 1.1: packages over 4 MiB
+	// come in parts).
+	Offset        uint64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6032,11 +6035,20 @@ func (x *GetExtensionPackageRequest) GetSha256() string {
 	return ""
 }
 
-// GetExtensionPackageResponse carries the package.
+func (x *GetExtensionPackageRequest) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+// GetExtensionPackageResponse carries the package from offset, at most
+// 4 MiB of it.
 type GetExtensionPackageResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The .ewx bytes (at most 4 MiB).
-	Package       []byte `protobuf:"bytes,1,opt,name=package,proto3" json:"package,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Package []byte                 `protobuf:"bytes,1,opt,name=package,proto3" json:"package,omitempty"`
+	// The package's whole size.
+	Total         uint64 `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6078,6 +6090,296 @@ func (x *GetExtensionPackageResponse) GetPackage() []byte {
 	return nil
 }
 
+func (x *GetExtensionPackageResponse) GetTotal() uint64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+// GetExtensionSecretsRequest names the extensions; empty: all the node's.
+type GetExtensionSecretsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ids           []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExtensionSecretsRequest) Reset() {
+	*x = GetExtensionSecretsRequest{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[69]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExtensionSecretsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExtensionSecretsRequest) ProtoMessage() {}
+
+func (x *GetExtensionSecretsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[69]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExtensionSecretsRequest.ProtoReflect.Descriptor instead.
+func (*GetExtensionSecretsRequest) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{69}
+}
+
+func (x *GetExtensionSecretsRequest) GetIds() []string {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+type GetExtensionSecretsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Secrets       []*ExtensionSecret     `protobuf:"bytes,1,rep,name=secrets,proto3" json:"secrets,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExtensionSecretsResponse) Reset() {
+	*x = GetExtensionSecretsResponse{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExtensionSecretsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExtensionSecretsResponse) ProtoMessage() {}
+
+func (x *GetExtensionSecretsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExtensionSecretsResponse.ProtoReflect.Descriptor instead.
+func (*GetExtensionSecretsResponse) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *GetExtensionSecretsResponse) GetSecrets() []*ExtensionSecret {
+	if x != nil {
+		return x.Secrets
+	}
+	return nil
+}
+
+// ExtensionSecret is an extension's console-generated secret.
+type ExtensionSecret struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Extension.secret_version of this secret.
+	Version uint32 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	// 32 random bytes; previous is empty before the first rotation.
+	Current       []byte `protobuf:"bytes,3,opt,name=current,proto3" json:"current,omitempty"`
+	Previous      []byte `protobuf:"bytes,4,opt,name=previous,proto3" json:"previous,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExtensionSecret) Reset() {
+	*x = ExtensionSecret{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExtensionSecret) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExtensionSecret) ProtoMessage() {}
+
+func (x *ExtensionSecret) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExtensionSecret.ProtoReflect.Descriptor instead.
+func (*ExtensionSecret) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *ExtensionSecret) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ExtensionSecret) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ExtensionSecret) GetCurrent() []byte {
+	if x != nil {
+		return x.Current
+	}
+	return nil
+}
+
+func (x *ExtensionSecret) GetPrevious() []byte {
+	if x != nil {
+		return x.Previous
+	}
+	return nil
+}
+
+// GetExtensionDataRequest names a data item part.
+type GetExtensionDataRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ExtensionId string                 `protobuf:"bytes,1,opt,name=extension_id,json=extensionId,proto3" json:"extension_id,omitempty"`
+	SiteId      string                 `protobuf:"bytes,2,opt,name=site_id,json=siteId,proto3" json:"site_id,omitempty"`
+	// Lowercase hex SHA-256 of the item.
+	Sha256        string `protobuf:"bytes,3,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Offset        uint64 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExtensionDataRequest) Reset() {
+	*x = GetExtensionDataRequest{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExtensionDataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExtensionDataRequest) ProtoMessage() {}
+
+func (x *GetExtensionDataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExtensionDataRequest.ProtoReflect.Descriptor instead.
+func (*GetExtensionDataRequest) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *GetExtensionDataRequest) GetExtensionId() string {
+	if x != nil {
+		return x.ExtensionId
+	}
+	return ""
+}
+
+func (x *GetExtensionDataRequest) GetSiteId() string {
+	if x != nil {
+		return x.SiteId
+	}
+	return ""
+}
+
+func (x *GetExtensionDataRequest) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *GetExtensionDataRequest) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+// GetExtensionDataResponse carries the item from offset, at most 4 MiB.
+type GetExtensionDataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Total         uint64                 `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExtensionDataResponse) Reset() {
+	*x = GetExtensionDataResponse{}
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[73]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExtensionDataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExtensionDataResponse) ProtoMessage() {}
+
+func (x *GetExtensionDataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[73]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExtensionDataResponse.ProtoReflect.Descriptor instead.
+func (*GetExtensionDataResponse) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{73}
+}
+
+func (x *GetExtensionDataResponse) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *GetExtensionDataResponse) GetTotal() uint64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
 // ExtensionStatus is one extension's state on the node. Added in PROTO_NEXT.
 type ExtensionStatus struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
@@ -6091,15 +6393,18 @@ type ExtensionStatus struct {
 	Message string `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
 	// Hook faults (errors and budget overruns) since the data plane started,
 	// and how often a worker tripped the extension.
-	Faults        uint64 `protobuf:"varint,6,opt,name=faults,proto3" json:"faults,omitempty"`
-	Trips         uint64 `protobuf:"varint,7,opt,name=trips,proto3" json:"trips,omitempty"`
+	Faults uint64 `protobuf:"varint,6,opt,name=faults,proto3" json:"faults,omitempty"`
+	Trips  uint64 `protobuf:"varint,7,opt,name=trips,proto3" json:"trips,omitempty"`
+	// JSON object, at most 4 KiB: "sidecar" {state, restarts, last_exit,
+	// since, status} and "listeners" (extension version 1.1).
+	DetailsJson   string `protobuf:"bytes,8,opt,name=details_json,json=detailsJson,proto3" json:"details_json,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExtensionStatus) Reset() {
 	*x = ExtensionStatus{}
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[69]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6111,7 +6416,7 @@ func (x *ExtensionStatus) String() string {
 func (*ExtensionStatus) ProtoMessage() {}
 
 func (x *ExtensionStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_node_proto_msgTypes[69]
+	mi := &file_edgeweir_node_v1_node_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6124,7 +6429,7 @@ func (x *ExtensionStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionStatus.ProtoReflect.Descriptor instead.
 func (*ExtensionStatus) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{69}
+	return file_edgeweir_node_v1_node_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *ExtensionStatus) GetId() string {
@@ -6174,6 +6479,13 @@ func (x *ExtensionStatus) GetTrips() uint64 {
 		return x.Trips
 	}
 	return 0
+}
+
+func (x *ExtensionStatus) GetDetailsJson() string {
+	if x != nil {
+		return x.DetailsJson
+	}
+	return ""
 }
 
 var File_edgeweir_node_v1_node_proto protoreflect.FileDescriptor
@@ -6650,11 +6962,30 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x1bReportSecurityEventsRequest\x127\n" +
 	"\x06events\x18\x01 \x03(\v2\x1f.edgeweir.node.v1.SecurityEventR\x06events\":\n" +
 	"\x1cReportSecurityEventsResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\rR\baccepted\"4\n" +
+	"\baccepted\x18\x01 \x01(\rR\baccepted\"L\n" +
 	"\x1aGetExtensionPackageRequest\x12\x16\n" +
-	"\x06sha256\x18\x01 \x01(\tR\x06sha256\"7\n" +
+	"\x06sha256\x18\x01 \x01(\tR\x06sha256\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x04R\x06offset\"M\n" +
 	"\x1bGetExtensionPackageResponse\x12\x18\n" +
-	"\apackage\x18\x01 \x01(\fR\apackage\"\xb1\x01\n" +
+	"\apackage\x18\x01 \x01(\fR\apackage\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x04R\x05total\".\n" +
+	"\x1aGetExtensionSecretsRequest\x12\x10\n" +
+	"\x03ids\x18\x01 \x03(\tR\x03ids\"Z\n" +
+	"\x1bGetExtensionSecretsResponse\x12;\n" +
+	"\asecrets\x18\x01 \x03(\v2!.edgeweir.node.v1.ExtensionSecretR\asecrets\"q\n" +
+	"\x0fExtensionSecret\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\rR\aversion\x12\x18\n" +
+	"\acurrent\x18\x03 \x01(\fR\acurrent\x12\x1a\n" +
+	"\bprevious\x18\x04 \x01(\fR\bprevious\"\x85\x01\n" +
+	"\x17GetExtensionDataRequest\x12!\n" +
+	"\fextension_id\x18\x01 \x01(\tR\vextensionId\x12\x17\n" +
+	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x16\n" +
+	"\x06sha256\x18\x03 \x01(\tR\x06sha256\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x04R\x06offset\"D\n" +
+	"\x18GetExtensionDataResponse\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x04R\x05total\"\xd4\x01\n" +
 	"\x0fExtensionStatus\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x16\n" +
@@ -6662,7 +6993,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x05state\x18\x04 \x01(\tR\x05state\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12\x16\n" +
 	"\x06faults\x18\x06 \x01(\x04R\x06faults\x12\x14\n" +
-	"\x05trips\x18\a \x01(\x04R\x05trips*\x8b\x01\n" +
+	"\x05trips\x18\a \x01(\x04R\x05trips\x12!\n" +
+	"\fdetails_json\x18\b \x01(\tR\vdetailsJson*\x8b\x01\n" +
 	"\n" +
 	"WatchEvent\x12\x1b\n" +
 	"\x17WATCH_EVENT_UNSPECIFIED\x10\x00\x12\x18\n" +
@@ -6711,7 +7043,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x1fSECURITY_EVENT_KIND_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSECURITY_EVENT_KIND_SITE_LEVEL\x10\x01\x12\"\n" +
 	"\x1eSECURITY_EVENT_KIND_PATH_LEVEL\x10\x02\x12!\n" +
-	"\x1dSECURITY_EVENT_KIND_IP_BANNED\x10\x032\x8d\x11\n" +
+	"\x1dSECURITY_EVENT_KIND_IP_BANNED\x10\x032\xec\x12\n" +
 	"\vNodeService\x12K\n" +
 	"\x06Enroll\x12\x1f.edgeweir.node.v1.EnrollRequest\x1a .edgeweir.node.v1.EnrollResponse\x12i\n" +
 	"\x10RenewCertificate\x12).edgeweir.node.v1.RenewCertificateRequest\x1a*.edgeweir.node.v1.RenewCertificateResponse\x12\\\n" +
@@ -6736,7 +7068,9 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\fCheckChannel\x12%.edgeweir.node.v1.CheckChannelRequest\x1a&.edgeweir.node.v1.CheckChannelResponse\x12c\n" +
 	"\x0eReportNodeLogs\x12'.edgeweir.node.v1.ReportNodeLogsRequest\x1a(.edgeweir.node.v1.ReportNodeLogsResponse\x12f\n" +
 	"\x0fUploadDebugLogs\x12(.edgeweir.node.v1.UploadDebugLogsRequest\x1a).edgeweir.node.v1.UploadDebugLogsResponse\x12r\n" +
-	"\x13GetExtensionPackage\x12,.edgeweir.node.v1.GetExtensionPackageRequest\x1a-.edgeweir.node.v1.GetExtensionPackageResponseB\xce\x01\n" +
+	"\x13GetExtensionPackage\x12,.edgeweir.node.v1.GetExtensionPackageRequest\x1a-.edgeweir.node.v1.GetExtensionPackageResponse\x12r\n" +
+	"\x13GetExtensionSecrets\x12,.edgeweir.node.v1.GetExtensionSecretsRequest\x1a-.edgeweir.node.v1.GetExtensionSecretsResponse\x12i\n" +
+	"\x10GetExtensionData\x12).edgeweir.node.v1.GetExtensionDataRequest\x1a*.edgeweir.node.v1.GetExtensionDataResponseB\xce\x01\n" +
 	"\x14com.edgeweir.node.v1B\tNodeProtoP\x01ZIgithub.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1;nodev1\xa2\x02\x03ENX\xaa\x02\x10Edgeweir.Node.V1\xca\x02\x10Edgeweir\\Node\\V1\xe2\x02\x1cEdgeweir\\Node\\V1\\GPBMetadata\xea\x02\x12Edgeweir::Node::V1b\x06proto3"
 
 var (
@@ -6752,7 +7086,7 @@ func file_edgeweir_node_v1_node_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_node_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
-var file_edgeweir_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 82)
+var file_edgeweir_node_v1_node_proto_msgTypes = make([]protoimpl.MessageInfo, 87)
 var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(WatchEvent)(0),                      // 0: edgeweir.node.v1.WatchEvent
 	(ApplyState)(0),                      // 1: edgeweir.node.v1.ApplyState
@@ -6833,63 +7167,68 @@ var file_edgeweir_node_v1_node_proto_goTypes = []any{
 	(*ReportSecurityEventsResponse)(nil), // 76: edgeweir.node.v1.ReportSecurityEventsResponse
 	(*GetExtensionPackageRequest)(nil),   // 77: edgeweir.node.v1.GetExtensionPackageRequest
 	(*GetExtensionPackageResponse)(nil),  // 78: edgeweir.node.v1.GetExtensionPackageResponse
-	(*ExtensionStatus)(nil),              // 79: edgeweir.node.v1.ExtensionStatus
-	nil,                                  // 80: edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
-	nil,                                  // 81: edgeweir.node.v1.MinuteStats.StatusCodesEntry
-	nil,                                  // 82: edgeweir.node.v1.MinuteStats.BrowsersEntry
-	nil,                                  // 83: edgeweir.node.v1.MinuteStats.OperatingSystemsEntry
-	nil,                                  // 84: edgeweir.node.v1.MinuteStats.DevicesEntry
-	nil,                                  // 85: edgeweir.node.v1.MinuteStats.HttpVersionsEntry
-	nil,                                  // 86: edgeweir.node.v1.MinuteStats.TlsVersionsEntry
-	nil,                                  // 87: edgeweir.node.v1.MinuteStats.BlockReasonsEntry
-	nil,                                  // 88: edgeweir.node.v1.MinuteStats.ExtCountersEntry
-	nil,                                  // 89: edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
-	nil,                                  // 90: edgeweir.node.v1.AccessLog.HeadersEntry
-	nil,                                  // 91: edgeweir.node.v1.AccessLog.ExtEntry
-	(*ChannelAddress)(nil),               // 92: edgeweir.node.v1.ChannelAddress
-	(*timestamppb.Timestamp)(nil),        // 93: google.protobuf.Timestamp
-	(*NodeConfig)(nil),                   // 94: edgeweir.node.v1.NodeConfig
-	(*NodeConfigDiff)(nil),               // 95: edgeweir.node.v1.NodeConfigDiff
-	(*ChannelStatus)(nil),                // 96: edgeweir.node.v1.ChannelStatus
-	(*DebugLogsTask)(nil),                // 97: edgeweir.node.v1.DebugLogsTask
-	(*ReportNodeLogsRequest)(nil),        // 98: edgeweir.node.v1.ReportNodeLogsRequest
-	(*UploadDebugLogsRequest)(nil),       // 99: edgeweir.node.v1.UploadDebugLogsRequest
-	(*ReportNodeLogsResponse)(nil),       // 100: edgeweir.node.v1.ReportNodeLogsResponse
-	(*UploadDebugLogsResponse)(nil),      // 101: edgeweir.node.v1.UploadDebugLogsResponse
+	(*GetExtensionSecretsRequest)(nil),   // 79: edgeweir.node.v1.GetExtensionSecretsRequest
+	(*GetExtensionSecretsResponse)(nil),  // 80: edgeweir.node.v1.GetExtensionSecretsResponse
+	(*ExtensionSecret)(nil),              // 81: edgeweir.node.v1.ExtensionSecret
+	(*GetExtensionDataRequest)(nil),      // 82: edgeweir.node.v1.GetExtensionDataRequest
+	(*GetExtensionDataResponse)(nil),     // 83: edgeweir.node.v1.GetExtensionDataResponse
+	(*ExtensionStatus)(nil),              // 84: edgeweir.node.v1.ExtensionStatus
+	nil,                                  // 85: edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
+	nil,                                  // 86: edgeweir.node.v1.MinuteStats.StatusCodesEntry
+	nil,                                  // 87: edgeweir.node.v1.MinuteStats.BrowsersEntry
+	nil,                                  // 88: edgeweir.node.v1.MinuteStats.OperatingSystemsEntry
+	nil,                                  // 89: edgeweir.node.v1.MinuteStats.DevicesEntry
+	nil,                                  // 90: edgeweir.node.v1.MinuteStats.HttpVersionsEntry
+	nil,                                  // 91: edgeweir.node.v1.MinuteStats.TlsVersionsEntry
+	nil,                                  // 92: edgeweir.node.v1.MinuteStats.BlockReasonsEntry
+	nil,                                  // 93: edgeweir.node.v1.MinuteStats.ExtCountersEntry
+	nil,                                  // 94: edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
+	nil,                                  // 95: edgeweir.node.v1.AccessLog.HeadersEntry
+	nil,                                  // 96: edgeweir.node.v1.AccessLog.ExtEntry
+	(*ChannelAddress)(nil),               // 97: edgeweir.node.v1.ChannelAddress
+	(*timestamppb.Timestamp)(nil),        // 98: google.protobuf.Timestamp
+	(*NodeConfig)(nil),                   // 99: edgeweir.node.v1.NodeConfig
+	(*NodeConfigDiff)(nil),               // 100: edgeweir.node.v1.NodeConfigDiff
+	(*ChannelStatus)(nil),                // 101: edgeweir.node.v1.ChannelStatus
+	(*DebugLogsTask)(nil),                // 102: edgeweir.node.v1.DebugLogsTask
+	(*ReportNodeLogsRequest)(nil),        // 103: edgeweir.node.v1.ReportNodeLogsRequest
+	(*UploadDebugLogsRequest)(nil),       // 104: edgeweir.node.v1.UploadDebugLogsRequest
+	(*ReportNodeLogsResponse)(nil),       // 105: edgeweir.node.v1.ReportNodeLogsResponse
+	(*UploadDebugLogsResponse)(nil),      // 106: edgeweir.node.v1.UploadDebugLogsResponse
 }
 var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
-	92,  // 0: edgeweir.node.v1.CheckChannelResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
-	93,  // 1: edgeweir.node.v1.CheckChannelResponse.console_time:type_name -> google.protobuf.Timestamp
+	97,  // 0: edgeweir.node.v1.CheckChannelResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
+	98,  // 1: edgeweir.node.v1.CheckChannelResponse.console_time:type_name -> google.protobuf.Timestamp
 	16,  // 2: edgeweir.node.v1.GetCertificatesResponse.certificates:type_name -> edgeweir.node.v1.CertificateMaterial
 	14,  // 3: edgeweir.node.v1.EnrollRequest.info:type_name -> edgeweir.node.v1.NodeInfo
-	93,  // 4: edgeweir.node.v1.EnrollResponse.not_after:type_name -> google.protobuf.Timestamp
-	93,  // 5: edgeweir.node.v1.RenewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	98,  // 4: edgeweir.node.v1.EnrollResponse.not_after:type_name -> google.protobuf.Timestamp
+	98,  // 5: edgeweir.node.v1.RenewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	0,   // 6: edgeweir.node.v1.WatchConfigResponse.event:type_name -> edgeweir.node.v1.WatchEvent
-	94,  // 7: edgeweir.node.v1.GetConfigResponse.snapshot:type_name -> edgeweir.node.v1.NodeConfig
-	95,  // 8: edgeweir.node.v1.GetConfigResponse.diff:type_name -> edgeweir.node.v1.NodeConfigDiff
-	93,  // 9: edgeweir.node.v1.GetConfigResponse.generated_at:type_name -> google.protobuf.Timestamp
+	99,  // 7: edgeweir.node.v1.GetConfigResponse.snapshot:type_name -> edgeweir.node.v1.NodeConfig
+	100, // 8: edgeweir.node.v1.GetConfigResponse.diff:type_name -> edgeweir.node.v1.NodeConfigDiff
+	98,  // 9: edgeweir.node.v1.GetConfigResponse.generated_at:type_name -> google.protobuf.Timestamp
 	1,   // 10: edgeweir.node.v1.ReportStatusRequest.state:type_name -> edgeweir.node.v1.ApplyState
 	14,  // 11: edgeweir.node.v1.ReportStatusRequest.info:type_name -> edgeweir.node.v1.NodeInfo
-	93,  // 12: edgeweir.node.v1.ReportStatusRequest.applied_at:type_name -> google.protobuf.Timestamp
-	93,  // 13: edgeweir.node.v1.ReportStatusRequest.certificate_not_after:type_name -> google.protobuf.Timestamp
+	98,  // 12: edgeweir.node.v1.ReportStatusRequest.applied_at:type_name -> google.protobuf.Timestamp
+	98,  // 13: edgeweir.node.v1.ReportStatusRequest.certificate_not_after:type_name -> google.protobuf.Timestamp
 	33,  // 14: edgeweir.node.v1.ReportStatusRequest.origin_health:type_name -> edgeweir.node.v1.OriginHealth
 	32,  // 15: edgeweir.node.v1.ReportStatusRequest.bans:type_name -> edgeweir.node.v1.BanStatus
 	31,  // 16: edgeweir.node.v1.ReportStatusRequest.security:type_name -> edgeweir.node.v1.SiteSecurity
 	30,  // 17: edgeweir.node.v1.ReportStatusRequest.metrics:type_name -> edgeweir.node.v1.NodeMetrics
 	29,  // 18: edgeweir.node.v1.ReportStatusRequest.cache_usage:type_name -> edgeweir.node.v1.CacheZoneUsage
 	28,  // 19: edgeweir.node.v1.ReportStatusRequest.certificate_failures:type_name -> edgeweir.node.v1.CertificateFailure
-	96,  // 20: edgeweir.node.v1.ReportStatusRequest.channel:type_name -> edgeweir.node.v1.ChannelStatus
+	101, // 20: edgeweir.node.v1.ReportStatusRequest.channel:type_name -> edgeweir.node.v1.ChannelStatus
 	27,  // 21: edgeweir.node.v1.ReportStatusRequest.location:type_name -> edgeweir.node.v1.NodeLocation
-	79,  // 22: edgeweir.node.v1.ReportStatusRequest.extensions:type_name -> edgeweir.node.v1.ExtensionStatus
-	93,  // 23: edgeweir.node.v1.CacheZoneUsage.measured_at:type_name -> google.protobuf.Timestamp
-	93,  // 24: edgeweir.node.v1.OriginHealth.last_failure_at:type_name -> google.protobuf.Timestamp
-	93,  // 25: edgeweir.node.v1.OriginHealth.down_until:type_name -> google.protobuf.Timestamp
-	80,  // 26: edgeweir.node.v1.OriginHealth.last_error_params:type_name -> edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
+	84,  // 22: edgeweir.node.v1.ReportStatusRequest.extensions:type_name -> edgeweir.node.v1.ExtensionStatus
+	98,  // 23: edgeweir.node.v1.CacheZoneUsage.measured_at:type_name -> google.protobuf.Timestamp
+	98,  // 24: edgeweir.node.v1.OriginHealth.last_failure_at:type_name -> google.protobuf.Timestamp
+	98,  // 25: edgeweir.node.v1.OriginHealth.down_until:type_name -> google.protobuf.Timestamp
+	85,  // 26: edgeweir.node.v1.OriginHealth.last_error_params:type_name -> edgeweir.node.v1.OriginHealth.LastErrorParamsEntry
 	2,   // 27: edgeweir.node.v1.OriginHealth.source:type_name -> edgeweir.node.v1.OriginHealthSource
-	92,  // 28: edgeweir.node.v1.ReportStatusResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
-	93,  // 29: edgeweir.node.v1.ReportStatusResponse.console_time:type_name -> google.protobuf.Timestamp
-	93,  // 30: edgeweir.node.v1.MinuteStats.minute:type_name -> google.protobuf.Timestamp
-	81,  // 31: edgeweir.node.v1.MinuteStats.status_codes:type_name -> edgeweir.node.v1.MinuteStats.StatusCodesEntry
+	97,  // 28: edgeweir.node.v1.ReportStatusResponse.channel:type_name -> edgeweir.node.v1.ChannelAddress
+	98,  // 29: edgeweir.node.v1.ReportStatusResponse.console_time:type_name -> google.protobuf.Timestamp
+	98,  // 30: edgeweir.node.v1.MinuteStats.minute:type_name -> google.protobuf.Timestamp
+	86,  // 31: edgeweir.node.v1.MinuteStats.status_codes:type_name -> edgeweir.node.v1.MinuteStats.StatusCodesEntry
 	39,  // 32: edgeweir.node.v1.MinuteStats.top_urls:type_name -> edgeweir.node.v1.TopCounter
 	39,  // 33: edgeweir.node.v1.MinuteStats.top_ips:type_name -> edgeweir.node.v1.TopCounter
 	39,  // 34: edgeweir.node.v1.MinuteStats.waf_rules:type_name -> edgeweir.node.v1.TopCounter
@@ -6897,106 +7236,111 @@ var file_edgeweir_node_v1_node_proto_depIdxs = []int32{
 	37,  // 36: edgeweir.node.v1.MinuteStats.countries:type_name -> edgeweir.node.v1.CountryCounter
 	38,  // 37: edgeweir.node.v1.MinuteStats.asns:type_name -> edgeweir.node.v1.AsnCounter
 	39,  // 38: edgeweir.node.v1.MinuteStats.referers:type_name -> edgeweir.node.v1.TopCounter
-	82,  // 39: edgeweir.node.v1.MinuteStats.browsers:type_name -> edgeweir.node.v1.MinuteStats.BrowsersEntry
-	83,  // 40: edgeweir.node.v1.MinuteStats.operating_systems:type_name -> edgeweir.node.v1.MinuteStats.OperatingSystemsEntry
-	84,  // 41: edgeweir.node.v1.MinuteStats.devices:type_name -> edgeweir.node.v1.MinuteStats.DevicesEntry
-	85,  // 42: edgeweir.node.v1.MinuteStats.http_versions:type_name -> edgeweir.node.v1.MinuteStats.HttpVersionsEntry
-	86,  // 43: edgeweir.node.v1.MinuteStats.tls_versions:type_name -> edgeweir.node.v1.MinuteStats.TlsVersionsEntry
-	87,  // 44: edgeweir.node.v1.MinuteStats.block_reasons:type_name -> edgeweir.node.v1.MinuteStats.BlockReasonsEntry
+	87,  // 39: edgeweir.node.v1.MinuteStats.browsers:type_name -> edgeweir.node.v1.MinuteStats.BrowsersEntry
+	88,  // 40: edgeweir.node.v1.MinuteStats.operating_systems:type_name -> edgeweir.node.v1.MinuteStats.OperatingSystemsEntry
+	89,  // 41: edgeweir.node.v1.MinuteStats.devices:type_name -> edgeweir.node.v1.MinuteStats.DevicesEntry
+	90,  // 42: edgeweir.node.v1.MinuteStats.http_versions:type_name -> edgeweir.node.v1.MinuteStats.HttpVersionsEntry
+	91,  // 43: edgeweir.node.v1.MinuteStats.tls_versions:type_name -> edgeweir.node.v1.MinuteStats.TlsVersionsEntry
+	92,  // 44: edgeweir.node.v1.MinuteStats.block_reasons:type_name -> edgeweir.node.v1.MinuteStats.BlockReasonsEntry
 	36,  // 45: edgeweir.node.v1.MinuteStats.origins:type_name -> edgeweir.node.v1.OriginCounter
-	88,  // 46: edgeweir.node.v1.MinuteStats.ext_counters:type_name -> edgeweir.node.v1.MinuteStats.ExtCountersEntry
+	93,  // 46: edgeweir.node.v1.MinuteStats.ext_counters:type_name -> edgeweir.node.v1.MinuteStats.ExtCountersEntry
 	35,  // 47: edgeweir.node.v1.ReportStatsRequest.stats:type_name -> edgeweir.node.v1.MinuteStats
 	35,  // 48: edgeweir.node.v1.ReportStatsV2Request.stats:type_name -> edgeweir.node.v1.MinuteStats
-	93,  // 49: edgeweir.node.v1.ReportStatsV2Request.complete_until:type_name -> google.protobuf.Timestamp
+	98,  // 49: edgeweir.node.v1.ReportStatsV2Request.complete_until:type_name -> google.protobuf.Timestamp
 	43,  // 50: edgeweir.node.v1.ReportStatsV2Request.l4_stats:type_name -> edgeweir.node.v1.L4MinuteStats
-	93,  // 51: edgeweir.node.v1.L4MinuteStats.minute:type_name -> google.protobuf.Timestamp
+	98,  // 51: edgeweir.node.v1.L4MinuteStats.minute:type_name -> google.protobuf.Timestamp
 	46,  // 52: edgeweir.node.v1.GetOriginCredentialsResponse.credentials:type_name -> edgeweir.node.v1.OriginCredential
 	50,  // 53: edgeweir.node.v1.PullTasksResponse.tasks:type_name -> edgeweir.node.v1.NodeTask
-	93,  // 54: edgeweir.node.v1.NodeTask.created_at:type_name -> google.protobuf.Timestamp
+	98,  // 54: edgeweir.node.v1.NodeTask.created_at:type_name -> google.protobuf.Timestamp
 	52,  // 55: edgeweir.node.v1.NodeTask.purge:type_name -> edgeweir.node.v1.PurgeTask
 	55,  // 56: edgeweir.node.v1.NodeTask.prefetch:type_name -> edgeweir.node.v1.PrefetchTask
 	61,  // 57: edgeweir.node.v1.NodeTask.upgrade:type_name -> edgeweir.node.v1.UpgradeTask
 	54,  // 58: edgeweir.node.v1.NodeTask.sitemap:type_name -> edgeweir.node.v1.SitemapPrefetchTask
-	97,  // 59: edgeweir.node.v1.NodeTask.debug_logs:type_name -> edgeweir.node.v1.DebugLogsTask
+	102, // 59: edgeweir.node.v1.NodeTask.debug_logs:type_name -> edgeweir.node.v1.DebugLogsTask
 	3,   // 60: edgeweir.node.v1.PurgeTarget.type:type_name -> edgeweir.node.v1.PurgeType
 	51,  // 61: edgeweir.node.v1.PurgeTask.targets:type_name -> edgeweir.node.v1.PurgeTarget
 	4,   // 62: edgeweir.node.v1.PrefetchTarget.variant:type_name -> edgeweir.node.v1.DeviceVariant
 	4,   // 63: edgeweir.node.v1.SitemapPrefetchTask.variants:type_name -> edgeweir.node.v1.DeviceVariant
 	53,  // 64: edgeweir.node.v1.PrefetchTask.targets:type_name -> edgeweir.node.v1.PrefetchTarget
 	5,   // 65: edgeweir.node.v1.ReportTaskResultRequest.state:type_name -> edgeweir.node.v1.TaskState
-	93,  // 66: edgeweir.node.v1.ReportTaskResultRequest.finished_at:type_name -> google.protobuf.Timestamp
-	89,  // 67: edgeweir.node.v1.ReportTaskResultRequest.error_params:type_name -> edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
-	93,  // 68: edgeweir.node.v1.AccessLog.time:type_name -> google.protobuf.Timestamp
-	90,  // 69: edgeweir.node.v1.AccessLog.headers:type_name -> edgeweir.node.v1.AccessLog.HeadersEntry
-	91,  // 70: edgeweir.node.v1.AccessLog.ext:type_name -> edgeweir.node.v1.AccessLog.ExtEntry
+	98,  // 66: edgeweir.node.v1.ReportTaskResultRequest.finished_at:type_name -> google.protobuf.Timestamp
+	94,  // 67: edgeweir.node.v1.ReportTaskResultRequest.error_params:type_name -> edgeweir.node.v1.ReportTaskResultRequest.ErrorParamsEntry
+	98,  // 68: edgeweir.node.v1.AccessLog.time:type_name -> google.protobuf.Timestamp
+	95,  // 69: edgeweir.node.v1.AccessLog.headers:type_name -> edgeweir.node.v1.AccessLog.HeadersEntry
+	96,  // 70: edgeweir.node.v1.AccessLog.ext:type_name -> edgeweir.node.v1.AccessLog.ExtEntry
 	58,  // 71: edgeweir.node.v1.ReportLogsRequest.logs:type_name -> edgeweir.node.v1.AccessLog
 	6,   // 72: edgeweir.node.v1.Ban.scope:type_name -> edgeweir.node.v1.BanScope
-	93,  // 73: edgeweir.node.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
+	98,  // 73: edgeweir.node.v1.Ban.expires_at:type_name -> google.protobuf.Timestamp
 	7,   // 74: edgeweir.node.v1.Ban.source:type_name -> edgeweir.node.v1.BanSource
-	93,  // 75: edgeweir.node.v1.Ban.created_at:type_name -> google.protobuf.Timestamp
+	98,  // 75: edgeweir.node.v1.Ban.created_at:type_name -> google.protobuf.Timestamp
 	8,   // 76: edgeweir.node.v1.Ban.action:type_name -> edgeweir.node.v1.BanAction
 	62,  // 77: edgeweir.node.v1.GetBansResponse.bans:type_name -> edgeweir.node.v1.Ban
 	62,  // 78: edgeweir.node.v1.GetBansResponse.lifted_own_bans:type_name -> edgeweir.node.v1.Ban
-	93,  // 79: edgeweir.node.v1.AutoBan.created_at:type_name -> google.protobuf.Timestamp
-	93,  // 80: edgeweir.node.v1.AutoBan.expires_at:type_name -> google.protobuf.Timestamp
+	98,  // 79: edgeweir.node.v1.AutoBan.created_at:type_name -> google.protobuf.Timestamp
+	98,  // 80: edgeweir.node.v1.AutoBan.expires_at:type_name -> google.protobuf.Timestamp
 	6,   // 81: edgeweir.node.v1.AutoBan.scope:type_name -> edgeweir.node.v1.BanScope
 	65,  // 82: edgeweir.node.v1.ReportBansRequest.bans:type_name -> edgeweir.node.v1.AutoBan
 	69,  // 83: edgeweir.node.v1.GetChallengeKeysResponse.keys:type_name -> edgeweir.node.v1.ChallengeKey
 	72,  // 84: edgeweir.node.v1.GetSessionTicketKeysResponse.keys:type_name -> edgeweir.node.v1.SessionTicketKey
-	93,  // 85: edgeweir.node.v1.SecurityEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	98,  // 85: edgeweir.node.v1.SecurityEvent.occurred_at:type_name -> google.protobuf.Timestamp
 	9,   // 86: edgeweir.node.v1.SecurityEvent.kind:type_name -> edgeweir.node.v1.SecurityEventKind
 	39,  // 87: edgeweir.node.v1.SecurityEvent.top_ips:type_name -> edgeweir.node.v1.TopCounter
 	39,  // 88: edgeweir.node.v1.SecurityEvent.top_paths:type_name -> edgeweir.node.v1.TopCounter
 	74,  // 89: edgeweir.node.v1.ReportSecurityEventsRequest.events:type_name -> edgeweir.node.v1.SecurityEvent
-	18,  // 90: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
-	20,  // 91: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
-	22,  // 92: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
-	24,  // 93: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
-	26,  // 94: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
-	40,  // 95: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
-	42,  // 96: edgeweir.node.v1.NodeService.ReportStatsV2:input_type -> edgeweir.node.v1.ReportStatsV2Request
-	59,  // 97: edgeweir.node.v1.NodeService.ReportLogs:input_type -> edgeweir.node.v1.ReportLogsRequest
-	45,  // 98: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
-	15,  // 99: edgeweir.node.v1.NodeService.GetCertificates:input_type -> edgeweir.node.v1.GetCertificatesRequest
-	48,  // 100: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
-	56,  // 101: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
-	63,  // 102: edgeweir.node.v1.NodeService.GetBans:input_type -> edgeweir.node.v1.GetBansRequest
-	66,  // 103: edgeweir.node.v1.NodeService.ReportBans:input_type -> edgeweir.node.v1.ReportBansRequest
-	68,  // 104: edgeweir.node.v1.NodeService.GetChallengeKeys:input_type -> edgeweir.node.v1.GetChallengeKeysRequest
-	75,  // 105: edgeweir.node.v1.NodeService.ReportSecurityEvents:input_type -> edgeweir.node.v1.ReportSecurityEventsRequest
-	12,  // 106: edgeweir.node.v1.NodeService.SubmitPurge:input_type -> edgeweir.node.v1.SubmitPurgeRequest
-	71,  // 107: edgeweir.node.v1.NodeService.GetSessionTicketKeys:input_type -> edgeweir.node.v1.GetSessionTicketKeysRequest
-	10,  // 108: edgeweir.node.v1.NodeService.CheckChannel:input_type -> edgeweir.node.v1.CheckChannelRequest
-	98,  // 109: edgeweir.node.v1.NodeService.ReportNodeLogs:input_type -> edgeweir.node.v1.ReportNodeLogsRequest
-	99,  // 110: edgeweir.node.v1.NodeService.UploadDebugLogs:input_type -> edgeweir.node.v1.UploadDebugLogsRequest
-	77,  // 111: edgeweir.node.v1.NodeService.GetExtensionPackage:input_type -> edgeweir.node.v1.GetExtensionPackageRequest
-	19,  // 112: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
-	21,  // 113: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
-	23,  // 114: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
-	25,  // 115: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
-	34,  // 116: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
-	41,  // 117: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
-	44,  // 118: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
-	60,  // 119: edgeweir.node.v1.NodeService.ReportLogs:output_type -> edgeweir.node.v1.ReportLogsResponse
-	47,  // 120: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
-	17,  // 121: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
-	49,  // 122: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
-	57,  // 123: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
-	64,  // 124: edgeweir.node.v1.NodeService.GetBans:output_type -> edgeweir.node.v1.GetBansResponse
-	67,  // 125: edgeweir.node.v1.NodeService.ReportBans:output_type -> edgeweir.node.v1.ReportBansResponse
-	70,  // 126: edgeweir.node.v1.NodeService.GetChallengeKeys:output_type -> edgeweir.node.v1.GetChallengeKeysResponse
-	76,  // 127: edgeweir.node.v1.NodeService.ReportSecurityEvents:output_type -> edgeweir.node.v1.ReportSecurityEventsResponse
-	13,  // 128: edgeweir.node.v1.NodeService.SubmitPurge:output_type -> edgeweir.node.v1.SubmitPurgeResponse
-	73,  // 129: edgeweir.node.v1.NodeService.GetSessionTicketKeys:output_type -> edgeweir.node.v1.GetSessionTicketKeysResponse
-	11,  // 130: edgeweir.node.v1.NodeService.CheckChannel:output_type -> edgeweir.node.v1.CheckChannelResponse
-	100, // 131: edgeweir.node.v1.NodeService.ReportNodeLogs:output_type -> edgeweir.node.v1.ReportNodeLogsResponse
-	101, // 132: edgeweir.node.v1.NodeService.UploadDebugLogs:output_type -> edgeweir.node.v1.UploadDebugLogsResponse
-	78,  // 133: edgeweir.node.v1.NodeService.GetExtensionPackage:output_type -> edgeweir.node.v1.GetExtensionPackageResponse
-	112, // [112:134] is the sub-list for method output_type
-	90,  // [90:112] is the sub-list for method input_type
-	90,  // [90:90] is the sub-list for extension type_name
-	90,  // [90:90] is the sub-list for extension extendee
-	0,   // [0:90] is the sub-list for field type_name
+	81,  // 90: edgeweir.node.v1.GetExtensionSecretsResponse.secrets:type_name -> edgeweir.node.v1.ExtensionSecret
+	18,  // 91: edgeweir.node.v1.NodeService.Enroll:input_type -> edgeweir.node.v1.EnrollRequest
+	20,  // 92: edgeweir.node.v1.NodeService.RenewCertificate:input_type -> edgeweir.node.v1.RenewCertificateRequest
+	22,  // 93: edgeweir.node.v1.NodeService.WatchConfig:input_type -> edgeweir.node.v1.WatchConfigRequest
+	24,  // 94: edgeweir.node.v1.NodeService.GetConfig:input_type -> edgeweir.node.v1.GetConfigRequest
+	26,  // 95: edgeweir.node.v1.NodeService.ReportStatus:input_type -> edgeweir.node.v1.ReportStatusRequest
+	40,  // 96: edgeweir.node.v1.NodeService.ReportStats:input_type -> edgeweir.node.v1.ReportStatsRequest
+	42,  // 97: edgeweir.node.v1.NodeService.ReportStatsV2:input_type -> edgeweir.node.v1.ReportStatsV2Request
+	59,  // 98: edgeweir.node.v1.NodeService.ReportLogs:input_type -> edgeweir.node.v1.ReportLogsRequest
+	45,  // 99: edgeweir.node.v1.NodeService.GetOriginCredentials:input_type -> edgeweir.node.v1.GetOriginCredentialsRequest
+	15,  // 100: edgeweir.node.v1.NodeService.GetCertificates:input_type -> edgeweir.node.v1.GetCertificatesRequest
+	48,  // 101: edgeweir.node.v1.NodeService.PullTasks:input_type -> edgeweir.node.v1.PullTasksRequest
+	56,  // 102: edgeweir.node.v1.NodeService.ReportTaskResult:input_type -> edgeweir.node.v1.ReportTaskResultRequest
+	63,  // 103: edgeweir.node.v1.NodeService.GetBans:input_type -> edgeweir.node.v1.GetBansRequest
+	66,  // 104: edgeweir.node.v1.NodeService.ReportBans:input_type -> edgeweir.node.v1.ReportBansRequest
+	68,  // 105: edgeweir.node.v1.NodeService.GetChallengeKeys:input_type -> edgeweir.node.v1.GetChallengeKeysRequest
+	75,  // 106: edgeweir.node.v1.NodeService.ReportSecurityEvents:input_type -> edgeweir.node.v1.ReportSecurityEventsRequest
+	12,  // 107: edgeweir.node.v1.NodeService.SubmitPurge:input_type -> edgeweir.node.v1.SubmitPurgeRequest
+	71,  // 108: edgeweir.node.v1.NodeService.GetSessionTicketKeys:input_type -> edgeweir.node.v1.GetSessionTicketKeysRequest
+	10,  // 109: edgeweir.node.v1.NodeService.CheckChannel:input_type -> edgeweir.node.v1.CheckChannelRequest
+	103, // 110: edgeweir.node.v1.NodeService.ReportNodeLogs:input_type -> edgeweir.node.v1.ReportNodeLogsRequest
+	104, // 111: edgeweir.node.v1.NodeService.UploadDebugLogs:input_type -> edgeweir.node.v1.UploadDebugLogsRequest
+	77,  // 112: edgeweir.node.v1.NodeService.GetExtensionPackage:input_type -> edgeweir.node.v1.GetExtensionPackageRequest
+	79,  // 113: edgeweir.node.v1.NodeService.GetExtensionSecrets:input_type -> edgeweir.node.v1.GetExtensionSecretsRequest
+	82,  // 114: edgeweir.node.v1.NodeService.GetExtensionData:input_type -> edgeweir.node.v1.GetExtensionDataRequest
+	19,  // 115: edgeweir.node.v1.NodeService.Enroll:output_type -> edgeweir.node.v1.EnrollResponse
+	21,  // 116: edgeweir.node.v1.NodeService.RenewCertificate:output_type -> edgeweir.node.v1.RenewCertificateResponse
+	23,  // 117: edgeweir.node.v1.NodeService.WatchConfig:output_type -> edgeweir.node.v1.WatchConfigResponse
+	25,  // 118: edgeweir.node.v1.NodeService.GetConfig:output_type -> edgeweir.node.v1.GetConfigResponse
+	34,  // 119: edgeweir.node.v1.NodeService.ReportStatus:output_type -> edgeweir.node.v1.ReportStatusResponse
+	41,  // 120: edgeweir.node.v1.NodeService.ReportStats:output_type -> edgeweir.node.v1.ReportStatsResponse
+	44,  // 121: edgeweir.node.v1.NodeService.ReportStatsV2:output_type -> edgeweir.node.v1.ReportStatsV2Response
+	60,  // 122: edgeweir.node.v1.NodeService.ReportLogs:output_type -> edgeweir.node.v1.ReportLogsResponse
+	47,  // 123: edgeweir.node.v1.NodeService.GetOriginCredentials:output_type -> edgeweir.node.v1.GetOriginCredentialsResponse
+	17,  // 124: edgeweir.node.v1.NodeService.GetCertificates:output_type -> edgeweir.node.v1.GetCertificatesResponse
+	49,  // 125: edgeweir.node.v1.NodeService.PullTasks:output_type -> edgeweir.node.v1.PullTasksResponse
+	57,  // 126: edgeweir.node.v1.NodeService.ReportTaskResult:output_type -> edgeweir.node.v1.ReportTaskResultResponse
+	64,  // 127: edgeweir.node.v1.NodeService.GetBans:output_type -> edgeweir.node.v1.GetBansResponse
+	67,  // 128: edgeweir.node.v1.NodeService.ReportBans:output_type -> edgeweir.node.v1.ReportBansResponse
+	70,  // 129: edgeweir.node.v1.NodeService.GetChallengeKeys:output_type -> edgeweir.node.v1.GetChallengeKeysResponse
+	76,  // 130: edgeweir.node.v1.NodeService.ReportSecurityEvents:output_type -> edgeweir.node.v1.ReportSecurityEventsResponse
+	13,  // 131: edgeweir.node.v1.NodeService.SubmitPurge:output_type -> edgeweir.node.v1.SubmitPurgeResponse
+	73,  // 132: edgeweir.node.v1.NodeService.GetSessionTicketKeys:output_type -> edgeweir.node.v1.GetSessionTicketKeysResponse
+	11,  // 133: edgeweir.node.v1.NodeService.CheckChannel:output_type -> edgeweir.node.v1.CheckChannelResponse
+	105, // 134: edgeweir.node.v1.NodeService.ReportNodeLogs:output_type -> edgeweir.node.v1.ReportNodeLogsResponse
+	106, // 135: edgeweir.node.v1.NodeService.UploadDebugLogs:output_type -> edgeweir.node.v1.UploadDebugLogsResponse
+	78,  // 136: edgeweir.node.v1.NodeService.GetExtensionPackage:output_type -> edgeweir.node.v1.GetExtensionPackageResponse
+	80,  // 137: edgeweir.node.v1.NodeService.GetExtensionSecrets:output_type -> edgeweir.node.v1.GetExtensionSecretsResponse
+	83,  // 138: edgeweir.node.v1.NodeService.GetExtensionData:output_type -> edgeweir.node.v1.GetExtensionDataResponse
+	115, // [115:139] is the sub-list for method output_type
+	91,  // [91:115] is the sub-list for method input_type
+	91,  // [91:91] is the sub-list for extension type_name
+	91,  // [91:91] is the sub-list for extension extendee
+	0,   // [0:91] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_node_proto_init() }
@@ -7026,7 +7370,7 @@ func file_edgeweir_node_v1_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_node_proto_rawDesc), len(file_edgeweir_node_v1_node_proto_rawDesc)),
 			NumEnums:      10,
-			NumMessages:   82,
+			NumMessages:   87,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

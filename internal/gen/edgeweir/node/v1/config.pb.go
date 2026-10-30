@@ -7744,7 +7744,14 @@ type Extension struct {
 	ConfigJson string `protobuf:"bytes,10,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
 	// Shared dicts of the manifest (name, size in KiB), so nodes can render
 	// nginx.conf before unpacking.
-	SharedDicts   []*ExtensionSharedDict `protobuf:"bytes,11,rep,name=shared_dicts,json=sharedDicts,proto3" json:"shared_dicts,omitempty"`
+	SharedDicts []*ExtensionSharedDict `protobuf:"bytes,11,rep,name=shared_dicts,json=sharedDicts,proto3" json:"shared_dicts,omitempty"`
+	// Lua API the package requires (0 or 1: version 1; 2: extension version
+	// 1.1, nodes with extensions-v2).
+	LuaApi uint32 `protobuf:"varint,12,opt,name=lua_api,json=luaApi,proto3" json:"lua_api,omitempty"`
+	// Version of the extension's console-generated secret (manifest
+	// `secret: true`, extension version 1.1); 0: none. Nodes fetch the secret
+	// itself with NodeService.GetExtensionSecrets when it changes.
+	SecretVersion uint32 `protobuf:"varint,13,opt,name=secret_version,json=secretVersion,proto3" json:"secret_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7856,6 +7863,20 @@ func (x *Extension) GetSharedDicts() []*ExtensionSharedDict {
 	return nil
 }
 
+func (x *Extension) GetLuaApi() uint32 {
+	if x != nil {
+		return x.LuaApi
+	}
+	return 0
+}
+
+func (x *Extension) GetSecretVersion() uint32 {
+	if x != nil {
+		return x.SecretVersion
+	}
+	return 0
+}
+
 // ExtensionSharedDict is one lua_shared_dict of an extension.
 type ExtensionSharedDict struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -7914,7 +7935,10 @@ type SiteExtension struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Site configuration (JSON object, defaults filled in by the console).
-	ConfigJson    string `protobuf:"bytes,2,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	ConfigJson string `protobuf:"bytes,2,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	// The site's data items for the extension (manifest `data`, extension
+	// version 1.1), fetched with NodeService.GetExtensionData by digest.
+	Data          []*ExtensionDataItem `protobuf:"bytes,3,rep,name=data,proto3" json:"data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7961,6 +7985,76 @@ func (x *SiteExtension) GetConfigJson() string {
 		return x.ConfigJson
 	}
 	return ""
+}
+
+func (x *SiteExtension) GetData() []*ExtensionDataItem {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+// ExtensionDataItem is one opaque per-site data item of an extension.
+type ExtensionDataItem struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// ^[a-z0-9][a-z0-9._-]{0,63}$
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Lowercase hex SHA-256 and size of the content.
+	Sha256        string `protobuf:"bytes,2,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Size          uint64 `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExtensionDataItem) Reset() {
+	*x = ExtensionDataItem{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExtensionDataItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExtensionDataItem) ProtoMessage() {}
+
+func (x *ExtensionDataItem) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExtensionDataItem.ProtoReflect.Descriptor instead.
+func (*ExtensionDataItem) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *ExtensionDataItem) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ExtensionDataItem) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *ExtensionDataItem) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
 }
 
 var File_edgeweir_node_v1_config_proto protoreflect.FileDescriptor
@@ -8610,7 +8704,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05names\x18\x02 \x03(\tR\x05names\x12-\n" +
 	"\x12sha256_fingerprint\x18\x03 \x01(\tR\x11sha256Fingerprint\x127\n" +
-	"\tnot_after\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"\xe4\x02\n" +
+	"\tnot_after\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\"\xa4\x03\n" +
 	"\tExtension\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1c\n" +
@@ -8625,14 +8719,21 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\vconfig_json\x18\n" +
 	" \x01(\tR\n" +
 	"configJson\x12H\n" +
-	"\fshared_dicts\x18\v \x03(\v2%.edgeweir.node.v1.ExtensionSharedDictR\vsharedDicts\"B\n" +
+	"\fshared_dicts\x18\v \x03(\v2%.edgeweir.node.v1.ExtensionSharedDictR\vsharedDicts\x12\x17\n" +
+	"\alua_api\x18\f \x01(\rR\x06luaApi\x12%\n" +
+	"\x0esecret_version\x18\r \x01(\rR\rsecretVersion\"B\n" +
 	"\x13ExtensionSharedDict\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
-	"\asize_kb\x18\x02 \x01(\rR\x06sizeKb\"@\n" +
+	"\asize_kb\x18\x02 \x01(\rR\x06sizeKb\"y\n" +
 	"\rSiteExtension\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vconfig_json\x18\x02 \x01(\tR\n" +
-	"configJson*S\n" +
+	"configJson\x127\n" +
+	"\x04data\x18\x03 \x03(\v2#.edgeweir.node.v1.ExtensionDataItemR\x04data\"S\n" +
+	"\x11ExtensionDataItem\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06sha256\x18\x02 \x01(\tR\x06sha256\x12\x12\n" +
+	"\x04size\x18\x03 \x01(\x04R\x04size*S\n" +
 	"\n" +
 	"L4Protocol\x12\x1b\n" +
 	"\x17L4_PROTOCOL_UNSPECIFIED\x10\x00\x12\x13\n" +
@@ -8708,7 +8809,7 @@ func file_edgeweir_node_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(L4Protocol)(0),               // 0: edgeweir.node.v1.L4Protocol
 	(ListenerProtocol)(0),         // 1: edgeweir.node.v1.ListenerProtocol
@@ -8789,7 +8890,8 @@ var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(*Extension)(nil),             // 76: edgeweir.node.v1.Extension
 	(*ExtensionSharedDict)(nil),   // 77: edgeweir.node.v1.ExtensionSharedDict
 	(*SiteExtension)(nil),         // 78: edgeweir.node.v1.SiteExtension
-	(*timestamppb.Timestamp)(nil), // 79: google.protobuf.Timestamp
+	(*ExtensionDataItem)(nil),     // 79: edgeweir.node.v1.ExtensionDataItem
+	(*timestamppb.Timestamp)(nil), // 80: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	22,  // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
@@ -8879,7 +8981,7 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	57,  // 84: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
 	57,  // 85: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
 	58,  // 86: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
-	79,  // 87: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	80,  // 87: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
 	4,   // 88: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
 	5,   // 89: edgeweir.node.v1.Domain.match:type_name -> edgeweir.node.v1.DomainMatch
 	6,   // 90: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
@@ -8897,13 +8999,14 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	11,  // 102: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
 	12,  // 103: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
 	57,  // 104: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
-	79,  // 105: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	80,  // 105: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
 	77,  // 106: edgeweir.node.v1.Extension.shared_dicts:type_name -> edgeweir.node.v1.ExtensionSharedDict
-	107, // [107:107] is the sub-list for method output_type
-	107, // [107:107] is the sub-list for method input_type
-	107, // [107:107] is the sub-list for extension type_name
-	107, // [107:107] is the sub-list for extension extendee
-	0,   // [0:107] is the sub-list for field type_name
+	79,  // 107: edgeweir.node.v1.SiteExtension.data:type_name -> edgeweir.node.v1.ExtensionDataItem
+	108, // [108:108] is the sub-list for method output_type
+	108, // [108:108] is the sub-list for method input_type
+	108, // [108:108] is the sub-list for extension type_name
+	108, // [108:108] is the sub-list for extension extendee
+	0,   // [0:108] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
@@ -8919,7 +9022,7 @@ func file_edgeweir_node_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_config_proto_rawDesc), len(file_edgeweir_node_v1_config_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   66,
+			NumMessages:   67,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
