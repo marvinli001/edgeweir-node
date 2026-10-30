@@ -93,6 +93,19 @@ Re-runs and interruptions:
 - A dropped SSH session (closed stdout/stderr pipes, SIGHUP) does not abort a running enrollment: the certificate may already be issued, so the identity is still saved; SIGINT and SIGTERM still abort it.
 - Enrolled hosts: `--if-not-enrolled` succeeds with the node id and fails (11) when the host belongs to another console, never switching identities silently; only `--force` enrolls again.
 
+### Operations without SSH
+
+After the install the console manages the node through the node channel only; SSH credentials are not kept:
+
+| Operation | How |
+| --- | --- |
+| Upgrade | The console's upgrade task (`supervise` downloads, verifies, trial-runs, rolls back on failure) |
+| Console address change | The node follows the address the console names ([Console URL](#console-url)) |
+| Certificate renewal | Automatic, before expiry |
+| Log collection | Warnings and events are reported continuously; the console pulls the recent logs of every level on demand (`--debug-log-buffer`) |
+| Restart, reload | Not needed: configuration changes reload OpenResty, crashed processes are restarted by the supervisor and systemd |
+| Still needs SSH | Decommissioning (stop serving and delete the identity), re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
+
 ### deb / rpm
 
 Requirements: glibc 2.34 or later (RHEL / Rocky / AlmaLinux 9, Debian 12, Ubuntu 22.04 and newer), amd64 or arm64. The agent runs OpenResty as a child process; if OpenResty's own packages are installed, disable their service (`sudo systemctl disable --now openresty`).

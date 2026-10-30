@@ -93,6 +93,19 @@ EDGEWEIR_RESULT {"v":1,"step":"enroll","status":"enrolled","exit":0,"retry":fals
 - SSH 会话断开（标准输出/错误的管道关闭、SIGHUP）不会中止进行中的注册：证书可能已经签发，身份仍会保存；SIGINT、SIGTERM 仍会中止。
 - 已注册的主机：`--if-not-enrolled` 成功并给出节点 ID，属于其他控制台时失败（11），不会悄悄换身份；`--force` 才重新注册。
 
+### 无需 SSH 的运维
+
+安装后控制台只经节点通道管理节点，SSH 凭据不保存：
+
+| 操作 | 方式 |
+| --- | --- |
+| 升级 | 控制台的升级任务（`supervise` 下载、验签、试运行、失败回滚） |
+| 更换控制台地址 | 节点自动跟随控制台给出的地址（[控制台地址](#控制台地址)） |
+| 证书续期 | 到期前自动续期 |
+| 收集日志 | 警告与事件持续上报；控制台按需拉取最近的全部级别日志（`--debug-log-buffer`） |
+| 重启、重载 | 不需要：配置变化时重载 OpenResty，进程异常退出由监督进程与 systemd 重启 |
+| 仍需 SSH | 下线（停止服务并删除身份）、密钥丢失或证书在离线期间过期后的重新注册、修改本机参数（`/etc/default/edgeweir-node`、内核封禁的 drop-in）、卸载软件包 |
+
 ### deb / rpm
 
 系统要求：glibc 2.34 及以上（RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新版本），amd64 或 arm64。OpenResty 由 agent 以子进程运行；若装有 OpenResty 官方包，停用其服务（`sudo systemctl disable --now openresty`）。
