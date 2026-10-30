@@ -5,7 +5,7 @@
   "publisher": "example.org",
   "name": { "en": "Hello header", "zh-CN": "问候响应头" },
   "description": { "en": "Adds a greeting header and a rule field.", "zh-CN": "添加问候响应头与一个规则字段。" },
-  "license": "Apache-2.0",
+  "license": "MIT-0",
   "requires": { "lua_api": 1 },
   "hooks": ["init", "access", "header_filter", "log", "endpoint"],
   "capabilities": ["response_headers", "verdicts", "html_inject"],
