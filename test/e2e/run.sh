@@ -1848,9 +1848,11 @@ mdh() { tr -d '\r' <"$TMPDIR_E2E/md.h" | awk -F': ' -v k="$1" 'tolower($1)==k {p
 AGENT='text/markdown, text/html;q=0.9, */*;q=0.8'
 BROWSER='text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 MDTYPE='text/markdown; charset=utf-8'
-[ "$(md md.test /md/page "$BROWSER")" = "MISS text/html; charset=utf-8 vary" ] || fail "a browser does not get the HTML: $(md md.test /md/page "$BROWSER")"
+got=$(md md.test /md/page "$BROWSER")
+[ "$got" = "MISS text/html; charset=utf-8 vary" ] || fail "a browser does not get the HTML: $got"
 grep -q '<h1>Converted page</h1>' "$TMPDIR_E2E/md" || fail "the HTML body changed"
-[ "$(md md.test /md/page "$AGENT")" = "MISS $MDTYPE vary" ] || fail "Accept: text/markdown does not get Markdown: $(md md.test /md/page "$AGENT")"
+got=$(md md.test /md/page "$AGENT")
+[ "$got" = "MISS $MDTYPE vary" ] || fail "Accept: text/markdown does not get Markdown: $got"
 head -1 "$TMPDIR_E2E/md" | grep -qx -- '---' || fail "the Markdown has no frontmatter"
 grep -qx 'description: Markdown for Agents end to end' "$TMPDIR_E2E/md" || fail "frontmatter description missing"
 grep -qx '# Converted page' "$TMPDIR_E2E/md" || fail "the heading is not Markdown"
@@ -1874,7 +1876,8 @@ pass "Markdown: the same URL is HTML for browsers and Markdown for agents, each 
 [ -z "$(mdh content-encoding)" ] || fail "the converted gzip page keeps Content-Encoding"
 [ "$(md md.test /md/data.json "$AGENT")" = "MISS application/json -" ] || fail "a JSON path is handled as Markdown"
 [ "$(md md.test /md/private/page "$AGENT")" = "MISS text/html; charset=utf-8 -" ] || fail "an excluded path is converted"
-[ "$(md md.test /md/own "$AGENT")" = "MISS text/markdown -" ] || fail "the origin's own Markdown does not pass: $(md md.test /md/own "$AGENT")"
+own=$(md md.test /md/own "$AGENT")
+[ "$own" = "MISS text/markdown vary" ] || fail "the origin's own Markdown does not pass: $own"
 grep -qx "# Origin's own Markdown" "$TMPDIR_E2E/md" || fail "the origin's own Markdown changed"
 [ "$(md mdlive.test /md/page "$AGENT" | cut -d' ' -f2-)" = "$MDTYPE vary" ] || fail "an uncached site is not converted"
 [ "$(md mdlive.test /md/page "$AGENT" | cut -d' ' -f1)" != HIT ] || fail "an uncached site cached the Markdown"
