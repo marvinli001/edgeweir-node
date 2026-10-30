@@ -2,20 +2,22 @@
 // (test/sshinstall): NodeService.Enroll only, plus a plain HTTP side for
 // the test script. It is not part of any release artifact.
 //
-// Enroll follows what the console is asked to do for unattended installs
-// (edgeweir console, ADR "one-shot SSH install"): a CSR whose public key
-// already belongs to a node gets that node back with a new certificate,
-// also with the token that node already used; a node is never created
-// twice for one key.
+// Enroll follows the console (ADR-0067, Enroll idempotent by key): a CSR
+// whose public key already belongs to a node gets that node back with a
+// new certificate when the token is the one that node used, or an unused
+// token of the node's cluster; any other token is refused. A node is never
+// created twice for one key.
 //
 // HTTP side (--http):
 //
 //	GET  /pin                  the CA pin (hex SHA-256)
-//	POST /token?t=T            add a single-use token
+//	POST /token?t=T&cluster=C  add a single-use token of cluster C
+//	                           (default cluster-ssh)
 //	POST /mode?delay=D&lose=N  delay each Enroll answer by D; lose the
 //	                           answers of the next N enrollments (the
 //	                           certificate is issued, the node gets an error)
 //	GET  /state                {"enrollments": n, "nodes": {id: spki}}
+//	                           (clusters are not shown)
 //	GET  /mirror/...           files of --mirror (install.sh's --mirror)
 package main
 
@@ -45,13 +47,20 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/pki/pkitest"
 )
 
+// token is a single-use enrollment token.
+type token struct {
+	cluster string
+	owner   string // node id that used it; "" unused
+}
+
 type console struct {
 	nodev1connect.UnimplementedNodeServiceHandler
 	ca *pkitest.CA
 
 	mu          sync.Mutex
-	tokens      map[string]string // token -> node id that used it ("" unused)
+	tokens      map[string]*token // by token
 	nodes       map[string]string // node id -> SPKI SHA-256
+	clusters    map[string]string // node id -> cluster
 	enrollments int
 	delay       time.Duration
 	lose        int
@@ -79,32 +88,30 @@ func (c *console) Enroll(ctx context.Context, req *connect.Request[nodev1.Enroll
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	c.mu.Lock()
-	owner, known := c.tokens[req.Msg.GetToken()]
+	tok, known := c.tokens[req.Msg.GetToken()]
 	nodeID := ""
 	for id, k := range c.nodes {
 		if k == key {
 			nodeID = id
 		}
 	}
-	switch {
-	case !known:
+	allowed := known && (tok.owner == nodeID || (tok.owner == "" && (nodeID == "" || c.clusters[nodeID] == tok.cluster)))
+	if !allowed {
 		c.mu.Unlock()
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invalid or already used enrollment token"))
-	case owner != "" && owner != nodeID:
-		c.mu.Unlock()
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invalid or already used enrollment token"))
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invalid, expired or already used enrollment token"))
 	}
 	if nodeID == "" {
 		nodeID = "node-" + strconv.Itoa(len(c.nodes)+1)
 		c.nodes[nodeID] = key
+		c.clusters[nodeID] = tok.cluster
 	}
-	c.tokens[req.Msg.GetToken()] = nodeID
+	tok.owner = nodeID
 	c.enrollments++
 	lose := c.lose > 0
 	if lose {
 		c.lose--
 	}
-	delay := c.delay
+	delay, cluster := c.delay, c.clusters[nodeID]
 	c.mu.Unlock()
 	certPEM, cert, err := c.ca.SignCSR([]byte(req.Msg.GetCsrPem()), nodeID, 24*time.Hour)
 	if err != nil {
@@ -120,7 +127,7 @@ func (c *console) Enroll(ctx context.Context, req *connect.Request[nodev1.Enroll
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("answer lost (test)"))
 	}
 	return connect.NewResponse(&nodev1.EnrollResponse{
-		NodeId: nodeID, ClusterId: "cluster-ssh", NodeName: nodeID,
+		NodeId: nodeID, ClusterId: cluster, NodeName: nodeID,
 		CertificatePem: string(certPEM), CaCertificatePem: string(c.ca.PEM), NotAfter: timestamppb.New(cert.NotAfter),
 	}), nil
 }
@@ -135,7 +142,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	c := &console{ca: ca, tokens: map[string]string{}, nodes: map[string]string{}}
+	c := &console{ca: ca, tokens: map[string]*token{}, nodes: map[string]string{}, clusters: map[string]string{}}
 	cert, err := ca.IssueServer([]string{*name, "localhost"}, []net.IP{net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		log.Fatal(err)
@@ -149,8 +156,12 @@ func main() {
 	sm := http.NewServeMux()
 	sm.HandleFunc("GET /pin", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, ca.Pin()) })
 	sm.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		cluster := r.URL.Query().Get("cluster")
+		if cluster == "" {
+			cluster = "cluster-ssh"
+		}
 		c.mu.Lock()
-		c.tokens[r.URL.Query().Get("t")] = ""
+		c.tokens[r.URL.Query().Get("t")] = &token{cluster: cluster}
 		c.mu.Unlock()
 	})
 	sm.HandleFunc("POST /mode", func(w http.ResponseWriter, r *http.Request) {

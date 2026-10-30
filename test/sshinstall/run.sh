@@ -6,8 +6,8 @@
 #   - root, and a sudo user (`sudo -n`), install and enroll; stdout carries
 #     the node's EDGEWEIR_RESULT line, exit status 0;
 #   - a sudo user whose sudo wants a password fails at once (`sudo -n`);
-#   - a re-run on an enrolled host neither enrolls again nor fails, and
-#     `enroll --if-not-enrolled` names the node;
+#   - a re-run on an enrolled host neither enrolls again nor fails: it
+#     reports the same node (install.sh asks `enroll --if-not-enrolled`);
 #   - an answer lost after the console issued the certificate: the retry
 #     with the same token gets the same node (same key), not a second one;
 #   - an SSH session with a terminal dropped during the enrollment: the
@@ -102,14 +102,18 @@ cssh() {
   compose exec -T client ssh "$tty" -i /work/keys/id_ed25519 -o BatchMode=yes \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$user@$host" "$@"
 }
-token() { compose exec -T client curl -fsS -X POST "http://console:8080/token?t=$1" >/dev/null; }
+# token T [CLUSTER]: a single-use token (of cluster-ssh by default).
+token() { compose exec -T client curl -fsS -X POST "http://console:8080/token?t=$1&cluster=${2:-cluster-ssh}" >/dev/null; }
 mode() { compose exec -T client curl -fsS -X POST "http://console:8080/mode?$1" >/dev/null; }
 state() { compose exec -T client curl -fsS http://console:8080/state; }
 # put_token USER HOST FILE TOKEN: a 0600 token file, sent on stdin.
 put_token() { printf '%s' "$4" | cssh "$1" "$2" "umask 077; cat >$3"; }
-# result FILE: the JSON of the last EDGEWEIR_RESULT line in FILE.
-result() { sed -n 's/^EDGEWEIR_RESULT //p' "$1" | tail -n1; }
-field() { result "$1" | sed -n "s/.*\"$2\":\"\{0,1\}\([^,\"}]*\).*/\1/p"; }
+# result FILE [STEP]: the JSON of the last EDGEWEIR_RESULT line of STEP
+# (default enroll: the node's own line) in FILE. install.sh writes one
+# line per step and ends with {"step":"done",...}.
+result() { sed -n 's/^EDGEWEIR_RESULT //p' "$1" | grep -F "\"step\":\"${2:-enroll}\"" | tail -n1 || true; }
+# field FILE NAME [STEP]: one field of that line.
+field() { result "$1" "${3:-}" | sed -n "s/.*\"$2\":\"\{0,1\}\([^,\"}]*\).*/\1/p"; }
 for _ in $(seq 1 30); do
   if cssh root host1 true 2>/dev/null && cssh root host2 true 2>/dev/null; then break; fi
   sleep 1
@@ -126,6 +130,7 @@ code=$?
 set -e
 check "root install exits 0 (got $code)" test "$code" = 0
 check "root install prints the enroll result" test "$(field "$WORK/root.out" status)" = enrolled
+check "root install ends with done ok" test "$(field "$WORK/root.out" status done):$(field "$WORK/root.out" exit done)" = "ok:0"
 check "root install: identity owned by the service user" \
   test "$(cssh root host1 'stat -c %U /var/lib/edgeweir-node/node.key')" = edgeweir
 check "root install: no pending key left" cssh root host1 'test ! -e /var/lib/edgeweir-node/enroll.key'
@@ -142,7 +147,9 @@ cssh root host1 "bash -s -- ${ARGS} --token-file /root/edgeweir.token" <"$WORK/i
 code=$?
 set -e
 check "re-run exits 0 (got $code)" test "$code" = 0
-check "re-run does not enroll" test -z "$(result "$WORK/rerun.out")"
+check "re-run keeps the node (already_enrolled ${node1})" \
+  test "$(field "$WORK/rerun.out" status):$(field "$WORK/rerun.out" node_id)" = "already_enrolled:${node1}"
+check "re-run ends with done ok" test "$(field "$WORK/rerun.out" status done)" = ok
 set +e
 cssh root host1 "edgeweir-node enroll --if-not-enrolled --server https://console:8443 --ca-sha256 ${PIN}" >"$WORK/ine.out" 2>/dev/null
 code=$?
@@ -182,6 +189,24 @@ check "lost answer: unreachable (13), retry true" \
 check "retry with the same token enrolls (got $code2)" test "$code2:$(field "$WORK/lost2.out" status)" = "0:enrolled"
 nodes_before="$(state)"
 
+echo "== lost answer, retried with a token of another cluster (host2)"
+token ewt_other-a
+token ewt_other-b other-cluster
+mode "lose=1"
+put_token root host2 /root/xa.token ewt_other-a
+put_token root host2 /root/xb.token ewt_other-b
+X="edgeweir-node enroll --server https://console:8443 --ca-sha256 ${PIN} --state-dir /var/lib/xcluster"
+set +e
+cssh root host2 "$X --token-file /root/xa.token" >/dev/null 2>&1
+cssh root host2 "$X --token-file /root/xb.token" >"$WORK/xb.out" 2>/dev/null
+codeb=$?
+cssh root host2 "$X --token-file /root/xa.token" >"$WORK/xa.out" 2>/dev/null
+codea=$?
+set -e
+check "known key with another cluster's token: token_rejected (got $codeb)" \
+  test "$codeb:$(field "$WORK/xb.out" status)" = "12:token_rejected"
+check "then its own token: enrolled (got $codea)" test "$codea:$(field "$WORK/xa.out" status)" = "0:enrolled"
+
 echo "== SSH session with a terminal dropped during the enrollment (host1)"
 token ewt_drop
 mode "delay=4s"
@@ -218,10 +243,11 @@ mode "delay=0s"
 echo "== console"
 final="$(state)"
 echo "$final"
-# root, sudo, lost (once), dropped, concurrent: five nodes, one per identity.
+# root, sudo, lost (once), other cluster (once), dropped, concurrent: six
+# nodes, one per identity.
 count_nodes() { printf '%s' "$1" | grep -o '"node-[0-9]*"' | sort -u | wc -l || true; }
 nodes="$(count_nodes "$final")"
-check "console has exactly 5 nodes (got $nodes)" test "$nodes" = 5
+check "console has exactly 6 nodes (got $nodes)" test "$nodes" = 6
 check "lost answer made no second node" test "$(count_nodes "$nodes_before")" = 3
 
 if [ "$failures" -ne 0 ]; then
