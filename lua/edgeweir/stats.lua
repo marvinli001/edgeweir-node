@@ -368,6 +368,13 @@ function _M.drain(now)
           b.auth_failures = (b.auth_failures or 0) + v
         elseif metric == "is" then
           b.image_bytes_saved = (b.image_bytes_saved or 0) + v
+        elseif sub(metric, 1, 2) == "tf" or sub(metric, 1, 2) == "tv" then
+          -- Tiered cache (edgeweir.tier): fetches from upper tiers and
+          -- requests served to lower tiers, by cache status.
+          local field = sub(metric, 2, 2) == "f" and "tier_fetches" or "tier_served"
+          local status = sub(metric, 3)
+          b[field] = b[field] or {}
+          b[field][status] = (b[field][status] or 0) + v
         elseif sub(metric, 1, 1) == "s" then
           local code = sub(metric, 2)
           b.status_codes[code] = (b.status_codes[code] or 0) + v

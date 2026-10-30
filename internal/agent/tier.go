@@ -278,3 +278,22 @@ func measureTierTarget(ctx context.Context, dial func(context.Context, string, u
 	}
 	return r
 }
+
+// tierStatuses are the keys of MinuteStats.tier_fetches and tier_served
+// (edgeweir.tier.STATUSES, FALLBACK and "-").
+var tierStatuses = map[string]bool{"HIT": true, "MISS": true, "EXPIRED": true, "STALE": true, "UPDATING": true,
+	"REVALIDATED": true, "BYPASS": true, "origin": true, "-": true}
+
+// tierCounters keeps the known keys of a tier counter map (nil when empty).
+func tierCounters(in map[string]uint64) map[string]uint64 {
+	var out map[string]uint64
+	for k, v := range in {
+		if tierStatuses[k] && v > 0 {
+			if out == nil {
+				out = map[string]uint64{}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}

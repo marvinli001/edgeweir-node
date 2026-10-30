@@ -65,7 +65,13 @@ type logFields struct {
 	TLSVersion     string `json:"tls_version,omitempty"`
 	BlockReason    string `json:"block_reason,omitempty"`
 	BlockRuleID    string `json:"block_rule_id,omitempty"`
+	// Tier is the upper tier and its cache status of a fetch through the
+	// tiered cache ("<node id> <status>", "origin"; tiered-cache-v1).
+	Tier string `json:"tier,omitempty"`
 }
+
+// tierRE matches AccessLog.tier values.
+var tierRE = regexp.MustCompile(`^(origin|[A-Za-z0-9_-]{1,128} (HIT|MISS|EXPIRED|STALE|UPDATING|REVALIDATED|BYPASS|-))$`)
 
 // maxRequestID bounds AccessLog.request_id.
 const maxRequestID = 128
@@ -185,6 +191,9 @@ func (f logFields) bounded() logFields {
 	if f.BlockReason == "" || !configir.ValidID(f.BlockRuleID) {
 		f.BlockRuleID = ""
 	}
+	if !tierRE.MatchString(f.Tier) {
+		f.Tier = ""
+	}
 	return f
 }
 
@@ -249,7 +258,7 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 			Country: f.Country, Asn: f.ASN, AsName: f.ASName,
 			UpstreamAddr: f.UpstreamAddr, UpstreamStatus: f.UpstreamStatus, UpstreamMs: f.UpstreamMS,
 			RequestBytes: f.RequestBytes, ContentType: f.ContentType, TlsVersion: f.TLSVersion,
-			BlockReason: f.BlockReason, BlockRuleId: f.BlockRuleID,
+			BlockReason: f.BlockReason, BlockRuleId: f.BlockRuleID, Tier: f.Tier,
 			Query: Text(l.Query, maxQuery), Headers: logHeaders(l.Headers), PeerIp: peerIP(l.PeerIP),
 		})
 	}

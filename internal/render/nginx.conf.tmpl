@@ -366,6 +366,7 @@ http {
 
         location / {
             set $edgeweir_tier_fallback "";
+            set $edgeweir_tier_tried "";
             set $edgeweir_ssl_name "";
             access_by_lua_block { require("edgeweir.tier").access() }
             proxy_pass https://edgeweir_tier_balancer;
@@ -390,7 +391,6 @@ http {
             # nginx's own 502 / 504 here: no upper tier answered.
             error_page 502 504 = @edgeweir_tier_fallback;
             header_filter_by_lua_block { require("edgeweir.tier").header_filter() }
-            body_filter_by_lua_block { require("edgeweir.tier").body_filter() }
             log_by_lua_block { require("edgeweir.tier").log() }
         }
 
@@ -413,6 +413,7 @@ http {
             proxy_pass_header X-Accel-Expires;
             error_page 502 504 = @edgeweir_tier_drop;
             header_filter_by_lua_block { require("edgeweir.tier").fallback_header_filter() }
+            log_by_lua_block { require("edgeweir.tier").fallback_log() }
         }
         location @edgeweir_tier_drop {
             return 444;
