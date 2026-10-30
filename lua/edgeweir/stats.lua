@@ -24,6 +24,7 @@ local accesslogs = require("edgeweir.accesslogs")
 local access = require("edgeweir.access")
 local geoip = require("edgeweir.geoip")
 local imageconv = require("edgeweir.imageconv")
+local markdown = require("edgeweir.markdown")
 
 local _M = {}
 
@@ -182,6 +183,11 @@ function _M.log(waf_location)
   local saved = imageconv.saved(var.upstream_http_x_edgeweir_image_saved, ngx.status, var.request_method)
   if saved > 0 then
     dict:incr(p .. "is", saved, 0, TTL)
+  end
+  -- Converted Markdown responses (edgeweir.markdown; metric "md",
+  -- MinuteStats.markdown_responses).
+  if markdown.converted(var.upstream_http_x_edgeweir_markdown_converted, ngx.status, var.request_method) > 0 then
+    dict:incr(p .. "md", 1, 0, TTL)
   end
   if waf_ids then
     for i = 1, #waf_ids do
@@ -368,6 +374,8 @@ function _M.drain(now)
           b.auth_failures = (b.auth_failures or 0) + v
         elseif metric == "is" then
           b.image_bytes_saved = (b.image_bytes_saved or 0) + v
+        elseif metric == "md" then
+          b.markdown_responses = (b.markdown_responses or 0) + v
         elseif sub(metric, 1, 1) == "s" then
           local code = sub(metric, 2)
           b.status_codes[code] = (b.status_codes[code] or 0) + v

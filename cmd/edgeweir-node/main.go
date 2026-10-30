@@ -42,6 +42,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
 	"github.com/marvinli001/edgeweir-node/internal/imageconv"
+	"github.com/marvinli001/edgeweir-node/internal/mdconv"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/probe"
@@ -108,6 +109,10 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		// One WebP / AVIF conversion for the agent's image converter
 		// (internal; not in the usage).
 		return imageconv.RunChild(args[1:], os.Stdin, stdout, stderr)
+	case mdconv.ChildCommand:
+		// One HTML to Markdown conversion for the agent's Markdown
+		// converter (internal; not in the usage).
+		return mdconv.RunChild(args[1:], os.Stdin, stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version.String())
 		return 0
@@ -489,6 +494,9 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		imageWorkers  = fs.Int("image-workers", imageconv.DefaultWorkers(), "concurrent WebP / AVIF conversions, each a child process on one CPU (0 turns conversion off: sites that convert cannot be served by this node)")
 		imageMemoryMB = fs.Int("image-memory-mb", int(imageconv.DefaultMemory>>20), "memory the running WebP / AVIF conversions may use together, in MiB (each conversion's need is estimated from its pixels; larger images keep their original)")
 		imageTimeout  = fs.Duration("image-timeout", imageconv.DefaultTimeout, "longest WebP / AVIF conversion (the child is killed and the original kept)")
+		mdWorkers     = fs.Int("markdown-workers", mdconv.DefaultWorkers(), "concurrent HTML to Markdown conversions (Markdown for Agents), each a child process on one CPU (0 turns conversion off: sites that convert cannot be served by this node)")
+		mdMemoryMB    = fs.Int("markdown-memory-mb", int(mdconv.DefaultMemory>>20), "memory the running Markdown conversions may use together, in MiB (each conversion's need is estimated from the HTML's size; larger documents stay HTML)")
+		mdTimeout     = fs.Duration("markdown-timeout", mdconv.DefaultTimeout, "longest Markdown conversion (the child is killed and the HTML kept)")
 		debugBuffer   = fs.Int("debug-log-buffer", nodelog.DefaultDebugCapacity, "recent log entries of every level kept in memory (at most 4 MiB) for the console to pull from the node's logs; 0 turns it off")
 		lf            logFlags
 	)
@@ -557,6 +565,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 	}
 	if *imageWorkers < 0 || *imageWorkers > 64 || *imageMemoryMB < 64 || *imageMemoryMB > 1<<20 || *imageTimeout < time.Second || *imageTimeout > 5*time.Minute {
 		fmt.Fprintln(stderr, "run: --image-workers must be 0-64, --image-memory-mb 64-1048576 and --image-timeout 1s-5m")
+		return 2
+	}
+	if *mdWorkers < 0 || *mdWorkers > 64 || *mdMemoryMB < 64 || *mdMemoryMB > 1<<20 || *mdTimeout < time.Second || *mdTimeout > 5*time.Minute {
+		fmt.Fprintln(stderr, "run: --markdown-workers must be 0-64, --markdown-memory-mb 64-1048576 and --markdown-timeout 1s-5m")
 		return 2
 	}
 	if *banCapacity < 1 || *banCapacity > render.MaxBanCapacity {
@@ -784,6 +796,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
 		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
+		Markdown:            agent.MarkdownOptions{Workers: *mdWorkers, Memory: int64(*mdMemoryMB) << 20, Timeout: *mdTimeout},
 		NodeLogs:            nodeLogs,
 		DebugLogs:           debugLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)

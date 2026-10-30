@@ -313,6 +313,9 @@ type Site struct {
 	// ImageConvert is the site's WebP / AVIF conversion (nil: off; feature
 	// image-convert-v1, ADR-0043).
 	ImageConvert *ImageConvert `json:"image_convert,omitempty"`
+	// Markdown is the site's Markdown for Agents (nil: off; feature
+	// markdown-v1).
+	Markdown *Markdown `json:"markdown,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -750,6 +753,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	bodyLimits := map[string]uint32{}
 	logHeaders := map[string][]string{}
 	images := map[string]*ImageConvert{}
+	markdowns := map[string]*Markdown{}
 	trusts := map[string]string{}
 	originClientCerts := map[string]string{}
 	ipLists := map[string]bool{}
@@ -805,6 +809,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if images[id], err = buildImageConvert(s, opts.ExtraFeatures); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if markdowns[id], err = buildMarkdown(s, opts.ExtraFeatures); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if trusts[id], originClientCerts[id], err = buildOriginTLS(s, p.OriginClientCertificates, p.OriginCA); err != nil {
@@ -966,6 +973,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.LogBlocked, site.LogQuery, site.LogPeer = s.GetLogBlocked(), s.GetLogQuery(), s.GetLogPeer()
 		site.LogHeaders = logHeaders[id]
 		site.ImageConvert = images[id]
+		site.Markdown = markdowns[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
