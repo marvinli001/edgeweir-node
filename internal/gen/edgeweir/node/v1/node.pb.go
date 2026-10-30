@@ -4075,8 +4075,9 @@ type NodeTask struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Creation time. Upgrade tasks older than 30 minutes (or more than 5
-	// minutes ahead) are refused. Purge tasks do not use it: a node gives each
-	// its own marker time when it first sees it.
+	// minutes ahead) are refused. A purge task's marker time starts from it
+	// when it is within 5 minutes of the node's clock, so that every node gives
+	// the task the same time (never earlier than one the node already gave).
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// What to do.
 	//
