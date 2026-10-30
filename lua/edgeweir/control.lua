@@ -169,6 +169,15 @@ function _M.handle()
     return reply(200, { extensions = require("edgeweir.ext").status() })
   end
 
+  -- Extension secrets and sidecar readiness (extension version 1.1).
+  if uri == "/v1/extensions/runtime" then
+    if method ~= "PUT" then return reply(405, { error = "method not allowed" }) end
+    local raw = read_body()
+    local doc = raw and #raw <= 1048576 and cjson.decode(raw)
+    if not require("edgeweir.ext").put_runtime(doc) then return reply(400, { error = "invalid runtime document" }) end
+    return reply(200, {})
+  end
+
   -- The agent's last host metrics for ew.node.status() (Lua API 2).
   if uri == "/v1/extensions/node-status" then
     if method ~= "PUT" then return reply(405, { error = "method not allowed" }) end

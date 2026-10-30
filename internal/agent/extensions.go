@@ -31,6 +31,16 @@ type ExtensionsConfig struct {
 	// line, or a JSON array) this node accepts on top of the console's
 	// trust store; empty: whatever key the console delivers.
 	KeysFile string
+	// SidecarMode (--sidecar-mode) is auto, user or off: user runs
+	// sidecars as SidecarUser (the agent must run as root), auto does so
+	// when it can; off never runs one.
+	SidecarMode string
+	// SidecarUser (--sidecar-user) is the user sidecars run as.
+	SidecarUser string
+	// SidecarDir (--sidecar-dir) holds the sidecars' copies of their
+	// packages, state and data (default: the state directory + "-sidecar",
+	// outside the state directory the sidecar user must not read).
+	SidecarDir string
 }
 
 // extensionsDir holds the packages (<sha256>.ewx) and their unpacked trees
@@ -111,6 +121,12 @@ func (a *Agent) ensureExtensions(ctx context.Context, plan *configir.Plan) error
 			a.log.Warn("extension not loaded", "extension", e.ID, "version", e.Version, "err", err)
 		default:
 			e.Dir, e.State = dir, "loaded"
+			// nginx.conf names the sidecar's origin socket in its directory.
+			if e.Sidecar != nil {
+				if err := a.prepareSidecarSockets(e.ID); err != nil {
+					e.Dir, e.State, e.Message = "", "failed", "sidecar socket directory: "+err.Error()
+				}
+			}
 		}
 	}
 	return nil
@@ -138,16 +154,19 @@ func (a *Agent) extensionTree(ctx context.Context, e *configir.Extension, localK
 		if a.channel == nil {
 			return "", errTransient{errors.New("extension package unavailable")}
 		}
-		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
-		res, err := a.channel.Client().GetExtensionPackage(cctx, connect.NewRequest(&nodev1.GetExtensionPackageRequest{Sha256: e.SHA256}))
-		cancel()
+		archive, err = a.fetchChunked(ctx, e.Size, func(cctx context.Context, offset uint64) ([]byte, uint64, error) {
+			res, err := a.channel.Client().GetExtensionPackage(cctx, connect.NewRequest(&nodev1.GetExtensionPackageRequest{Sha256: e.SHA256, Offset: offset}))
+			if err != nil {
+				return nil, 0, err
+			}
+			return res.Msg.GetPackage(), res.Msg.GetTotal(), nil
+		})
 		if err != nil {
 			if code := connect.CodeOf(err); code == connect.CodeNotFound || code == connect.CodeUnimplemented {
 				return "", fmt.Errorf("the console does not have the package: %w", err)
 			}
 			return "", errTransient{fmt.Errorf("fetch extension %s: %w", e.ID, err)}
 		}
-		archive = res.Msg.GetPackage()
 	}
 	if len(archive) != e.Size {
 		return "", fmt.Errorf("package size %d is not %d", len(archive), e.Size)
@@ -170,6 +189,13 @@ func (a *Agent) extensionTree(ctx context.Context, e *configir.Extension, localK
 	if !slices.Equal(dicts, e.SharedDicts) {
 		return "", errors.New("the configured shared dicts differ from the manifest's")
 	}
+	if s := pkg.Manifest.Sidecar; s != nil {
+		s.Normalize()
+		e.Sidecar = &configir.ExtensionSidecar{
+			Binary: s.Binary, Args: s.Args, Env: s.Env, MemoryMB: s.MemoryMB, TasksMax: s.TasksMax, CPUPercent: s.CPUPercent,
+			HealthPath: s.HealthPath, ConnectTimeoutMS: s.ConnectTimeoutMS, TimeoutS: s.TimeoutS, MaxBody: *s.MaxBody,
+		}
+	}
 	if err := fsutil.WriteFileAtomic(archivePath, archive, 0o600); err != nil {
 		return "", err
 	}
@@ -180,6 +206,32 @@ func (a *Agent) extensionTree(ctx context.Context, e *configir.Extension, localK
 		return "", fmt.Errorf("unpack: %w", err)
 	}
 	return dir, nil
+}
+
+// chunkFetch returns a part of a package or data item from offset and its
+// whole size.
+type chunkFetch func(ctx context.Context, offset uint64) ([]byte, uint64, error)
+
+// fetchChunked reads an object of the expected size in parts (at most
+// 4 MiB each; consoles before extension version 1.1 answer at once).
+func (a *Agent) fetchChunked(ctx context.Context, size int, fetch chunkFetch) ([]byte, error) {
+	out := make([]byte, 0, size)
+	for len(out) < size {
+		cctx, cancel := context.WithTimeout(ctx, a.cfg.RPCTimeout)
+		part, total, err := fetch(cctx, uint64(len(out)))
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if total != 0 && total != uint64(size) {
+			return nil, fmt.Errorf("size %d is not %d", total, size)
+		}
+		if len(part) == 0 || len(out)+len(part) > size {
+			return nil, errors.New("unexpected part size")
+		}
+		out = append(out, part...)
+	}
+	return out, nil
 }
 
 // compatible checks the manifest's requirements against this node.
@@ -219,7 +271,11 @@ func (a *Agent) unpack(dir string, pkg *extension.Package) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := fsutil.WriteFileAtomic(path, f.Data, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(f.Path, "sidecar/") {
+			mode = 0o755
+		}
+		if err := fsutil.WriteFileAtomic(path, f.Data, mode); err != nil {
 			return err
 		}
 	}
@@ -313,7 +369,7 @@ func (a *Agent) extensionReport(ctx context.Context) []*nodev1.ExtensionStatus {
 	}
 	out := make([]*nodev1.ExtensionStatus, 0, len(plan.Extensions))
 	for _, e := range plan.Extensions {
-		s := &nodev1.ExtensionStatus{Id: e.ID, Version: e.Version, Sha256: e.SHA256, State: e.State, Message: e.Message}
+		s := &nodev1.ExtensionStatus{Id: e.ID, Version: e.Version, Sha256: e.SHA256, State: e.State, Message: e.Message, DetailsJson: a.sidecarDetails(e.ID)}
 		if r, ok := runtime[e.ID]; ok && r.SHA256 == e.SHA256 {
 			s.Faults, s.Trips = r.Faults, r.Trips
 			if r.Error != "" {

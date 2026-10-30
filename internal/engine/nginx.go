@@ -18,6 +18,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,6 +41,8 @@ type Config struct {
 	// StaleSockets are unix sockets removed before nginx starts (left over
 	// after a crash they would make bind() fail).
 	StaleSockets []string
+	// StaleSocketGlobs name more of them by pattern.
+	StaleSocketGlobs []string
 	// StopTimeout bounds graceful shutdown before SIGKILL (default 8s).
 	StopTimeout time.Duration
 	Logger      *slog.Logger
@@ -192,7 +196,12 @@ func (n *Nginx) Run(ctx context.Context) error {
 }
 
 func (n *Nginx) runOnce(ctx context.Context) error {
-	for _, s := range n.cfg.StaleSockets {
+	stale := slices.Clone(n.cfg.StaleSockets)
+	for _, g := range n.cfg.StaleSocketGlobs {
+		matches, _ := filepath.Glob(g)
+		stale = append(stale, matches...)
+	}
+	for _, s := range stale {
 		if err := os.Remove(s); err != nil && !errors.Is(err, os.ErrNotExist) {
 			n.log.Warn("cannot remove stale socket", "path", s, "err", err)
 		}

@@ -368,12 +368,17 @@ type Agent struct {
 
 	// Challenges (challenge.go): keys by id (challengeMu), the captcha
 	// pool pushed last (challengePushMu, which also serializes pushes).
-	challengeMu         sync.Mutex
-	challengeKeys       map[string][]byte
-	challengePushMu     sync.Mutex
-	captchaID           string
-	captchaCh           chan struct{}
-	ocspCh              chan struct{}
+	challengeMu     sync.Mutex
+	challengeKeys   map[string][]byte
+	challengePushMu sync.Mutex
+	captchaID       string
+	captchaCh       chan struct{}
+	ocspCh          chan struct{}
+
+	// Extension version 1.1: secrets, per-site data and sidecars
+	// (extruntime.go); extCh wakes extensionLoop.
+	ext                 extRuntime
+	extCh               chan struct{}
 	keysFetchedAt       time.Time // data plane loop only
 	securityUnsupported sync.Once
 
@@ -433,6 +438,7 @@ func New(cfg Config, eng Engine, dp DataPlane, log *slog.Logger) *Agent {
 		challengeKeys: map[string][]byte{},
 		ticketKeys:    map[string][]byte{},
 		captchaCh:     make(chan struct{}, 1),
+		extCh:         make(chan struct{}, 1),
 		ocspCh:        make(chan struct{}, 1),
 
 		activeCh:    make(chan struct{}, 1),
@@ -557,6 +563,7 @@ func (a *Agent) Run(parent context.Context) error {
 	spawn("ocsp", a.ocspLoop)
 	spawn("kernel", a.kernelLoop)
 	spawn("captchas", a.captchaLoop)
+	spawn("extensions", a.extensionLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down

@@ -308,6 +308,9 @@ edgeweir-node version
 | `--image-workers` | min(4, max(1, CPUs / 2)) | Concurrent WebP / AVIF conversions, each a child process on one CPU; 0 turns conversion off (the node does not announce `image-convert-v1` and cannot serve sites that convert) |
 | `--no-extensions` | off | Turns node extensions off: the node does not announce `extensions-v1` and never downloads or loads extension packages; the console cannot override it |
 | `--extension-keys` | none | File of publisher keys (Ed25519 JWKs, one per line or a JSON array): extension packages must also be signed with one of them, on top of the console's trust store |
+| `--sidecar-mode` | `auto` | Extension sidecars: `auto` runs them when the agent runs as root with `--sidecar-user`, `user` requires that, `off` never runs one |
+| `--sidecar-user` | none | Unprivileged user of its own that extension sidecars run as (the agent must run as root) |
+| `--sidecar-dir` | state directory + `-sidecar` | The sidecars' package copies, state and data |
 | `--image-memory-mb` | `1024` | Memory the running conversions may use together, in MiB; each conversion's need is estimated from its pixels, larger images keep their original |
 | `--image-timeout` | `8s` | Longest conversion: the child is killed and the original kept |
 | `--debug-log-buffer` | `5000` | Recent log entries of every level kept in memory (at most 4 MiB) for the console to pull from the node's Logs tab; `0` turns it off (the node does not announce `debug-logs-v1`), at most 100000 |

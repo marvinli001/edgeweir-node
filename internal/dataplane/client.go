@@ -516,6 +516,12 @@ func (c *Client) Extensions(ctx context.Context) (map[string]ExtensionRuntime, e
 	return out.Extensions, nil
 }
 
+// PutExtensionRuntime stores the extensions' secrets and their sidecars'
+// readiness (extension version 1.1).
+func (c *Client) PutExtensionRuntime(ctx context.Context, doc json.RawMessage) error {
+	return c.do(ctx, http.MethodPut, "/v1/extensions/runtime", doc, nil)
+}
+
 // PutExtensionNodeStatus stores the host metrics ew.node.status() returns.
 func (c *Client) PutExtensionNodeStatus(ctx context.Context, s *ExtensionNodeStatus) error {
 	return c.do(ctx, http.MethodPut, "/v1/extensions/node-status", s, nil)

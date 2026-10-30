@@ -291,6 +291,52 @@ http {
     }
 {{- end }}
 
+{{- if .Sidecars }}
+
+    # Extension sidecars (extension version 1.1): the sidecar's socket, then
+    # a server answering 599 (the fallthrough) when nginx cannot reach it.
+{{- range .Sidecars }}
+    upstream ewx_{{ .Sidecar.Hex }}_sidecar {
+        server unix:{{ .Sidecar.Socket }} max_fails=0;
+        server unix:{{ $.SidecarFallthroughSocket }} backup;
+        keepalive 16;
+    }
+{{- end }}
+    server {
+        listen unix:{{ .SidecarFallthroughSocket }};
+        access_log off;
+        location / {
+            return 599;
+        }
+    }
+{{- range .Sidecars }}
+
+    # The origin socket of extension {{ .ID }}'s sidecar: requests naming a
+    # site that turns the extension on (X-Edgeweir-Ext-Site) go to its origin
+    # as the edge layer sends them, without cache, CRS or hooks.
+    server {
+        listen unix:{{ .Sidecar.OriginSocket }};
+        access_log off;
+        client_max_body_size 0;
+        location / {
+            set $edgeweir_site "";
+            set $edgeweir_origin_layer "edgeweir_origin_verify";
+            access_by_lua_block { require("edgeweir.ext").origin_access("{{ .ID }}") }
+            proxy_pass http://$edgeweir_origin_layer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Edgeweir-Site $edgeweir_site;
+            proxy_set_header X-Request-Id $request_id;
+            proxy_request_buffering off;
+            proxy_buffering off;
+            proxy_send_timeout {{ .Sidecar.TimeoutS }}s;
+            proxy_read_timeout {{ .Sidecar.TimeoutS }}s;
+        }
+    }
+{{- end }}
+{{- end }}
+
     # Control API for the agent (JSON). Unix socket only, never TCP.
     server {
         listen unix:{{ .ControlSocket }};
@@ -601,6 +647,48 @@ http {
             header_filter_by_lua_block { require("edgeweir.router").header_filter(true) }
             log_by_lua_block { require("edgeweir.stats").log(true) }
         }
+
+{{- range $.Sidecars }}
+
+        # Requests extension {{ .ID }} hands to its sidecar (ew.sidecar.proxy,
+        # edgeweir.ext.sidecar_enter): the body is read first (so that a
+        # fallthrough can send it on), the response streams back through
+        # the edge's filters and is never cached. A sidecar that cannot be
+        # reached (the backup server) or answers 599 falls through.
+        location @ewx_{{ .Sidecar.Hex }}_sidecar {
+            client_max_body_size {{ .Sidecar.MaxBody }};
+            access_by_lua_block { require("edgeweir.router").sidecar_access() }
+            proxy_pass http://ewx_{{ .Sidecar.Hex }}_sidecar;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Edgeweir-Ext-Site $edgeweir_site;
+            proxy_set_header X-Edgeweir-Ext-Request-Id $edgeweir_request_id;
+            proxy_set_header X-Edgeweir-Ext-Client-Ip $remote_addr;
+            proxy_set_header X-Edgeweir-Ext-Scheme $scheme;
+            proxy_set_header X-Edgeweir-Ext-Host $host;
+            proxy_connect_timeout {{ .Sidecar.ConnectMS }}ms;
+            proxy_send_timeout {{ .Sidecar.TimeoutS }}s;
+            proxy_read_timeout {{ .Sidecar.TimeoutS }}s;
+            proxy_request_buffering on;
+            proxy_buffering off;
+            proxy_next_upstream error timeout;
+            proxy_next_upstream_tries 2;
+            proxy_intercept_errors on;
+            error_page 599 = @ewx_{{ .Sidecar.Hex }}_fallthrough;
+            add_header X-Request-Id $edgeweir_request_id always;
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            body_filter_by_lua_block { require("edgeweir.ext").body_filter() }
+            log_by_lua_block { require("edgeweir.router").sidecar_log() }
+        }
+        location @ewx_{{ .Sidecar.Hex }}_fallthrough {
+            access_by_lua_block { require("edgeweir.router").sidecar_fallthrough() }
+{{ template "edge_proxy" $ }}
+            header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+            body_filter_by_lua_block { require("edgeweir.ext").body_filter() }
+            log_by_lua_block { require("edgeweir.stats").log() }
+        }
+{{- end }}
 
         # Error pages of nginx's own errors (error_page above), also of
         # requests that came from a CRS or gRPC location (log: counted as

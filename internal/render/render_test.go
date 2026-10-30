@@ -1072,3 +1072,41 @@ func TestUpstreamProxyProtocolProbe(t *testing.T) {
 		t.Error("unsafe prefix accepted")
 	}
 }
+
+// An extension with a sidecar gets its upstream (with the fallthrough
+// backup), the sidecar and fallthrough locations in the edge servers and
+// its origin socket (extension version 1.1).
+func TestRenderExtensionSidecar(t *testing.T) {
+	p := params()
+	plan := configir.Bootstrap(80)
+	plan.Extensions = []configir.Extension{{
+		ID: "edge-compute", SHA256: strings.Repeat("ab", 32), Dir: "/var/lib/edgeweir-node/extensions/" + strings.Repeat("ab", 32),
+		Sidecar: &configir.ExtensionSidecar{Binary: "run", ConnectTimeoutMS: 1000, TimeoutS: 60, MaxBody: 32 << 20},
+	}}
+	got, err := Render(p, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(got)
+	_, sock, origin := p.ExtensionSidecarSockets("edge-compute")
+	for _, want := range []string{
+		"upstream ewx_656467652d636f6d70757465_sidecar {",
+		"server unix:" + sock + " max_fails=0;",
+		"server unix:" + p.SidecarFallthroughSocket() + " backup;",
+		"listen unix:" + origin + ";",
+		`origin_access("edge-compute")`,
+		"location @ewx_656467652d636f6d70757465_sidecar {",
+		"client_max_body_size 33554432;",
+		"proxy_read_timeout 60s;",
+		"error_page 599 = @ewx_656467652d636f6d70757465_fallthrough;",
+		"location @ewx_656467652d636f6d70757465_fallthrough {",
+		"return 599;",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("nginx.conf lacks %q", want)
+		}
+	}
+	if !strings.HasPrefix(sock, filepath.Dir(p.ControlSocket)+"-ext/") {
+		t.Errorf("sidecar socket %s inside the control socket's directory", sock)
+	}
+}

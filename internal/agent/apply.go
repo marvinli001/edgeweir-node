@@ -198,6 +198,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.removeStaleTicketKeyFiles(plan)
 	a.removeStaleOriginTLSFiles(plan)
 	a.removeStaleExtensions(plan, previousPlan)
+	a.wakeExtensions()
 	// Checks of the plan start (or stop); the marks' lifetime follows
 	// their intervals.
 	a.health.Update(plan)

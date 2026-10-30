@@ -129,11 +129,26 @@ function M.access(ew)
 end
 return M
 ]] })
+local SIDE = package("t-side", { requires = { lua_api = 2 }, hooks = { "access", "access_late" }, capabilities = { "sidecar" },
+  secret = true }, { ["lua/main.lua"] = [[
+local M = {}
+function M.access(ew)
+  local s = ew.secrets()
+  ew.ctx.secret = { #ew.secret(), s.current == ew.secret(), s.previous }
+  ew.ctx.ready = ew.sidecar.ready()
+  ew.ctx.bad_header = pcall(ew.sidecar.proxy, { headers = { ["X-Other"] = "1" } })
+  ew.ctx.in_access = pcall(ew.sidecar.proxy, {})
+end
+function M.access_late(ew)
+  return ew.sidecar.proxy({ headers = { ["X-Edgeweir-Ext-Route"] = "r1" }, fail = ew.site_config.fail })
+end
+return M
+]] })
 local FUTURE = package("t-future", { requires = { lua_api = 3 } }, { ["lua/main.lua"] = "return {}" })
 
 ext.init({
   { id = "hello-header", dir = example_dir, sha256 = string.rep("b", 64) },
-  VERDICTS, NOCAP, PROBE, BROKEN, API2, FUTURE,
+  VERDICTS, NOCAP, PROBE, BROKEN, API2, SIDE, FUTURE,
 })
 ext.init_worker()
 
@@ -377,6 +392,46 @@ test("Lua API 2: site name, reason, node, status, equal", function()
   eq(ext.EXT["t-verdict"].api.api, 1)
   eq(ext.EXT["t-verdict"].api.node, nil, "API 1 has no ew.node")
   settings.node = nil
+end)
+
+test("Lua API 2: secrets and sidecar verdicts", function()
+  local key = string.rep("k", 32)
+  eq(ext.put_runtime({ secrets = { ["t-side"] = { current = ngx.encode_base64(key) } }, sidecars = { ["t-side"] = false } }), true)
+  enable("t-side")
+  local function run(fail)
+    local s = { id = "s1", domains = { { name = "a.example" } }, extensions = { { id = "t-side", config = { fail = fail } } } }
+    ext.prepare(s)
+    reset_ctx()
+    denied = nil
+    local r = ext.access(s, run_challenge, deny)
+    local c = ngx.ctx.edgeweir_ext["t-side"].ctx
+    return s, r, c
+  end
+  local s, r, c = run("open")
+  eq(r, nil)
+  eq(c.secret[1], 32); eq(c.secret[2], true); eq(c.secret[3], nil)
+  eq(c.ready, false)
+  eq(c.bad_header, false, "non X-Edgeweir-Ext- header refused")
+  eq(c.in_access, false, "proxy outside access_late refused")
+  -- Not ready: open continues, closed answers 502.
+  eq(ext.access_late(s, run_challenge, deny), nil)
+  s = run("closed")
+  eq(ext.access_late(s, run_challenge, deny), true)
+  eq(denied.status, 502)
+  -- Ready: the request goes to the sidecar location with the headers.
+  ext.put_runtime({ secrets = { ["t-side"] = { current = ngx.encode_base64(key), previous = ngx.encode_base64("p") } }, sidecars = { ["t-side"] = true } })
+  local entered
+  local real = ext.sidecar_enter
+  ext.sidecar_enter = function(_, v) entered = v; return "entered" end
+  s = run("open")
+  eq(ext.access_late(s, run_challenge, deny), true)
+  ext.sidecar_enter = real
+  eq(entered.fail, "open")
+  eq(entered.headers["X-Edgeweir-Ext-Route"], "r1")
+  eq(ngx.ctx.edgeweir_ext_counts["t-side.sidecar"], 1)
+  -- Extensions the agent leaves out lose their secret.
+  ext.put_runtime({ secrets = {}, sidecars = {} })
+  eq(ngx.shared.edgeweir_meta:get("ext_secret|t-side"), nil)
 end)
 
 os.execute("rm -r '" .. tmp .. "'")

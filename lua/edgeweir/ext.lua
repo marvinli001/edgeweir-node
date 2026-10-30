@@ -451,6 +451,49 @@ local function api2(e, a)
       return raw and cjson.decode(raw) or nil
     end,
   }
+  -- The console's secret (manifest secret: true), which the agent stores
+  -- in edgeweir_meta (PUT /v1/extensions/runtime).
+  local function secrets()
+    if not e.manifest.secret then error("the manifest declares no secret", 3) end
+    local d = meta()
+    local raw = d and d:get("ext_secret|" .. e.id)
+    local s = raw and cjson.decode(raw)
+    if type(s) ~= "table" or type(s.current) ~= "string" then error("the extension's secret is not available yet", 3) end
+    return { current = ngx.decode_base64(s.current), previous = s.previous and ngx.decode_base64(s.previous) or nil }
+  end
+  a.secret = function() return secrets().current end
+  a.secrets = function() return secrets() end
+  a.sidecar = {
+    ready = function()
+      need(e, "sidecar")
+      return _M.sidecar_ready(e.id)
+    end,
+    proxy = function(opts)
+      need(e, "sidecar")
+      in_hooks(e, { "access_late" })
+      opts = opts or {}
+      if type(opts) ~= "table" then error("invalid options", 2) end
+      local headers = {}
+      if opts.headers ~= nil then
+        if type(opts.headers) ~= "table" then error("headers must be a table", 2) end
+        for k, v in pairs(opts.headers) do
+          if type(k) ~= "string" or lower(sub(k, 1, 15)) ~= "x-edgeweir-ext-" then
+            error("sidecar headers must start with X-Edgeweir-Ext-", 2)
+          end
+          valid_header(k, v)
+          headers[k] = v
+        end
+      end
+      local fail = opts.fail
+      if fail == nil then
+        local x = require("edgeweir.store").config().extensions
+        local set = x and x.by_id[e.id]
+        fail = set and set.closed and "closed" or "open"
+      end
+      if fail ~= "open" and fail ~= "closed" then error("fail must be open or closed", 2) end
+      return verdict("sidecar", { headers = headers, fail = fail })
+    end,
+  }
   a.equal = function(x, y)
     if type(x) ~= "string" or type(y) ~= "string" then error("equal takes strings", 2) end
     -- Constant time in the content; the length is not secret.
@@ -905,6 +948,10 @@ local function request_hook(site, hook)
     if not ok then return set.closed and "closed" or nil end
     local kind = type(res) == "table" and res[VERDICT]
     if not kind then return nil end
+    if kind == "sidecar" and hook ~= "access_late" then
+      _M.fault(e, site.id, hook .. ": sidecar.proxy is an access_late verdict")
+      return set.closed and "closed" or nil
+    end
     if kind == "allow" and hook ~= "access" then
       _M.fault(e, site.id, "access_late: allow is an access verdict")
       return set.closed and "closed" or nil
@@ -926,6 +973,80 @@ function _M.access_late(site, run_challenge, deny)
   return _M.verdict(site, request_hook(site, "access_late"), run_challenge, deny)
 end
 
+-- hex is an extension id in nginx names (ewx_<hex>_...).
+local function hex(id)
+  return (gsub(id, ".", function(c) return format("%02x", byte(c)) end))
+end
+_M.hex = hex
+
+-- sidecar_ready reports whether the agent found the extension's sidecar
+-- healthy (PUT /v1/extensions/runtime).
+function _M.sidecar_ready(id)
+  local d = meta()
+  return d ~= nil and d:get("ext_sidecar|" .. id) == true
+end
+
+-- sidecar_enter hands the request to the extension's sidecar location
+-- (@ewx_<hex>_sidecar in nginx.conf) with the verdict's headers; the
+-- request context travels like a CRS request's (edgeweir.waf.stash_ctx)
+-- for the fallthrough (edgeweir.router.sidecar_fallthrough).
+function _M.sidecar_enter(site, v)
+  for k, val in pairs(v.headers or {}) do ngx.req.set_header(k, val) end
+  local ctx = ngx.ctx
+  ctx.edgeweir_ext_sidecar = { id = v.id, fail = v.fail }
+  local var = ngx.var
+  var.edgeweir_site = site.id
+  var.edgeweir_ctx_ref = require("edgeweir.waf").stash_ctx(ctx)
+  return ngx.exec("@ewx_" .. hex(v.id) .. "_sidecar")
+end
+
+-- origin_access is the access phase of an extension's origin socket: the
+-- sidecar names the site in X-Edgeweir-Ext-Site; only sites that turn the
+-- extension on are served, as the edge layer sends them to the origin
+-- layer (no cache, CRS or hooks).
+function _M.origin_access(id)
+  local headers = ngx.req.get_headers(0)
+  local site_id = headers["x-edgeweir-ext-site"]
+  for name in pairs(headers) do
+    if sub(name, 1, 11) == "x-edgeweir-" then ngx.req.clear_header(name) end
+  end
+  if type(site_id) ~= "string" or site_id == "" then return ngx.exit(400) end
+  local site = require("edgeweir.store").site_current(site_id)
+  local on = false
+  for _, x in ipairs(site and site._ext or {}) do
+    if x.id == id then on = true end
+  end
+  if not on then return ngx.exit(403) end
+  local var = ngx.var
+  var.edgeweir_site = site.id
+  var.edgeweir_origin_layer = require("edgeweir.router").origin_layer(site)
+end
+
+-- put_runtime stores what the agent pushes (PUT /v1/extensions/runtime):
+-- {secrets = {id = {current, previous}}, sidecars = {id = ready}}, base64
+-- secrets; extensions left out lose theirs.
+function _M.put_runtime(doc)
+  local d = meta()
+  if not d or type(doc) ~= "table" then return false end
+  local keep = {}
+  for id, s in pairs(type(doc.secrets) == "table" and doc.secrets or {}) do
+    if type(id) == "string" and type(s) == "table" and type(s.current) == "string" then
+      d:set("ext_secret|" .. id, cjson.encode({ current = s.current, previous = type(s.previous) == "string" and s.previous ~= "" and s.previous or nil }))
+      keep["ext_secret|" .. id] = true
+    end
+  end
+  for id, ready in pairs(type(doc.sidecars) == "table" and doc.sidecars or {}) do
+    if type(id) == "string" then
+      d:set("ext_sidecar|" .. id, ready == true)
+      keep["ext_sidecar|" .. id] = true
+    end
+  end
+  for _, key in ipairs(d:get_keys(0)) do
+    if (sub(key, 1, 11) == "ext_secret|" or sub(key, 1, 12) == "ext_sidecar|") and not keep[key] then d:delete(key) end
+  end
+  return true
+end
+
 -- verdict acts on a hook's verdict (router helpers run_challenge and deny).
 function _M.verdict(site, v, run_challenge, deny)
   if v == nil then return nil end
@@ -936,6 +1057,15 @@ function _M.verdict(site, v, run_challenge, deny)
   local kind = v[VERDICT]
   if kind == "allow" then return "allow" end
   local rule = "ext:" .. v.id
+  if kind == "sidecar" then
+    count(v.id .. ".sidecar", 1)
+    if not _M.sidecar_ready(v.id) then
+      if v.fail == "open" then return nil end
+      reasons.set("extension", rule)
+      return true, deny(502, "extension", "extension unavailable")
+    end
+    return true, _M.sidecar_enter(site, v)
+  end
   if kind == "deny" then
     reasons.set("extension", rule)
     return true, deny(v.status, "extension-denied", "request denied")
