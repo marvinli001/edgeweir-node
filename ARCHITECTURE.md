@@ -1010,6 +1010,16 @@ proto PROTO_NEXT，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `
 - **证书**：agent 把节点证书、私钥与 CA 复制到 `<prefix>/conf/tier/`（文件名带指纹，续期后重新应用）；证书没有 serverAuth 时不监听、不上报 `tier-upper-v1`，读不到身份时去掉分层并告警。
 - **测量**：`tierlatency` 循环每 60 秒对每个测量目标做 3 次 TCP 连接（每次 3 秒超时，最多 16 个并行，遵守源站地址策略），取最小值经 `ReportStatusRequest.tier_latencies` 上报。
 - **统计与日志**：tier 层按上层的缓存状态计数 `tf<状态>`（无上层回答为 `origin`），上层按自己的缓存状态计数 `tv<状态>`，经 `MinuteStats.tier_fetches` / `tier_served` 上报；访问日志字段 `tier` 为 `<节点 id> <状态>` 或 `origin`。
+### 3.36 节点扩展（`extensions-v1`）
+
+通用的签名 Lua 扩展（格式 `edgeweir-node-extension-v1`，Lua API 1；契约见控制台仓库的 `docs/reference/extensions.md`）。节点不认识任何具体扩展，不检查许可证，不联系发布者。
+
+1. **分发**：`NodeConfig.extensions` 列出集群有网站开启的扩展（当前版本的摘要、大小、JWS 签名、签名公钥、启用、失败模式、全局配置、共享字典）与总开关 `extensions_disabled`，`Site.extensions` 列出网站开启的扩展及网站配置（`internal/configir/extensions.go` 校验）。agent 在应用配置前（`internal/agent/extensions.go`）按摘要经 mTLS 的 `GetExtensionPackage` 取缺少的扩展包，检查大小与 SHA-256，用下发的公钥验证 JWS（`--extension-keys` 指定本地 JWK 文件时，公钥还必须在其中），按控制台同样的规则读取归档与清单（`internal/extension`：严格 ustar、上限、无链接 / 原生代码 / 字节码、严格清单），检查 `requires`，解包到 `<state>/extensions/<sha256>/`（文件 0644、目录 0755，`.verified` 标记，归档另存 `<sha256>.ewx`）。失败的扩展包不加载、上报为 `failed` 或 `incompatible`，其余配置照常应用；不再被当前与上一份配置引用的目录被删除。
+2. **渲染**：可加载的扩展按安装顺序写进 `init_by_lua` 的参数 `extensions = {{id, dir, sha256}}`，每个声明的共享字典渲染为 `lua_shared_dict ewx_<十六进制 id>_<name>`；有扩展时边缘层的 `location /` 与请求体分级位置加 `body_filter_by_lua`。加载集合或共享字典变化时 reload；启用、失败模式、配置、网站列表与总开关随站点表热更新（`extensions: {disabled, list}`，`edgeweir.store` 编译为 `cfg.extensions`，网站为 `site._ext`）。`--no-extensions` 时 agent 不声明 `extensions-v1`，拒绝下发了扩展的配置，从不下载或加载扩展包。
+3. **运行时**（`lua/edgeweir/ext.lua`）：每个 worker 在 `init_worker` 中把扩展包载入各自的环境（标准库副本、`os.time/clock/date`、只允许扩展包自己的 `lua/` 模块与 `cjson.safe`、`resty.sha256`、`resty.string`、`resty.random`、`resty.lrucache`、`ngx.re`；没有 `ngx`、`io`、`debug`、`ffi`、`jit`、`package`、字节码），扩展首次使用时运行 `init`。钩子：`access`（主机查找、封禁与保留路径之后，访问控制、规则与挑战之前；`ew.allow()` 让本请求跳过 Under Attack 与 CC 挑战）、`access_late`（规则与挑战之后，CRS、缓存与回源之前）、`header_filter`、`body_filter`（`body_rewrite`）、`log`（访问日志写入之前），以及 `/.edgeweir/ext/<id>/` 下的静态资源与端点（与其他保留路径一样受封禁与 CC 约束，不经过访问控制、规则与挑战）。裁决 `deny` 走节点错误页（`X-Edgeweir-Error: extension-denied`，拦截原因 `extension`，规则 id `ext:<id>`），`challenge` 用核心挑战（有该级别通行凭证则继续），`respond` 直接应答。
+4. **故障**：每次钩子调用都在 `pcall` 中，按墙钟预算（10 ms；有 `http_client` 的 `access`、`access_late`、`endpoint` 为 1 s）计时；出错或超时为一次故障，记入 `edgeweir_meta`（`ext|<id>|<sha256>|faults`）与网站分钟统计 `ext.<id>.faults`，一个 worker 内 60 秒 20 次故障熔断 60 秒（`trips`）。失败模式 `open` 跳过出错、熔断或未加载的扩展；`closed` 在 `access`、`access_late`、`endpoint` 返回 503 `X-Edgeweir-Error: extension`；响应阶段的钩子总是放行。
+5. **HTML 注入**：`ew.html.inject` / `ew.html.script` 在 header filter 排队，只对 `GET`、200、`text/html`、无 `Content-Encoding` / `Content-Range` / `no-transform` 的响应生效；去掉 `Content-Length`，强 ETag 改为弱 ETag；body filter 在前 64 KiB 内第一个 `</head>` 前插入 `head_end`，在最后 512 字节内最后一个 `</body>` 前插入 `body_end`（否则追加）。`ew.html.script` 按响应的 CSP（`script-src`，否则 `default-src`）取 nonce，或在 `'self'` 且无 `'strict-dynamic'` 时注入同源脚本，否则不注入。缓存始终保存源站原文。
+6. **上报**：规则字段 `ext.<id>.<name>` 由 `access` 写入 `ngx.ctx.edgeweir_ext_fields`，`edgeweir.policy.request` 合并进请求值（未设置的按类型取默认值）；日志字段与裁决进入 `AccessLog.ext`，计数器以指标 `x<id>.<name>` 计入分钟统计、上报为 `MinuteStats.ext_counters`；控制 API `GET /v1/extensions` 返回各扩展加载的摘要、加载错误与全部 worker 的故障、熔断次数，agent 随心跳上报 `ExtensionStatus`。
 
 ## 4. 文件布局
 
@@ -1028,6 +1038,7 @@ proto PROTO_NEXT，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `
 | `/var/lib/edgeweir-node/session-ticket-keys.json` | 当前与上一份同集群配置引用的 TLS 会话票据密钥（每把 80 字节，0600，§3.27） |
 | `/var/lib/edgeweir-node/health.crt`、`health.key` | 健康证书与私钥（0600，§3.22） |
 | `/var/lib/edgeweir-node/traffic-spool.json`、`logs-spool.json`、`nodelogs-spool.json` | 控制台尚未确认的统计批次、采样访问日志批次与节点日志批次（0600） |
+| `/var/lib/edgeweir-node/extensions/` | 节点扩展：`<sha256>.ewx`（校验过的归档，0600）与解包目录 `<sha256>/`（`manifest.json`、`lua/`、`assets/`、`.verified`；文件 0644，目录 0755，worker 只读），§3.34 |
 | `/var/lib/edgeweir-node/run.lock` | `run` 运行期间持有的锁（flock），`enroll --force` 据此拒绝替换正在使用的身份 |
 | `/var/lib/edgeweir-node/upgrade.sock`、`upgrades/` | `supervise` 监督进程的本机 socket（0600）；升级状态 `upgrades/state.json` 与各版本目录 `upgrades/releases/<任务 id>/`（0700） |
 | `/var/lib/edgeweir-node/nginx/` | nginx prefix：`conf/nginx.conf`（有 HTTPS 监听时还有占位证书 `conf/bootstrap.crt`、`bootstrap.key`；配置带会话票据密钥时还有 `conf/tls-tickets/<id>.key`（80 字节，0600，目录 0700，只保留 `nginx.conf` 列出的）；有站点运行 OWASP CRS 时还有 `conf/modsecurity-<哈希>.conf`）、`logs/nginx.pid`、`tmp/` |

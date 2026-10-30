@@ -63,6 +63,8 @@ function _M.init(opts)
   require("edgeweir.accesslogs")
   require("edgeweir.stats")
   require("edgeweir.control")
+  -- Node extensions (extensions-v1): the packages each worker loads.
+  require("edgeweir.ext").init(opts.extensions)
 end
 
 function _M.init_worker()
@@ -71,6 +73,7 @@ function _M.init_worker()
   require("edgeweir.topstats").init_worker()
   require("edgeweir.cc").init_worker()
   math.randomseed(ngx.now() * 1000 + ngx.worker.pid())
+  require("edgeweir.ext").init_worker()
 end
 
 return _M

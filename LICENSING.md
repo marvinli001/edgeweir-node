@@ -1,6 +1,6 @@
 # 开源许可与商业产品边界 / Licensing and product boundaries
 
-适用日期：2026-09-26。`edgeweir-node` 与控制面 `edgeweir` 保持 **AGPL-3.0-only**，以 [LICENSE](LICENSE) 为准；第三方组件遵循各自许可证。本文不修改许可证，也不增加使用限制或插件链接例外。共同产品边界见控制台仓库的 [LICENSING.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.md)。
+适用日期：2026-09-26。`edgeweir-node` 与控制面 `edgeweir` 保持 **AGPL-3.0-only**，以 [LICENSE](LICENSE) 为准；第三方组件遵循各自许可证。本文不修改许可证，也不增加使用限制。唯一的附加许可是控制台仓库 [LICENSING.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.md#节点扩展例外) 中的**节点扩展例外**（AGPL 第 7 条）：只通过公开格式 `edgeweir-node-extension-v1` 与 Lua API 和 Edgeweir 交互的节点扩展可以按任意条款分发，节点加载运行它们不使扩展受 AGPL 约束；对节点本身（包括扩展运行时 `lua/edgeweir/ext.lua`、`internal/extension`）的修改仍为 AGPL-3.0-only。`examples/extensions` 下的示例按 MIT-0 提供。共同产品边界见同一文件。
 
 发布镜像内置的 GeoIP 数据 `/usr/share/edgeweir-node/geoip/ipinfo_lite.mmdb` 是 [IPinfo Lite](https://ipinfo.io/lite)，按 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) 原样再分发，不属于 AGPL 代码。署名：IP address data is powered by [IPinfo](https://ipinfo.io)。
 
@@ -13,14 +13,14 @@
 - 以下数据面能力属于独立商业产品：组内缓存共享（一致性哈希分片、缓存索引节点）、访问日志直推自定义 sink 与 Logpush、Prometheus 指标、GeoIP 热更新、103 Early Hints、Speculation-Rules、0-RTT、Tunnels、边缘计算、XDP / eBPF、按学习基线的自适应七层 DDoS 缓解、Bot 评分。
 - 对外客户门户、套餐计费、财务和分销属于未来独立商业运营产品；官方账户、订阅、许可证与插件分发属于独立商业服务。
 - 节点不回连官方授权服务，不持有官方商业许可证，不因许可证到期或授权服务故障停止已有 CDN 流量。节点身份、mTLS 与发布物签名是安全机制，不是商业授权。
-- 独立原创商业代码可以另行约定许可；私有仓库、独立进程或容器不是 AGPL 豁免。集成、复制或分发核心代码与依赖仍需满足适用许可证，本文不授予闭源插件通用豁免或商业双许可。
-- 社区可按适用许可自行实现类似商业功能。核心贡献按 AGPL-3.0-only 提供，不自动授予闭源再许可权；既有版本的合规使用权不受产品边界调整影响。
+- 独立原创商业代码可以另行约定许可；私有仓库、独立进程或容器不是 AGPL 豁免。集成、复制或分发核心代码与依赖仍需满足适用许可证；除节点扩展例外，本文不授予闭源插件豁免或商业双许可。
+- 社区可按适用许可自行实现类似商业功能。核心贡献按 AGPL-3.0-only 及节点扩展例外提供，不自动授予闭源再许可权；既有版本的合规使用权不受产品边界调整影响。
 
 ## English summary
 
 `edgeweir-node` and the `edgeweir` console remain **AGPL-3.0-only**, with commercial use permitted subject to the license. The existing node and data-plane capabilities (including heartbeat and data-plane health reports, Tiered Cache, sampled access logs, `ReportStats` statistics, the bundled IPinfo Lite, HTTP/2 and HTTP/3), organizations, membership, access control, isolation and the existing console/admin remain open source. A customer commerce portal, billing, finance and reselling belong to a planned separate commercial product. These data-plane capabilities belong to a separate commercial product: cache sharing within a group (consistent-hash sharding, cache index nodes), access log push to custom sinks and Logpush, Prometheus metrics, GeoIP hot reload, 103 Early Hints, Speculation-Rules, 0-RTT, Tunnels, edge compute, XDP/eBPF, adaptive layer-7 DDoS mitigation with learned baselines and bot scoring.
 
-The node has no official license gates or vendor phone-home. An expired vendor license or licensing outage must not stop existing CDN traffic. Node identity, mTLS and artifact signatures serve security, not commercial licensing. Separate commercial products do not amend LICENSE, withdraw existing rights, grant a plugin linking exception or automatically authorize proprietary reuse of contributions. See the console's [LICENSING.en.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.en.md) for the shared boundary.
+The node has no official license gates or vendor phone-home. An expired vendor license or licensing outage must not stop existing CDN traffic. Node identity, mTLS and artifact signatures serve security, not commercial licensing. Separate commercial products do not amend LICENSE, withdraw existing rights, grant a plugin linking exception or automatically authorize proprietary reuse of contributions. The only additional permission is the **node extension exception** (AGPL section 7) in the console's [LICENSING.en.md](https://github.com/marvinli001/edgeweir/blob/master/LICENSING.en.md#node-extension-exception): node extensions that interact with Edgeweir only through the documented format `edgeweir-node-extension-v1` and the Lua API may be conveyed under any terms, and the node loading and running them does not subject them to the AGPL; changes to the node itself, the extension runtime (`lua/edgeweir/ext.lua`, `internal/extension`) included, stay AGPL-3.0-only. The examples under `examples/extensions` are offered under MIT-0. See the same file for the shared boundary.
 
 The node's OpenResty (the edgeweir-openresty and edgeweir-openresty-modsecurity packages and the same files in the container image) is built from third-party open-source components under their own licenses, all of which permit commercial use: OpenResty and its modules, nginx (BSD), LuaJIT, lua-cjson, Brotli, libxml2 (MIT), OpenSSL, ModSecurity, ModSecurity-nginx, the OWASP CRS (Apache-2.0), PCRE2 (BSD-3-Clause WITH PCRE2-exception), zlib (Zlib), Zstandard (under BSD-3-Clause), YAJL (ISC) and others. The component list and the full license texts are in `/usr/share/doc/edgeweir-openresty/NOTICE`.
 

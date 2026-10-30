@@ -236,6 +236,8 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	req.OriginHealth = a.originHealth(cctx)
 	req.Bans = a.banReport(cctx)
 	req.Security = a.securityReport(cctx)
+	req.Extensions = a.extensionReport(cctx)
+	a.pushExtensionNodeStatus(cctx, req.Metrics)
 	if a.kernelActive() {
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "kernel-ban-v1")
 	}
@@ -384,6 +386,7 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			MarkdownResponses: m.MarkdownResponses,
 			TierFetches:     tierCounters(m.TierFetches),
 			TierServed:      tierCounters(m.TierServed),
+			ExtCounters:     extCounters(m.ExtCounters),
 		}
 		applyDimensions(ms, m)
 		out = append(out, ms)
@@ -500,6 +503,29 @@ func wafRules(input map[string]uint64) []*nodev1.TopCounter {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// maxExtCounters bounds MinuteStats.ext_counters.
+const maxExtCounters = 64
+
+// extCounters keeps node extensions' counters with valid names
+// ("ext.<id>.<name>"), at most maxExtCounters (the first by name).
+func extCounters(input map[string]uint64) map[string]uint64 {
+	names := make([]string, 0, len(input))
+	for name, count := range input {
+		if count > 0 && configir.ValidExtensionName(name) {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	slices.Sort(names)
+	out := make(map[string]uint64, min(len(names), maxExtCounters))
+	for _, name := range names[:min(len(names), maxExtCounters)] {
+		out[name] = input[name]
 	}
 	return out
 }

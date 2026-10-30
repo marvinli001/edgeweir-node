@@ -1,0 +1,34 @@
+{
+  "format": "edgeweir-node-extension-v1",
+  "id": "hello-header",
+  "version": "1.0.0",
+  "publisher": "example.org",
+  "name": { "en": "Hello header", "zh-CN": "问候响应头" },
+  "description": { "en": "Adds a greeting header and a rule field.", "zh-CN": "添加问候响应头与一个规则字段。" },
+  "license": "MIT-0",
+  "requires": { "lua_api": 1 },
+  "hooks": ["init", "access", "header_filter", "log", "endpoint"],
+  "capabilities": ["response_headers", "verdicts", "html_inject"],
+  "config": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "greeting": { "type": "string", "title": { "en": "Greeting", "zh-CN": "问候语" }, "default": "hello", "maxLength": 64 }
+      }
+    },
+    "site": {
+      "type": "object",
+      "properties": {
+        "header": { "type": "string", "title": { "en": "Header name", "zh-CN": "响应头名称" }, "default": "X-Hello", "pattern": "^[A-Za-z0-9-]{1,64}$" },
+        "deny_path": { "type": "string", "title": { "en": "Path to deny", "zh-CN": "拒绝的路径" }, "default": "", "maxLength": 256 },
+        "inject": { "type": "boolean", "title": { "en": "Inject a script into HTML", "zh-CN": "向 HTML 注入脚本" }, "default": false },
+        "fail": { "type": "boolean", "title": { "en": "Throw in access (testing)", "zh-CN": "在 access 中抛出错误（测试用）" }, "default": false }
+      }
+    }
+  },
+  "fields": [{ "name": "greeted", "type": "boolean", "description": { "en": "The request did not opt out of the greeting" } }],
+  "log_fields": ["greeting"],
+  "counters": ["greeted"],
+  "endpoints": [{ "path": "ping", "methods": ["GET", "HEAD"] }],
+  "shared_dicts": [{ "name": "state", "size_kb": 64 }]
+}

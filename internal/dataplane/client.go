@@ -58,6 +58,41 @@ type SiteTable struct {
 	// TierClients are the node ids the tier listener serves as lower tiers
 	// (tiered-cache-v1).
 	TierClients []string `json:"tier_clients,omitempty"`
+	// Extensions are the node extensions (extensions-v1): the kill switch
+	// and, in hook order, each extension's settings and whether its package
+	// loaded (state "loaded"); the sites name theirs.
+	Extensions *ExtensionTable `json:"extensions,omitempty"`
+}
+
+// ExtensionTable is the site table's part for node extensions.
+type ExtensionTable struct {
+	Disabled bool                 `json:"disabled"`
+	List     []configir.Extension `json:"list"`
+	// Node is this node's identity for ew.node (Lua API 2).
+	Node *ExtensionNode `json:"node,omitempty"`
+}
+
+// ExtensionNode is the node identity extensions read (ew.node.id, name,
+// cluster_id, version).
+type ExtensionNode struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	ClusterID string `json:"cluster_id"`
+	Version   string `json:"version"`
+}
+
+// ExtensionNodeStatus is the node's last reported host metrics for
+// ew.node.status() (Lua API 2).
+type ExtensionNodeStatus struct {
+	At                int64   `json:"at"`
+	CPUPercent        float64 `json:"cpu_percent"`
+	Load1             float64 `json:"load1"`
+	Load5             float64 `json:"load5"`
+	Load15            float64 `json:"load15"`
+	MemoryUsedBytes   uint64  `json:"memory_used_bytes"`
+	MemoryTotalBytes  uint64  `json:"memory_total_bytes"`
+	EgressBps         uint64  `json:"egress_bps"`
+	ActiveConnections uint64  `json:"active_connections"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -74,6 +109,9 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.AICrawlers = p.AICrawlers
 	if p.Tier != nil && p.Tier.Listen {
 		t.TierClients = p.Tier.Clients
+	}
+	if len(p.Extensions) > 0 {
+		t.Extensions = &ExtensionTable{Disabled: p.ExtensionsDisabled, List: p.Extensions}
 	}
 	for _, z := range p.CacheZones {
 		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
@@ -223,6 +261,9 @@ type MinuteStats struct {
 	// (feature tiered-cache-v1).
 	TierFetches map[string]uint64 `json:"tier_fetches"`
 	TierServed  map[string]uint64 `json:"tier_served"`
+	// ExtCounters are node extensions' counters and faults by
+	// "ext.<id>.<name>" (feature extensions-v1).
+	ExtCounters map[string]uint64 `json:"ext_counters"`
 	// The bounded dimensions (feature stats-dims-v1, ADR-0041): requests
 	// and bytes sent per country ("" unknown, at most 250), the heaviest 50
 	// networks (by AS number, with names) and referring hosts, requests per
@@ -497,4 +538,36 @@ func (c *Client) DrainStats(ctx context.Context, all bool) ([]MinuteStats, error
 		return nil, fmt.Errorf("decode stats: %w", err)
 	}
 	return stats, nil
+}
+
+// ExtensionRuntime is one extension's state in the workers
+// (GET /v1/extensions): the loaded package, a load error and the fault
+// and trip counters summed over the workers.
+type ExtensionRuntime struct {
+	SHA256 string `json:"sha256"`
+	Error  string `json:"error"`
+	Faults uint64 `json:"faults"`
+	Trips  uint64 `json:"trips"`
+}
+
+// Extensions returns the extensions' runtime state by id.
+func (c *Client) Extensions(ctx context.Context) (map[string]ExtensionRuntime, error) {
+	var out struct {
+		Extensions map[string]ExtensionRuntime `json:"extensions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/extensions", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Extensions, nil
+}
+
+// PutExtensionRuntime stores the extensions' secrets and their sidecars'
+// readiness (extension version 1.1).
+func (c *Client) PutExtensionRuntime(ctx context.Context, doc json.RawMessage) error {
+	return c.do(ctx, http.MethodPut, "/v1/extensions/runtime", doc, nil)
+}
+
+// PutExtensionNodeStatus stores the host metrics ew.node.status() returns.
+func (c *Client) PutExtensionNodeStatus(ctx context.Context, s *ExtensionNodeStatus) error {
+	return c.do(ctx, http.MethodPut, "/v1/extensions/node-status", s, nil)
 }

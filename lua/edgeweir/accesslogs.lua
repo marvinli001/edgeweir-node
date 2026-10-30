@@ -177,6 +177,8 @@ local function record(var, site_id, geo, status)
     tls_version = TLS_VERSIONS[var.ssl_protocol or ""] or "",
     block_reason = reason or "", block_rule_id = rule or "",
     tier = M.tier(var),
+    -- Node extensions' log fields and verdicts (edgeweir.ext).
+    ext = ngx.ctx.edgeweir_ext_log,
   }
   -- The AI crawler the request claimed (ai-crawlers-v1).
   local ctx = ngx.ctx

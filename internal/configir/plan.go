@@ -174,6 +174,10 @@ type Plan struct {
 	// Tier is this node's part in the tiered cache (nil: none; feature
 	// tiered-cache-v1).
 	Tier *Tier
+	// Extensions are the node extensions in hook order and
+	// ExtensionsDisabled the kill switch (feature extensions-v1).
+	Extensions         []Extension
+	ExtensionsDisabled bool
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -332,6 +336,8 @@ type Site struct {
 	// AICrawl is the site's AI crawl control (nil: crawlers are only
 	// tagged; feature ai-crawlers-v1, ADR-0070).
 	AICrawl *AICrawl `json:"ai_crawl,omitempty"`
+	// Extensions the site turns on, in hook order (feature extensions-v1).
+	Extensions []SiteExtension `json:"extensions,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -728,6 +734,12 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	}
 
 	p := &Plan{Revision: c.GetRevision(), ContentHash: c.GetContentHash(), ClusterID: c.GetClusterId()}
+	exts, err := buildExtensions(c)
+	if err != nil {
+		return nil, err
+	}
+	p.Extensions = exts
+	p.ExtensionsDisabled = c.GetExtensionsDisabled()
 	p.Certificates = map[string]string{}
 	for _, cert := range c.GetCertificates() {
 		if !idRE.MatchString(cert.GetId()) || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(cert.GetSha256Fingerprint()) {
@@ -737,7 +749,6 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	}
 	p.IPLists = c.GetIpLists()
 	p.PlatformRules = c.GetPlatformRules()
-	var err error
 	if p.PlatformProtection, err = buildPlatformProtection(c.GetPlatformProtection()); err != nil {
 		return nil, err
 	}
@@ -1018,6 +1029,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.ImageConvert = images[id]
 		site.Markdown = markdowns[id]
 		site.AICrawl = aiCrawls[id]
+		if site.Extensions, err = buildSiteExtensions(s, p.Extensions); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)

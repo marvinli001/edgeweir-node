@@ -353,6 +353,11 @@ edgeweir-node version
 | `--modsecurity-module` | `auto` | ModSecurity-nginx dynamic module: `auto` (the `modules/` directory of the edgeweir-openresty that `--nginx-bin` belongs to), a file path, or `off`; loaded only while a site runs the OWASP CRS |
 | `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS directory (`crs-setup.conf`, `rules/`); `unicode.mapping` comes from the sibling `modsecurity/` |
 | `--image-workers` | min(4, max(1, CPUs / 2)) | Concurrent WebP / AVIF conversions, each a child process on one CPU; 0 turns conversion off (the node does not announce `image-convert-v1` and cannot serve sites that convert) |
+| `--no-extensions` | off | Turns node extensions off: the node does not announce `extensions-v1` and never downloads or loads extension packages; the console cannot override it |
+| `--extension-keys` | none | File of publisher keys (Ed25519 JWKs, one per line or a JSON array): extension packages must also be signed with one of them, on top of the console's trust store |
+| `--sidecar-mode` | `auto` | Extension sidecars: `auto` runs them when the agent runs as root with `--sidecar-user`, `user` requires that, `off` never runs one |
+| `--sidecar-user` | none | Unprivileged user of its own that extension sidecars run as (the agent must run as root) |
+| `--sidecar-dir` | state directory + `-sidecar` | The sidecars' package copies, state and data |
 | `--image-memory-mb` | `1024` | Memory the running conversions may use together, in MiB; each conversion's need is estimated from its pixels, larger images keep their original |
 | `--image-timeout` | `8s` | Longest conversion: the child is killed and the original kept |
 | `--markdown-workers` | min(4, max(1, CPUs / 2)) | Concurrent HTML to Markdown conversions (Markdown for Agents), each a child process on one CPU; 0 turns conversion off (the node does not announce `markdown-v1` and cannot serve sites that convert) |

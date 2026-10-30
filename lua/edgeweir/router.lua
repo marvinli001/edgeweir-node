@@ -121,6 +121,7 @@ local geoip = require("edgeweir.geoip")
 local accesslogs = require("edgeweir.accesslogs")
 local uripath = require("edgeweir.uripath")
 local tier = require("edgeweir.tier")
+local ext = require("edgeweir.ext")
 
 local _M = {}
 
@@ -422,6 +423,83 @@ end
 
 -- access returns true when the request goes on to the cache and origin;
 -- every other outcome has answered the request already.
+-- after_ext goes on with the access phase after the extensions' late
+-- access hooks: in access(), and after a sidecar fell through
+-- (sidecar_fallthrough).
+local function after_ext(site, pctx, host, original_path, acme)
+  local var, ctx = ngx.var, ngx.ctx
+  local is_local = var.edgeweir_local == "1"
+  local headers
+  -- The client certificate towards the origin (after the rules: they
+  -- never overwrite it).
+  if site._client and site._client.forward then
+    clientcert.forward(clientcert.values())
+  end
+  headers = ngx.req.get_headers(0)
+  -- The variable's default is "": only origin and timeout overrides set it.
+  local override = policy.origin_header(pctx)
+  if override ~= "" then
+    var.edgeweir_origin_override = override
+  end
+
+  var.edgeweir_site = site.id
+  var.edgeweir_cache_zone = site.cache_zone
+  -- The edge compresses: the origin sends (and the cache keeps) identity.
+  if compress.enabled(site) then
+    var.edgeweir_strip_ae = "1"
+  end
+
+  local upgrade = var.http_upgrade
+  if upgrade and lower(upgrade) == "websocket" then
+    local websocket = site.websocket
+    if pctx and pctx.websocket ~= nil then
+      websocket = pctx.websocket
+    end
+    if not websocket then
+      return deny(ngx.HTTP_FORBIDDEN, "websocket-disabled", "websocket disabled")
+    end
+    -- The site's WebSocket origins (edgeweir.access); clients on its allow
+    -- lists are checked too, the local listeners are not.
+    if not is_local and not accesscontrol.websocket_allowed(site, var.http_origin) then
+      reasons.set("websocket_origin")
+      return deny(ngx.HTTP_FORBIDDEN, "websocket-origin-denied", "websocket origin denied")
+    end
+    -- Proxied as is, never cached.
+    var.edgeweir_origin_layer = _M.origin_layer(site, "websocket")
+    var.edgeweir_upgrade = "websocket"
+    var.edgeweir_connection = "upgrade"
+    return true
+  end
+  if site.grpc and _M.is_grpc(var.http_content_type) then
+    -- Never cached: _M.access hands it to @edgeweir_grpc.
+    var.edgeweir_origin_layer = _M.origin_layer(site, "grpc")
+    ngx.ctx.edgeweir_grpc = true
+    return true
+  end
+  -- The site's body limit (a config rule's for this request) by
+  -- Content-Length. A body without one (chunked, or HTTP/2 and HTTP/3
+  -- without Content-Length) is read up to that limit, and checked by the
+  -- size read: in the edge location of the limit (body_tier), where nginx
+  -- answers 413 past it, else up to client_max_body_size (the largest limit
+  -- of the sites). The CRS and the origin layer get the body read.
+  local rule_limit = pctx and pctx.body_limit
+  if _M.body_too_large(rule_limit, site.body_limit, var.http_content_length) then
+    return deny(413, "body-too-large", "request body too large")
+  end
+  -- Reading a body without Content-Length up to the site's own limit takes
+  -- the edge location of that limit (body_access continues there).
+  local tier = _M.body_tier(rule_limit, site.body_limit)
+  if tier then
+    ctx.edgeweir_acme = acme
+    var.edgeweir_ctx_ref = waf.stash_ctx(ctx)
+    return ngx.exec(tier)
+  end
+  if _M.unsized_body_too_large(rule_limit, site.body_limit) then
+    return deny(413, "body-too-large", "request body too large")
+  end
+  return route(site, pctx, headers, host, original_path, acme)
+end
+
 local function access()
   local headers = strip_internal_headers()
 
@@ -576,6 +654,11 @@ local function access()
       reasons.set("cc")
       return deny(ngx.HTTP_FORBIDDEN, "ip-banned", "banned")
     end
+    -- Node extensions' assets and endpoints (edgeweir.ext): bans and CC
+    -- apply, access control, rules and challenges do not.
+    if sub(original_path, 1, 15) == ext.PREFIX then
+      return ext.endpoint(site, original_path)
+    end
     -- Failed answers count towards the site's failure ban, but not for
     -- these clients (nor on the local listeners).
     local uncounted = is_local or site_allowed or _M.platform_allowed(site, var.remote_addr) or store.trusted_proxy(site, var.remote_addr)
@@ -590,6 +673,18 @@ local function access()
   -- the access logs and statistics carry it, rules refusals included.
   local crawler_ok, crawler_err = pcall(aicrawl.request, site)
   if not crawler_ok then ngx.log(ngx.ERR, "edgeweir: AI crawler check failed site=", site.id, ": ", crawler_err) end
+  -- Node extensions' access hooks (edgeweir.ext), before access control,
+  -- rules and challenges: a verdict answers, an allow verdict skips Under
+  -- Attack and CC challenges.
+  local ext_allowed = false
+  if site._ext and not is_local then
+    local r = ext.access(site, run_challenge, deny)
+    if r == "allow" then
+      ext_allowed = true
+    elseif r then
+      return
+    end
+  end
   local ok, result = pcall(policy.access, site, headers, acme, site_allowed)
   if not ok then
     ngx.log(ngx.ERR, "edgeweir: policy evaluation failed site=", site.id)
@@ -648,7 +743,7 @@ local function access()
     end
   end
   local under_attack = pctx and pctx.under_attack
-  if (site._guard or under_attack == true) and not exempt and not is_local and not acme then
+  if (site._guard or under_attack == true) and not exempt and not ext_allowed and not is_local and not acme then
     local cc_level = policy.cc_level(pctx, site._cc and cc_on and cc.level(site, original_path) or 0)
     local level, kind = challenge.required(site, cc_level, under_attack)
     local glevel, gkind = _M.greylist_level(grey, exempt, 0, nil)
@@ -672,74 +767,14 @@ local function access()
       return run_challenge(site, kind, level)
     end
   end
-  -- The client certificate towards the origin (after the rules: they
-  -- never overwrite it).
-  if site._client and site._client.forward then
-    clientcert.forward(clientcert.values())
+  -- Node extensions' late access hooks (edgeweir.ext): after the rules and
+  -- challenges, before the CRS, the cache and the origin.
+  -- (The context keeps acme for a sidecar's fallthrough.)
+  ctx.edgeweir_acme = acme
+  if site._ext and not is_local and ext.access_late(site, run_challenge, deny) then
+    return
   end
-  headers = ngx.req.get_headers(0)
-  -- The variable's default is "": only origin and timeout overrides set it.
-  local override = policy.origin_header(pctx)
-  if override ~= "" then
-    var.edgeweir_origin_override = override
-  end
-
-  var.edgeweir_site = site.id
-  var.edgeweir_cache_zone = site.cache_zone
-  -- The edge compresses: the origin sends (and the cache keeps) identity.
-  if compress.enabled(site) then
-    var.edgeweir_strip_ae = "1"
-  end
-
-  local upgrade = var.http_upgrade
-  if upgrade and lower(upgrade) == "websocket" then
-    local websocket = site.websocket
-    if pctx and pctx.websocket ~= nil then
-      websocket = pctx.websocket
-    end
-    if not websocket then
-      return deny(ngx.HTTP_FORBIDDEN, "websocket-disabled", "websocket disabled")
-    end
-    -- The site's WebSocket origins (edgeweir.access); clients on its allow
-    -- lists are checked too, the local listeners are not.
-    if not is_local and not accesscontrol.websocket_allowed(site, var.http_origin) then
-      reasons.set("websocket_origin")
-      return deny(ngx.HTTP_FORBIDDEN, "websocket-origin-denied", "websocket origin denied")
-    end
-    -- Proxied as is, never cached.
-    var.edgeweir_origin_layer = _M.origin_layer(site, "websocket")
-    var.edgeweir_upgrade = "websocket"
-    var.edgeweir_connection = "upgrade"
-    return true
-  end
-  if site.grpc and _M.is_grpc(var.http_content_type) then
-    -- Never cached: _M.access hands it to @edgeweir_grpc.
-    var.edgeweir_origin_layer = _M.origin_layer(site, "grpc")
-    ngx.ctx.edgeweir_grpc = true
-    return true
-  end
-  -- The site's body limit (a config rule's for this request) by
-  -- Content-Length. A body without one (chunked, or HTTP/2 and HTTP/3
-  -- without Content-Length) is read up to that limit, and checked by the
-  -- size read: in the edge location of the limit (body_tier), where nginx
-  -- answers 413 past it, else up to client_max_body_size (the largest limit
-  -- of the sites). The CRS and the origin layer get the body read.
-  local rule_limit = pctx and pctx.body_limit
-  if _M.body_too_large(rule_limit, site.body_limit, var.http_content_length) then
-    return deny(413, "body-too-large", "request body too large")
-  end
-  -- Reading a body without Content-Length up to the site's own limit takes
-  -- the edge location of that limit (body_access continues there).
-  local tier = _M.body_tier(rule_limit, site.body_limit)
-  if tier then
-    ctx.edgeweir_acme = acme
-    var.edgeweir_ctx_ref = waf.stash_ctx(ctx)
-    return ngx.exec(tier)
-  end
-  if _M.unsized_body_too_large(rule_limit, site.body_limit) then
-    return deny(413, "body-too-large", "request body too large")
-  end
-  return route(site, pctx, headers, host, original_path, acme)
+  return after_ext(site, pctx, host, original_path, acme)
 end
 
 -- proceed hands a request that passed the access phase on: gRPC requests to
@@ -806,6 +841,51 @@ function _M.body_access()
     return deny(413, "body-too-large", "request body too large")
   end
   if route(site, pctx, ngx.req.get_headers(0), ngx.var.host, ctx.edgeweir_original_path, ctx.edgeweir_acme) then
+    return proceed()
+  end
+end
+
+-- sidecar_access is the access phase of an extension's sidecar location
+-- (@ewx_<hex>_sidecar, edgeweir.ext.sidecar_enter): the request context
+-- comes back and is kept for a fallthrough.
+function _M.sidecar_access()
+  waf.restore()
+  local ctx = ngx.ctx
+  if not ctx.edgeweir_site or not ctx.edgeweir_ext_sidecar then
+    return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+  end
+  ngx.var.edgeweir_ctx_ref = waf.stash_ctx(ctx)
+end
+
+-- sidecar_log drops the context kept for a fallthrough that did not come.
+function _M.sidecar_log()
+  local ref = ngx.var.edgeweir_ctx_ref
+  if ref and ref ~= "" then waf.take_ctx(ref) end
+  return require("edgeweir.stats").log()
+end
+
+-- sidecar_fallthrough is the access phase of @ewx_<hex>_fallthrough: the
+-- sidecar could not be reached or answered 599. A fail-closed call ends
+-- with 502; otherwise the request goes on along the site's normal path
+-- without the sidecar's request headers.
+function _M.sidecar_fallthrough()
+  waf.restore()
+  local ctx = ngx.ctx
+  local site, sc = ctx.edgeweir_site, ctx.edgeweir_ext_sidecar
+  if not site or not sc then
+    return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+  end
+  ctx.edgeweir_ext_sidecar = nil
+  for name in pairs(ngx.req.get_headers(0)) do
+    if sub(name, 1, 15) == "x-edgeweir-ext-" then ngx.req.clear_header(name) end
+  end
+  local log = ctx.edgeweir_ext_log
+  if log then log["ext." .. sc.id .. ".verdict"] = "fallthrough" end
+  if sc.fail == "closed" then
+    reasons.set("extension", "ext:" .. sc.id)
+    return deny(502, "extension", "extension unavailable")
+  end
+  if after_ext(site, ctx.edgeweir_policy, ngx.var.host, ctx.edgeweir_original_path, ctx.edgeweir_acme) then
     return proceed()
   end
 end
@@ -1134,6 +1214,10 @@ function _M.header_filter(waf_location)
       local aok, err = pcall(aicrawl.header_filter, site)
       if not aok then ngx.log(ngx.ERR, "edgeweir: AI crawl response failed site=", site.id, ": ", err) end
     end
+    -- Node extensions' header filters and HTML injection (edgeweir.ext).
+    if site._ext then
+      ext.header_filter(site)
+    end
     -- The gRPC location compresses nothing.
     if not ngx.ctx.edgeweir_grpc then
       compress.header_filter(site)
@@ -1142,11 +1226,13 @@ function _M.header_filter(waf_location)
 end
 
 -- body_filter sends the error page header_filter prepared (CRS
--- locations), and the bodies AI crawl control replaces or prepends to
--- (edgeweir.aicrawl: pay per crawl's 402, the managed robots.txt).
+-- locations), the bodies AI crawl control replaces or prepends to
+-- (edgeweir.aicrawl: pay per crawl's 402, the managed robots.txt), and
+-- node extensions' body filters (edgeweir.ext).
 function _M.body_filter()
   if aicrawl.filtering() then return aicrawl.body_filter() end
-  return errorpages.body_filter()
+  errorpages.body_filter()
+  return ext.body_filter()
 end
 
 -- error_page answers nginx's own errors (content phase of @edgeweir_error,

@@ -135,5 +135,8 @@ func (a *Agent) siteTable(plan *configir.Plan) *dataplane.SiteTable {
 	t := dataplane.FromPlan(plan)
 	t.CDNID = a.cdnID()
 	t.HealthCertificate = a.healthCert
+	if t.Extensions != nil {
+		t.Extensions.Node = a.extensionNode()
+	}
 	return t
 }

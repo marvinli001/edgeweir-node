@@ -50,6 +50,11 @@ type Params struct {
 	CacheDir string
 	// ControlSocket is the unix socket of the control API.
 	ControlSocket string
+	// ExtensionSocketDir holds a directory per extension sidecar with its
+	// socket and the origin socket nginx serves for it (default: the
+	// control socket's directory + "-ext"; outside it, so that sidecars
+	// never reach the control sockets).
+	ExtensionSocketDir string
 	// EdgeSocket and EdgeTLSSocket are the local edge listeners (plain
 	// and TLS) of the agent's prefetch requests (default: edge.sock next
 	// to ControlSocket, edge-tls.sock next to EdgeSocket). Requests there
@@ -261,6 +266,9 @@ func (p Params) WithDefaults() Params {
 	if p.L4Socket == "" && p.ControlSocket != "" {
 		p.L4Socket = filepath.Join(filepath.Dir(p.ControlSocket), "l4.sock")
 	}
+	if p.ExtensionSocketDir == "" && p.ControlSocket != "" {
+		p.ExtensionSocketDir = filepath.Dir(p.ControlSocket) + "-ext"
+	}
 	if p.L4DictMB == 0 {
 		p.L4DictMB = DefaultL4DictMB
 	}
@@ -368,6 +376,12 @@ type data struct {
 	Params
 	ConfID      string
 	SharedDicts []sharedDict
+	// Extensions are the node extensions whose packages the agent unpacked
+	// (configir.Extension.Dir), in hook order: workers load them at start,
+	// so a change of the set reloads nginx (feature extensions-v1).
+	Extensions []renderedExtension
+	// Sidecars are the Extensions with a sidecar (extension version 1.1).
+	Sidecars []renderedExtension
 	// RegexCacheEntries sizes lua_regex_cache_max_entries when site or
 	// offline host patterns (domains-v2) are matched with ngx.re's "jo": each
 	// is compiled once per worker. 0: nginx's default (1024).
@@ -611,6 +625,77 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		out = append(out, sharedDict{Name: name, SizeKB: p.RateLimitDictKB})
 	}
 	return out, nil
+}
+
+// renderedExtension is a loadable extension package.
+type renderedExtension struct {
+	ID, Dir, SHA256 string
+	// Sidecar is set for packages with a sidecar (extension version 1.1).
+	Sidecar *renderedSidecar
+}
+
+// sidecars returns the extensions with a sidecar.
+func sidecars(exts []renderedExtension) []renderedExtension {
+	var out []renderedExtension
+	for _, e := range exts {
+		if e.Sidecar != nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// renderedSidecar is what nginx.conf names of an extension's sidecar: its
+// upstream and locations (ewx_<Hex>_...), its socket and the origin socket
+// nginx serves for it.
+type renderedSidecar struct {
+	Hex, Socket, OriginSocket string
+	ConnectMS, TimeoutS       int
+	// MaxBody is client_max_body_size of the sidecar location (1 for a
+	// sidecar that takes no body: 0 means no limit to nginx).
+	MaxBody int
+}
+
+// ExtensionSidecarSockets returns an extension's sidecar socket directory,
+// its socket and the origin socket (Params.ExtensionSocketDir/<id>).
+func (p Params) ExtensionSidecarSockets(id string) (dir, sidecar, origin string) {
+	dir = filepath.Join(p.WithDefaults().ExtensionSocketDir, id)
+	return dir, filepath.Join(dir, "sidecar.sock"), filepath.Join(dir, "origin.sock")
+}
+
+// SidecarFallthroughSocket answers 599 for sidecars nginx cannot reach.
+func (p Params) SidecarFallthroughSocket() string {
+	return filepath.Join(filepath.Dir(p.ControlSocket), "ext-fallthrough.sock")
+}
+
+// extensions returns the loadable packages and their shared dicts.
+func extensions(p Params, plan *configir.Plan) ([]renderedExtension, []sharedDict, error) {
+	var out []renderedExtension
+	var dicts []sharedDict
+	for _, e := range plan.Extensions {
+		if e.Dir == "" {
+			continue
+		}
+		if !safeWord.MatchString(e.ID) || !safePath.MatchString(e.Dir) || !safeWord.MatchString(e.SHA256) {
+			return nil, nil, fmt.Errorf("invalid extension %q", e.ID)
+		}
+		x := renderedExtension{ID: e.ID, Dir: e.Dir, SHA256: e.SHA256}
+		if s := e.Sidecar; s != nil {
+			_, sock, origin := p.ExtensionSidecarSockets(e.ID)
+			if !safePath.MatchString(sock) {
+				return nil, nil, fmt.Errorf("invalid sidecar socket of %q", e.ID)
+			}
+			x.Sidecar = &renderedSidecar{
+				Hex: hex.EncodeToString([]byte(e.ID)), Socket: sock, OriginSocket: origin,
+				ConnectMS: s.ConnectTimeoutMS, TimeoutS: s.TimeoutS, MaxBody: max(s.MaxBody, 1),
+			}
+		}
+		out = append(out, x)
+		for _, d := range e.SharedDicts {
+			dicts = append(dicts, sharedDict{Name: d.DictName(e.ID), SizeKB: d.SizeKB})
+		}
+	}
+	return out, dicts, nil
 }
 
 // matchServer is the server of a suffix or pattern domain (domains-v2).
@@ -1130,6 +1215,11 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	exts, extDicts, err := extensions(p, plan)
+	if err != nil {
+		return nil, err
+	}
+	dicts = append(dicts, extDicts...)
 	if err := validateCompression(plan); err != nil {
 		return nil, err
 	}
@@ -1158,6 +1248,8 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		// Whole milliseconds, at least one (nginx's time syntax).
 		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
 		SharedDicts:       dicts,
+		Extensions:        exts,
+		Sidecars:          sidecars(exts),
 		RegexCacheEntries: regexCacheEntries(plan),
 		EdgeServers:       edge,
 		ForwardedFor:      forwardedFor,

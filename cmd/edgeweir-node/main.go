@@ -50,6 +50,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/nodelog"
 	"github.com/marvinli001/edgeweir-node/internal/probe"
 	"github.com/marvinli001/edgeweir-node/internal/render"
+	"github.com/marvinli001/edgeweir-node/internal/sidecar"
 	"github.com/marvinli001/edgeweir-node/internal/upgrade"
 	"github.com/marvinli001/edgeweir-node/internal/version"
 )
@@ -108,6 +109,12 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return cmdDiagnose(args[1:], stdout, stderr)
 	case "pprof":
 		return cmdPprof(args[1:], stdout, stderr)
+	case "extension":
+		return cmdExtension(args[1:], stdout, stderr)
+	case sidecar.ChildCommand:
+		// Starts an extension sidecar in its sandbox for the agent
+		// (internal; not in the usage).
+		return sidecar.RunChild(args[1:], stderr)
 	case imageconv.ChildCommand:
 		// One WebP / AVIF conversion for the agent's image converter
 		// (internal; not in the usage).
@@ -146,6 +153,7 @@ Usage:
   edgeweir-node accesslog [--site ID] [--json] [--socket PATH]
   edgeweir-node diagnose [--state-dir DIR] [--control-socket PATH] [--diag-socket PATH] [--json]
   edgeweir-node pprof PROFILE [--seconds N] [--output FILE] [--diag-socket PATH]
+  edgeweir-node extension keygen|pack|sign|verify ...
   edgeweir-node version
 
 Run "edgeweir-node <command> -h" for the flags of a command. Every flag can
@@ -548,6 +556,11 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		modsecModule  = fs.String("modsecurity-module", "auto", "ModSecurity-nginx dynamic module for sites that run the OWASP CRS: auto (the edgeweir-openresty-modsecurity package next to --nginx-bin), a path, or off")
 		crsDir        = fs.String("crs-dir", render.DefaultCRSDir, "OWASP CRS directory (crs-setup.conf and rules/); unicode.mapping is read from ../modsecurity/")
+		noExtensions  = fs.Bool("no-extensions", false, "turn node extensions off: do not announce extensions-v1, never download or load extension packages (the console cannot override it)")
+		extensionKeys = fs.String("extension-keys", "", "file of publisher keys (Ed25519 JWKs, one per line or a JSON array) extension packages must be signed with, on top of the console's trust store")
+		sidecarMode   = fs.String("sidecar-mode", "auto", "extension sidecars: auto (run them when the agent runs as root with --sidecar-user), user (the same, required) or off (never run one)")
+		sidecarUser   = fs.String("sidecar-user", "", "unprivileged user of its own that extension sidecars run as (needs the agent to run as root)")
+		sidecarDir    = fs.String("sidecar-dir", "", "directory of the sidecars' package copies, state and data (default: the state directory + \"-sidecar\")")
 		imageWorkers  = fs.Int("image-workers", imageconv.DefaultWorkers(), "concurrent WebP / AVIF conversions, each a child process on one CPU (0 turns conversion off: sites that convert cannot be served by this node)")
 		imageMemoryMB = fs.Int("image-memory-mb", int(imageconv.DefaultMemory>>20), "memory the running WebP / AVIF conversions may use together, in MiB (each conversion's need is estimated from its pixels; larger images keep their original)")
 		imageTimeout  = fs.Duration("image-timeout", imageconv.DefaultTimeout, "longest WebP / AVIF conversion (the child is killed and the original kept)")
@@ -865,6 +878,10 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
 		Markdown:            agent.MarkdownOptions{Workers: *mdWorkers, Memory: int64(*mdMemoryMB) << 20, Timeout: *mdTimeout},
 		ChallengeVerify:     &challengeverify.Verifier{Endpoints: endpoints},
+		Extensions: agent.ExtensionsConfig{
+			Disabled: *noExtensions, KeysFile: *extensionKeys,
+			SidecarMode: *sidecarMode, SidecarUser: *sidecarUser, SidecarDir: *sidecarDir,
+		},
 		NodeLogs:            nodeLogs,
 		DebugLogs:           debugLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
@@ -892,8 +909,10 @@ func engineConfig(bin, prefix, conf string, params render.Params, log *slog.Logg
 		Prefix:       prefix,
 		Conf:         conf,
 		Managed:      true,
-		StaleSockets: append([]string{params.ControlSocket, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket}, params.OriginLayerSockets()...),
-		Logger:       log,
+		StaleSockets: append([]string{params.ControlSocket, params.EdgeSocket, params.EdgeTLSSocket, params.L4Socket, params.SidecarFallthroughSocket()}, params.OriginLayerSockets()...),
+		// The origin sockets nginx serves for extension sidecars.
+		StaleSocketGlobs: []string{filepath.Join(params.WithDefaults().ExtensionSocketDir, "*", "origin.sock")},
+		Logger:           log,
 	}
 }
 

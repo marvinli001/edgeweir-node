@@ -319,6 +319,8 @@ function _M.prepare(s, cfg)
   -- Access control (access-control-v1): lists, hotlink, user agents, CORS,
   -- geo, WebSocket origins and idle timeout, security headers.
   access.prepare(s)
+  -- The node extensions the site turns on, in hook order (edgeweir.ext).
+  require("edgeweir.ext").prepare(s)
   -- The listener ports the site is served on (edge-ports-v1); nil: every
   -- listener. The HTTPS redirect's excluded domains, by name.
   if type(s.ports) == "table" and #s.ports > 0 then
@@ -537,6 +539,8 @@ function _M.replace(doc)
   cfg.tag_ttl = tonumber(doc.tag_ttl)
   if type(doc.platform_error_pages) == "table" then cfg.platform_error_pages = doc.platform_error_pages end
   if type(doc.offline_hosts) == "table" and #doc.offline_hosts > 0 then cfg.offline_hosts = doc.offline_hosts end
+  -- Node extensions' settings (extensions-v1, edgeweir.ext).
+  if type(doc.extensions) == "table" then cfg.extensions = doc.extensions end
   -- Site patterns in precedence order; each compiles (checked here so a
   -- pattern PCRE2 refuses rejects the table instead of every request).
   local patterns = patterns_of(list)
@@ -725,6 +729,7 @@ function _M.config(version)
       unknown = unknown_hosts(doc.unknown_hosts),
       ai_crawlers = aicrawl.prepare_catalogue(doc.ai_crawlers),
       tier_clients = type(doc.tier_clients) == "table" and doc.tier_clients or nil,
+      extensions = require("edgeweir.ext").compile(doc.extensions),
     }
     if type(doc.patterns) == "table" and #doc.patterns > 0 then
       cfg.patterns = {}

@@ -391,6 +391,12 @@ function _M.request(site, headers)
     values["ip.geoip.country"], values["ip.geoip.subdivision"], values["ip.geoip.asnum"] = geo.country or "", geo.subdivision or "", geo.asnum or 0
     values["ip.geoip.as_name"] = geo.as_name or ""
   end
+  -- Rule fields node extensions set in their access hooks
+  -- (ext.<id>.<name>, edgeweir.ext); unset ones read as their default.
+  local ext_fields = ngx.ctx.edgeweir_ext_fields
+  if ext_fields then
+    for k, v in pairs(ext_fields) do values[k] = v end
+  end
   if site._body or site._bots then _M.lazy_values(values, site) end
   return values
 end

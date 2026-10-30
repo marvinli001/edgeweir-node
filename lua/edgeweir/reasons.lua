@@ -15,7 +15,7 @@ local _M = {}
 _M.REASONS = {
   ip_banned = true, ip_blocked = true, rule = true, rate_limit = true, crs = true, cc = true,
   challenge = true, auth = true, referer = true, user_agent = true, region = true, cors = true,
-  websocket_origin = true, client_cert = true, maintenance = true,
+  websocket_origin = true, client_cert = true, maintenance = true, extension = true,
   -- AI crawl control (ai-crawlers-v1, ADR-0070): a crawler's block or
   -- challenge action; pay per crawl's 402 and 400 answers.
   ai_crawler = true, pay_per_crawl = true,

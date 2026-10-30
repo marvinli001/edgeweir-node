@@ -162,6 +162,11 @@ function _M.log(waf_location)
       return
     end
   end
+  -- Node extensions' log hooks set their log fields and counters first
+  -- (edgeweir.ext).
+  if ctx_site and ctx_site._ext and ctx_site.id == site then
+    require("edgeweir.ext").log(ctx_site)
+  end
   local geo = _M.geo(ctx, var.remote_addr)
   -- AI crawlers (ai-crawlers-v1): verified in the access phase, else only
   -- claimed here (requests refused before it).
@@ -211,6 +216,14 @@ function _M.log(waf_location)
   if waf_ids then
     for i = 1, #waf_ids do
       dict:incr(p .. "w" .. waf_ids[i], 1, 0, TTL)
+    end
+  end
+  -- Node extensions' counters and faults (metric "x<id>.<name>", reported
+  -- as MinuteStats.ext_counters "ext.<id>.<name>").
+  local counts = ctx.edgeweir_ext_counts
+  if counts then
+    for name, n in pairs(counts) do
+      dict:incr(p .. "x" .. name, n, 0, TTL)
     end
   end
 end
@@ -462,6 +475,10 @@ function _M.drain(now)
           local id = sub(metric, 2)
           b.logged_rules = b.logged_rules or {}
           b.logged_rules[id] = (b.logged_rules[id] or 0) + v
+        elseif sub(metric, 1, 1) == "x" then
+          local name = "ext." .. sub(metric, 2)
+          b.ext_counters = b.ext_counters or {}
+          b.ext_counters[name] = (b.ext_counters[name] or 0) + v
         end
       end
     end

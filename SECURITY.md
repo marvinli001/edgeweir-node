@@ -96,6 +96,12 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 带 `Authorization` 的请求默认不查缓存也不存储（RFC 9111 §3.5），只有规则显式设置 `cache_authorized` 才缓存。
 - 站点、源站、规则 id 只接受 `[A-Za-z0-9_-]`，避免它们在数据面的键里互相冒充。
 
+**节点扩展（`extensions-v1`）**
+
+- 扩展是运营者在控制台信任的发布者用 Ed25519 签名的 Lua 扩展包，默认没有受信任的密钥。agent 解包前独立校验 JWS、摘要、大小、发布者与清单（与控制台相同的规则），归档不能含链接、原生代码或字节码，大小与条目数有上限；只经 mTLS 按摘要获取，不从发布者下载，也不向发布者报告。
+- `--extension-keys FILE` 让节点只接受本地文件里的公钥，即使控制台失陷信任了别的密钥；`--no-extensions` 让节点完全不运行扩展。在意控制台失陷后果的部署应使用其中之一。
+- 扩展以 nginx worker 的权限在 worker 内运行，能读取并修改开启它的网站的请求与响应（包括 Cookie 与凭据），能访问 worker 能访问的共享内存、套接字与文件，有 `http_client` 时还能连接网络。受限环境只是防误用，**不是沙箱**。钩子在 `pcall` 中按时间预算运行，反复故障熔断，默认失败放行。
+
 **本地攻击面**
 
 - 本地控制 API 只监听 unix socket，从不监听 TCP。
