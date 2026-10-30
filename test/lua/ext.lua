@@ -81,6 +81,10 @@ function M.access(ew)
   if mode == "bad_field" then ew.field("score", "seven") end
   if mode == "undeclared" then ew.field("other", 1) end
   if mode == "slow" then local t = os.clock() while os.clock() - t < 0.03 do end end
+  if mode == "headers" then
+    ew.ctx.hdr = { (pcall(ew.respond, 403, "x", { ["X-Edgeweir-Challenge"] = "session" })),
+      (pcall(ew.respond, 403, "x", { ["X-Edgeweir-Error"] = "x" })) }
+  end
   ew.ctx.seen = (ew.ctx.seen or 0) + 1
 end
 function M.access_late(ew)
@@ -257,6 +261,11 @@ test("challenge and allow verdicts", function()
   s = site({ { id = "t-verdict", config = { mode = "late_deny" } } })
   eq(access(s, "access_late"), true)
   eq(denied.status, 403)
+  s = site({ { id = "t-verdict", config = { mode = "headers" } } })
+  eq(access(s), nil)
+  local hdr = ngx.ctx.edgeweir_ext["t-verdict"].ctx.hdr
+  eq(hdr[1], true, "ew.respond may mark its page X-Edgeweir-Challenge")
+  eq(hdr[2], false, "other X-Edgeweir- headers are the node's")
 end)
 
 test("verdicts need the capability; fields are type-checked and declared", function()
