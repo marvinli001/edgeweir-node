@@ -117,9 +117,23 @@ return M
 
 local BROKEN = package("t-broken", {}, { ["lua/main.lua"] = "return {" })
 
+local API2 = package("t-api2", { requires = { lua_api = 2 }, hooks = { "access", "log" } }, { ["lua/main.lua"] = [[
+local M = {}
+function M.access(ew)
+  ew.ctx.site_name = ew.site_name
+  ew.ctx.reason = { ew.resp.reason() }
+  ew.ctx.node = { ew.node.id(), ew.node.name(), ew.node.cluster_id(), ew.node.version() }
+  ew.ctx.status = ew.node.status()
+  ew.ctx.equal = { ew.equal("abc", "abc"), ew.equal("abc", "abd"), ew.equal("abc", "ab"), ew.equal("", "") }
+  ew.ctx.log_only = pcall(ew.resp.bytes_sent)
+end
+return M
+]] })
+local FUTURE = package("t-future", { requires = { lua_api = 3 } }, { ["lua/main.lua"] = "return {}" })
+
 ext.init({
   { id = "hello-header", dir = example_dir, sha256 = string.rep("b", 64) },
-  VERDICTS, NOCAP, PROBE, BROKEN,
+  VERDICTS, NOCAP, PROBE, BROKEN, API2, FUTURE,
 })
 ext.init_worker()
 
@@ -339,6 +353,30 @@ test("helpers", function()
   eq(a.b64url_encode("\255\254"), "__4")
   eq(a.json_decode(a.json_encode({ a = 1 })).a, 1)
   eq(#a.random_bytes(16), 16)
+end)
+
+test("Lua API 2: site name, reason, node, status, equal", function()
+  eq(ext.EXT["t-future"].err, "unsupported Lua API")
+  settings.node = { id = "n1", name = "edge-1", cluster_id = "c1", version = "1.7.0" }
+  ngx.shared.edgeweir_meta:set("ext_node_status", '{"at":1,"cpu_percent":12.5}')
+  enable("t-api2")
+  local s = { id = "s1", domains = { { name = "shop.example" }, { name = "www.shop.example" } },
+    extensions = { { id = "t-api2", config = {} } } }
+  ext.prepare(s)
+  reset_ctx()
+  reasons.set("rate_limit", "r7")
+  ext.access(s, run_challenge, deny)
+  local c = ngx.ctx.edgeweir_ext["t-api2"].ctx
+  eq(c.site_name, "shop.example")
+  eq(c.reason[1], "rate_limit"); eq(c.reason[2], "r7")
+  eq(table.concat(c.node, ","), "n1,edge-1,c1,1.7.0")
+  eq(c.status.cpu_percent, 12.5)
+  eq(c.equal[1], true); eq(c.equal[2], false); eq(c.equal[3], false); eq(c.equal[4], true)
+  eq(c.log_only, false, "bytes_sent outside log")
+  eq(ext.EXT["t-api2"].api.api, 2)
+  eq(ext.EXT["t-verdict"].api.api, 1)
+  eq(ext.EXT["t-verdict"].api.node, nil, "API 1 has no ew.node")
+  settings.node = nil
 end)
 
 os.execute("rm -r '" .. tmp .. "'")

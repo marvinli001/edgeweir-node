@@ -65,6 +65,31 @@ type SiteTable struct {
 type ExtensionTable struct {
 	Disabled bool                 `json:"disabled"`
 	List     []configir.Extension `json:"list"`
+	// Node is this node's identity for ew.node (Lua API 2).
+	Node *ExtensionNode `json:"node,omitempty"`
+}
+
+// ExtensionNode is the node identity extensions read (ew.node.id, name,
+// cluster_id, version).
+type ExtensionNode struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	ClusterID string `json:"cluster_id"`
+	Version   string `json:"version"`
+}
+
+// ExtensionNodeStatus is the node's last reported host metrics for
+// ew.node.status() (Lua API 2).
+type ExtensionNodeStatus struct {
+	At                int64   `json:"at"`
+	CPUPercent        float64 `json:"cpu_percent"`
+	Load1             float64 `json:"load1"`
+	Load5             float64 `json:"load5"`
+	Load15            float64 `json:"load15"`
+	MemoryUsedBytes   uint64  `json:"memory_used_bytes"`
+	MemoryTotalBytes  uint64  `json:"memory_total_bytes"`
+	EgressBps         uint64  `json:"egress_bps"`
+	ActiveConnections uint64  `json:"active_connections"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -489,4 +514,9 @@ func (c *Client) Extensions(ctx context.Context) (map[string]ExtensionRuntime, e
 		return nil, err
 	}
 	return out.Extensions, nil
+}
+
+// PutExtensionNodeStatus stores the host metrics ew.node.status() returns.
+func (c *Client) PutExtensionNodeStatus(ctx context.Context, s *ExtensionNodeStatus) error {
+	return c.do(ctx, http.MethodPut, "/v1/extensions/node-status", s, nil)
 }

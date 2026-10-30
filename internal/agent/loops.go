@@ -235,6 +235,7 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 	req.Bans = a.banReport(cctx)
 	req.Security = a.securityReport(cctx)
 	req.Extensions = a.extensionReport(cctx)
+	a.pushExtensionNodeStatus(cctx, req.Metrics)
 	if a.kernelActive() {
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "kernel-ban-v1")
 	}

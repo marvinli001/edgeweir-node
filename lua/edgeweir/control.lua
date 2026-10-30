@@ -169,6 +169,16 @@ function _M.handle()
     return reply(200, { extensions = require("edgeweir.ext").status() })
   end
 
+  -- The agent's last host metrics for ew.node.status() (Lua API 2).
+  if uri == "/v1/extensions/node-status" then
+    if method ~= "PUT" then return reply(405, { error = "method not allowed" }) end
+    local raw = read_body()
+    local doc = raw and #raw <= 4096 and cjson.decode(raw)
+    if type(doc) ~= "table" then return reply(400, { error = "invalid node status" }) end
+    ngx.shared.edgeweir_meta:set("ext_node_status", cjson.encode(doc))
+    return reply(200, {})
+  end
+
   if uri == "/v1/logs/drain" then
     if method ~= "POST" then return reply(405, { error = "method not allowed" }) end
     return reply(200, { logs = require("edgeweir.accesslogs").drain() })

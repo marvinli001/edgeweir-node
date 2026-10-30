@@ -27,7 +27,9 @@ local _M = {}
 local byte, find, sub, lower, gsub, format = string.byte, string.find, string.sub, string.lower, string.gsub, string.format
 local concat = table.concat
 
-_M.API = 1
+-- API is the highest Lua API this node runs; packages may require 1..API
+-- (extensions-v1, extensions-v2).
+_M.API = 2
 _M.PREFIX = "/.edgeweir/ext/"
 -- Budgets of a hook call in seconds (wall time): IO_BUDGET for the hooks
 -- of extensions with http_client that may wait on cosockets.
@@ -166,10 +168,12 @@ local function load_one(spec)
     e.err = "manifest unreadable"
     return e
   end
-  if tonumber(type(m.requires) == "table" and m.requires.lua_api) ~= _M.API then
+  local lua_api = tonumber(type(m.requires) == "table" and m.requires.lua_api)
+  if lua_api ~= 1 and lua_api ~= _M.API then
     e.err = "unsupported Lua API"
     return e
   end
+  e.lua_api = lua_api
   e.version, e.manifest = m.version, m
   e.hooks, e.caps = set_of(m.hooks), set_of(m.capabilities)
   e.fields = {}
@@ -234,6 +238,7 @@ end
 function _M.compile(doc)
   if type(doc) ~= "table" or type(doc.list) ~= "table" then return nil end
   local out = { disabled = doc.disabled == true, by_id = {} }
+  if type(doc.node) == "table" then out.node = doc.node end
   for i, x in ipairs(doc.list) do
     if type(x) == "table" and type(x.id) == "string" then
       out.by_id[x.id] = {
@@ -367,8 +372,98 @@ end
 
 -- api builds an extension's API object, shared by its requests; ew()
 -- gives each request its own table that reads through to it.
+-- upstream_last returns the last value of an upstream variable listing
+-- every origin attempt ("502, 200" or "x : y"), nil without one.
+local function upstream_last(v)
+  if v == nil or v == "" then return nil end
+  local last = v:match("([^,:%s]+)%s*$")
+  if last == nil or last == "-" then return nil end
+  return last
+end
+
+local HTTP_VERSIONS = { [1.0] = "1.0", [1.1] = "1.1", [2.0] = "2", [3.0] = "3" }
+
+-- api2 adds the calls of Lua API 2 to a (extension version 1.1).
+local function api2(e, a)
+  local var = function(name) return ngx.var[name] end
+  local function num(name) return tonumber(var(name)) end
+  a.req.http_version = function() return HTTP_VERSIONS[ngx.req.http_version()] or "" end
+  a.req.request_length = function()
+    in_hooks(e, { "log" })
+    return num("request_length")
+  end
+  a.req.request_time = function()
+    in_hooks(e, { "log" })
+    return num("request_time")
+  end
+  a.req.verified_bot = function()
+    in_hooks(e, { "access", "access_late" })
+    ngx.update_time()
+    local started = ngx.now()
+    local ok, verified, name = pcall(require("edgeweir.bots").request)
+    ngx.update_time()
+    local st = req_state(e.id)
+    st.excluded = (st.excluded or 0) + (ngx.now() - started)
+    if ok and verified then return name end
+    return nil
+  end
+  a.req.exempt = function()
+    in_hooks(e, { "access", "access_late" })
+    local site, addr = ngx.ctx.edgeweir_site, var("remote_addr")
+    if not site then return false end
+    return require("edgeweir.router").platform_allowed(site, addr) or require("edgeweir.access").site_allowed(site, addr)
+  end
+  a.resp.bytes_sent = function()
+    in_hooks(e, { "log" })
+    return num("bytes_sent")
+  end
+  for _, name in ipairs({ "response_time", "connect_time", "header_time" }) do
+    a.resp["upstream_" .. name] = function()
+      in_hooks(e, { "log" })
+      return tonumber(upstream_last(var("upstream_" .. name)))
+    end
+  end
+  a.resp.upstream_status = function()
+    in_hooks(e, { "log" })
+    return tonumber(upstream_last(var("upstream_status")))
+  end
+  a.resp.reason = function()
+    local reason, rule = require("edgeweir.reasons").get()
+    return reason or "", rule or ""
+  end
+  local function node()
+    local x = require("edgeweir.store").config().extensions
+    return x and x.node or {}
+  end
+  a.node = {
+    id = function() return node().id or "" end,
+    name = function() return node().name or "" end,
+    cluster_id = function() return node().cluster_id or "" end,
+    version = function() return node().version or "" end,
+    connections = function()
+      if current_hook(e) == "timer" then return nil end
+      return { active = num("connections_active") or 0, reading = num("connections_reading") or 0,
+        writing = num("connections_writing") or 0, waiting = num("connections_waiting") or 0 }
+    end,
+    status = function()
+      local d = meta()
+      local raw = d and d:get("ext_node_status")
+      return raw and cjson.decode(raw) or nil
+    end,
+  }
+  a.equal = function(x, y)
+    if type(x) ~= "string" or type(y) ~= "string" then error("equal takes strings", 2) end
+    -- Constant time in the content; the length is not secret.
+    if #x ~= #y then return false end
+    local bit = require("bit")
+    local diff = 0
+    for i = 1, #x do diff = bit.bor(diff, bit.bxor(byte(x, i), byte(y, i))) end
+    return diff == 0
+  end
+end
+
 local function api(e)
-  local a = { id = e.id, version = e.version, api = _M.API }
+  local a = { id = e.id, version = e.version, api = e.lua_api or 1 }
   local var = function(name) return ngx.var[name] end
 
   a.req = {
@@ -629,6 +724,7 @@ local function api(e)
     end
     return verdict("respond", { status = status, body = body, headers = headers })
   end
+  if (e.lua_api or 1) >= 2 then api2(e, a) end
   return a
 end
 
@@ -699,17 +795,23 @@ local function call(e, set, site, hook, ...)
   local ew = st.ew
   if not ew or st.site ~= site then
     ew = setmetatable({ site_id = site and site.id, ctx = st.ctx or {} }, { __index = e.api })
+    if (e.lua_api or 1) >= 2 then
+      local d = site and type(site.domains) == "table" and site.domains[1]
+      ew.site_name = type(d) == "table" and d.name or nil
+    end
     st.ctx, st.ew, st.site = ew.ctx, ew, site
   end
   ew.global_config = set.config
   e.global_config = set.config
   ew.site_config = st.site_config
-  local previous = st.hook
-  st.hook = hook
+  local previous, excluded = st.hook, st.excluded
+  st.hook, st.excluded = hook, 0
   ngx.update_time()
   local started = ngx.now()
   local ok, res = pcall(fn, ew, ...)
-  st.hook = previous
+  -- Time spent waiting for a verified crawler's DNS does not count.
+  started = started + (st.excluded or 0)
+  st.hook, st.excluded = previous, excluded
   ngx.update_time()
   if not ok then
     _M.fault(e, site and site.id, hook .. ": " .. tostring(res))

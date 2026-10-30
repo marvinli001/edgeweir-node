@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -264,6 +265,38 @@ func (a *Agent) removeStaleExtensions(plans ...*configir.Plan) {
 // load state and fault counters (GET /v1/extensions).
 type extensionDataPlane interface {
 	Extensions(ctx context.Context) (map[string]dataplane.ExtensionRuntime, error)
+	PutExtensionNodeStatus(ctx context.Context, s *dataplane.ExtensionNodeStatus) error
+}
+
+// extensionNode is this node's identity for the extensions (ew.node).
+func (a *Agent) extensionNode() *dataplane.ExtensionNode {
+	n := &dataplane.ExtensionNode{ID: a.selfID(), Version: version.Version}
+	if ch := a.connectedCh.Load(); ch != nil {
+		if id := ch.Identity(); id != nil {
+			n.ID, n.Name, n.ClusterID = id.NodeID, id.NodeName, id.ClusterID
+		}
+	}
+	return n
+}
+
+// pushExtensionNodeStatus hands the heartbeat's host metrics to the
+// extensions (ew.node.status) while the plan has any.
+func (a *Agent) pushExtensionNodeStatus(ctx context.Context, m *nodev1.NodeMetrics) {
+	a.mu.Lock()
+	plan := a.plan
+	a.mu.Unlock()
+	dp, ok := a.dp.(extensionDataPlane)
+	if m == nil || !ok || plan == nil || len(plan.Extensions) == 0 {
+		return
+	}
+	s := &dataplane.ExtensionNodeStatus{
+		At: time.Now().Unix(), CPUPercent: m.GetCpuPercent(), Load1: m.GetLoad1(), Load5: m.GetLoad5(), Load15: m.GetLoad15(),
+		MemoryUsedBytes: m.GetMemoryUsedBytes(), MemoryTotalBytes: m.GetMemoryTotalBytes(), EgressBps: m.GetEgressBps(),
+		ActiveConnections: m.GetActiveConnections(),
+	}
+	if err := dp.PutExtensionNodeStatus(ctx, s); err != nil {
+		a.log.Debug("extension node status not stored", "err", err)
+	}
 }
 
 // extensionReport is the state of each extension of the applied plan.
