@@ -309,6 +309,7 @@ edgeweir-node version
 | `--image-memory-mb` | `1024` | Memory the running conversions may use together, in MiB; each conversion's need is estimated from its pixels, larger images keep their original |
 | `--image-timeout` | `8s` | Longest conversion: the child is killed and the original kept |
 | `--debug-log-buffer` | `5000` | Recent log entries of every level kept in memory (at most 4 MiB) for the console to pull from the node's Logs tab; `0` turns it off (the node does not announce `debug-logs-v1`), at most 100000 |
+| `--challenge-verify-endpoints` | empty | Replace CAPTCHA providers' verification URLs, comma-separated `kind=URL` (`turnstile`, `recaptcha`, `recaptcha_enterprise`, `tencent`, `aliyun`, `geetest`); for tests against a mock provider only |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
 

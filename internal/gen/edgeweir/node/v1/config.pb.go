@@ -4783,12 +4783,22 @@ func (x *WafExclusion) GetTargets() []string {
 
 // SiteProtection holds a site's challenge and CC mitigation settings.
 // Challenge types and levels are cookie302, js, pow and captcha (in rising
-// strength); anything else rejects the configuration.
+// strength); anything else rejects the configuration. captcha is the
+// interactive challenge: the site's interactive provider, or the built-in
+// image captcha.
+//
+// Since PROTO_NEXT (feature challenge-v3) a challenge may also be
+// "managed" (Under Attack, PlatformProtection, the challenge rule action):
+// it asks for a pass of level 3 (pow) and is passed without interaction
+// (a proof of work and the browser's signals) unless the node judges the
+// client suspicious, then it escalates to the interactive challenge (a
+// pass of level 4). Levels, CcPolicy.max_level and bans keep the four
+// types.
 type SiteProtection struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Challenge every GET/HEAD request that carries no valid pass.
 	UnderAttack bool `protobuf:"varint,1,opt,name=under_attack,json=underAttack,proto3" json:"under_attack,omitempty"`
-	// Challenge type of Under Attack.
+	// Challenge type of Under Attack (managed since PROTO_NEXT).
 	UnderAttackChallenge string `protobuf:"bytes,2,opt,name=under_attack_challenge,json=underAttackChallenge,proto3" json:"under_attack_challenge,omitempty"`
 	// Lifetime of a pass, 300 to 86400 seconds.
 	PassTtlSeconds uint32 `protobuf:"varint,3,opt,name=pass_ttl_seconds,json=passTtlSeconds,proto3" json:"pass_ttl_seconds,omitempty"`
@@ -4814,8 +4824,12 @@ type SiteProtection struct {
 	// answers within 600 seconds; 0 off, else 3-100.
 	FailureThreshold  uint32 `protobuf:"varint,10,opt,name=failure_threshold,json=failureThreshold,proto3" json:"failure_threshold,omitempty"`
 	FailureBanSeconds uint32 `protobuf:"varint,11,opt,name=failure_ban_seconds,json=failureBanSeconds,proto3" json:"failure_ban_seconds,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Third-party widget of the interactive challenge (level 4); unset means
+	// the built-in image captcha. Added in PROTO_NEXT (feature
+	// challenge-v3).
+	Interactive   *ChallengeProvider `protobuf:"bytes,12,opt,name=interactive,proto3" json:"interactive,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SiteProtection) Reset() {
@@ -4925,6 +4939,131 @@ func (x *SiteProtection) GetFailureBanSeconds() uint32 {
 	return 0
 }
 
+func (x *SiteProtection) GetInteractive() *ChallengeProvider {
+	if x != nil {
+		return x.Interactive
+	}
+	return nil
+}
+
+// ChallengeProvider is a third-party CAPTCHA widget of a site's interactive
+// challenge. The secret travels as an OriginCredential (access_key_id
+// empty, secret_access_key a JSON document of the kind's secret fields) and
+// never in NodeConfig; the agent verifies answers with the provider. When
+// the provider cannot be reached (timeout, network or server error) or the
+// secret has not been fetched, the node serves the built-in image captcha
+// instead, so that visitors are never locked out.
+type ChallengeProvider struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// turnstile, recaptcha_v2, recaptcha_v3, recaptcha_enterprise, tencent,
+	// aliyun or geetest; anything else rejects the configuration.
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Public key of the widget: the Turnstile or reCAPTCHA site key, the
+	// Tencent CaptchaAppId, the Alibaba Cloud SceneId or the GeeTest
+	// captcha_id (1-128 of [A-Za-z0-9_.-]).
+	SiteKey string `protobuf:"bytes,2,opt,name=site_key,json=siteKey,proto3" json:"site_key,omitempty"`
+	// OriginCredential id and version of the secret.
+	CredentialId      string `protobuf:"bytes,3,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
+	CredentialVersion uint64 `protobuf:"varint,4,opt,name=credential_version,json=credentialVersion,proto3" json:"credential_version,omitempty"`
+	// recaptcha_v3 and recaptcha_enterprise: lowest score that passes, in
+	// hundredths (1-100; 0 means 50).
+	MinScore uint32 `protobuf:"varint,5,opt,name=min_score,json=minScore,proto3" json:"min_score,omitempty"`
+	// recaptcha_enterprise: the Google Cloud project id.
+	ProjectId string `protobuf:"bytes,6,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	// aliyun: the region of the service, cn (cn-shanghai) or sgp
+	// (ap-southeast-1); and the identity prefix of the account.
+	Region        string `protobuf:"bytes,7,opt,name=region,proto3" json:"region,omitempty"`
+	Prefix        string `protobuf:"bytes,8,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChallengeProvider) Reset() {
+	*x = ChallengeProvider{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChallengeProvider) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChallengeProvider) ProtoMessage() {}
+
+func (x *ChallengeProvider) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChallengeProvider.ProtoReflect.Descriptor instead.
+func (*ChallengeProvider) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ChallengeProvider) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ChallengeProvider) GetSiteKey() string {
+	if x != nil {
+		return x.SiteKey
+	}
+	return ""
+}
+
+func (x *ChallengeProvider) GetCredentialId() string {
+	if x != nil {
+		return x.CredentialId
+	}
+	return ""
+}
+
+func (x *ChallengeProvider) GetCredentialVersion() uint64 {
+	if x != nil {
+		return x.CredentialVersion
+	}
+	return 0
+}
+
+func (x *ChallengeProvider) GetMinScore() uint32 {
+	if x != nil {
+		return x.MinScore
+	}
+	return 0
+}
+
+func (x *ChallengeProvider) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *ChallengeProvider) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *ChallengeProvider) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
 // ChallengeText is plain text (no control characters, at most 200
 // characters each); nodes escape it.
 type ChallengeText struct {
@@ -4939,7 +5078,7 @@ type ChallengeText struct {
 
 func (x *ChallengeText) Reset() {
 	*x = ChallengeText{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[39]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4951,7 +5090,7 @@ func (x *ChallengeText) String() string {
 func (*ChallengeText) ProtoMessage() {}
 
 func (x *ChallengeText) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[39]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4964,7 +5103,7 @@ func (x *ChallengeText) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeText.ProtoReflect.Descriptor instead.
 func (*ChallengeText) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{39}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ChallengeText) GetTitleZh() string {
@@ -5027,7 +5166,7 @@ type CcPolicy struct {
 
 func (x *CcPolicy) Reset() {
 	*x = CcPolicy{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[40]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5039,7 +5178,7 @@ func (x *CcPolicy) String() string {
 func (*CcPolicy) ProtoMessage() {}
 
 func (x *CcPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[40]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5052,7 +5191,7 @@ func (x *CcPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CcPolicy.ProtoReflect.Descriptor instead.
 func (*CcPolicy) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{40}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CcPolicy) GetEnabled() bool {
@@ -5141,16 +5280,17 @@ func (x *CcPolicy) GetCooldownSeconds() uint32 {
 
 // PlatformProtection is set by the operator for every site.
 type PlatformProtection struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	UnderAttack          bool                   `protobuf:"varint,1,opt,name=under_attack,json=underAttack,proto3" json:"under_attack,omitempty"`
-	UnderAttackChallenge string                 `protobuf:"bytes,2,opt,name=under_attack_challenge,json=underAttackChallenge,proto3" json:"under_attack_challenge,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	UnderAttack bool                   `protobuf:"varint,1,opt,name=under_attack,json=underAttack,proto3" json:"under_attack,omitempty"`
+	// Challenge type of Under Attack (managed since PROTO_NEXT).
+	UnderAttackChallenge string `protobuf:"bytes,2,opt,name=under_attack_challenge,json=underAttackChallenge,proto3" json:"under_attack_challenge,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *PlatformProtection) Reset() {
 	*x = PlatformProtection{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[41]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5162,7 +5302,7 @@ func (x *PlatformProtection) String() string {
 func (*PlatformProtection) ProtoMessage() {}
 
 func (x *PlatformProtection) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[41]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5175,7 +5315,7 @@ func (x *PlatformProtection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlatformProtection.ProtoReflect.Descriptor instead.
 func (*PlatformProtection) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{41}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PlatformProtection) GetUnderAttack() bool {
@@ -5205,7 +5345,7 @@ type SessionTicketKeyRef struct {
 
 func (x *SessionTicketKeyRef) Reset() {
 	*x = SessionTicketKeyRef{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[42]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5217,7 +5357,7 @@ func (x *SessionTicketKeyRef) String() string {
 func (*SessionTicketKeyRef) ProtoMessage() {}
 
 func (x *SessionTicketKeyRef) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[42]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5230,7 +5370,7 @@ func (x *SessionTicketKeyRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionTicketKeyRef.ProtoReflect.Descriptor instead.
 func (*SessionTicketKeyRef) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{42}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SessionTicketKeyRef) GetId() string {
@@ -5259,7 +5399,7 @@ type ChallengeKeyRef struct {
 
 func (x *ChallengeKeyRef) Reset() {
 	*x = ChallengeKeyRef{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[43]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5271,7 +5411,7 @@ func (x *ChallengeKeyRef) String() string {
 func (*ChallengeKeyRef) ProtoMessage() {}
 
 func (x *ChallengeKeyRef) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[43]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5284,7 +5424,7 @@ func (x *ChallengeKeyRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeKeyRef.ProtoReflect.Descriptor instead.
 func (*ChallengeKeyRef) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{43}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ChallengeKeyRef) GetId() string {
@@ -5353,7 +5493,7 @@ type RuleExpression struct {
 
 func (x *RuleExpression) Reset() {
 	*x = RuleExpression{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[44]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5365,7 +5505,7 @@ func (x *RuleExpression) String() string {
 func (*RuleExpression) ProtoMessage() {}
 
 func (x *RuleExpression) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[44]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5378,7 +5518,7 @@ func (x *RuleExpression) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuleExpression.ProtoReflect.Descriptor instead.
 func (*RuleExpression) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{44}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *RuleExpression) GetOp() string {
@@ -5438,7 +5578,8 @@ type RuleAction struct {
 	Gzip          *bool                  `protobuf:"varint,10,opt,name=gzip,proto3,oneof" json:"gzip,omitempty"`
 	Remove        bool                   `protobuf:"varint,11,opt,name=remove,proto3" json:"remove,omitempty"`
 	// Challenge type of kind "challenge" (waf-custom): cookie302, js, pow or
-	// captcha. Added in v0.10.0 (feature challenge-v1).
+	// captcha. Added in v0.10.0 (feature challenge-v1); managed since
+	// PROTO_NEXT (feature challenge-v3).
 	Challenge string `protobuf:"bytes,12,opt,name=challenge,proto3" json:"challenge,omitempty"`
 	// Fields 13-31 were added in v0.13.0 (feature rules-v2).
 	//
@@ -5530,7 +5671,7 @@ type RuleAction struct {
 
 func (x *RuleAction) Reset() {
 	*x = RuleAction{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[45]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5542,7 +5683,7 @@ func (x *RuleAction) String() string {
 func (*RuleAction) ProtoMessage() {}
 
 func (x *RuleAction) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[45]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5555,7 +5696,7 @@ func (x *RuleAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuleAction.ProtoReflect.Descriptor instead.
 func (*RuleAction) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{45}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *RuleAction) GetKind() string {
@@ -5876,7 +6017,7 @@ type QueryParam struct {
 
 func (x *QueryParam) Reset() {
 	*x = QueryParam{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[46]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5888,7 +6029,7 @@ func (x *QueryParam) String() string {
 func (*QueryParam) ProtoMessage() {}
 
 func (x *QueryParam) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[46]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5901,7 +6042,7 @@ func (x *QueryParam) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryParam.ProtoReflect.Descriptor instead.
 func (*QueryParam) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{46}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *QueryParam) GetName() string {
@@ -5941,7 +6082,7 @@ type EdgeRule struct {
 
 func (x *EdgeRule) Reset() {
 	*x = EdgeRule{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[47]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5953,7 +6094,7 @@ func (x *EdgeRule) String() string {
 func (*EdgeRule) ProtoMessage() {}
 
 func (x *EdgeRule) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[47]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5966,7 +6107,7 @@ func (x *EdgeRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgeRule.ProtoReflect.Descriptor instead.
 func (*EdgeRule) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{47}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *EdgeRule) GetId() string {
@@ -6011,7 +6152,7 @@ type IpList struct {
 
 func (x *IpList) Reset() {
 	*x = IpList{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[48]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6023,7 +6164,7 @@ func (x *IpList) String() string {
 func (*IpList) ProtoMessage() {}
 
 func (x *IpList) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[48]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6036,7 +6177,7 @@ func (x *IpList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IpList.ProtoReflect.Descriptor instead.
 func (*IpList) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{48}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *IpList) GetId() string {
@@ -6123,7 +6264,7 @@ type TlsOptions struct {
 
 func (x *TlsOptions) Reset() {
 	*x = TlsOptions{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[49]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6135,7 +6276,7 @@ func (x *TlsOptions) String() string {
 func (*TlsOptions) ProtoMessage() {}
 
 func (x *TlsOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[49]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6148,7 +6289,7 @@ func (x *TlsOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TlsOptions.ProtoReflect.Descriptor instead.
 func (*TlsOptions) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{49}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *TlsOptions) GetForceHttps() bool {
@@ -6339,7 +6480,7 @@ type HttpChallenge struct {
 
 func (x *HttpChallenge) Reset() {
 	*x = HttpChallenge{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[50]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6351,7 +6492,7 @@ func (x *HttpChallenge) String() string {
 func (*HttpChallenge) ProtoMessage() {}
 
 func (x *HttpChallenge) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[50]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6364,7 +6505,7 @@ func (x *HttpChallenge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HttpChallenge.ProtoReflect.Descriptor instead.
 func (*HttpChallenge) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{50}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *HttpChallenge) GetDomain() string {
@@ -6419,7 +6560,7 @@ type CacheKeyPolicy struct {
 
 func (x *CacheKeyPolicy) Reset() {
 	*x = CacheKeyPolicy{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[51]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6431,7 +6572,7 @@ func (x *CacheKeyPolicy) String() string {
 func (*CacheKeyPolicy) ProtoMessage() {}
 
 func (x *CacheKeyPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[51]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6444,7 +6585,7 @@ func (x *CacheKeyPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheKeyPolicy.ProtoReflect.Descriptor instead.
 func (*CacheKeyPolicy) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{51}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *CacheKeyPolicy) GetQuery() CacheKeyQuery {
@@ -6532,7 +6673,7 @@ type Domain struct {
 
 func (x *Domain) Reset() {
 	*x = Domain{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[52]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6544,7 +6685,7 @@ func (x *Domain) String() string {
 func (*Domain) ProtoMessage() {}
 
 func (x *Domain) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[52]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6557,7 +6698,7 @@ func (x *Domain) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Domain.ProtoReflect.Descriptor instead.
 func (*Domain) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{52}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *Domain) GetName() string {
@@ -6649,7 +6790,7 @@ type OriginPool struct {
 
 func (x *OriginPool) Reset() {
 	*x = OriginPool{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[53]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6661,7 +6802,7 @@ func (x *OriginPool) String() string {
 func (*OriginPool) ProtoMessage() {}
 
 func (x *OriginPool) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[53]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6674,7 +6815,7 @@ func (x *OriginPool) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginPool.ProtoReflect.Descriptor instead.
 func (*OriginPool) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{53}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *OriginPool) GetId() string {
@@ -6818,7 +6959,7 @@ type ActiveHealthCheck struct {
 
 func (x *ActiveHealthCheck) Reset() {
 	*x = ActiveHealthCheck{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[54]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6830,7 +6971,7 @@ func (x *ActiveHealthCheck) String() string {
 func (*ActiveHealthCheck) ProtoMessage() {}
 
 func (x *ActiveHealthCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[54]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6843,7 +6984,7 @@ func (x *ActiveHealthCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActiveHealthCheck.ProtoReflect.Descriptor instead.
 func (*ActiveHealthCheck) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{54}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ActiveHealthCheck) GetPath() string {
@@ -6939,7 +7080,7 @@ type SessionAffinity struct {
 
 func (x *SessionAffinity) Reset() {
 	*x = SessionAffinity{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[55]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6951,7 +7092,7 @@ func (x *SessionAffinity) String() string {
 func (*SessionAffinity) ProtoMessage() {}
 
 func (x *SessionAffinity) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[55]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6964,7 +7105,7 @@ func (x *SessionAffinity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionAffinity.ProtoReflect.Descriptor instead.
 func (*SessionAffinity) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{55}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *SessionAffinity) GetTtlSeconds() uint32 {
@@ -6989,7 +7130,7 @@ type PassiveHealthCheck struct {
 
 func (x *PassiveHealthCheck) Reset() {
 	*x = PassiveHealthCheck{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[56]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7001,7 +7142,7 @@ func (x *PassiveHealthCheck) String() string {
 func (*PassiveHealthCheck) ProtoMessage() {}
 
 func (x *PassiveHealthCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[56]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7014,7 +7155,7 @@ func (x *PassiveHealthCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PassiveHealthCheck.ProtoReflect.Descriptor instead.
 func (*PassiveHealthCheck) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{56}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *PassiveHealthCheck) GetMaxFails() uint32 {
@@ -7051,7 +7192,7 @@ type OriginConnection struct {
 
 func (x *OriginConnection) Reset() {
 	*x = OriginConnection{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[57]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7063,7 +7204,7 @@ func (x *OriginConnection) String() string {
 func (*OriginConnection) ProtoMessage() {}
 
 func (x *OriginConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[57]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7076,7 +7217,7 @@ func (x *OriginConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OriginConnection.ProtoReflect.Descriptor instead.
 func (*OriginConnection) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{57}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *OriginConnection) GetConnectTimeoutMs() uint32 {
@@ -7159,7 +7300,7 @@ type Origin struct {
 
 func (x *Origin) Reset() {
 	*x = Origin{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[58]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7171,7 +7312,7 @@ func (x *Origin) String() string {
 func (*Origin) ProtoMessage() {}
 
 func (x *Origin) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[58]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7184,7 +7325,7 @@ func (x *Origin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Origin.ProtoReflect.Descriptor instead.
 func (*Origin) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{58}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *Origin) GetId() string {
@@ -7284,7 +7425,7 @@ type S3Auth struct {
 
 func (x *S3Auth) Reset() {
 	*x = S3Auth{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[59]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7296,7 +7437,7 @@ func (x *S3Auth) String() string {
 func (*S3Auth) ProtoMessage() {}
 
 func (x *S3Auth) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[59]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7309,7 +7450,7 @@ func (x *S3Auth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use S3Auth.ProtoReflect.Descriptor instead.
 func (*S3Auth) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{59}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *S3Auth) GetRegion() string {
@@ -7376,7 +7517,7 @@ type CacheRule struct {
 
 func (x *CacheRule) Reset() {
 	*x = CacheRule{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[60]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7388,7 +7529,7 @@ func (x *CacheRule) String() string {
 func (*CacheRule) ProtoMessage() {}
 
 func (x *CacheRule) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[60]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7401,7 +7542,7 @@ func (x *CacheRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheRule.ProtoReflect.Descriptor instead.
 func (*CacheRule) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{60}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *CacheRule) GetId() string {
@@ -7515,7 +7656,7 @@ type CacheRuleMatch struct {
 
 func (x *CacheRuleMatch) Reset() {
 	*x = CacheRuleMatch{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[61]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7527,7 +7668,7 @@ func (x *CacheRuleMatch) String() string {
 func (*CacheRuleMatch) ProtoMessage() {}
 
 func (x *CacheRuleMatch) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[61]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7540,7 +7681,7 @@ func (x *CacheRuleMatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheRuleMatch.ProtoReflect.Descriptor instead.
 func (*CacheRuleMatch) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{61}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *CacheRuleMatch) GetPathPrefixes() []string {
@@ -7612,7 +7753,7 @@ type CertificateRef struct {
 
 func (x *CertificateRef) Reset() {
 	*x = CertificateRef{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[62]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7624,7 +7765,7 @@ func (x *CertificateRef) String() string {
 func (*CertificateRef) ProtoMessage() {}
 
 func (x *CertificateRef) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[62]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7637,7 +7778,7 @@ func (x *CertificateRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateRef.ProtoReflect.Descriptor instead.
 func (*CertificateRef) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{62}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *CertificateRef) GetId() string {
@@ -8016,7 +8157,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n" +
 	"\x05exact\x18\x02 \x01(\bR\x05exact\x12\x19\n" +
 	"\brule_ids\x18\x03 \x03(\rR\aruleIds\x12\x18\n" +
-	"\atargets\x18\x04 \x03(\tR\atargets\"\x84\x04\n" +
+	"\atargets\x18\x04 \x03(\tR\atargets\"\xcb\x04\n" +
 	"\x0eSiteProtection\x12!\n" +
 	"\funder_attack\x18\x01 \x01(\bR\vunderAttack\x124\n" +
 	"\x16under_attack_challenge\x18\x02 \x01(\tR\x14underAttackChallenge\x12(\n" +
@@ -8029,7 +8170,18 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x0echallenge_text\x18\t \x01(\v2\x1f.edgeweir.node.v1.ChallengeTextR\rchallengeText\x12+\n" +
 	"\x11failure_threshold\x18\n" +
 	" \x01(\rR\x10failureThreshold\x12.\n" +
-	"\x13failure_ban_seconds\x18\v \x01(\rR\x11failureBanSeconds\"w\n" +
+	"\x13failure_ban_seconds\x18\v \x01(\rR\x11failureBanSeconds\x12E\n" +
+	"\vinteractive\x18\f \x01(\v2#.edgeweir.node.v1.ChallengeProviderR\vinteractive\"\x82\x02\n" +
+	"\x11ChallengeProvider\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x19\n" +
+	"\bsite_key\x18\x02 \x01(\tR\asiteKey\x12#\n" +
+	"\rcredential_id\x18\x03 \x01(\tR\fcredentialId\x12-\n" +
+	"\x12credential_version\x18\x04 \x01(\x04R\x11credentialVersion\x12\x1b\n" +
+	"\tmin_score\x18\x05 \x01(\rR\bminScore\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x06 \x01(\tR\tprojectId\x12\x16\n" +
+	"\x06region\x18\a \x01(\tR\x06region\x12\x16\n" +
+	"\x06prefix\x18\b \x01(\tR\x06prefix\"w\n" +
 	"\rChallengeText\x12\x19\n" +
 	"\btitle_zh\x18\x01 \x01(\tR\atitleZh\x12\x17\n" +
 	"\ahint_zh\x18\x02 \x01(\tR\x06hintZh\x12\x19\n" +
@@ -8380,7 +8532,7 @@ func file_edgeweir_node_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
+var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
 var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(L4Protocol)(0),               // 0: edgeweir.node.v1.L4Protocol
 	(ListenerProtocol)(0),         // 1: edgeweir.node.v1.ListenerProtocol
@@ -8434,49 +8586,50 @@ var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(*SiteWaf)(nil),               // 49: edgeweir.node.v1.SiteWaf
 	(*WafExclusion)(nil),          // 50: edgeweir.node.v1.WafExclusion
 	(*SiteProtection)(nil),        // 51: edgeweir.node.v1.SiteProtection
-	(*ChallengeText)(nil),         // 52: edgeweir.node.v1.ChallengeText
-	(*CcPolicy)(nil),              // 53: edgeweir.node.v1.CcPolicy
-	(*PlatformProtection)(nil),    // 54: edgeweir.node.v1.PlatformProtection
-	(*SessionTicketKeyRef)(nil),   // 55: edgeweir.node.v1.SessionTicketKeyRef
-	(*ChallengeKeyRef)(nil),       // 56: edgeweir.node.v1.ChallengeKeyRef
-	(*RuleExpression)(nil),        // 57: edgeweir.node.v1.RuleExpression
-	(*RuleAction)(nil),            // 58: edgeweir.node.v1.RuleAction
-	(*QueryParam)(nil),            // 59: edgeweir.node.v1.QueryParam
-	(*EdgeRule)(nil),              // 60: edgeweir.node.v1.EdgeRule
-	(*IpList)(nil),                // 61: edgeweir.node.v1.IpList
-	(*TlsOptions)(nil),            // 62: edgeweir.node.v1.TlsOptions
-	(*HttpChallenge)(nil),         // 63: edgeweir.node.v1.HttpChallenge
-	(*CacheKeyPolicy)(nil),        // 64: edgeweir.node.v1.CacheKeyPolicy
-	(*Domain)(nil),                // 65: edgeweir.node.v1.Domain
-	(*OriginPool)(nil),            // 66: edgeweir.node.v1.OriginPool
-	(*ActiveHealthCheck)(nil),     // 67: edgeweir.node.v1.ActiveHealthCheck
-	(*SessionAffinity)(nil),       // 68: edgeweir.node.v1.SessionAffinity
-	(*PassiveHealthCheck)(nil),    // 69: edgeweir.node.v1.PassiveHealthCheck
-	(*OriginConnection)(nil),      // 70: edgeweir.node.v1.OriginConnection
-	(*Origin)(nil),                // 71: edgeweir.node.v1.Origin
-	(*S3Auth)(nil),                // 72: edgeweir.node.v1.S3Auth
-	(*CacheRule)(nil),             // 73: edgeweir.node.v1.CacheRule
-	(*CacheRuleMatch)(nil),        // 74: edgeweir.node.v1.CacheRuleMatch
-	(*CertificateRef)(nil),        // 75: edgeweir.node.v1.CertificateRef
-	(*timestamppb.Timestamp)(nil), // 76: google.protobuf.Timestamp
+	(*ChallengeProvider)(nil),     // 52: edgeweir.node.v1.ChallengeProvider
+	(*ChallengeText)(nil),         // 53: edgeweir.node.v1.ChallengeText
+	(*CcPolicy)(nil),              // 54: edgeweir.node.v1.CcPolicy
+	(*PlatformProtection)(nil),    // 55: edgeweir.node.v1.PlatformProtection
+	(*SessionTicketKeyRef)(nil),   // 56: edgeweir.node.v1.SessionTicketKeyRef
+	(*ChallengeKeyRef)(nil),       // 57: edgeweir.node.v1.ChallengeKeyRef
+	(*RuleExpression)(nil),        // 58: edgeweir.node.v1.RuleExpression
+	(*RuleAction)(nil),            // 59: edgeweir.node.v1.RuleAction
+	(*QueryParam)(nil),            // 60: edgeweir.node.v1.QueryParam
+	(*EdgeRule)(nil),              // 61: edgeweir.node.v1.EdgeRule
+	(*IpList)(nil),                // 62: edgeweir.node.v1.IpList
+	(*TlsOptions)(nil),            // 63: edgeweir.node.v1.TlsOptions
+	(*HttpChallenge)(nil),         // 64: edgeweir.node.v1.HttpChallenge
+	(*CacheKeyPolicy)(nil),        // 65: edgeweir.node.v1.CacheKeyPolicy
+	(*Domain)(nil),                // 66: edgeweir.node.v1.Domain
+	(*OriginPool)(nil),            // 67: edgeweir.node.v1.OriginPool
+	(*ActiveHealthCheck)(nil),     // 68: edgeweir.node.v1.ActiveHealthCheck
+	(*SessionAffinity)(nil),       // 69: edgeweir.node.v1.SessionAffinity
+	(*PassiveHealthCheck)(nil),    // 70: edgeweir.node.v1.PassiveHealthCheck
+	(*OriginConnection)(nil),      // 71: edgeweir.node.v1.OriginConnection
+	(*Origin)(nil),                // 72: edgeweir.node.v1.Origin
+	(*S3Auth)(nil),                // 73: edgeweir.node.v1.S3Auth
+	(*CacheRule)(nil),             // 74: edgeweir.node.v1.CacheRule
+	(*CacheRuleMatch)(nil),        // 75: edgeweir.node.v1.CacheRuleMatch
+	(*CertificateRef)(nil),        // 76: edgeweir.node.v1.CertificateRef
+	(*timestamppb.Timestamp)(nil), // 77: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	22,  // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
 	23,  // 1: edgeweir.node.v1.NodeConfig.cache_zones:type_name -> edgeweir.node.v1.CacheZone
 	25,  // 2: edgeweir.node.v1.NodeConfig.sites:type_name -> edgeweir.node.v1.Site
-	75,  // 3: edgeweir.node.v1.NodeConfig.certificates:type_name -> edgeweir.node.v1.CertificateRef
-	63,  // 4: edgeweir.node.v1.NodeConfig.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
-	61,  // 5: edgeweir.node.v1.NodeConfig.ip_lists:type_name -> edgeweir.node.v1.IpList
-	60,  // 6: edgeweir.node.v1.NodeConfig.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
-	54,  // 7: edgeweir.node.v1.NodeConfig.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
-	56,  // 8: edgeweir.node.v1.NodeConfig.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
+	76,  // 3: edgeweir.node.v1.NodeConfig.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	64,  // 4: edgeweir.node.v1.NodeConfig.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
+	62,  // 5: edgeweir.node.v1.NodeConfig.ip_lists:type_name -> edgeweir.node.v1.IpList
+	61,  // 6: edgeweir.node.v1.NodeConfig.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
+	55,  // 7: edgeweir.node.v1.NodeConfig.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
+	57,  // 8: edgeweir.node.v1.NodeConfig.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
 	47,  // 9: edgeweir.node.v1.NodeConfig.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
 	48,  // 10: edgeweir.node.v1.NodeConfig.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
 	20,  // 11: edgeweir.node.v1.NodeConfig.l4_apps:type_name -> edgeweir.node.v1.L4App
 	18,  // 12: edgeweir.node.v1.NodeConfig.client_address:type_name -> edgeweir.node.v1.ClientAddress
 	17,  // 13: edgeweir.node.v1.NodeConfig.unknown_hosts:type_name -> edgeweir.node.v1.UnknownHosts
-	55,  // 14: edgeweir.node.v1.NodeConfig.session_ticket_keys:type_name -> edgeweir.node.v1.SessionTicketKeyRef
-	75,  // 15: edgeweir.node.v1.NodeConfig.origin_client_certificates:type_name -> edgeweir.node.v1.CertificateRef
+	56,  // 14: edgeweir.node.v1.NodeConfig.session_ticket_keys:type_name -> edgeweir.node.v1.SessionTicketKeyRef
+	76,  // 15: edgeweir.node.v1.NodeConfig.origin_client_certificates:type_name -> edgeweir.node.v1.CertificateRef
 	16,  // 16: edgeweir.node.v1.NodeConfig.origin_ca:type_name -> edgeweir.node.v1.OriginCa
 	14,  // 17: edgeweir.node.v1.NodeConfig.connection_limits:type_name -> edgeweir.node.v1.ConnectionLimits
 	16,  // 18: edgeweir.node.v1.NodeConfig.origin_ca_previous:type_name -> edgeweir.node.v1.OriginCa
@@ -8484,19 +8637,19 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	22,  // 20: edgeweir.node.v1.NodeConfigDiff.listeners:type_name -> edgeweir.node.v1.Listener
 	23,  // 21: edgeweir.node.v1.NodeConfigDiff.cache_zones:type_name -> edgeweir.node.v1.CacheZone
 	25,  // 22: edgeweir.node.v1.NodeConfigDiff.upserted_sites:type_name -> edgeweir.node.v1.Site
-	75,  // 23: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
-	63,  // 24: edgeweir.node.v1.NodeConfigDiff.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
-	61,  // 25: edgeweir.node.v1.NodeConfigDiff.ip_lists:type_name -> edgeweir.node.v1.IpList
-	60,  // 26: edgeweir.node.v1.NodeConfigDiff.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
-	54,  // 27: edgeweir.node.v1.NodeConfigDiff.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
-	56,  // 28: edgeweir.node.v1.NodeConfigDiff.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
+	76,  // 23: edgeweir.node.v1.NodeConfigDiff.certificates:type_name -> edgeweir.node.v1.CertificateRef
+	64,  // 24: edgeweir.node.v1.NodeConfigDiff.http_challenges:type_name -> edgeweir.node.v1.HttpChallenge
+	62,  // 25: edgeweir.node.v1.NodeConfigDiff.ip_lists:type_name -> edgeweir.node.v1.IpList
+	61,  // 26: edgeweir.node.v1.NodeConfigDiff.platform_rules:type_name -> edgeweir.node.v1.EdgeRule
+	55,  // 27: edgeweir.node.v1.NodeConfigDiff.platform_protection:type_name -> edgeweir.node.v1.PlatformProtection
+	57,  // 28: edgeweir.node.v1.NodeConfigDiff.challenge_keys:type_name -> edgeweir.node.v1.ChallengeKeyRef
 	47,  // 29: edgeweir.node.v1.NodeConfigDiff.platform_error_pages:type_name -> edgeweir.node.v1.PlatformErrorPages
 	48,  // 30: edgeweir.node.v1.NodeConfigDiff.offline_hosts:type_name -> edgeweir.node.v1.OfflineHost
 	20,  // 31: edgeweir.node.v1.NodeConfigDiff.l4_apps:type_name -> edgeweir.node.v1.L4App
 	18,  // 32: edgeweir.node.v1.NodeConfigDiff.client_address:type_name -> edgeweir.node.v1.ClientAddress
 	17,  // 33: edgeweir.node.v1.NodeConfigDiff.unknown_hosts:type_name -> edgeweir.node.v1.UnknownHosts
-	55,  // 34: edgeweir.node.v1.NodeConfigDiff.session_ticket_keys:type_name -> edgeweir.node.v1.SessionTicketKeyRef
-	75,  // 35: edgeweir.node.v1.NodeConfigDiff.origin_client_certificates:type_name -> edgeweir.node.v1.CertificateRef
+	56,  // 34: edgeweir.node.v1.NodeConfigDiff.session_ticket_keys:type_name -> edgeweir.node.v1.SessionTicketKeyRef
+	76,  // 35: edgeweir.node.v1.NodeConfigDiff.origin_client_certificates:type_name -> edgeweir.node.v1.CertificateRef
 	16,  // 36: edgeweir.node.v1.NodeConfigDiff.origin_ca:type_name -> edgeweir.node.v1.OriginCa
 	14,  // 37: edgeweir.node.v1.NodeConfigDiff.connection_limits:type_name -> edgeweir.node.v1.ConnectionLimits
 	16,  // 38: edgeweir.node.v1.NodeConfigDiff.origin_ca_previous:type_name -> edgeweir.node.v1.OriginCa
@@ -8504,12 +8657,12 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	21,  // 40: edgeweir.node.v1.L4App.origins:type_name -> edgeweir.node.v1.L4Origin
 	1,   // 41: edgeweir.node.v1.Listener.protocol:type_name -> edgeweir.node.v1.ListenerProtocol
 	24,  // 42: edgeweir.node.v1.CacheZone.node_sizes:type_name -> edgeweir.node.v1.CacheZoneNodeSize
-	65,  // 43: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
-	66,  // 44: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
-	73,  // 45: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
-	64,  // 46: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
-	62,  // 47: edgeweir.node.v1.Site.tls:type_name -> edgeweir.node.v1.TlsOptions
-	60,  // 48: edgeweir.node.v1.Site.rules:type_name -> edgeweir.node.v1.EdgeRule
+	66,  // 43: edgeweir.node.v1.Site.domains:type_name -> edgeweir.node.v1.Domain
+	67,  // 44: edgeweir.node.v1.Site.origin_pool:type_name -> edgeweir.node.v1.OriginPool
+	74,  // 45: edgeweir.node.v1.Site.cache_rules:type_name -> edgeweir.node.v1.CacheRule
+	65,  // 46: edgeweir.node.v1.Site.cache_key:type_name -> edgeweir.node.v1.CacheKeyPolicy
+	63,  // 47: edgeweir.node.v1.Site.tls:type_name -> edgeweir.node.v1.TlsOptions
+	61,  // 48: edgeweir.node.v1.Site.rules:type_name -> edgeweir.node.v1.EdgeRule
 	51,  // 49: edgeweir.node.v1.Site.protection:type_name -> edgeweir.node.v1.SiteProtection
 	49,  // 50: edgeweir.node.v1.Site.waf:type_name -> edgeweir.node.v1.SiteWaf
 	45,  // 51: edgeweir.node.v1.Site.error_pages:type_name -> edgeweir.node.v1.SiteErrorPages
@@ -8537,38 +8690,39 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	46,  // 73: edgeweir.node.v1.SiteErrorPages.pages:type_name -> edgeweir.node.v1.ErrorPage
 	5,   // 74: edgeweir.node.v1.OfflineHost.match:type_name -> edgeweir.node.v1.DomainMatch
 	50,  // 75: edgeweir.node.v1.SiteWaf.exclusions:type_name -> edgeweir.node.v1.WafExclusion
-	53,  // 76: edgeweir.node.v1.SiteProtection.cc:type_name -> edgeweir.node.v1.CcPolicy
-	52,  // 77: edgeweir.node.v1.SiteProtection.challenge_text:type_name -> edgeweir.node.v1.ChallengeText
-	57,  // 78: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
-	57,  // 79: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
-	59,  // 80: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
-	57,  // 81: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
-	57,  // 82: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
-	58,  // 83: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
-	76,  // 84: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	4,   // 85: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
-	5,   // 86: edgeweir.node.v1.Domain.match:type_name -> edgeweir.node.v1.DomainMatch
-	6,   // 87: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
-	71,  // 88: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
-	69,  // 89: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
-	70,  // 90: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
-	67,  // 91: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
-	68,  // 92: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
-	8,   // 93: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
-	7,   // 94: edgeweir.node.v1.OriginPool.tls_trust:type_name -> edgeweir.node.v1.OriginTlsTrust
-	9,   // 95: edgeweir.node.v1.ActiveHealthCheck.type:type_name -> edgeweir.node.v1.ActiveHealthCheckType
-	10,  // 96: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
-	72,  // 97: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
-	74,  // 98: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
-	11,  // 99: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
-	12,  // 100: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
-	57,  // 101: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
-	76,  // 102: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
-	103, // [103:103] is the sub-list for method output_type
-	103, // [103:103] is the sub-list for method input_type
-	103, // [103:103] is the sub-list for extension type_name
-	103, // [103:103] is the sub-list for extension extendee
-	0,   // [0:103] is the sub-list for field type_name
+	54,  // 76: edgeweir.node.v1.SiteProtection.cc:type_name -> edgeweir.node.v1.CcPolicy
+	53,  // 77: edgeweir.node.v1.SiteProtection.challenge_text:type_name -> edgeweir.node.v1.ChallengeText
+	52,  // 78: edgeweir.node.v1.SiteProtection.interactive:type_name -> edgeweir.node.v1.ChallengeProvider
+	58,  // 79: edgeweir.node.v1.RuleExpression.children:type_name -> edgeweir.node.v1.RuleExpression
+	58,  // 80: edgeweir.node.v1.RuleAction.target:type_name -> edgeweir.node.v1.RuleExpression
+	60,  // 81: edgeweir.node.v1.RuleAction.set_query:type_name -> edgeweir.node.v1.QueryParam
+	58,  // 82: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
+	58,  // 83: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
+	59,  // 84: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
+	77,  // 85: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	4,   // 86: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
+	5,   // 87: edgeweir.node.v1.Domain.match:type_name -> edgeweir.node.v1.DomainMatch
+	6,   // 88: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
+	72,  // 89: edgeweir.node.v1.OriginPool.origins:type_name -> edgeweir.node.v1.Origin
+	70,  // 90: edgeweir.node.v1.OriginPool.health_check:type_name -> edgeweir.node.v1.PassiveHealthCheck
+	71,  // 91: edgeweir.node.v1.OriginPool.connection:type_name -> edgeweir.node.v1.OriginConnection
+	68,  // 92: edgeweir.node.v1.OriginPool.active_health_check:type_name -> edgeweir.node.v1.ActiveHealthCheck
+	69,  // 93: edgeweir.node.v1.OriginPool.session_affinity:type_name -> edgeweir.node.v1.SessionAffinity
+	8,   // 94: edgeweir.node.v1.OriginPool.protocol:type_name -> edgeweir.node.v1.OriginProtocol
+	7,   // 95: edgeweir.node.v1.OriginPool.tls_trust:type_name -> edgeweir.node.v1.OriginTlsTrust
+	9,   // 96: edgeweir.node.v1.ActiveHealthCheck.type:type_name -> edgeweir.node.v1.ActiveHealthCheckType
+	10,  // 97: edgeweir.node.v1.Origin.scheme:type_name -> edgeweir.node.v1.OriginScheme
+	73,  // 98: edgeweir.node.v1.Origin.s3:type_name -> edgeweir.node.v1.S3Auth
+	75,  // 99: edgeweir.node.v1.CacheRule.match:type_name -> edgeweir.node.v1.CacheRuleMatch
+	11,  // 100: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
+	12,  // 101: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
+	58,  // 102: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
+	77,  // 103: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	104, // [104:104] is the sub-list for method output_type
+	104, // [104:104] is the sub-list for method input_type
+	104, // [104:104] is the sub-list for extension type_name
+	104, // [104:104] is the sub-list for extension extendee
+	0,   // [0:104] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
@@ -8577,14 +8731,14 @@ func file_edgeweir_node_v1_config_proto_init() {
 		return
 	}
 	file_edgeweir_node_v1_config_proto_msgTypes[12].OneofWrappers = []any{}
-	file_edgeweir_node_v1_config_proto_msgTypes[45].OneofWrappers = []any{}
+	file_edgeweir_node_v1_config_proto_msgTypes[46].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_config_proto_rawDesc), len(file_edgeweir_node_v1_config_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   63,
+			NumMessages:   64,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

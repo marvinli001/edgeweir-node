@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -36,6 +37,7 @@ import (
 	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/agent"
+	"github.com/marvinli001/edgeweir-node/internal/challengeverify"
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
@@ -490,6 +492,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		imageMemoryMB = fs.Int("image-memory-mb", int(imageconv.DefaultMemory>>20), "memory the running WebP / AVIF conversions may use together, in MiB (each conversion's need is estimated from its pixels; larger images keep their original)")
 		imageTimeout  = fs.Duration("image-timeout", imageconv.DefaultTimeout, "longest WebP / AVIF conversion (the child is killed and the original kept)")
 		debugBuffer   = fs.Int("debug-log-buffer", nodelog.DefaultDebugCapacity, "recent log entries of every level kept in memory (at most 4 MiB) for the console to pull from the node's logs; 0 turns it off")
+		verifyURLs    = fs.String("challenge-verify-endpoints", "", "replace CAPTCHA providers' verification URLs, comma-separated kind=URL (turnstile, recaptcha, recaptcha_enterprise, tencent, aliyun, geetest); for tests against a mock provider only")
 		lf            logFlags
 	)
 	fs.Var(&listenIPv6, "listen-ipv6", "also listen on IPv6: auto, on or off")
@@ -768,6 +771,11 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		log.Error("cannot resolve --geoip-ipinfo", "err", err)
 		return 1
 	}
+	endpoints, err := parseVerifyEndpoints(*verifyURLs)
+	if err != nil {
+		fmt.Fprintln(stderr, "edgeweir-node: --challenge-verify-endpoints:", err)
+		return 2
+	}
 	a := agent.New(agent.Config{
 		StateDir:            state,
 		SupervisorSocket:    os.Getenv("EDGEWEIR_SUPERVISOR_SOCKET"),
@@ -784,6 +792,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
 		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
+		ChallengeVerify:     &challengeverify.Verifier{Endpoints: endpoints},
 		NodeLogs:            nodeLogs,
 		DebugLogs:           debugLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)
@@ -918,4 +927,27 @@ func cmdSecurity(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// parseVerifyEndpoints reads --challenge-verify-endpoints: kind=URL pairs
+// with http or https URLs.
+func parseVerifyEndpoints(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		kind, raw, ok := strings.Cut(pair, "=")
+		u, err := url.Parse(raw)
+		if !ok || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("invalid kind=URL pair %q", pair)
+		}
+		switch kind {
+		case "turnstile", "recaptcha", "recaptcha_enterprise", "tencent", "aliyun", "geetest":
+			out[kind] = raw
+		default:
+			return nil, fmt.Errorf("unknown provider %q", kind)
+		}
+	}
+	return out, nil
 }

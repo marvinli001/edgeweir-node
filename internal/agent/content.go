@@ -184,6 +184,7 @@ func (a *Agent) agentHandler() http.Handler {
 		status, answer := a.purgeMethod(r.Context(), req)
 		writePurge(w, status, answer)
 	})
+	mux.HandleFunc("POST /v1/challenge/verify", a.serveChallengeVerify)
 	return mux
 }
 

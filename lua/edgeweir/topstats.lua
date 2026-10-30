@@ -95,6 +95,23 @@ function _M.challenge(site_id, kind)
   bucket[field] = (bucket[field] or 0) + 1
 end
 
+-- outcome counts a challenge of kind (cookie302, js, pow, managed, captcha
+-- for the built-in image, or a provider kind) ending in outcome (issued,
+-- passed, failed, escalated, fallback) for site in the current minute
+-- (MinuteStats.challenge_outcomes, feature challenge-v3).
+function _M.outcome(site_id, kind, outcome)
+  if ngx.var.edgeweir_local == "1" then return end
+  local bucket = bucket_for(site_id, math.floor(ngx.time() / 60) * 60)
+  if not bucket then return end
+  local m = bucket.ch_out
+  if not m then
+    m = {}
+    bucket.ch_out = m
+  end
+  local key = kind .. ":" .. outcome
+  m[key] = (m[key] or 0) + 1
+end
+
 -- Upper bounds (ms) of the header time buckets; one more bucket counts
 -- everything above the last.
 _M.HEADER_TIME_BOUNDS = { 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 }

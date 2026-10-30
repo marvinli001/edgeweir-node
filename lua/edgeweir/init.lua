@@ -21,6 +21,7 @@ function _M.init(opts)
   -- Load every module eagerly: workers inherit them after fork.
   require("edgeweir.geoip").socket = opts.geoip_socket or ""
   require("edgeweir.purgemethod").socket = opts.agent_socket or ""
+  require("edgeweir.challenge").agent_socket = opts.agent_socket or ""
   -- Request body limits of this nginx.conf's CRS locations, and its
   -- client_max_body_size and body limit locations.
   require("edgeweir.waf").init(opts.waf_body_limits)
