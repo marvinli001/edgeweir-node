@@ -65,6 +65,10 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 			break
 		}
 	}
+	// The node certificate's copies the tiered cache's servers name.
+	if err := a.prepareTier(plan); err != nil {
+		return err
+	}
 	params := a.cfg.Render
 	params.GeoIPServed = len(a.geoFeatures) > 0
 	conf, err := render.Render(params, plan)

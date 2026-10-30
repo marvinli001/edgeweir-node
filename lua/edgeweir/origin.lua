@@ -757,7 +757,14 @@ function _M.header_filter()
   if not chain then
     return -- the edge does not cache this request
   end
-  local d = _M.decide(chain, status, response_size(h, status), flatten(h["Cache-Control"]), h["Expires"], ctx.authorized)
+  _M.edge_cache_headers(h, chain, status, ctx.authorized)
+end
+
+-- edge_cache_headers adds what the edge cache needs to a response of the
+-- origins (or of an upper tier, edgeweir.tier): X-Accel-Expires and the
+-- stale extensions of the deciding cache rule of chain.
+function _M.edge_cache_headers(h, chain, status, authorized)
+  local d = _M.decide(chain, status, response_size(h, status), flatten(h["Cache-Control"]), h["Expires"], authorized)
   if d.accel_expires ~= nil then
     h["X-Accel-Expires"] = d.accel_expires
   end
@@ -771,6 +778,11 @@ function _M.header_filter()
   if d.set_cookie and d.accel_expires ~= 0 then
     setcookie.carry(h)
   end
+end
+
+-- chain_from_header rebuilds the edge's rule chain (X-Edgeweir-Rules).
+function _M.chain_from_header(site, value)
+  return chain_from_header(site, value)
 end
 
 -- body_filter sends the error page header_filter prepared, and keeps at

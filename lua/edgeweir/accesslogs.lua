@@ -176,6 +176,7 @@ local function record(var, site_id, geo, status)
     content_type = M.media_type(var.sent_http_content_type),
     tls_version = TLS_VERSIONS[var.ssl_protocol or ""] or "",
     block_reason = reason or "", block_rule_id = rule or "",
+    tier = M.tier(var),
   }
   -- The AI crawler the request claimed (ai-crawlers-v1).
   local ctx = ngx.ctx
@@ -185,6 +186,15 @@ local function record(var, site_id, geo, status)
     out.crawler_charged_micros = ctx.edgeweir_charged
   end
   return out
+end
+
+-- tier is AccessLog.tier: the upper tier and its cache status when the
+-- edge fetched the response through the tiered cache (edgeweir.tier), not
+-- for cache hits (whose stored header names an earlier fetch).
+local FETCHED = { MISS = true, EXPIRED = true, BYPASS = true }
+function M.tier(var)
+  if not FETCHED[var.upstream_cache_status or ""] then return "" end
+  return require("edgeweir.tier").log_value(var.upstream_http_x_edgeweir_tier) or ""
 end
 
 -- decide returns whether the request of site gets a line and its sample

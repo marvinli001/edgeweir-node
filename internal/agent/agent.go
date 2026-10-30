@@ -278,6 +278,9 @@ type Agent struct {
 	engine     Engine
 	dp         DataPlane
 	ids        identity.Store
+	// tierLatency holds the round trip times to the tiered cache's latency
+	// targets (tierLatencyLoop).
+	tierLatency tierLatencies
 	lkg        configstore.Store
 	// stopRun stops Run with a cause (set while Run runs).
 	stopRun context.CancelCauseFunc
@@ -588,6 +591,7 @@ func (a *Agent) run(parent context.Context) error {
 	spawn("ocsp", a.ocspLoop)
 	spawn("kernel", a.kernelLoop)
 	spawn("captchas", a.captchaLoop)
+	spawn("tierlatency", a.tierLatencyLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down

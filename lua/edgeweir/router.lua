@@ -57,6 +57,9 @@
 -- them. Their responses that the edge made itself (no cache or origin
 -- involved: redirects, error pages) carry X-Edgeweir-Edge-Response.
 --
+-- Sites whose tiered cache plan gives this node upper tiers send the
+-- requests the edge may cache to the tier layer (edgeweir.tier, ADR-0073).
+--
 -- Purged objects: the key epoch combines the URL, prefix and site markers
 -- (edgeweir.purge) with the tag markers of the object's Cache-Tag
 -- (edgeweir.cachetags) for sites that have tag markers. Denials with a
@@ -117,6 +120,7 @@ local reasons = require("edgeweir.reasons")
 local geoip = require("edgeweir.geoip")
 local accesslogs = require("edgeweir.accesslogs")
 local uripath = require("edgeweir.uripath")
+local tier = require("edgeweir.tier")
 
 local _M = {}
 
@@ -376,6 +380,10 @@ local function route(site, pctx, headers, host, original_path, acme)
     var.edgeweir_cache_key = cachekey.with_epoch(base, cachetags.key_epoch(site.id, base, epoch, tmax))
   else
     var.edgeweir_cache_key = cachekey.build(site, req, epoch)
+  end
+  -- Sites with upper tiers fetch through them (edgeweir.tier).
+  if site.tier then
+    tier.route(site, var, host, path)
   end
   return true
 end

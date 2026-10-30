@@ -171,6 +171,9 @@ type Plan struct {
 	// AICrawlers is the AI crawler catalogue (nil: none; proto vNEXT,
 	// ADR-0070): requests are tagged with the crawler they claim.
 	AICrawlers []AICrawler
+	// Tier is this node's part in the tiered cache (nil: none; feature
+	// tiered-cache-v1).
+	Tier *Tier
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -254,6 +257,9 @@ type Site struct {
 	WAF *WAF `json:"waf,omitempty"`
 	// KeepCacheTag forwards the origin's Cache-Tag header to clients.
 	KeepCacheTag bool `json:"keep_cache_tag,omitempty"`
+	// Tier are this node's upper tiers for the site (Site.tier_plan_id), in
+	// the order it tries them; empty: it fetches from the origins.
+	Tier []TierPeer `json:"tier,omitempty"`
 	// ErrorPages replace the built-in error pages of the site (nil: none).
 	ErrorPages *ErrorPages `json:"error_pages,omitempty"`
 	// ActiveHealthCheck is the pool's active health check (nil: passive
@@ -401,7 +407,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureDevelopmentMode, FeatureChallengeV3, FeatureAICrawlers}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureDevelopmentMode, FeatureChallengeV3, FeatureAICrawlers, FeatureTieredCache}
 
 // FeatureActiveHealthGRPC (proto v1.6.0): ActiveHealthCheck.type GRPC,
 // grpc.health.v1 probes. FeatureOriginProxyProtocol (proto v1.6.0):
@@ -895,6 +901,14 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		}
 		p.Listeners = []Listener{{Port: defaultPort}}
 	}
+	listenerPorts := map[uint32]bool{}
+	for _, l := range p.Listeners {
+		listenerPorts[l.Port] = true
+	}
+	var tierPeers map[string][]TierPeer
+	if p.Tier, tierPeers, err = buildTier(c, opts.NodeID, listenerPorts); err != nil {
+		return nil, err
+	}
 	if p.ClientAddress, err = buildClientAddress(c); err != nil {
 		return nil, err
 	}
@@ -967,6 +981,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.Protection = protections[id]
 		site.WAF = wafs[id]
 		site.KeepCacheTag = s.GetKeepCacheTag()
+		site.Tier = tierPeers[s.GetTierPlanId()]
 		site.ErrorPages = pages[id]
 		site.ActiveHealthCheck = checks[id]
 		site.ActiveHealth = site.ActiveHealthCheck != nil

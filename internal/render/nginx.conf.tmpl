@@ -348,6 +348,156 @@ http {
         }
     }
 {{- end }}
+{{- if .Tier }}
+{{- if .Tier.Lower }}
+
+    # Tiered cache (ADR-0073): the edge's cacheable requests of sites with
+    # upper tiers go through the tier layer, which fetches them from the
+    # upper tiers over mutual TLS (the node certificate both ways, verified
+    # against the node CA; the name checked is the upper tier's node id).
+    # When no upper tier answers (connection, TLS or timeout), the request
+    # goes on to the site's own origin layer. No keep-alive towards the
+    # edge (stale-if-error closes connections, as in the origin layers).
+    upstream edgeweir_tier {
+        server unix:{{ .TierSocket }};
+        keepalive 0;
+    }
+    upstream edgeweir_tier_balancer {
+        server 0.0.0.1;
+        keepalive 0;
+        balancer_keepalive 64;
+        balancer_by_lua_block { require("edgeweir.tier").balance() }
+    }
+    server {
+        listen unix:{{ .TierSocket }};
+        error_page 400 413 414 500 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_tier_fallback "";
+            set $edgeweir_tier_tried "";
+            set $edgeweir_ssl_name "";
+            access_by_lua_block { require("edgeweir.tier").access() }
+            proxy_pass https://edgeweir_tier_balancer;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header X-Edgeweir-Tier-Fallback "";
+            proxy_ssl_certificate {{ .Tier.CertFile }};
+            proxy_ssl_certificate_key {{ .Tier.KeyFile }};
+            proxy_ssl_trusted_certificate {{ .Tier.CAFile }};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 1;
+            proxy_ssl_protocols TLSv1.3;
+            proxy_ssl_name $edgeweir_ssl_name;
+            proxy_ssl_server_name on;
+            proxy_ssl_session_reuse on;
+            # Timeouts per attempt are set in balancer_by_lua (the site's
+            # origin timeouts and a margin).
+            proxy_connect_timeout 3s;
+            proxy_next_upstream error timeout;
+            proxy_next_upstream_tries 3;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            # nginx's own 502 / 504 here: no upper tier answered.
+            error_page 502 504 = @edgeweir_tier_fallback;
+            header_filter_by_lua_block { require("edgeweir.tier").header_filter() }
+            log_by_lua_block { require("edgeweir.tier").log() }
+        }
+
+        # The site's own origin layer, as the edge would have used it.
+        # Its failures close the connection, so that the edge serves its
+        # stale copy or its error page.
+        location @edgeweir_tier_fallback {
+            recursive_error_pages on;
+            access_by_lua_block { require("edgeweir.tier").fallback_access() }
+            proxy_pass http://$edgeweir_tier_fallback;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header X-Edgeweir-Tier-Key "";
+            proxy_set_header X-Edgeweir-Tier-Url "";
+            proxy_set_header X-Edgeweir-Tier-Hops "";
+            proxy_set_header X-Edgeweir-Tier-Fallback "";
+            proxy_send_timeout 86400s;
+            proxy_read_timeout 86400s;
+            proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+            proxy_pass_header X-Accel-Expires;
+            error_page 502 504 = @edgeweir_tier_drop;
+            header_filter_by_lua_block { require("edgeweir.tier").fallback_header_filter() }
+            log_by_lua_block { require("edgeweir.tier").fallback_log() }
+        }
+        location @edgeweir_tier_drop {
+            return 444;
+        }
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.origin").error_page() }
+        }
+    }
+{{- end }}
+{{- if .Tier.Listen }}
+
+    # Tiered cache: the tier listener of an upper tier. Only nodes with a
+    # certificate of the node CA (O=Edgeweir Node) that a plan names as one
+    # of this node's lower tiers get past edgeweir.tier.upper_access; their
+    # requests skip the edge's checks (the lower tier made them), take the
+    # cache key the lower tier sends and go on to the cache and the
+    # origins like the edge's own.
+    server {
+{{- range .Tier.Listen }}
+        listen {{ . }};
+{{- end }}
+        server_name _;
+        ssl_certificate {{ .Tier.CertFile }};
+        ssl_certificate_key {{ .Tier.KeyFile }};
+        ssl_protocols TLSv1.3;
+        ssl_verify_client on;
+        ssl_client_certificate {{ .Tier.CAFile }};
+        ssl_verify_depth 1;
+        ssl_early_data off;
+        error_page 400 413 414 500 502 504 $edgeweir_error_page;
+        error_page 494 =494 $edgeweir_error_page;
+        error_page 495 496 =403 $edgeweir_error_page;
+
+        location / {
+            set $edgeweir_local "";
+            set $edgeweir_tier_in "1";
+            set $edgeweir_site "";
+            set $edgeweir_cache_zone "{{ $.DefaultZone }}";
+            set $edgeweir_cache_key "";
+            set $edgeweir_cache_bypass 1;
+            set $edgeweir_no_cache 1;
+            set $edgeweir_rules "";
+            set $edgeweir_range_mode "";
+            set $edgeweir_origin_layer "edgeweir_origin_verify";
+            set $edgeweir_image "";
+            set $edgeweir_upgrade "";
+            set $edgeweir_connection "";
+            set $edgeweir_cdn_loop "";
+            set $edgeweir_strip_ae "";
+            set $edgeweir_origin_override "";
+            set $edgeweir_x_cache_off "";
+            set $edgeweir_tier_key "";
+            set $edgeweir_tier_url "";
+            set $edgeweir_tier_hops "";
+            set $edgeweir_tier_fallback "";
+            set $edgeweir_ctx_ref "";
+            access_by_lua_block { require("edgeweir.tier").upper_access() }
+{{ template "edge_proxy" (tierEdge $) }}
+            header_filter_by_lua_block { require("edgeweir.tier").upper_header_filter() }
+            log_by_lua_block { require("edgeweir.tier").upper_log() }
+        }
+        location @edgeweir_error {
+            content_by_lua_block { require("edgeweir.router").error_page() }
+        }
+        location = /./edgeweir-error {
+            internal;
+            content_by_lua_block { require("edgeweir.router").error_page() }
+        }
+    }
+{{- end }}
+{{- end }}
 
     # Edge layer: one server per listener, plus the local ones on unix
     # sockets (plain, and TLS when a listener is) for the agent's prefetch
@@ -480,6 +630,13 @@ http {
             # The request context across the hand-over to a CRS or gRPC
             # location (edgeweir.waf.stash_ctx).
             set $edgeweir_ctx_ref "";
+{{- if and $.Tier $.Tier.Lower }}
+            set $edgeweir_tier_in "";
+            set $edgeweir_tier_key "";
+            set $edgeweir_tier_url "";
+            set $edgeweir_tier_hops "";
+            set $edgeweir_tier_fallback "";
+{{- end }}
             access_by_lua_block { require("edgeweir.router").access() }
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
@@ -715,9 +872,9 @@ stream {
             proxy_set_header Connection $edgeweir_connection;
             proxy_set_header Upgrade $edgeweir_upgrade;
             proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Real-IP {{ if $.InTier }}$http_x_real_ip{{ else }}$remote_addr{{ end }};
             proxy_set_header X-Forwarded-For {{ $.ForwardedFor }};
-            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Proto {{ if $.InTier }}$http_x_forwarded_proto{{ else }}$scheme{{ end }};
             proxy_set_header Accept-Encoding $edgeweir_upstream_ae;
             # Incoming CDN-Loop plus this node's cdn-id (RFC 8586); the origin
             # layer forwards it to the origin unchanged.
@@ -739,6 +896,18 @@ stream {
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
             proxy_set_header X-Request-Id $edgeweir_request_id;
+{{- if and $.Tier $.Tier.Lower }}
+            # The tiered cache (edgeweir.tier): the cache key and the URL its
+            # purge markers match, the hops so far and the site's own origin
+            # layer; empty unless $edgeweir_origin_layer is the tier layer.
+            proxy_set_header X-Edgeweir-Tier-Key $edgeweir_tier_key;
+            proxy_set_header X-Edgeweir-Tier-Url $edgeweir_tier_url;
+            proxy_set_header X-Edgeweir-Tier-Hops $edgeweir_tier_hops;
+            proxy_set_header X-Edgeweir-Tier-Fallback $edgeweir_tier_fallback;
+            # The upper tier that answered and its cache status, for the
+            # access log only (cache hits included).
+            proxy_hide_header X-Edgeweir-Tier;
+{{- end }}
             # Timeouts towards origins are per site in the origin layer, which
             # always answers within its own; these only bound the local hop
             # (as long as the longest WebSocket idle timeout a site may set).
@@ -778,7 +947,12 @@ stream {
             # statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Markdown-Converted;
 
+{{ if $.InTier }}
+            # The lower tier counts and logs the upper tier's cache status.
+            add_header X-Edgeweir-Tier-Cache $upstream_cache_status always;
+{{- else }}
             add_header X-Cache $edgeweir_x_cache always;
+{{- end }}
             add_header X-Request-Id $edgeweir_request_id always;
 {{- end }}
 {{- define "origin_proxy" }}
@@ -826,6 +1000,12 @@ stream {
             {{ .P }}_set_header X-Edgeweir-Auth "";
             {{ .P }}_set_header X-Edgeweir-Image "";
             {{ .P }}_set_header X-Edgeweir-Markdown "";
+{{- if .Root.Tier }}
+            {{ .P }}_set_header X-Edgeweir-Tier-Key "";
+            {{ .P }}_set_header X-Edgeweir-Tier-Url "";
+            {{ .P }}_set_header X-Edgeweir-Tier-Hops "";
+            {{ .P }}_set_header X-Edgeweir-Tier-Fallback "";
+{{- end }}
 {{- if .Root.OriginProxyProtocol }}
             {{ .P }}_set_header X-Edgeweir-Conn "";
 {{- end }}

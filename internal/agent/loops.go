@@ -215,6 +215,8 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 		req.Channel = f.Status()
 	}
 	req.Location = a.nodeLocation()
+	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.tierFeatures()...)
+	req.TierLatencies = a.tierLatency.report(a.tierTargets(), time.Now())
 	return req
 }
 
@@ -306,6 +308,7 @@ func (a *Agent) renew(ctx context.Context, reason string) {
 	id := a.channel.Identity()
 	a.log.Info("node certificate renewed", "reason", reason,
 		"not_after", id.Certificate.NotAfter.UTC().Format(time.RFC3339), nodelog.EventKey, nodelog.EventCertificateRenewed)
+	a.reapplyAfterRenewal(ctx)
 	a.triggerReport()
 }
 
@@ -379,6 +382,8 @@ func convertStats(items []dataplane.MinuteStats) []*nodev1.MinuteStats {
 			AuthFailures:      m.AuthFailures,
 			ImageBytesSaved:   m.ImageBytesSaved,
 			MarkdownResponses: m.MarkdownResponses,
+			TierFetches:     tierCounters(m.TierFetches),
+			TierServed:      tierCounters(m.TierServed),
 		}
 		applyDimensions(ms, m)
 		out = append(out, ms)
