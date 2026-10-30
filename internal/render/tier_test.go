@@ -49,6 +49,14 @@ func TestTierServers(t *testing.T) {
 			t.Errorf("lower tier lacks %q", s)
 		}
 	}
+	// Both ways out of the tier layer keep the client's Host (nginx would
+	// send the upstream's name, which the origin layer then forwards).
+	for _, pass := range []string{"proxy_pass https://edgeweir_tier_balancer;", "proxy_pass http://$edgeweir_tier_fallback;"} {
+		i := strings.Index(lower, pass)
+		if i < 0 || !strings.Contains(lower[i:i+300], "proxy_set_header Host $host;") {
+			t.Errorf("%s without proxy_set_header Host $host", pass)
+		}
+	}
 	if strings.Contains(lower, "ssl_verify_client") {
 		t.Error("a lower tier only has no tier listener")
 	}
