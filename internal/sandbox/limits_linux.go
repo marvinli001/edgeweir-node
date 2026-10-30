@@ -1,6 +1,6 @@
 //go:build linux
 
-package imageconv
+package sandbox
 
 import (
 	"os"
@@ -14,11 +14,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// dataHeadroom is writable memory beyond a conversion's estimate: the Go
+// dataHeadroom is writable memory beyond the child's estimate: the Go
 // runtime's own structures and the data segment.
 const dataHeadroom = 256 << 20
 
-// limitSelf bounds the child: its writable private memory (RLIMIT_DATA,
+// Limit bounds the child: its writable private memory (RLIMIT_DATA,
 // which Linux counts for anonymous mappings; RLIMIT_AS would also count the
 // address space the Go runtime reserves without using it) to what it already
 // has plus memory plus headroom, no file it could write, at most 16
@@ -26,7 +26,7 @@ const dataHeadroom = 256 << 20
 // CAP_NET_BIND_SERVICE as an ambient capability). A limit the child
 // inherited lower stays as it is: raising a hard limit needs
 // CAP_SYS_RESOURCE.
-func limitSelf(memory int64) error {
+func Limit(memory int64) error {
 	limits := []struct {
 		resource int
 		value    uint64
@@ -99,8 +99,8 @@ func dataInUse() uint64 {
 // and inheritable sets of every thread (capabilities are per thread). A
 // runtime that counts as cgo (a build without the release tags links
 // purego's stand-in for it) cannot change every thread: then the calling
-// goroutine stays on its thread, which drops them, and does the conversion
-// there (RunChild runs it on the calling goroutine).
+// goroutine stays on its thread, which drops them, and does the child's
+// work there (the children run it on the calling goroutine).
 func dropCapabilities() error {
 	header := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	var data [2]unix.CapUserData

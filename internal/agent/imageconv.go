@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marvinli001/edgeweir-node/internal/imageconv"
+	"github.com/marvinli001/edgeweir-node/internal/sandbox"
 )
 
 // ImageOptions configure the WebP / AVIF converter (ADR-0043).
@@ -37,7 +38,7 @@ func (a *Agent) serveImageSocket(ctx context.Context, spawn func(string, func(co
 	}
 	exe := opts.Executable
 	if exe == "" {
-		exe = imageconv.SelfExecutable()
+		exe = sandbox.SelfExecutable()
 	}
 	if st, err := os.Lstat(path); err == nil {
 		if st.Mode()&os.ModeSocket == 0 {
@@ -64,7 +65,7 @@ func (a *Agent) serveImageSocket(ctx context.Context, spawn func(string, func(co
 		Workers:   opts.Workers,
 		Memory:    opts.Memory,
 		Timeout:   opts.Timeout,
-		Command:   imageconv.SelfCommand(exe),
+		Command:   sandbox.SelfCommand(exe),
 		Log:       a.log.With("component", "imageconv"),
 	})
 	// No write timeout: answers that are not converted stream as long as

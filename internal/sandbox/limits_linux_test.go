@@ -1,6 +1,6 @@
 //go:build linux
 
-package imageconv
+package sandbox
 
 import (
 	"os"
@@ -12,13 +12,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// TestLimitSelf runs limitSelf in a child (it changes the process for good)
+// TestLimitSelf runs Limit in a child (it changes the process for good)
 // and reads what the kernel reports: no capabilities in any set (on every
 // thread, or on the conversion's thread for builds whose runtime counts as
 // cgo) and the resource limits.
 func TestLimitSelf(t *testing.T) {
-	if os.Getenv("IMAGECONV_LIMIT_CHILD") == "1" {
-		if err := limitSelf(64 << 20); err != nil {
+	if os.Getenv("SANDBOX_LIMIT_CHILD") == "1" {
+		if err := Limit(64 << 20); err != nil {
 			t.Fatal(err)
 		}
 		// Every thread in a release build; else the thread this goroutine
@@ -54,19 +54,19 @@ func TestLimitSelf(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLimitSelf$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "IMAGECONV_LIMIT_CHILD=1")
+	cmd.Env = append(os.Environ(), "SANDBOX_LIMIT_CHILD=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
 	}
 }
 
-// TestLimitSelfNoNewPrivs runs limitSelf in a child and reads NoNewPrivs
+// TestLimitSelfNoNewPrivs runs Limit in a child and reads NoNewPrivs
 // from the kernel: set on every thread (or on the conversion's thread for
 // builds whose runtime counts as cgo), and still set in a process the child
 // starts (it cannot be unset).
 func TestLimitSelfNoNewPrivs(t *testing.T) {
-	if os.Getenv("IMAGECONV_NNP_CHILD") == "1" {
-		if err := limitSelf(64 << 20); err != nil {
+	if os.Getenv("SANDBOX_NNP_CHILD") == "1" {
+		if err := Limit(64 << 20); err != nil {
 			t.Fatal(err)
 		}
 		tasks, _ := filepath.Glob("/proc/self/task/*/status")
@@ -90,18 +90,18 @@ func TestLimitSelfNoNewPrivs(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLimitSelfNoNewPrivs$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "IMAGECONV_NNP_CHILD=1")
+	cmd.Env = append(os.Environ(), "SANDBOX_NNP_CHILD=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
 	}
 }
 
 // TestLimitSelfKeepsLowerLimits: a child without CAP_SYS_RESOURCE whose
-// inherited data limit is below what limitSelf would set keeps the lower
-// one instead of failing (every conversion would). RunChild in TestRunChild's
-// child depends on it too: VmData grows between conversions.
+// inherited data limit is below what Limit would set keeps the lower
+// one instead of failing (every conversion would). The converters' children
+// depend on it too: VmData grows between conversions.
 func TestLimitSelfKeepsLowerLimits(t *testing.T) {
-	if os.Getenv("IMAGECONV_LOWER_CHILD") == "1" {
+	if os.Getenv("SANDBOX_LOWER_CHILD") == "1" {
 		if err := dropCapabilities(); err != nil {
 			t.Fatal(err)
 		}
@@ -109,8 +109,8 @@ func TestLimitSelfKeepsLowerLimits(t *testing.T) {
 		if err := unix.Setrlimit(unix.RLIMIT_DATA, &unix.Rlimit{Cur: lower, Max: lower}); err != nil {
 			t.Fatal(err)
 		}
-		if err := limitSelf(64 << 20); err != nil {
-			t.Fatalf("limitSelf under a lower inherited limit: %v", err)
+		if err := Limit(64 << 20); err != nil {
+			t.Fatalf("Limit under a lower inherited limit: %v", err)
 		}
 		var got unix.Rlimit
 		if err := unix.Getrlimit(unix.RLIMIT_DATA, &got); err != nil || got.Cur != lower || got.Max != lower {
@@ -119,7 +119,7 @@ func TestLimitSelfKeepsLowerLimits(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLimitSelfKeepsLowerLimits$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "IMAGECONV_LOWER_CHILD=1")
+	cmd.Env = append(os.Environ(), "SANDBOX_LOWER_CHILD=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("child: %v\n%s", err, out)
 	}
