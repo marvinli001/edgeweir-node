@@ -258,3 +258,28 @@ func TestPurgeStatePersistsTagMarkers(t *testing.T) {
 		t.Fatalf("stored tags = %+v (tags %v, last %d), want %+v", r.list(), r.tags, r.last, want)
 	}
 }
+
+// TestPurgeTimeFromTask: nodes applying one purge task at different times
+// get the same epoch from the task's creation time while the clocks agree,
+// and fall back to their own clock when the task's time is far off.
+func TestPurgeTimeFromTask(t *testing.T) {
+	created := time.UnixMilli(1_800_000_000_000)
+	a, b := newPurgeState(), newPurgeState()
+	ea := a.taskEpoch("t1", purgeTime(created.Add(200*time.Millisecond), created))
+	eb := b.taskEpoch("t1", purgeTime(created.Add(3*time.Second), created))
+	if ea != created.UnixMilli() || eb != ea {
+		t.Fatalf("epochs %d and %d, want both %d", ea, eb, created.UnixMilli())
+	}
+	now := created.Add(time.Hour)
+	for name, c := range map[string]time.Time{
+		"none": {}, "an hour old": created, "an hour ahead": now.Add(time.Hour),
+	} {
+		if got := purgeTime(now, c); !got.Equal(now) {
+			t.Errorf("%s: purge time %v, want now %v", name, got, now)
+		}
+	}
+	// A task created before one already applied still gets a later epoch.
+	if e := a.taskEpoch("t0", purgeTime(created, created.Add(-time.Second))); e != ea+1 {
+		t.Fatalf("out of order task epoch %d, want %d", e, ea+1)
+	}
+}

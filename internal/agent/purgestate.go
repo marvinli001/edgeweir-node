@@ -32,10 +32,12 @@ const maxPurgeTasks = 100_000
 // hashing every marker.
 //
 // Marker times (N-M3): a purge task's epoch is assigned by the node when it
-// first applies the task, max(now, last+1) in milliseconds, and recorded
-// per task id so that a task handed out again keeps its time. The
-// console's created_at is not trusted: transactions committed out of order
-// or skewed clocks would otherwise make a purge silently ineffective.
+// first applies the task, max(t, last+1) in milliseconds, and recorded
+// per task id so that a task handed out again keeps its time. t is the
+// console's created_at when it is within purgeTrustedSkew of the node's
+// clock (so that every node of a cluster gets the same epoch), else now;
+// last+1 keeps a task committed out of order from getting an earlier epoch,
+// which would make the purge silently ineffective.
 //
 // Not safe for concurrent use; the agent guards it with its mutex.
 type purgeState struct {

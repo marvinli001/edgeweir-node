@@ -317,14 +317,20 @@ func purgeMarker(t *nodev1.PurgeTarget, epoch int64) (dataplane.PurgeMarker, str
 }
 
 // executePurge applies a purge task. Its marker time is assigned by the
-// node the first time it sees the task (see purgeState).
+// node the first time it sees the task: the task's creation time when the
+// clocks agree (purgeTime), never earlier than an epoch already assigned
+// (see purgeState).
 func (a *Agent) executePurge(ctx context.Context, task *nodev1.NodeTask, p *nodev1.PurgeTask) *nodev1.ReportTaskResultRequest {
 	markers, invalid := purgeMarkers(p, 0)
 	failed := uint32(len(invalid))
 	if len(markers) == 0 {
 		return withCode(result(task, 0, failed, nodev1.TaskState_TASK_STATE_FAILED, strings.Join(invalid, "; ")), codePurgeFailed, nil)
 	}
-	epoch := a.taskEpoch(task.GetId())
+	var created time.Time
+	if c := task.GetCreatedAt(); c != nil && c.IsValid() {
+		created = c.AsTime()
+	}
+	epoch := a.taskEpoch(task.GetId(), created)
 	for i := range markers {
 		markers[i].Epoch = epoch
 	}

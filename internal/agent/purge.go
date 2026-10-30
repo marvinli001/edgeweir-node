@@ -101,18 +101,37 @@ func (a *Agent) savePurgeLocked() error {
 	return fsutil.WriteFileAtomic(a.purgePath(), raw, 0o600)
 }
 
+// purgeTrustedSkew is how far the console's task time may be from the
+// node's clock to serve as the marker time.
+const purgeTrustedSkew = 5 * time.Minute
+
+// purgeTime is the time a purge task's epoch starts from: the console's
+// creation time when it lies within purgeTrustedSkew of now, else now.
+// Every node gets the same task time, so the nodes of a cluster key a
+// purged object alike and a tiered cache's upper tier serves all its lower
+// tiers from one copy (ADR-0073); purgeState still makes the epoch later
+// than every earlier one, and the hour of margin in the marker retention
+// covers the skew.
+func purgeTime(now, created time.Time) time.Time {
+	if created.IsZero() || created.Before(now.Add(-purgeTrustedSkew)) || created.After(now.Add(purgeTrustedSkew)) {
+		return now
+	}
+	return created
+}
+
 func (a *Agent) purgeID() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.purge.id()
 }
 
-// taskEpoch assigns (and persists) the marker time of a purge task.
-func (a *Agent) taskEpoch(taskID string) int64 {
+// taskEpoch assigns (and persists) the marker time of a purge task
+// created at created (the console's time).
+func (a *Agent) taskEpoch(taskID string, created time.Time) int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	_, known := a.purge.tasks[taskID]
-	e := a.purge.taskEpoch(taskID, time.Now())
+	e := a.purge.taskEpoch(taskID, purgeTime(time.Now(), created))
 	if !known {
 		if err := a.savePurgeLocked(); err != nil {
 			a.log.Warn("cannot persist purge task time", "err", err)
