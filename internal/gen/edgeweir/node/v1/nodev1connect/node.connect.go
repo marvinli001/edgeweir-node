@@ -170,7 +170,7 @@ type NodeServiceClient interface {
 	// debug-logs-v1).
 	UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error)
 	// GetExtensionPackage returns an extension package (.ewx) that the
-	// node's current configuration references, by digest. Added in PROTO_NEXT
+	// node's current configuration references, by digest. Added in v1.9.0
 	// (feature extensions-v1).
 	GetExtensionPackage(context.Context, *connect.Request[v1.GetExtensionPackageRequest]) (*connect.Response[v1.GetExtensionPackageResponse], error)
 	// GetExtensionSecrets returns the current and previous secret of the
@@ -560,7 +560,7 @@ type NodeServiceHandler interface {
 	// debug-logs-v1).
 	UploadDebugLogs(context.Context, *connect.Request[v1.UploadDebugLogsRequest]) (*connect.Response[v1.UploadDebugLogsResponse], error)
 	// GetExtensionPackage returns an extension package (.ewx) that the
-	// node's current configuration references, by digest. Added in PROTO_NEXT
+	// node's current configuration references, by digest. Added in v1.9.0
 	// (feature extensions-v1).
 	GetExtensionPackage(context.Context, *connect.Request[v1.GetExtensionPackageRequest]) (*connect.Response[v1.GetExtensionPackageResponse], error)
 	// GetExtensionSecrets returns the current and previous secret of the
