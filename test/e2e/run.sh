@@ -1784,7 +1784,9 @@ WAIT_SECS=60 wait_for "base revision $rev applied" applied_is "$rev APPLY_STATE_
 # img.test converts JPEG and PNG to both formats, webp.test JPEG to WebP.
 grep -qx image-convert-v1 <<<"$(curl -fsS "$HELPER/features")" || fail "feature image-convert-v1 not reported"
 img() { # host path [accept] [method] -> "<x-cache> <content-type> <vary|->", the body in $TMPDIR_E2E/img
-  curl -s -o "$TMPDIR_E2E/img" -D "$TMPDIR_E2E/img.h" ${4:+-X "$4"} -H "Host: $1" ${3:+-H "Accept: $3"} "$NODE$2" >/dev/null
+  local method=()
+  case "${4:-}" in "") ;; HEAD) method=(--head) ;; *) method=(-X "$4") ;; esac
+  curl -s -o "$TMPDIR_E2E/img" -D "$TMPDIR_E2E/img.h" "${method[@]}" -H "Host: $1" ${3:+-H "Accept: $3"} "$NODE$2" >/dev/null
   tr -d '\r' <"$TMPDIR_E2E/img.h" | awk -F': ' '
     tolower($1)=="x-cache" {c=$2} tolower($1)=="content-type" {t=$2}
     tolower($1)=="vary" {n=split(tolower($2), v, / *, */); for (i=1; i<=n; i++) if (v[i]=="accept") a="vary"}
@@ -1838,7 +1840,10 @@ pass "G18: saved bytes reach the console ($(curl -fsS "$HELPER/g18/saved") bytes
 # /md/private/ and caches everything; mdlive.test caches nothing.
 grep -qx markdown-v1 <<<"$(curl -fsS "$HELPER/features")" || fail "feature markdown-v1 not reported"
 md() { # host path [accept] [method] -> "<x-cache|-> <content-type> <vary|->", the body in $TMPDIR_E2E/md
-  curl -s -o "$TMPDIR_E2E/md" -D "$TMPDIR_E2E/md.h" ${4:+-X "$4"} -H "Host: $1" ${3:+-H "Accept: $3"} "$NODE$2" >/dev/null
+  # HEAD as --head: with -X HEAD curl waits for the body Content-Length announces.
+  local method=()
+  case "${4:-}" in "") ;; HEAD) method=(--head) ;; *) method=(-X "$4") ;; esac
+  curl -s -o "$TMPDIR_E2E/md" -D "$TMPDIR_E2E/md.h" "${method[@]}" -H "Host: $1" ${3:+-H "Accept: $3"} "$NODE$2" >/dev/null
   tr -d '\r' <"$TMPDIR_E2E/md.h" | awk -F': ' '
     tolower($1)=="x-cache" {c=$2} tolower($1)=="content-type" {t=$2}
     tolower($1)=="vary" {n=split(tolower($2), v, / *, */); for (i=1; i<=n; i++) if (v[i]=="accept") a="vary"}
@@ -1881,7 +1886,9 @@ own=$(md md.test /md/own "$AGENT")
 grep -qx "# Origin's own Markdown" "$TMPDIR_E2E/md" || fail "the origin's own Markdown changed"
 [ "$(md mdlive.test /md/page "$AGENT" | cut -d' ' -f2-)" = "$MDTYPE vary" ] || fail "an uncached site is not converted"
 [ "$(md mdlive.test /md/page "$AGENT" | cut -d' ' -f1)" != HIT ] || fail "an uncached site cached the Markdown"
-[ "$(md mdlive.test /other "$AGENT" | cut -d' ' -f3)" = - ] || fail "a path outside the include prefixes is converted"
+# The content type has a space ("text/plain; charset=utf-8"): the last field is the vary.
+got=$(md mdlive.test /other "$AGENT")
+[ "${got##* }" = - ] && [ "${got#*text/markdown}" = "$got" ] || fail "a path outside the include prefixes is converted: $got"
 pass "Markdown: HEAD, gzip origins, other types, excluded paths, the origin's own Markdown, uncached sites and include prefixes"
 task=$(curl -fsS -X POST "$HELPER/purge-prefix?site=site-md&host=md.test&path=/md/")
 wait_for "purge task $task" sh -c "curl -fsS $HELPER/task-results | grep -q '^$task TASK_STATE_SUCCEEDED'"
