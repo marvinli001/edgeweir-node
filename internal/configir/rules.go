@@ -31,10 +31,12 @@ var responsePhases = []string{"response-transform", "compression"}
 var requestPhases = []string{"request-transform", "redirect", "config", "waf-custom", "ratelimit", "origin"}
 
 // requestOnlyFields are the fields only requestPhases may read: the request
-// body (rules-body-v1) and the verified crawler (challenge-v2).
+// body (rules-body-v1), the verified crawler (challenge-v2) and the bot
+// score (session-detection-v1).
 var requestOnlyFields = map[string]bool{
 	"http.request.body.size": true, "http.request.body.raw": true, "http.request.body.truncated": true,
 	"http.request.body.filenames": true, "http.request.bot.verified": true, "http.request.bot.name": true,
+	"http.request.bot.score": true, "http.request.bot.automated": true,
 }
 
 // bodyFunctions read the request body (rules-body-v1); only requestPhases
@@ -68,7 +70,10 @@ var fieldTypes = map[string]string{"http.host": "string", "http.request.method":
 	"http.request.body.filenames": "string",
 	// challenge-v2: a search engine crawler the node verified by reverse and
 	// forward DNS, and its name.
-	"http.request.bot.verified": "boolean", "http.request.bot.name": "string"}
+	"http.request.bot.verified": "boolean", "http.request.bot.name": "string",
+	// session-detection-v1: the request's bot score, 1 (automated) to 99,
+	// and whether it is below 30 (edgeweir.botscore, ADR-0068).
+	"http.request.bot.score": "number", "http.request.bot.automated": "boolean"}
 
 // namedFields are the rules-v3 fields of one request cookie
 // (http.request.cookies.<name>, an RFC 6265 token, case-sensitive) and one

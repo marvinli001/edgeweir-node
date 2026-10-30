@@ -313,6 +313,9 @@ type Site struct {
 	// ImageConvert is the site's WebP / AVIF conversion (nil: off; feature
 	// image-convert-v1, ADR-0043).
 	ImageConvert *ImageConvert `json:"image_convert,omitempty"`
+	// SessionDetection is the site's session detection and bot score (nil:
+	// off; feature session-detection-v1, ADR-0068).
+	SessionDetection *SessionDetection `json:"session_detection,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -388,7 +391,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureSessionDetection}
 
 // FeatureActiveHealthGRPC (proto v1.6.0): ActiveHealthCheck.type GRPC,
 // grpc.health.v1 probes. FeatureOriginProxyProtocol (proto v1.6.0):
@@ -750,6 +753,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	bodyLimits := map[string]uint32{}
 	logHeaders := map[string][]string{}
 	images := map[string]*ImageConvert{}
+	sessions := map[string]*SessionDetection{}
 	trusts := map[string]string{}
 	originClientCerts := map[string]string{}
 	ipLists := map[string]bool{}
@@ -805,6 +809,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if images[id], err = buildImageConvert(s, opts.ExtraFeatures); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
+		if sessions[id], err = buildSessionDetection(s); err != nil {
 			return nil, fmt.Errorf("site %q: %w", id, err)
 		}
 		if trusts[id], originClientCerts[id], err = buildOriginTLS(s, p.OriginClientCertificates, p.OriginCA); err != nil {
@@ -966,6 +973,7 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.LogBlocked, site.LogQuery, site.LogPeer = s.GetLogBlocked(), s.GetLogQuery(), s.GetLogPeer()
 		site.LogHeaders = logHeaders[id]
 		site.ImageConvert = images[id]
+		site.SessionDetection = sessions[id]
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
