@@ -98,6 +98,14 @@ http {
             -- (@edgeweir_waf_<limit>, edgeweir.waf).
             waf_body_limits = { {{- range $i, $l := .WAFBodyLimits }}{{ if $i }}, {{ end }}{{ $l }}{{ end -}} },
 {{- end }}
+{{- if .Extensions }}
+            -- Node extensions the workers load (edgeweir.ext), in hook order.
+            extensions = {
+{{- range .Extensions }}
+                { id = "{{ .ID }}", dir = "{{ .Dir }}", sha256 = "{{ .SHA256 }}" },
+{{- end }}
+            },
+{{- end }}
         })
     }
     init_worker_by_lua_block { require("edgeweir.init").init_worker() }
@@ -471,6 +479,9 @@ http {
             access_by_lua_block { require("edgeweir.router").access() }
 {{ template "edge_proxy" $ }}
             header_filter_by_lua_block { require("edgeweir.router").header_filter() }
+{{- if $.Extensions }}
+            body_filter_by_lua_block { require("edgeweir.ext").body_filter() }
+{{- end }}
             log_by_lua_block { require("edgeweir.stats").log() }
         }
 

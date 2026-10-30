@@ -489,6 +489,8 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		nftBin        = fs.String("nft-bin", "nft", "nftables binary for kernel bans")
 		modsecModule  = fs.String("modsecurity-module", "auto", "ModSecurity-nginx dynamic module for sites that run the OWASP CRS: auto (the edgeweir-openresty-modsecurity package next to --nginx-bin), a path, or off")
 		crsDir        = fs.String("crs-dir", render.DefaultCRSDir, "OWASP CRS directory (crs-setup.conf and rules/); unicode.mapping is read from ../modsecurity/")
+		noExtensions  = fs.Bool("no-extensions", false, "turn node extensions off: do not announce extensions-v1, never download or load extension packages (the console cannot override it)")
+		extensionKeys = fs.String("extension-keys", "", "file of publisher keys (Ed25519 JWKs, one per line or a JSON array) extension packages must be signed with, on top of the console's trust store")
 		imageWorkers  = fs.Int("image-workers", imageconv.DefaultWorkers(), "concurrent WebP / AVIF conversions, each a child process on one CPU (0 turns conversion off: sites that convert cannot be served by this node)")
 		imageMemoryMB = fs.Int("image-memory-mb", int(imageconv.DefaultMemory>>20), "memory the running WebP / AVIF conversions may use together, in MiB (each conversion's need is estimated from its pixels; larger images keep their original)")
 		imageTimeout  = fs.Duration("image-timeout", imageconv.DefaultTimeout, "longest WebP / AVIF conversion (the child is killed and the original kept)")
@@ -787,6 +789,7 @@ func cmdRunMode(args []string, stderr io.Writer, supervised bool) int {
 		BanCapacity:         *banCapacity,
 		Kernel:              kernel,
 		Image:               agent.ImageOptions{Workers: *imageWorkers, Memory: int64(*imageMemoryMB) << 20, Timeout: *imageTimeout},
+		Extensions:          agent.ExtensionsConfig{Disabled: *noExtensions, KeysFile: *extensionKeys},
 		NodeLogs:            nodeLogs,
 		DebugLogs:           debugLogs,
 	}, eng, dataplane.NewClient(params.ControlSocket), log)

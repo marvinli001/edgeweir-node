@@ -354,6 +354,10 @@ type data struct {
 	Params
 	ConfID      string
 	SharedDicts []sharedDict
+	// Extensions are the node extensions whose packages the agent unpacked
+	// (configir.Extension.Dir), in hook order: workers load them at start,
+	// so a change of the set reloads nginx (feature extensions-v1).
+	Extensions []renderedExtension
 	// RegexCacheEntries sizes lua_regex_cache_max_entries when site or
 	// offline host patterns (domains-v2) are matched with ngx.re's "jo": each
 	// is compiled once per worker. 0: nginx's default (1024).
@@ -537,6 +541,30 @@ func sharedDicts(p Params, sites []configir.Site) ([]sharedDict, error) {
 		out = append(out, sharedDict{Name: name, SizeKB: p.RateLimitDictKB})
 	}
 	return out, nil
+}
+
+// renderedExtension is a loadable extension package.
+type renderedExtension struct {
+	ID, Dir, SHA256 string
+}
+
+// extensions returns the loadable packages and their shared dicts.
+func extensions(plan *configir.Plan) ([]renderedExtension, []sharedDict, error) {
+	var out []renderedExtension
+	var dicts []sharedDict
+	for _, e := range plan.Extensions {
+		if e.Dir == "" {
+			continue
+		}
+		if !safeWord.MatchString(e.ID) || !safePath.MatchString(e.Dir) || !safeWord.MatchString(e.SHA256) {
+			return nil, nil, fmt.Errorf("invalid extension %q", e.ID)
+		}
+		out = append(out, renderedExtension{ID: e.ID, Dir: e.Dir, SHA256: e.SHA256})
+		for _, d := range e.SharedDicts {
+			dicts = append(dicts, sharedDict{Name: d.DictName(e.ID), SizeKB: d.SizeKB})
+		}
+	}
+	return out, dicts, nil
 }
 
 // matchServer is the server of a suffix or pattern domain (domains-v2).
@@ -1056,6 +1084,11 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	exts, extDicts, err := extensions(plan)
+	if err != nil {
+		return nil, err
+	}
+	dicts = append(dicts, extDicts...)
 	if err := validateCompression(plan); err != nil {
 		return nil, err
 	}
@@ -1076,6 +1109,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		// Whole milliseconds, at least one (nginx's time syntax).
 		ShutdownTimeoutMS: (p.WorkerShutdownTimeout + time.Millisecond - 1).Milliseconds(),
 		SharedDicts:       dicts,
+		Extensions:        exts,
 		RegexCacheEntries: regexCacheEntries(plan),
 		EdgeServers:       edge,
 		ForwardedFor:      forwardedFor,

@@ -55,6 +55,16 @@ type SiteTable struct {
 	// UnknownHosts is the cluster's handling of unknown hosts and node IP
 	// access, and scan protection (unknown-host-v1).
 	UnknownHosts *configir.UnknownHosts `json:"unknown_hosts,omitempty"`
+	// Extensions are the node extensions (extensions-v1): the kill switch
+	// and, in hook order, each extension's settings and whether its package
+	// loaded (state "loaded"); the sites name theirs.
+	Extensions *ExtensionTable `json:"extensions,omitempty"`
+}
+
+// ExtensionTable is the site table's part for node extensions.
+type ExtensionTable struct {
+	Disabled bool                 `json:"disabled"`
+	List     []configir.Extension `json:"list"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -68,6 +78,9 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.OfflineHosts = p.OfflineHosts
 	t.ClientAddress = p.ClientAddress
 	t.UnknownHosts = p.UnknownHosts
+	if len(p.Extensions) > 0 {
+		t.Extensions = &ExtensionTable{Disabled: p.ExtensionsDisabled, List: p.Extensions}
+	}
 	for _, z := range p.CacheZones {
 		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
 	}
@@ -452,4 +465,25 @@ func (c *Client) DrainStats(ctx context.Context, all bool) ([]MinuteStats, error
 		return nil, fmt.Errorf("decode stats: %w", err)
 	}
 	return stats, nil
+}
+
+// ExtensionRuntime is one extension's state in the workers
+// (GET /v1/extensions): the loaded package, a load error and the fault
+// and trip counters summed over the workers.
+type ExtensionRuntime struct {
+	SHA256 string `json:"sha256"`
+	Error  string `json:"error"`
+	Faults uint64 `json:"faults"`
+	Trips  uint64 `json:"trips"`
+}
+
+// Extensions returns the extensions' runtime state by id.
+func (c *Client) Extensions(ctx context.Context) (map[string]ExtensionRuntime, error) {
+	var out struct {
+		Extensions map[string]ExtensionRuntime `json:"extensions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/extensions", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Extensions, nil
 }

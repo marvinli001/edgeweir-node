@@ -116,6 +116,8 @@ type Config struct {
 	DefaultPort uint32
 	// GeoIP selects the local MMDBs; an empty path disables that source.
 	GeoIP geoip.Paths
+	// Extensions is the node's own setting for node extensions.
+	Extensions ExtensionsConfig
 
 	EnrollPollInterval time.Duration // default 2s
 	PollInterval       time.Duration // GetConfig fallback poll, default 30s

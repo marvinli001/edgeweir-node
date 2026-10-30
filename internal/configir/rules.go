@@ -312,6 +312,13 @@ func (c *exprCheck) condition(e *nodev1.RuleExpression, depth int) error {
 		}
 	} else {
 		typ = c.fieldType(e.Field)
+		// Extension fields (extensions-v1) have the type their manifest
+		// declares; the console checked it, the node reads it unset as the
+		// type's zero value.
+		if typ == "" && extensionField.MatchString(e.Field) && slices.Contains(requestPhases, c.phase) &&
+			slices.Contains([]string{"string", "number", "boolean"}, e.ValueType) {
+			typ = e.ValueType
+		}
 		if typ == "" || typ != e.ValueType {
 			return bad
 		}

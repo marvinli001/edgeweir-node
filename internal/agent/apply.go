@@ -96,6 +96,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 
 	a.mu.Lock()
 	current := a.conf
+	previousPlan := a.plan
 	previousTable := a.desired
 	previousL4 := a.desiredL4
 	a.mu.Unlock()
@@ -196,6 +197,7 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	a.mu.Unlock()
 	a.removeStaleTicketKeyFiles(plan)
 	a.removeStaleOriginTLSFiles(plan)
+	a.removeStaleExtensions(plan, previousPlan)
 	// Checks of the plan start (or stop); the marks' lifetime follows
 	// their intervals.
 	a.health.Update(plan)
@@ -619,6 +621,12 @@ func (a *Agent) apply(ctx context.Context, cfg *nodev1.NodeConfig, key string) {
 		return
 	}
 	a.attachOriginClientCertificates(plan)
+	// Extension packages are named in nginx.conf: they come before
+	// rendering; one that fails is left out, not the configuration.
+	if err := a.ensureExtensions(ctx, plan); err != nil {
+		a.fail(cfg, key, err)
+		return
+	}
 	for _, w := range plan.Warnings {
 		a.log.Warn("configuration warning", "revision", cfg.GetRevision(), "warning", w)
 	}

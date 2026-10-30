@@ -22,6 +22,9 @@ func (a *Agent) extraFeatures() []string {
 	if a.cfg.Image.Workers > 0 {
 		out = append(out, configir.FeatureImageConvert)
 	}
+	if !a.cfg.Extensions.Disabled {
+		out = append(out, configir.FeatureExtensions)
+	}
 	return out
 }
 

@@ -168,6 +168,10 @@ type Plan struct {
 	// ConnectionLimits are the per-client TCP connection limits the agent
 	// writes into nftables (nil: none; proto v1.6.0).
 	ConnectionLimits *ConnectionLimits
+	// Extensions are the node extensions in hook order and
+	// ExtensionsDisabled the kill switch (feature extensions-v1).
+	Extensions         []Extension
+	ExtensionsDisabled bool
 }
 
 // Listener is an HTTP or HTTPS port served by the edge layer.
@@ -313,6 +317,8 @@ type Site struct {
 	// ImageConvert is the site's WebP / AVIF conversion (nil: off; feature
 	// image-convert-v1, ADR-0043).
 	ImageConvert *ImageConvert `json:"image_convert,omitempty"`
+	// Extensions the site turns on, in hook order (feature extensions-v1).
+	Extensions []SiteExtension `json:"extensions,omitempty"`
 }
 
 // BulkRedirect is an entry of a site's exact-match redirect table: Source
@@ -706,6 +712,12 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	}
 
 	p := &Plan{Revision: c.GetRevision(), ContentHash: c.GetContentHash(), ClusterID: c.GetClusterId()}
+	exts, err := buildExtensions(c)
+	if err != nil {
+		return nil, err
+	}
+	p.Extensions = exts
+	p.ExtensionsDisabled = c.GetExtensionsDisabled()
 	p.Certificates = map[string]string{}
 	for _, cert := range c.GetCertificates() {
 		if !idRE.MatchString(cert.GetId()) || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(cert.GetSha256Fingerprint()) {
@@ -715,7 +727,6 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	}
 	p.IPLists = c.GetIpLists()
 	p.PlatformRules = c.GetPlatformRules()
-	var err error
 	if p.PlatformProtection, err = buildPlatformProtection(c.GetPlatformProtection()); err != nil {
 		return nil, err
 	}
@@ -966,6 +977,9 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 		site.LogBlocked, site.LogQuery, site.LogPeer = s.GetLogBlocked(), s.GetLogQuery(), s.GetLogPeer()
 		site.LogHeaders = logHeaders[id]
 		site.ImageConvert = images[id]
+		if site.Extensions, err = buildSiteExtensions(s, p.Extensions); err != nil {
+			return nil, fmt.Errorf("site %q: %w", id, err)
+		}
 		if tls := s.GetTls(); tls != nil {
 			if (tls.GetMinimumVersion() != "1.2" && tls.GetMinimumVersion() != "1.3") || (tls.GetCipherProfile() != "modern" && tls.GetCipherProfile() != "compatible") {
 				return nil, fmt.Errorf("%w: unsupported TLS policy", ErrRejected)
