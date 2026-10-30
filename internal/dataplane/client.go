@@ -8,8 +8,6 @@ package dataplane
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +53,9 @@ type SiteTable struct {
 	// UnknownHosts is the cluster's handling of unknown hosts and node IP
 	// access, and scan protection (unknown-host-v1).
 	UnknownHosts *configir.UnknownHosts `json:"unknown_hosts,omitempty"`
+	// TierClients are the node ids the tier listener serves as lower tiers
+	// (tiered-cache-v1).
+	TierClients []string `json:"tier_clients,omitempty"`
 }
 
 // FromPlan converts a plan into the site table pushed to Lua.
@@ -68,6 +69,9 @@ func FromPlan(p *configir.Plan) *SiteTable {
 	t.OfflineHosts = p.OfflineHosts
 	t.ClientAddress = p.ClientAddress
 	t.UnknownHosts = p.UnknownHosts
+	if p.Tier != nil && p.Tier.Listen {
+		t.TierClients = p.Tier.Clients
+	}
 	for _, z := range p.CacheZones {
 		t.TagTTL = max(t.TagTTL, z.InactiveSeconds)
 	}
@@ -84,11 +88,7 @@ func FromPlan(p *configir.Plan) *SiteTable {
 // "edgeweir-" and the first 16 hex characters of sha256(node id). It does
 // not reveal the node id but is stable across restarts and renewals.
 func CDNID(nodeID string) string {
-	if nodeID == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(nodeID))
-	return "edgeweir-" + hex.EncodeToString(sum[:])[:16]
+	return configir.CDNID(nodeID)
 }
 
 // Status is the response of GET /v1/status. Version is 0 until the first

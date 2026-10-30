@@ -270,7 +270,10 @@ type Agent struct {
 	engine     Engine
 	dp         DataPlane
 	ids        identity.Store
-	lkg        configstore.Store
+	// tierLatency holds the round trip times to the tiered cache's latency
+	// targets (tierLatencyLoop).
+	tierLatency tierLatencies
+	lkg         configstore.Store
 
 	geoFeatures []string
 	// geo is set while the agent runs with GeoIP databases; locateAddress is
@@ -555,6 +558,7 @@ func (a *Agent) Run(parent context.Context) error {
 	spawn("ocsp", a.ocspLoop)
 	spawn("kernel", a.kernelLoop)
 	spawn("captchas", a.captchaLoop)
+	spawn("tierlatency", a.tierLatencyLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down

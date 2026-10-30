@@ -30,7 +30,7 @@ import (
 var confTemplate string
 
 var tmpl = template.Must(template.New("nginx.conf").
-	Funcs(template.FuncMap{"join": strings.Join, "originProxy": newOriginProxy}).
+	Funcs(template.FuncMap{"join": strings.Join, "originProxy": newOriginProxy, "tierEdge": tierEdge}).
 	Option("missingkey=error").
 	Parse(confTemplate))
 
@@ -94,6 +94,10 @@ type Params struct {
 	OriginSocketOriginCA     string
 	OriginSocketOriginCAH2   string
 	OriginSocketOriginCAGRPC string
+	// TierSocket is the unix socket of the tier layer, through which the
+	// edge fetches from upper tiers (default: tier.sock next to
+	// OriginSocket); rendered while a site of the node has upper tiers.
+	TierSocket string
 	// TrustedCA is the CA bundle used to verify HTTPS origins. Empty means
 	// none was found: origins that must be verified then fail closed.
 	TrustedCA string
@@ -267,6 +271,7 @@ func (p Params) WithDefaults() Params {
 			{&p.OriginSocketOriginCA, "origin-oca.sock"},
 			{&p.OriginSocketOriginCAH2, "origin-oca-h2.sock"},
 			{&p.OriginSocketOriginCAGRPC, "origin-oca-grpc.sock"},
+			{&p.TierSocket, "tier.sock"},
 		} {
 			if *s.path == "" {
 				*s.path = filepath.Join(dir, s.name)
@@ -299,6 +304,7 @@ func (p Params) Validate() error {
 		"Origin CA origin socket":                   p.OriginSocketOriginCA,
 		"HTTP/2 Origin CA origin socket":            p.OriginSocketOriginCAH2,
 		"gRPC Origin CA origin socket":              p.OriginSocketOriginCAGRPC,
+		"tier socket":                               p.TierSocket,
 		"edge socket":                               p.EdgeSocket,
 		"TLS edge socket":                           p.EdgeTLSSocket,
 		"GeoIP socket":                              p.GeoIPSocket,
@@ -404,6 +410,66 @@ type data struct {
 	// order (none: no tickets).
 	TLSSessions    bool
 	TicketKeyFiles []string
+	// Tier is the tiered cache's part of nginx.conf (nil: none).
+	Tier *tierData
+	// InTier marks the copy of data the tier listener's location renders
+	// edge_proxy with (tierEdge).
+	InTier bool
+}
+
+// tierData is the tiered cache in nginx.conf: the tier layer towards the
+// upper tiers (Lower) and the tier listener for the lower tiers (Listen),
+// both authenticated with the node certificate (CertFile, KeyFile) against
+// the node CA (CAFile).
+type tierData struct {
+	Lower                     bool
+	Listen                    []string
+	CertFile, KeyFile, CAFile string
+}
+
+// TierDir is the directory of the copies of the node certificate, its key
+// and the node CA nginx reads for the tiered cache (the agent writes them
+// before rendering). The names follow the certificate, so a renewal
+// changes nginx.conf and reloads.
+const TierDir = "conf/tier"
+
+// TierFiles returns the paths of the node certificate, key and CA copies
+// for a certificate with the given SHA-256 fingerprint (hex).
+func TierFiles(prefix, fingerprint string) (cert, key, ca string) {
+	base := prefix + "/" + TierDir + "/node-" + fingerprint[:16]
+	return base + ".crt", base + ".key", base + "-ca.crt"
+}
+
+// tierEdge is the data edge_proxy renders the tier listener's location
+// with: the lower tier already set X-Forwarded-For, X-Real-IP and
+// X-Forwarded-Proto for the origin.
+func tierEdge(root data) data {
+	root.InTier = true
+	root.ForwardedFor = "$http_x_forwarded_for"
+	return root
+}
+
+func buildTierData(p Params, plan *configir.Plan) (*tierData, error) {
+	t := plan.Tier
+	if t == nil || (!t.Lower && !t.Listen) {
+		return nil, nil
+	}
+	for _, f := range []string{t.CertPath, t.KeyPath, t.CAPath} {
+		if !safePath.MatchString(f) {
+			return nil, fmt.Errorf("invalid tier certificate path %q", f)
+		}
+	}
+	if t.Port == 0 || t.Port > 65535 {
+		return nil, fmt.Errorf("invalid tier port %d", t.Port)
+	}
+	d := &tierData{Lower: t.Lower, CertFile: t.CertPath, KeyFile: t.KeyPath, CAFile: t.CAPath}
+	if t.Listen {
+		d.Listen = []string{fmt.Sprintf("%d ssl", t.Port)}
+		if p.ListenIPv6 {
+			d.Listen = append(d.Listen, fmt.Sprintf("[::]:%d ssl", t.Port))
+		}
+	}
+	return d, nil
 }
 
 // TicketKeyDir is the directory of the session ticket key files under the
@@ -1070,6 +1136,14 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	edge := edgeServers(p, plan)
 	layers := renderedLayers(p, plan)
 	p.WorkerConnections += listeningSockets(p, len(layers), edge, l4)
+	tier, err := buildTierData(p, plan)
+	if err != nil {
+		return nil, err
+	}
+	if tier != nil {
+		// The tier socket and the tier listener's sockets.
+		p.WorkerConnections += 1 + len(tier.Listen)
+	}
 	d := data{
 		Params:    p,
 		L4Servers: l4,
@@ -1097,6 +1171,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if modsecConf != "" {
 		d.WAFBodyLimits = plan.WAFBodyLimits()
 	}
+	d.Tier = tier
 	if plan.OriginCA != nil {
 		d.OriginCAFile = OriginCAPath(p.Prefix, plan.OriginCA)
 		d.OriginCRLFile = OriginCRLPath(p.Prefix, plan.OriginCA)
