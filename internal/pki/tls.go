@@ -12,6 +12,10 @@ import (
 // matches the pinned CA fingerprint.
 var ErrPinMismatch = errors.New("CA pin mismatch")
 
+// ErrServerCertificate is returned when the server's certificate does not
+// verify against the pinned CA (wrong name, expired, not for servers).
+var ErrServerCertificate = errors.New("verify server certificate against pinned CA")
+
 // VerifyPinnedChain verifies a server certificate chain against a pinned CA
 // (kubeadm-style discovery). It is used during enrollment, when the node
 // does not yet have the internal CA certificate:
@@ -50,7 +54,7 @@ func VerifyPinnedChain(chain []*x509.Certificate, pin, serverName string, now ti
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})
 	if err != nil {
-		return fmt.Errorf("verify server certificate against pinned CA: %w", err)
+		return fmt.Errorf("%w: %w", ErrServerCertificate, err)
 	}
 	return nil
 }

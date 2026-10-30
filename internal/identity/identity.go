@@ -7,6 +7,15 @@
 //	identity.json  node id, cluster id, name and console address
 //	run.lock       held (flock) by `edgeweir-node run` while it runs
 //	identity.lock  held (flock) while the console address is changed
+//	enroll.lock    held (flock) by `edgeweir-node enroll` while it enrolls
+//	enroll.key     the key of an enrollment not completed yet, mode 0600
+//
+// enroll.key is written before the token and CSR are sent and reused by
+// every retry until an enrollment is saved (then it is node.key): an
+// attempt whose answer was lost (the SSH session or the connection died
+// after the console issued the certificate) is retried with the same
+// public key, which lets the console answer with the node it already
+// created instead of a second one.
 //
 // identity.json is written last and is the "enrolled" marker; the other
 // files are always complete when it exists. Every file is replaced
@@ -47,6 +56,10 @@ const (
 	// IdentityLockFile is locked while the console address in the identity
 	// file is changed (UpdateServer).
 	IdentityLockFile = "identity.lock"
+	// EnrollLockFile is locked by a running enrollment (LockEnroll).
+	EnrollLockFile = "enroll.lock"
+	// PendingKeyFile is the key of an enrollment not completed yet.
+	PendingKeyFile = "enroll.key"
 
 	// The probe layout (Store.Probe).
 	ProbeKeyFile      = "probe.key"
@@ -59,6 +72,10 @@ var ErrNotEnrolled = errors.New("node is not enrolled")
 
 // ErrProbeNotEnrolled is returned by Load when probe.json does not exist.
 var ErrProbeNotEnrolled = errors.New("probe is not enrolled")
+
+// ErrEnrolling is returned by LockEnroll when another enrollment runs
+// with the state directory.
+var ErrEnrolling = errors.New("another enrollment is running with this state directory")
 
 // ErrRunning is returned by LockRun when an agent already runs with the
 // state directory.
@@ -185,7 +202,42 @@ func (s Store) Save(id Identity, keyPEM, certPEM, caPEM []byte) error {
 			return err
 		}
 	}
-	return matchDirOwner(s.Dir, s.KeyFile(), s.CertFile(), CAFile, s.IdentityFile())
+	if err := matchDirOwner(s.Dir, s.KeyFile(), s.CertFile(), CAFile, s.IdentityFile()); err != nil {
+		return err
+	}
+	// The pending key is node.key now.
+	if err := os.Remove(s.Path(PendingKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// PendingKey returns the key of an enrollment not completed yet
+// (PendingKeyFile), or creates and stores a new one. reused tells which.
+// An unreadable pending key is replaced.
+func (s Store) PendingKey() (key crypto.Signer, reused bool, err error) {
+	if raw, err := os.ReadFile(s.Path(PendingKeyFile)); err == nil {
+		if k, err := pki.ParsePrivateKeyPEM(raw); err == nil {
+			return k, true, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, false, fmt.Errorf("read pending enrollment key: %w", err)
+	}
+	k, err := pki.GenerateKey()
+	if err != nil {
+		return nil, false, fmt.Errorf("generate key: %w", err)
+	}
+	keyPEM, err := pki.MarshalPrivateKeyPEM(k)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.EnsureDir(); err != nil {
+		return nil, false, err
+	}
+	if err := fsutil.WriteFileAtomic(s.Path(PendingKeyFile), keyPEM, 0o600); err != nil {
+		return nil, false, fmt.Errorf("store pending enrollment key: %w", err)
+	}
+	return k, false, nil
 }
 
 // Remove deletes the identity and the cached configuration (used by

@@ -1,6 +1,6 @@
 // Command edgeweir-node is the Edgeweir edge node agent.
 //
-//	EDGEWEIR_TOKEN=T edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name N] [--state-dir DIR] [--force]
+//	EDGEWEIR_TOKEN=T edgeweir-node enroll --server URL --ca-sha256 HEX [--server-name N] [--state-dir DIR] [--force | --if-not-enrolled]
 //	edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX ...  (--token T also works but shows in ps)
 //	edgeweir-node run [--manage-nginx] [--state-dir DIR] [--nginx-bin BIN] [--nginx-prefix DIR]
 //	                  [--lua-dir DIR] [--control-socket PATH] [--kernel-bans auto|off] ...
@@ -41,6 +41,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
 	"github.com/marvinli001/edgeweir-node/internal/geoip"
 	"github.com/marvinli001/edgeweir-node/internal/hostinfo"
+	"github.com/marvinli001/edgeweir-node/internal/identity"
 	"github.com/marvinli001/edgeweir-node/internal/imageconv"
 	"github.com/marvinli001/edgeweir-node/internal/nft"
 	"github.com/marvinli001/edgeweir-node/internal/nodelog"
@@ -83,7 +84,7 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "enroll":
-		return cmdEnroll(args[1:], stderr)
+		return cmdEnroll(args[1:], stdout, stderr)
 	case "run":
 		return cmdRun(args[1:], stderr)
 	case "supervise":
@@ -125,7 +126,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `edgeweir-node - Edgeweir edge node agent
 
 Usage:
-  EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [flags]
+  EDGEWEIR_TOKEN=TOKEN edgeweir-node enroll --server URL --ca-sha256 HEX [--if-not-enrolled | --force] [flags]
   edgeweir-node enroll --server URL --token-file PATH --ca-sha256 HEX [flags]
   edgeweir-node run [--manage-nginx] [flags]
   edgeweir-node supervise --manage-nginx [flags]
@@ -227,49 +228,92 @@ func parse(fs *flag.FlagSet, args []string) (ok bool, code int) {
 	return true, 0
 }
 
-func cmdEnroll(args []string, stderr io.Writer) int {
+// cmdEnroll enrolls the node. Whatever the outcome it writes one result
+// line to stdout (enroll.ResultPrefix, JSON) and exits with the status the
+// line names (enroll.Exit*; README "Unattended installs"), so that a caller
+// over SSH can tell a used token from an unreachable console without
+// reading the logs.
+func cmdEnroll(args []string, stdout, stderr io.Writer) int {
+	// Over SSH the session may end while the enrollment runs: the console
+	// may have issued the certificate already, so the identity must still
+	// be saved. A closed stdout/stderr then fails writes instead of killing
+	// the process (SIGPIPE), and a hangup does not stop it; the RPC is
+	// bounded by --timeout. SIGINT and SIGTERM still interrupt it.
+	signal.Ignore(syscall.SIGPIPE, syscall.SIGHUP)
+	result := func(r enroll.Result) int {
+		_ = r.Write(stdout)
+		return r.Exit
+	}
+	usageResult := func(code int, msg string) int {
+		if code == 0 {
+			return 0 // -h
+		}
+		return result(enroll.Result{Status: enroll.StatusUsage, Exit: enroll.ExitUsage, Message: msg})
+	}
 	fs := newFlagSet("enroll", stderr)
 	var (
-		server     = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443, or wss://console.example.com for its WebSocket entry (required)")
-		token      = fs.String("token", "", "single-use enrollment token; visible in the process list, prefer the EDGEWEIR_TOKEN environment variable or --token-file")
-		tokenFile  = fs.String("token-file", "", "read the single-use enrollment token from this file (surrounding whitespace is ignored)")
-		caSHA256   = fs.String("ca-sha256", "", "SHA-256 of the console's internal CA certificate (DER, hex) from the install command (required)")
-		serverName = fs.String("server-name", "", "TLS server name to verify (default: host of --server)")
-		stateDir   = fs.String("state-dir", defaultStateDir, "state directory for the node identity")
-		force      = fs.Bool("force", false, "replace an existing identity (re-enroll)")
-		timeout    = fs.Duration("timeout", 30*time.Second, "enrollment RPC timeout")
-		lf         logFlags
+		server        = fs.String("server", "", "console node-channel URL, e.g. https://console.example.com:8443, or wss://console.example.com for its WebSocket entry (required)")
+		token         = fs.String("token", "", "single-use enrollment token; visible in the process list, prefer the EDGEWEIR_TOKEN environment variable or --token-file")
+		tokenFile     = fs.String("token-file", "", "read the single-use enrollment token from this file (surrounding whitespace is ignored)")
+		caSHA256      = fs.String("ca-sha256", "", "SHA-256 of the console's internal CA certificate (DER, hex) from the install command (required)")
+		serverName    = fs.String("server-name", "", "TLS server name to verify (default: host of --server)")
+		stateDir      = fs.String("state-dir", defaultStateDir, "state directory for the node identity")
+		force         = fs.Bool("force", false, "replace an existing identity (re-enroll)")
+		ifNotEnrolled = fs.Bool("if-not-enrolled", false, "succeed without a token when the node is already enrolled with the console of --ca-sha256 (exit 11 when enrolled with another one)")
+		timeout       = fs.Duration("timeout", 30*time.Second, "enrollment RPC timeout")
+		lf            logFlags
 	)
 	lf.register(fs)
 	if ok, code := parse(fs, args); !ok {
-		return code
+		return usageResult(code, "invalid arguments")
 	}
 	log, err := lf.logger(stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return 2
+		return usageResult(2, err.Error())
+	}
+	if *force && *ifNotEnrolled {
+		fmt.Fprintln(stderr, "enroll: --force and --if-not-enrolled exclude each other")
+		return usageResult(2, "--force and --if-not-enrolled exclude each other")
 	}
 	cli := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { cli[f.Name] = true })
 	tok, err := enrollToken(*token, *tokenFile, cli["token"], cli["token-file"])
-	if err != nil {
-		fmt.Fprintln(stderr, "enroll:", err)
-		return 2
-	}
 	// The token must not leak into child processes (openresty -v below).
 	_ = os.Unsetenv(envName("token"))
+	dir, derr := filepath.Abs(*stateDir)
+	if derr != nil {
+		log.Error("invalid --state-dir", "err", derr)
+		return usageResult(2, "invalid --state-dir: "+derr.Error())
+	}
+	if *ifNotEnrolled && *server != "" && *caSHA256 != "" {
+		id, xerr := enroll.Existing(dir, *caSHA256)
+		switch {
+		case xerr == nil:
+			log.Info("node is already enrolled with this console; nothing to do", "node_id", id.NodeID, "state_dir", dir)
+			return result(enroll.Result{Status: enroll.StatusAlreadyEnrolled, Exit: enroll.ExitOK,
+				Message: "already enrolled with this console"}.WithIdentity(id))
+		case errors.Is(xerr, enroll.ErrEnrolledElsewhere):
+			log.Error("enrollment refused", "err", xerr, "node_id", id.NodeID, "ca_sha256", id.CASHA256)
+			r := enroll.Outcome(xerr).WithIdentity(id)
+			r.CASHA256 = id.CASHA256
+			return result(r)
+		case !errors.Is(xerr, identity.ErrNotEnrolled):
+			log.Error("cannot read the existing identity", "err", xerr)
+			return result(enroll.Outcome(xerr))
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "enroll:", err)
+		return usageResult(2, err.Error())
+	}
 	if cli["token"] {
 		log.Warn("--token is visible to other users in the process list; prefer EDGEWEIR_TOKEN or --token-file")
 	}
 	if *server == "" || tok == "" || *caSHA256 == "" {
 		fmt.Fprintln(stderr, "enroll: --server, a token (EDGEWEIR_TOKEN, --token-file or --token) and --ca-sha256 are required")
 		fs.Usage()
-		return 2
-	}
-	dir, err := filepath.Abs(*stateDir)
-	if err != nil {
-		log.Error("invalid --state-dir", "err", err)
-		return 2
+		return usageResult(2, "--server, a token and --ca-sha256 are required")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -280,7 +324,7 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 		engineVersion = v
 	}
 	vcancel()
-	if _, err := enroll.Run(ctx, enroll.Options{
+	id, err := enroll.Run(ctx, enroll.Options{
 		Info:       hostinfo.Collect(engineVersion),
 		ServerURL:  *server,
 		Token:      tok,
@@ -290,11 +334,22 @@ func cmdEnroll(args []string, stderr io.Writer) int {
 		Force:      *force,
 		Timeout:    *timeout,
 		Logger:     log,
-	}); err != nil {
-		log.Error("enrollment failed", "err", err)
-		return 1
+	})
+	if err != nil {
+		r := enroll.Outcome(err)
+		log.Error("enrollment failed", "err", err, "status", r.Status)
+		if errors.Is(err, enroll.ErrAlreadyEnrolled) {
+			if cur, rerr := (identity.Store{Dir: dir}).ReadIdentity(); rerr == nil {
+				r = r.WithIdentity(cur)
+			}
+		}
+		return result(r)
 	}
-	return 0
+	var notAfter time.Time
+	if loaded, err := (identity.Store{Dir: dir}).Load(); err == nil {
+		notAfter = loaded.Certificate.NotAfter
+	}
+	return result(enroll.Succeeded(id, notAfter))
 }
 
 // cmdProbe runs a regional probe: it enrolls with a one-time probe token on

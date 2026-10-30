@@ -39,6 +39,36 @@ var ErrAgentRunning = errors.New("edgeweir-node run is using this state director
 // ErrProbeAlreadyEnrolled is returned when a probe identity exists.
 var ErrProbeAlreadyEnrolled = errors.New("probe is already enrolled")
 
+// ErrEnrolledElsewhere is returned by Existing when the identity pins
+// another console CA than the one asked for.
+var ErrEnrolledElsewhere = errors.New("node is enrolled with another console (its identity pins another CA)")
+
+// ErrBusy is returned while another enrollment runs with the state
+// directory.
+var ErrBusy = errors.New("another enrollment is running with this state directory; " +
+	"wait for it, then run this command again")
+
+// ErrInvalidOptions marks an invalid server URL, CA pin or missing token.
+var ErrInvalidOptions = errors.New("invalid enrollment options")
+
+// ErrStateDir marks a state directory that cannot hold the identity.
+var ErrStateDir = errors.New("state directory unusable")
+
+// ErrBadResponse marks an answer of the console that the node cannot use
+// (missing fields, a certificate that does not fit the key).
+var ErrBadResponse = errors.New("invalid enroll response")
+
+// responseError is an error about the console's answer (ErrBadResponse);
+// its message stays the wrapped one.
+type responseError struct{ error }
+
+func (e responseError) Unwrap() error        { return e.error }
+func (e responseError) Is(target error) bool { return target == ErrBadResponse }
+
+// ErrTokenRejected marks a token the console refused (unknown, expired
+// or used).
+var ErrTokenRejected = errors.New("console rejected the enrollment token (expired or already used)")
+
 // Options configures an enrollment.
 type Options struct {
 	// ServerURL is the console node-channel base URL, e.g. https://console:8443.
@@ -85,7 +115,7 @@ func Run(ctx context.Context, opts Options) (*identity.Identity, error) {
 		}
 		msg := resp.Msg
 		if msg.GetNodeId() == "" {
-			return nil, errors.New("enroll response: empty node_id")
+			return nil, responseError{errors.New("enroll response: empty node_id")}
 		}
 		return &issued{
 			id:      identity.Identity{NodeID: msg.GetNodeId(), ClusterID: msg.GetClusterId(), NodeName: msg.GetNodeName()},
@@ -137,7 +167,7 @@ func Probe(ctx context.Context, opts ProbeOptions) (*identity.Identity, error) {
 		}
 		msg := resp.Msg
 		if msg.GetProbeId() == "" {
-			return nil, errors.New("enroll response: empty probe_id")
+			return nil, responseError{errors.New("enroll response: empty probe_id")}
 		}
 		return &issued{
 			id:      identity.Identity{ProbeID: msg.GetProbeId(), ProbeName: msg.GetProbeName(), RegionID: msg.GetRegionId()},
@@ -174,26 +204,42 @@ func run(ctx context.Context, c common, store identity.Store, hostname string, s
 		log = slog.Default()
 	}
 	if c.token == "" {
-		return nil, errors.New("enrollment token is required")
+		return nil, fmt.Errorf("%w: enrollment token is required", ErrInvalidOptions)
 	}
 	pin, err := pki.NormalizePin(c.caSHA256)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrInvalidOptions, err)
 	}
 	u, err := controlplane.ParseServerURL(c.serverURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrInvalidOptions, err)
 	}
 	serverName := c.serverName
 	if serverName == "" {
 		serverName = u.Hostname()
 	}
 
-	if store.Enrolled() && !c.force {
-		if store.Probe {
-			return nil, ErrProbeAlreadyEnrolled
-		}
-		return nil, ErrAlreadyEnrolled
+	if err := alreadyEnrolled(store, c.force); err != nil {
+		return nil, err
+	}
+	// Fail before burning the single-use token if the state directory is
+	// not writable.
+	if err := checkWritable(store); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStateDir, err)
+	}
+	// One enrollment at a time: a second one (a retry while the first
+	// still runs) would use another token for the same host.
+	releaseEnroll, err := store.LockEnroll()
+	if errors.Is(err, identity.ErrEnrolling) {
+		return nil, ErrBusy
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStateDir, err)
+	}
+	defer releaseEnroll()
+	// The enrollment that held the lock may just have finished.
+	if err := alreadyEnrolled(store, c.force); err != nil {
+		return nil, err
 	}
 	// A first enrollment is what a waiting agent expects; replacing the
 	// identity of a running one is not. The lock is held until the new
@@ -204,19 +250,19 @@ func run(ctx context.Context, c common, store identity.Store, hostname string, s
 			return nil, ErrAgentRunning
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrStateDir, err)
 		}
 		defer release()
 	}
-	// Fail before burning the single-use token if the state directory is
-	// not writable.
-	if err := checkWritable(store); err != nil {
-		return nil, err
-	}
 
-	key, err := pki.GenerateKey()
+	// The key of an earlier attempt that did not complete is used again
+	// (identity.PendingKeyFile).
+	key, reused, err := store.PendingKey()
 	if err != nil {
-		return nil, fmt.Errorf("generate key: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStateDir, err)
+	}
+	if reused {
+		log.Info("using the key of an earlier enrollment attempt that did not complete", "state_dir", store.Dir)
 	}
 	csrPEM, err := pki.CreateCSR(key, hostname)
 	if err != nil {
@@ -233,24 +279,24 @@ func run(ctx context.Context, c common, store identity.Store, hostname string, s
 	got, err := send(rctx, u.String(), serverName, pin, csrPEM)
 	if err != nil {
 		if controlplane.IsAuthError(err) {
-			return nil, fmt.Errorf("console rejected the enrollment token (expired or already used): %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrTokenRejected, err)
 		}
 		return nil, fmt.Errorf("enroll: %w", err)
 	}
 
 	ca, err := pki.ParseCertificatePEM([]byte(got.caPEM))
 	if err != nil {
-		return nil, fmt.Errorf("enroll response: CA certificate: %w", err)
+		return nil, responseError{fmt.Errorf("enroll response: CA certificate: %w", err)}
 	}
 	if fp := pki.Fingerprint(ca); fp != pin {
-		return nil, fmt.Errorf("enroll response: CA certificate sha256 %s does not match the pin %s", fp, pin)
+		return nil, fmt.Errorf("enroll response: %w: CA certificate sha256 %s does not match the pin %s", pki.ErrPinMismatch, fp, pin)
 	}
 	cert, err := pki.ParseCertificatePEM([]byte(got.certPEM))
 	if err != nil {
-		return nil, fmt.Errorf("enroll response: %s certificate: %w", c.kind, err)
+		return nil, responseError{fmt.Errorf("enroll response: %s certificate: %w", c.kind, err)}
 	}
 	if err := pki.VerifyNodeCertificate(cert, ca, key, time.Now()); err != nil {
-		return nil, fmt.Errorf("enroll response: %w", err)
+		return nil, responseError{fmt.Errorf("enroll response: %w", err)}
 	}
 	if cert.Subject.CommonName != got.subject {
 		log.Warn(c.kind+" certificate CN differs from the "+c.kind+" id", "cn", cert.Subject.CommonName, "id", got.subject)
@@ -262,14 +308,14 @@ func run(ctx context.Context, c common, store identity.Store, hostname string, s
 	}
 	if c.force {
 		if err := store.Remove(); err != nil {
-			return nil, fmt.Errorf("remove previous identity: %w", err)
+			return nil, fmt.Errorf("%w: remove previous identity: %w", ErrStateDir, err)
 		}
 	}
 	id := got.id
 	id.ServerURL, id.ServerName, id.CASHA256 = u.String(), serverName, pin
 	id.EnrolledAt = time.Now().UTC().Truncate(time.Second)
 	if err := store.Save(id, keyPEM, []byte(got.certPEM), []byte(got.caPEM)); err != nil {
-		return nil, fmt.Errorf("persist identity: %w", err)
+		return nil, fmt.Errorf("%w: persist identity: %w", ErrStateDir, err)
 	}
 	if store.Probe {
 		log.Info("probe enrolled", "probe_id", id.ProbeID, "probe_name", id.ProbeName, "region_id", id.RegionID,
@@ -280,6 +326,36 @@ func run(ctx context.Context, c common, store identity.Store, hostname string, s
 			"certificate_not_after", cert.NotAfter.UTC().Format(time.RFC3339), "state_dir", store.Dir)
 	}
 	return &id, nil
+}
+
+// alreadyEnrolled refuses an enrolled state directory unless force.
+func alreadyEnrolled(store identity.Store, force bool) error {
+	if !store.Enrolled() || force {
+		return nil
+	}
+	if store.Probe {
+		return ErrProbeAlreadyEnrolled
+	}
+	return ErrAlreadyEnrolled
+}
+
+// Existing returns the identity of an enrolled node in stateDir when it
+// pins the CA caSHA256 (the same console), with ErrEnrolledElsewhere when
+// it pins another one, and identity.ErrNotEnrolled when there is none.
+// Nothing is sent and no token is needed (`enroll --if-not-enrolled`).
+func Existing(stateDir, caSHA256 string) (*identity.Identity, error) {
+	pin, err := pki.NormalizePin(caSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidOptions, err)
+	}
+	id, err := identity.Store{Dir: stateDir}.ReadIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if id.CASHA256 != pin {
+		return id, ErrEnrolledElsewhere
+	}
+	return id, nil
 }
 
 func checkWritable(store identity.Store) error {
