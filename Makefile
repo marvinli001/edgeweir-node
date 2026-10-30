@@ -120,7 +120,7 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 			--shdict "edgeweir_challenge 1m" --shdict "edgeweir_purge 1m" --shdict "edgeweir_tags 1m" \
 			--shdict "edgeweir_auth 1m" --shdict "edgeweir_purge_rate 1m" --shdict "edgeweir_rate_6c6f67 256k" /t/accesslogs.lua && \
 		resty -I /lua --shdict "edgeweir_l4 1m" --shdict "edgeweir_l4_state 1m" --shdict "edgeweir_l4_stats 1m" /t/l4.lua && \
-		resty -I /lua --shdict "edgeweir_meta 1m" --shdict "edgeweir_challenge 1m" --shdict "edgeweir_sites 1m" \
+		resty -I /lua --shdict "edgeweir_meta 1m" \
 			--shdict "ewx_68656c6c6f2d686561646572_state 64k" /t/ext.lua /examples/extensions/hello-header'
 
 .PHONY: docker

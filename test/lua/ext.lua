@@ -29,6 +29,12 @@ end
 -- The extensions' settings come from a stub of edgeweir.store.
 local settings = { disabled = false, by_id = {} }
 package.loaded["edgeweir.store"] = { config = function() return { extensions = settings } end }
+-- The challenge module's levels and the request's pass level.
+local pass_level = 0
+package.loaded["edgeweir.challenge"] = {
+  LEVELS = { cookie302 = 1, js = 2, pow = 3, captcha = 4 },
+  pass_level = function() return pass_level end,
+}
 local ext = require("edgeweir.ext")
 local reasons = require("edgeweir.reasons")
 
@@ -207,17 +213,14 @@ end)
 
 test("challenge and allow verdicts", function()
   local s = site({ { id = "t-verdict", config = { mode = "challenge" } } })
-  package.loaded["edgeweir.challenge"] = package.loaded["edgeweir.challenge"] or require("edgeweir.challenge")
-  local challenge = package.loaded["edgeweir.challenge"]
-  local pass_level = challenge.pass_level
-  challenge.pass_level = function() return 0 end
+  pass_level = 0
   eq(access(s), true)
   eq(challenged.kind, "js")
   eq(challenged.level, 2)
   eq(challenged.rule, "ext:t-verdict")
-  challenge.pass_level = function() return 2 end
+  pass_level = 2
   eq(access(s), nil, "a pass of the level continues")
-  challenge.pass_level = pass_level
+  pass_level = 0
   s = site({ { id = "t-verdict", config = { mode = "allow" } } })
   eq(access(s), "allow")
   s = site({ { id = "t-verdict", config = { mode = "late_allow" } } })
