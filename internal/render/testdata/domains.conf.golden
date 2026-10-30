@@ -72,7 +72,7 @@ http {
             ipv6 = false,
             -- Identifies this file; GET /v1/status reports it, so the agent
             -- can tell that a reload really loaded it.
-            conf_id = "7f4d7d2cbbe2c6e8",
+            conf_id = "c99810e4168b5b6d",
             -- Empty when the agent serves no GeoIP database (edgeweir.geoip).
             geoip_socket = "",
             -- The agent's socket for PURGE requests (edgeweir.purgemethod).
@@ -209,6 +209,15 @@ http {
         keepalive 0;
     }
 
+    # Edge -> the agent's Markdown converter (Markdown for Agents): requests
+    # whose Accept names text/markdown (edgeweir.markdown). The agent passes
+    # them on to the origin layer named in X-Edgeweir-Markdown and converts
+    # an HTML answer; no keep-alive, as for the image converter.
+    upstream edgeweir_markdown {
+        server unix:/run/edgeweir-node/markdown.sock;
+        keepalive 0;
+    }
+
     # Origin layer -> origins: peers, retries, timeouts and keep-alive pools
     # (keyed by address, port and SNI) are chosen per request in Lua.
     # nginx >= 1.29.7 caches upstream connections by default
@@ -302,6 +311,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -361,6 +371,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -436,6 +447,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -496,6 +508,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -574,6 +587,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -634,6 +648,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -711,6 +726,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -772,6 +788,7 @@ http {
             proxy_set_header X-Edgeweir-Origin "";
             proxy_set_header X-Edgeweir-Auth "";
             proxy_set_header X-Edgeweir-Image "";
+            proxy_set_header X-Edgeweir-Markdown "";
             proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -853,6 +870,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Image "";
+            grpc_set_header X-Edgeweir-Markdown "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -911,6 +929,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Image "";
+            grpc_set_header X-Edgeweir-Markdown "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -991,6 +1010,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Image "";
+            grpc_set_header X-Edgeweir-Markdown "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -1050,6 +1070,7 @@ http {
             grpc_set_header X-Edgeweir-Origin "";
             grpc_set_header X-Edgeweir-Auth "";
             grpc_set_header X-Edgeweir-Image "";
+            grpc_set_header X-Edgeweir-Markdown "";
             grpc_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
             # SNI and certificate name of the origin chosen for the attempt
             # (set in balancer_by_lua; the default, the proxied host, would
@@ -1117,6 +1138,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1155,6 +1179,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1194,6 +1219,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1309,6 +1337,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1347,6 +1378,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1386,6 +1418,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1506,6 +1541,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1544,6 +1582,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1583,6 +1622,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1699,6 +1741,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1737,6 +1782,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1776,6 +1822,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -1896,6 +1945,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -1934,6 +1986,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -1973,6 +2026,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2089,6 +2145,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2127,6 +2186,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2166,6 +2226,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2286,6 +2349,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2324,6 +2390,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2363,6 +2430,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2479,6 +2549,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2517,6 +2590,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2556,6 +2630,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2676,6 +2753,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2714,6 +2794,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2753,6 +2834,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -2879,6 +2963,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -2917,6 +3004,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -2956,6 +3044,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -3081,6 +3172,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -3119,6 +3213,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -3158,6 +3253,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -3288,6 +3386,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -3326,6 +3427,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -3365,6 +3467,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -3491,6 +3596,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -3529,6 +3637,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -3568,6 +3677,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -3698,6 +3810,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -3736,6 +3851,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -3775,6 +3891,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -3901,6 +4020,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -3939,6 +4061,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -3978,6 +4101,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -4108,6 +4234,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -4146,6 +4275,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -4185,6 +4315,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -4311,6 +4444,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -4349,6 +4485,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -4388,6 +4525,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -4518,6 +4658,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -4556,6 +4699,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -4595,6 +4739,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -4718,6 +4865,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -4756,6 +4906,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -4795,6 +4946,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
@@ -4925,6 +5079,9 @@ http {
             # A WebP / AVIF variant's parameters for the image converter
             # (edgeweir.imageconv); empty for every other request.
             set $edgeweir_image "";
+            # The origin layer of a Markdown request for the Markdown
+            # converter (edgeweir.markdown); empty for every other request.
+            set $edgeweir_markdown "";
             set $edgeweir_upgrade "";
             set $edgeweir_connection "";
             set $edgeweir_cdn_loop "";
@@ -4963,6 +5120,7 @@ http {
             # timeouts (edgeweir.policy.origin_header).
             proxy_set_header X-Edgeweir-Origin $edgeweir_origin_override;
             proxy_set_header X-Edgeweir-Image $edgeweir_image;
+            proxy_set_header X-Edgeweir-Markdown $edgeweir_markdown;
             proxy_set_header Range $edgeweir_range;
             proxy_set_header If-Range $edgeweir_if_range;
             # One request id for the client, the origin layer and the origin.
@@ -5002,6 +5160,9 @@ http {
             # The bytes a WebP / AVIF variant saved (the image converter), for
             # the statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Image-Saved;
+            # Converted Markdown responses (the Markdown converter), for the
+            # statistics only (edgeweir.stats), cache hits included.
+            proxy_hide_header X-Edgeweir-Markdown-Converted;
 
             add_header X-Cache $edgeweir_x_cache always;
             add_header X-Request-Id $edgeweir_request_id always;
