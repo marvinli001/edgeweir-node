@@ -1045,7 +1045,6 @@ stream {
             # Converted Markdown responses (the Markdown converter), for the
             # statistics only (edgeweir.stats), cache hits included.
             proxy_hide_header X-Edgeweir-Markdown-Converted;
-
 {{ if $.InTier }}
             # The lower tier counts and logs the upper tier's cache status.
             add_header X-Edgeweir-Tier-Cache $upstream_cache_status always;
