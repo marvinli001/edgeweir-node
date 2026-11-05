@@ -36,7 +36,7 @@
 | OpenResty 数据面 | 路由、缓存、回源、策略执行、四层转发（stream）；经本地 unix socket 接收站点、源站、证书、规则与四层应用的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v1.9.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v1.10.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则、四层应用的端口、协议与 PROXY protocol 设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload，已有连接由旧 worker 服务到结束；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
@@ -353,7 +353,7 @@ edgeweir-node version
 | `--modsecurity-module` | `auto` | ModSecurity-nginx 动态模块：`auto`（`--nginx-bin` 所属 edgeweir-openresty 的 `modules/` 目录）、文件路径、`off`；只在有站点启用 OWASP CRS 时加载 |
 | `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS 目录（`crs-setup.conf`、`rules/`），`unicode.mapping` 取自同级 `modsecurity/` |
 | `--image-workers` | min(4, max(1, CPU 数 / 2)) | 同时进行的 WebP / AVIF 转换数，每个转换是一个只用一个 CPU 的子进程；0 关闭转换（节点不上报 `image-convert-v1`，开启转换的网站不能由它服务） |
-| `--no-extensions` | 关 | 关闭节点扩展：不上报 `extensions-v1`，从不下载或加载扩展包；控制台无法覆盖 |
+| `--no-extensions` | 关 | 关闭节点扩展：不上报 `extensions-v1`、`extensions-v2`、`extensions-node-v1`，从不下载或加载扩展包；控制台无法覆盖 |
 | `--extension-keys` | 无 | 发布者公钥文件（Ed25519 JWK，每行一个或 JSON 数组）：扩展包除了控制台的信任库，还必须由其中之一签名 |
 | `--sidecar-mode` | `auto` | 扩展边车：`auto` 在 agent 以 root 运行且指定 `--sidecar-user` 时运行，`user` 要求如此，`off` 从不运行 |
 | `--sidecar-user` | 无 | 边车运行所用的独立非特权用户（agent 须以 root 运行） |
@@ -367,6 +367,8 @@ edgeweir-node version
 | `--challenge-verify-endpoints` | 空 | 替换第三方验证码的校验地址，逗号分隔的 `类型=URL`（`turnstile`、`recaptcha`、`recaptcha_enterprise`、`tencent`、`aliyun`、`geetest`）；只用于对接模拟服务的测试 |
 | `--log-level` | `info` | `debug`、`info`、`warn`、`error` |
 | `--log-format` | `text` | `text`、`json` |
+
+节点作用范围的签名 Lua API 2 扩展需要 `extensions-v1`、`extensions-v2` 和 `extensions-node-v1`。它无需网站关联；每个 worker 在全局配置与密钥可用后初始化，网站日志钩子在该网站的扩展之后运行，独立监听器不进入网站请求链。运营者须另行指定监听器的端口、单个 IP 绑定地址与非空 IP/CIDR 地址名单；清单的 `default_port` 只作提示，未绑定的监听器保持关闭。地址名单始终检查原始 TCP peer，不能用 Forwarded 或 X-Forwarded-For 绕过。签名方法之外的请求返回 405；正文上限默认 4096 字节，显式 0 仅接受空正文，包括 chunked 请求，超限返回 413；HEAD 不发送正文。故障与密钥未就绪返回 503，不转交网站或源站。绑定变化须预检并重载；预检或重载失败保留上一份完整配置。停用、总开关或移除会关闭绑定，回滚重新校验并恢复目标绑定。
 
 | 路径 / 端口 | 用途 |
 | --- | --- |
@@ -429,6 +431,7 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 - 统计 RPC V2 不兼容旧版控制台，控制台与节点须同步升级。
 - 每个已发布站点占用固定 256 KiB 限速计数分区，每集群最多 512 个已发布站点。见[限速存储](docs/rate-limit-storage.md)。
 - 自升级仅覆盖 agent 与 Lua；监督进程、cosign 与 OpenResty 随系统包或镜像升级，且优先于状态卷中较旧的自升级版本。
+- 非 root 容器以 filecap 授予 agent 的 `CAP_KILL/SETGID/SETUID`，需要先通过镜像或系统包更新监督进程，才能安全传给无 filecap 的自升级 agent；旧监督进程无法由候选版本追溯修复。新监督进程仅向已声明支持入口清理的目标临时传递这三项既有权限，agent 在启动 nginx 等子进程前清除 inheritable/ambient，边车也只在切换用户的内部引导阶段接收它们。无此支持的旧升级包会在带权限执行前被拒绝并回滚；自带所需 filecap 的安装基座沿原路径运行。需要临时传递权限的目标必须采用官方的非 cgo 构建，原 systemd 的 `NET_BIND_SERVICE/NET_ADMIN` ambient 配置保持原行为。
 
 ## 安全
 

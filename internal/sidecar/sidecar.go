@@ -18,6 +18,10 @@ import (
 // ChildCommand is the hidden subcommand of the sandbox helper.
 const ChildCommand = "sidecar-exec"
 
+// CapabilityHandoff is the local version query's promise that every entry point
+// clears inherited sidecar capabilities before it can start other processes.
+const CapabilityHandoff = "edgeweir-node:sidecar-capabilities-v1"
+
 // SpecEnv carries the Spec (JSON) from the agent to the helper.
 const SpecEnv = "EDGEWEIR_SIDECAR_EXEC_SPEC"
 

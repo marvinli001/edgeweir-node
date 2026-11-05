@@ -175,6 +175,7 @@ func (a *Agent) pushExtensionRuntime(ctx context.Context) {
 	type secret struct {
 		Current  string `json:"current"`
 		Previous string `json:"previous,omitempty"`
+		Version  uint32 `json:"version,omitempty"`
 	}
 	doc := struct {
 		Secrets  map[string]secret `json:"secrets"`
@@ -182,7 +183,7 @@ func (a *Agent) pushExtensionRuntime(ctx context.Context) {
 	}{Secrets: map[string]secret{}, Sidecars: map[string]bool{}}
 	a.ext.mu.Lock()
 	for id, s := range a.ext.secrets {
-		doc.Secrets[id] = secret{Current: base64.StdEncoding.EncodeToString(s.GetCurrent()), Previous: base64.StdEncoding.EncodeToString(s.GetPrevious())}
+		doc.Secrets[id] = secret{Current: base64.StdEncoding.EncodeToString(s.GetCurrent()), Previous: base64.StdEncoding.EncodeToString(s.GetPrevious()), Version: s.GetVersion()}
 	}
 	for id, p := range a.ext.sidecars {
 		p.mu.Lock()
@@ -645,6 +646,9 @@ func (a *Agent) runSidecar(ctx context.Context, p *sidecarProc, e configir.Exten
 	cmd := exec.Command(self, sidecar.ChildCommand)
 	cmd.Env = []string{sidecar.SpecEnv + "=" + string(raw)}
 	cmd.SysProcAttr = sidecarProcAttr()
+	if err := sidecar.InheritCapabilities(cmd); err != nil {
+		return err
+	}
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {

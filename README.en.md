@@ -36,7 +36,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement, layer-4 forwarding (stream); hot updates for sites, origins, certificates, rules and layer-4 applications over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v1.9.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v1.10.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules, ports, protocols and PROXY protocol settings of layer-4 applications) re-render `nginx.conf` and reload after `openresty -t`, the old workers serving open connections until they end; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
@@ -353,7 +353,7 @@ edgeweir-node version
 | `--modsecurity-module` | `auto` | ModSecurity-nginx dynamic module: `auto` (the `modules/` directory of the edgeweir-openresty that `--nginx-bin` belongs to), a file path, or `off`; loaded only while a site runs the OWASP CRS |
 | `--crs-dir` | `/usr/share/edgeweir-openresty/crs` | OWASP CRS directory (`crs-setup.conf`, `rules/`); `unicode.mapping` comes from the sibling `modsecurity/` |
 | `--image-workers` | min(4, max(1, CPUs / 2)) | Concurrent WebP / AVIF conversions, each a child process on one CPU; 0 turns conversion off (the node does not announce `image-convert-v1` and cannot serve sites that convert) |
-| `--no-extensions` | off | Turns node extensions off: the node does not announce `extensions-v1` and never downloads or loads extension packages; the console cannot override it |
+| `--no-extensions` | off | Turns node extensions off: the node announces none of `extensions-v1`, `extensions-v2`, `extensions-node-v1` and never downloads or loads extension packages; the console cannot override it |
 | `--extension-keys` | none | File of publisher keys (Ed25519 JWKs, one per line or a JSON array): extension packages must also be signed with one of them, on top of the console's trust store |
 | `--sidecar-mode` | `auto` | Extension sidecars: `auto` runs them when the agent runs as root with `--sidecar-user`, `user` requires that, `off` never runs one |
 | `--sidecar-user` | none | Unprivileged user of its own that extension sidecars run as (the agent must run as root) |
@@ -367,6 +367,8 @@ edgeweir-node version
 | `--challenge-verify-endpoints` | empty | Replace CAPTCHA providers' verification URLs, comma-separated `kind=URL` (`turnstile`, `recaptcha`, `recaptcha_enterprise`, `tencent`, `aliyun`, `geetest`); for tests against a mock provider only |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `text` | `text`, `json` |
+
+Signed Lua API 2 packages with node scope require `extensions-v1`, `extensions-v2` and `extensions-node-v1`. They need no site association: each worker initializes them after global settings and secrets arrive, and their site log hooks follow the site's extensions. Independent listeners do not enter the site request chain. Operators must supply the port, a single IP bind address and a nonempty IP/CIDR allow list; the signed `default_port` is only a hint and never opens a socket. ACLs always check the original TCP peer, regardless of Forwarded or X-Forwarded-For. Unsigned methods return 405. Bodies default to 4096 bytes; an explicit zero accepts only empty bodies, including chunked requests, and excess bodies return 413. HEAD sends no body. Failures or unavailable secrets return 503 without routing to a site or origin. Binding changes require preflight and reload; a failed preflight or reload keeps the previous complete configuration. Disabling, the kill switch or removal closes bindings; rollback validates and restores the target bindings.
 
 | Path / port | Purpose |
 | --- | --- |
@@ -429,6 +431,7 @@ gh attestation verify edgeweir-node_<version>_linux_amd64.tar.gz --repo marvinli
 - The V2 statistics RPC is incompatible with older consoles; upgrade the console and nodes together.
 - Each published site reserves a fixed 256 KiB rate-limit counter partition; up to 512 published sites per cluster. See [rate-limit storage](docs/rate-limit-storage.md).
 - Self-update covers the agent and Lua only; the supervisor, cosign and OpenResty are upgraded with system packages or the image, which take precedence over an older self-updated bundle in the state volume.
+- In non-root containers that grant the agent `CAP_KILL`, `CAP_SETGID` and `CAP_SETUID` through file capabilities, first update the supervisor through the image or system package so it can safely pass those existing privileges to a self-updated agent without file capabilities; a candidate cannot retroactively fix an old supervisor. The new supervisor temporarily passes only these three privileges to targets that declare support for entry-point cleanup. The agent clears their inheritable and ambient bits before starting nginx or other children; sidecars receive them only during the internal bootstrap that switches users. Older upgrade bundles without this support are rejected before privileged execution and rolled back; the installed base with the required file capabilities uses the original execution path. Targets that need this temporary handoff must use the official non-cgo build. Existing systemd `NET_BIND_SERVICE` / `NET_ADMIN` ambient settings retain their behavior.
 
 ## Security
 

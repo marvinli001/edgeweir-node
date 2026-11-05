@@ -14,6 +14,7 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/dataplane"
 	"github.com/marvinli001/edgeweir-node/internal/enroll"
+	"github.com/marvinli001/edgeweir-node/internal/sidecar"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakeconsole"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/fakedataplane"
 )
@@ -119,6 +120,18 @@ func TestRealMain(t *testing.T) {
 	}
 	if code := realMain([]string{"healthcheck", "--control-socket", "/nonexistent/control.sock", "--timeout", "100ms"}, io.Discard, io.Discard); code != 1 {
 		t.Fatalf("healthcheck against missing socket: code=%d", code)
+	}
+}
+
+func TestVersionSidecarCapabilityHandoff(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := realMain([]string{"version", "--sidecar-capabilities"}, &out, &errOut)
+	if sidecar.CapabilityHandoffSupported() {
+		if code != 0 || out.String() != sidecar.CapabilityHandoff+"\n" {
+			t.Fatalf("handoff query: exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+		}
+	} else if code == 0 || out.Len() != 0 {
+		t.Fatalf("unsupported build advertised capability handoff: exit=%d stdout=%q", code, out.String())
 	}
 }
 

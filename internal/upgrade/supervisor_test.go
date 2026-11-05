@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -16,12 +17,33 @@ import (
 
 	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
+	"github.com/marvinli001/edgeweir-node/internal/sidecar"
 	"github.com/marvinli001/edgeweir-node/internal/testutil/childproc"
 )
 
+var inspectUpgradeChild = func() error { return nil }
+
 // The real test executable doubles as an independently started agent process.
 func TestMain(m *testing.M) {
+	if err := sidecar.ClearInheritedCapabilities(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(44)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "version" && os.Args[2] == "--sidecar-capabilities" {
+		if !sidecar.CapabilityHandoffSupported() {
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, sidecar.CapabilityHandoff)
+		os.Exit(0)
+	}
+	if len(os.Args) == 2 && os.Args[1] == sidecar.ChildCommand {
+		os.Exit(sidecar.RunChild(nil, os.Stderr))
+	}
 	if os.Getenv("EDGEWEIR_UPGRADE_TEST_CHILD") == "1" {
+		if err := inspectUpgradeChild(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(45)
+		}
 		lua := ""
 		for i := 0; i < len(os.Args)-1; i++ {
 			if os.Args[i] == "--lua-dir" {
@@ -93,6 +115,9 @@ func fixture(t *testing.T) (Options, *Client) {
 	// A candidate that fails exits; the trial timeout only has to outlast
 	// a slow start of a healthy one.
 	opts := Options{Trust: Trust{StateDir: root}, Executable: exe, LuaDir: lua, Version: "0.1.0", Output: io.Discard, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), StableWindow: 100 * time.Millisecond, TrialTimeout: time.Until(childproc.Deadline(t))}
+	if os.Getenv("EDGEWEIR_UPGRADE_TEST_FILECAPS") == "1" {
+		opts.Output = os.Stderr
+	}
 	opts.prepare = func(_ context.Context, o Trust, t Task) (Bundle, error) {
 		dir := filepath.Join(o.StateDir, "upgrades", "releases", t.ID)
 		if err := os.MkdirAll(filepath.Join(dir, "lua"), 0700); err != nil {

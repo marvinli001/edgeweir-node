@@ -82,6 +82,10 @@ func main() {
 }
 
 func realMain(args []string, stdout, stderr io.Writer) int {
+	if err := sidecar.ClearInheritedCapabilities(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -124,6 +128,14 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		// converter (internal; not in the usage).
 		return mdconv.RunChild(args[1:], os.Stdin, stdout, stderr)
 	case "version", "--version", "-v":
+		if len(args) == 2 && args[0] == "version" && args[1] == "--sidecar-capabilities" {
+			if !sidecar.CapabilityHandoffSupported() {
+				fmt.Fprintln(stderr, "sidecar capability handoff requires a Linux non-cgo build")
+				return 1
+			}
+			fmt.Fprintln(stdout, sidecar.CapabilityHandoff)
+			return 0
+		}
 		fmt.Fprintln(stdout, version.String())
 		return 0
 	case "help", "--help", "-h":

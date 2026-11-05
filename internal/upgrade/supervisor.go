@@ -19,6 +19,7 @@ import (
 	"github.com/marvinli001/edgeweir-node/internal/engine"
 	"github.com/marvinli001/edgeweir-node/internal/fsutil"
 	"github.com/marvinli001/edgeweir-node/internal/nodelog"
+	"github.com/marvinli001/edgeweir-node/internal/sidecar"
 )
 
 type Result struct {
@@ -339,7 +340,7 @@ func Run(ctx context.Context, opts Options) error {
 					err = s.startLocked(p.Candidate)
 				}
 				if err != nil {
-					if e := s.rollback("candidate failed to start"); e != nil {
+					if e := s.rollback("candidate failed to start: " + err.Error()); e != nil {
 						s.mu.Unlock()
 						return e
 					}
@@ -373,7 +374,7 @@ func Run(ctx context.Context, opts Options) error {
 					}
 					continue
 				}
-				if !s.healthFirst.IsZero() && s.healthLast.Sub(s.healthFirst) >= opts.StableWindow && time.Since(s.healthLast) < 30*time.Second {
+				if !s.healthFirst.IsZero() && s.healthLast.Sub(s.healthFirst) >= opts.StableWindow && time.Since(s.healthLast) < 30*time.Second && processHealthy(s.child) == nil {
 					next := s.state
 					next.Previous = p.Previous
 					next.Active = p.Candidate
@@ -442,6 +443,9 @@ func (s *Supervisor) startLocked(b Bundle) error {
 	cmd.Stdout = s.opts.Output
 	cmd.Stderr = s.opts.Output
 	cmd.SysProcAttr = processAttributes()
+	if err := sidecar.InheritCapabilities(cmd); err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -587,7 +591,7 @@ func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if p := s.state.Pending; p != nil && p.Phase == "trial" {
 			expected = p.Candidate.Version
 		}
-		if h.PID != s.healthPID || (expected != "" && h.Version != expected) {
+		if s.child == nil || h.PID != s.healthPID || (expected != "" && h.Version != expected) {
 			reply(w, 409, map[string]string{"error": "not current child"})
 			return
 		}
@@ -596,6 +600,12 @@ func (s *Supervisor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.healthFirst = time.Time{}
 			s.healthLast = time.Time{}
 			reply(w, 200, map[string]bool{"ok": true})
+			return
+		}
+		if err := processHealthy(s.child); err != nil {
+			s.healthFirst = time.Time{}
+			s.healthLast = time.Time{}
+			reply(w, 503, map[string]string{"error": err.Error()})
 			return
 		}
 		if !s.healthLast.IsZero() && now.Sub(s.healthLast) > 30*time.Second {
