@@ -830,6 +830,7 @@ func main() {
 	contentHelpers(mux, c, c.Publish, func() *nodev1.NodeConfig { return config(baseSites(*origin)...) })
 	imageHelpers(mux, c)
 	markdownHelpers(mux, c)
+	extensionHelpers(mux, c, *origin)
 	g10Handlers(mux, c, *origin)
 	g11Handlers(mux, c, *origin, clientCA)
 	g12Handlers(mux, c, *origin)

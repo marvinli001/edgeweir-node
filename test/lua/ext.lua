@@ -151,9 +151,66 @@ return M
 ]] })
 local FUTURE = package("t-future", { requires = { lua_api = 3 } }, { ["lua/main.lua"] = "return {}" })
 
+local NODE_SOURCE = [[
+local M = { inits = 0, logs = 0, listens = 0, timers = 0 }
+local function view(ew)
+  return { site_id = ew.site_id, site_name = ew.site_name, site_config = ew.site_config,
+    config = ew.global_config, fresh = next(ew.ctx) == nil, pass_level = ew.req.pass_level() }
+end
+function M.init(ew)
+  M.inits = M.inits + 1
+  M.last_init = view(ew)
+  ew.ctx.from_init = true
+  M.init_log = pcall(ew.log_field, "note", "init")
+  M.init_count = pcall(ew.count, "hits")
+  if ew.global_config.timer then
+    ew.timer(0, function(t)
+      M.timers = M.timers + 1
+      M.last_timer = view(t)
+      if t.global_config.fail_timer then error(t.secret()) end
+    end)
+  end
+end
+function M.log(ew)
+  M.logs = M.logs + 1
+  M.last_log = view(ew)
+  if M.on_log then M.on_log(ew) end
+  ew.log_field("note", ew.site_id or "unknown")
+  ew.count("hits")
+  if ew.global_config.fail_log then error(ew.secret()) end
+end
+function M.listen(ew, name, path)
+  M.listens = M.listens + 1
+  M.last_listen = view(ew)
+  M.last_listen.name, M.last_listen.path = name, path
+  M.body_allowed, M.body = pcall(ew.req.body)
+  M.secret_allowed, M.secret = pcall(ew.secret)
+  M.tcp_allowed, M.socket = pcall(ew.tcp)
+  M.listen_log = pcall(ew.log_field, "note", "listen")
+  M.listen_count = pcall(ew.count, "hits")
+  M.listen_deny = pcall(ew.deny)
+  M.listen_rewrite = pcall(ew.req.set_header, "X-Leak", "bad")
+  if M.on_listen then return M.on_listen(ew, name, path) end
+  return ew.respond(200, M.body_allowed and M.body or "no body", { ["Content-Type"] = "text/plain" })
+end
+return M
+]]
+local NODE = package("t-node", { scope = "node", requires = { lua_api = 2 }, hooks = { "init", "log", "listen" },
+  capabilities = { "request_body", "http_client", "timers" }, secret = true, log_fields = { "note" }, counters = { "hits" },
+  listeners = { { name = "status", default_port = 9145, methods = { "GET", "HEAD", "POST" }, max_body = 4 },
+    { name = "empty", default_port = 9146, methods = { "POST" }, max_body = 0 } },
+}, { ["lua/main.lua"] = NODE_SOURCE })
+local NODE_NOCAP = package("t-node-nocap", { scope = "node", requires = { lua_api = 2 }, hooks = { "listen" },
+  listeners = { { name = "status", default_port = 9145, methods = { "GET", "HEAD", "POST" } } },
+}, { ["lua/main.lua"] = NODE_SOURCE })
+
+require("edgeweir.init").conf_id = "native-node-worker"
+settings.conf_id = "native-node-worker"
+settings.node_secrets = { [NODE.id] = 1 }
+
 ext.init({
   { id = "hello-header", dir = example_dir, sha256 = string.rep("b", 64) },
-  VERDICTS, NOCAP, PROBE, BROKEN, API2, SIDE, FUTURE,
+  VERDICTS, NOCAP, PROBE, BROKEN, API2, SIDE, FUTURE, NODE, NODE_NOCAP,
 })
 ext.init_worker()
 
@@ -443,6 +500,361 @@ test("Lua API 2: secrets and sidecar verdicts", function()
   -- Extensions the agent leaves out lose their secret.
   ext.put_runtime({ secrets = {}, sidecars = {} })
   eq(ngx.shared.edgeweir_meta:get("ext_secret|t-side"), nil)
+end)
+
+-- Keep the real resty dictionaries and module loader; request-only nginx
+-- operations are stubbed so the same harness can cover content entry points.
+local function request(opts, fn)
+  local runtime, at = ngx, 100
+  opts = opts or {}
+  local fake = { ctx = opts.ctx or {}, header = {}, status = 200, output = {}, messages = {}, timers = {}, reads = 0,
+    is_subrequest = false, var = { uri = "/status", remote_addr = "127.0.0.1", host = "node.example", scheme = "http",
+      http_content_length = opts.length, http_transfer_encoding = opts.chunked and "chunked" or nil } }
+  fake.req = {
+    get_method = function() return opts.method or "GET" end,
+    read_body = function() fake.reads = fake.reads + 1 end,
+    get_body_data = function() return opts.body end,
+    get_body_file = function() return opts.file end,
+  }
+  fake.timer = { at = function(_, cb) fake.timers[#fake.timers + 1] = cb; return true end }
+  fake.socket = { tcp = function() return "socket" end }
+  fake.now = function() return at end
+  fake.time = function() return math.floor(at) end
+  fake.advance = function(n) at = at + n end
+  fake.update_time = function() end
+  fake.get_phase = function() return "content" end
+  fake.print = function(...)
+    for i = 1, select("#", ...) do fake.output[#fake.output + 1] = tostring(select(i, ...)) end
+  end
+  fake.log = function(_, ...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring(select(i, ...)) end
+    fake.messages[#fake.messages + 1] = table.concat(parts)
+  end
+  fake.exit = function(code) fake.exit_code = code; return "exited" end
+  fake.exec = function() error("listener tried to proxy") end
+  _G.ngx = setmetatable(fake, { __index = runtime })
+  local ok, result = pcall(fn, fake)
+  _G.ngx = runtime
+  if not ok then error(result, 0) end
+  return fake
+end
+
+local function node(id, config)
+  id = id or NODE.id
+  local e = ext.EXT[id]
+  enable(id, { config = config })
+  settings.disabled = false
+  e.inited, e.err, e.faults, e.window, e.tripped = false, nil, 0, 0, 0
+  e.mod.on_listen, e.mod.on_log = nil, nil
+  return e, e.mod
+end
+
+local function listen(opts, id, name)
+  return request(opts, function(r)
+    eq(ext.listen(id or NODE.id, name or "status", r.var.uri), "exited", "request ended")
+  end)
+end
+
+local function no_site(v)
+  eq(v.site_id, nil); eq(v.site_name, nil); eq(v.site_config, nil)
+  eq(v.fresh, true, "fresh extension context")
+  eq(v.pass_level, 0, "no previous site's challenge context")
+end
+
+test("node init needs no site reference and runs once with only global configuration", function()
+  local e, m = node(nil, { token = "global" })
+  eq(e.scope, "node"); eq(ext.EXT[VERDICTS.id].scope, "site", "omitted scope")
+  local before = m.inits
+  local init = require("edgeweir.init")
+  local previous_conf = init.conf_id
+  local previous_table = settings.conf_id
+  local previous_secrets = settings.node_secrets
+  init.conf_id, settings.conf_id = "new-worker", "old-table"
+  settings.node_secrets = { [NODE.id] = 1 }
+  ext.put_runtime({ secrets = { [NODE.id] = { current = ngx.encode_base64("node-private") } } })
+  for _, pair in ipairs({ { worker = nil, table = "new-worker" }, { worker = "", table = "new-worker" },
+    { worker = "new-worker", table = nil }, { worker = "new-worker", table = "" }, { worker = "new-worker", table = "old-table" } }) do
+    init.conf_id, settings.conf_id = pair.worker, pair.table
+    request({}, function()
+      ext.node_init()
+      eq(m.inits, before, "node init requires a nonempty matching worker/table generation")
+      eq(listen({}).status, 503)
+    end)
+  end
+  init.conf_id, settings.conf_id = "new-worker", "old-table"
+  request({}, function()
+    ext.node_init()
+    eq(m.inits, before, "new worker waits for its global table")
+    eq(listen({}).status, 503, "stale global table cannot serve a listener")
+  end)
+  settings.conf_id = "new-worker"
+  request({}, function()
+    ext.node_init()
+    eq(m.inits, before, "node init waits for the configured secret version")
+  end)
+  ext.put_runtime({ secrets = {} })
+  request({}, function()
+    ext.node_init()
+    eq(m.inits, before, "node init waits for its secret")
+    eq(listen({}).status, 503, "missing secret cannot serve a listener")
+  end)
+  ext.put_runtime({ secrets = { [NODE.id] = { current = ngx.encode_base64("node-private"), version = 1 } } })
+  request({ ctx = { edgeweir_site = { id = "old", config = { token = "site" } } } }, function()
+    ext.node_init(); ext.node_init()
+    eq(m.inits, before + 1)
+    no_site(m.last_init)
+    eq(m.last_init.config.token, "global")
+    eq(m.init_log, false); eq(m.init_count, false)
+  end)
+  init.conf_id, settings.conf_id = previous_conf, previous_table
+  settings.node_secrets = previous_secrets
+  request({}, function(r)
+    eq(ext.access(site({ { id = NODE.id, config = { token = "site" } } }), run_challenge, deny), nil)
+    eq(r.ctx.edgeweir_node_ext, nil, "site dispatch cannot invoke a node package")
+  end)
+end)
+
+test("node readiness uses the settings and generation from one store snapshot", function()
+  local e, m = node(nil, { token = "old" })
+  local store = require("edgeweir.store")
+  local original = store.config
+  local reads = 0
+  local old = { disabled = false, by_id = settings.by_id, conf_id = "old-table", node_secrets = settings.node_secrets }
+  store.config = function()
+    reads = reads + 1
+    return { extensions = reads == 1 and old or settings }
+  end
+  local before = m.inits
+  local r = listen({})
+  store.config = original
+  eq(r.status, 503, "a new generation cannot authorize an older settings snapshot")
+  eq(reads, 1); eq(m.inits, before); eq(e.inited, false)
+end)
+
+test("node log follows site hooks without a site reference and runs once", function()
+  local _, m = node()
+  enable(VERDICTS.id)
+  local s = site({ { id = VERDICTS.id, config = { token = "site-only" } } })
+  s.domains = { { name = "shop.example" } }
+  local before = m.logs
+  m.on_log = function()
+    eq(ngx.ctx.edgeweir_ext_log["ext.t-verdict.note"], "12345", "site hook ran first")
+  end
+  request({}, function(r)
+    ext.log(s); ext.node_log(s)
+    eq(m.logs, before + 1)
+    eq(m.last_log.site_id, "s1"); eq(m.last_log.site_name, "shop.example")
+    eq(m.last_log.site_config, nil); eq(m.last_log.fresh, true)
+    eq(r.ctx.edgeweir_node_ext[NODE.id].site, nil, "no stored site configuration")
+    eq(r.ctx.edgeweir_ext_log["ext.t-node.note"], "s1")
+    eq(r.ctx.edgeweir_ext_counts["t-node.hits"], 1)
+  end)
+  m.on_log = nil
+  request({}, function()
+    ext.log(nil)
+    eq(m.last_log.site_id, nil); eq(m.last_log.site_name, nil)
+  end)
+end)
+
+test("node log still runs after a failed site hook and always fails open", function()
+  local e, m = node(nil, { fail_log = true })
+  settings.by_id[NODE.id].closed = true
+  ext.put_runtime({ secrets = { [NODE.id] = { current = ngx.encode_base64("node-private"), version = 1 } } })
+  local old = ext.EXT[VERDICTS.id].mod.log
+  ext.EXT[VERDICTS.id].mod.log = function() error("site log failed") end
+  local r = request({}, function()
+    ext.log(site({ { id = VERDICTS.id, config = {} } }))
+  end)
+  ext.EXT[VERDICTS.id].mod.log = old
+  eq(m.last_log.site_id, "s1"); eq(e.faults, 1)
+  eq(r.status, 200); eq(r.exit_code, nil)
+  eq(table.concat(r.messages):find("node-private", 1, true), nil, "secret not in fault log")
+end)
+
+test("site and node request views do not reuse configuration or extension context", function()
+  local _, m = node(nil, { token = "node-global" })
+  local s = site({ { id = VERDICTS.id, config = { mode = "", token = "site-only" } } })
+  local stale = { edgeweir_site = s, edgeweir_ext = { [NODE.id] = { ctx = { leaked = true }, site_config = s } },
+    edgeweir_node_ext = { [NODE.id] = { ctx = { leaked = true }, site_config = s } } }
+  request({ ctx = stale, method = "POST", body = "data" }, function(r)
+    ext.log(s)
+    local logs = m.logs
+    eq(ext.listen(NODE.id, "status", "/health"), "exited")
+    no_site(m.last_listen)
+    eq(m.last_listen.config.token, "node-global")
+    eq(m.last_listen.path, "/health"); eq(m.last_listen.name, "status")
+    eq(r.ctx.edgeweir_node_ext[NODE.id].site_config, nil)
+    eq(r.ctx.edgeweir_node_ext[NODE.id].site, nil)
+    ext.log(s); ext.node_log(s)
+    eq(m.logs, logs, "listener has no site log hooks")
+    eq(m.listen_log, false); eq(m.listen_count, false)
+    eq(m.listen_deny, false); eq(m.listen_rewrite, false)
+  end)
+  request({}, function(r)
+    eq(ext.access(s, run_challenge, deny), nil)
+    eq(r.ctx.edgeweir_ext[VERDICTS.id].ew.site_config.token, "site-only")
+    eq(r.ctx.edgeweir_ext_fields["ext.t-verdict.score"], 7)
+    eq(r.ctx.edgeweir_node_ext, nil, "site call does not create node state")
+  end)
+end)
+
+test("signed listener methods and body limits reject requests before init or listen", function()
+  local e, m = node()
+  local before = m.listens
+  local r = listen({ method = "PUT", length = "8", body = "too long" })
+  eq(r.status, 405); eq(r.header.Allow, "GET, HEAD, POST"); eq(r.reads, 0)
+  r = listen({ method = "POST", length = "5", body = "12345" })
+  eq(r.status, 413); eq(r.reads, 0)
+  r = listen({ method = "POST", chunked = true, body = "12345" })
+  eq(r.status, 413); eq(r.reads, 1)
+  eq(m.listens, before); eq(e.inited, false)
+  eq(listen({ method = "POST", body = "" }, nil, "empty").status, 200)
+  eq(listen({ method = "POST", chunked = true, body = "x" }, nil, "empty").status, 413)
+end)
+
+test("listener body includes unsized and temporary-file data within the signed limit", function()
+  local _, m = node()
+  for _, opts in ipairs({ { method = "POST", length = "4", body = "data" },
+    { method = "POST", chunked = true, body = "data" }, { method = "POST", body = "data" } }) do
+    local r = listen(opts)
+    eq(r.status, 200); eq(table.concat(r.output), "data")
+    eq(m.body_allowed, true); eq(m.tcp_allowed, true); eq(m.socket, "socket")
+  end
+  local file = tmp .. "/request-body"
+  write(file, "data")
+  eq(listen({ method = "POST", file = file }).status, 200)
+  eq(m.body, "data")
+  write(file, "12345")
+  eq(listen({ method = "POST", file = file }).status, 413)
+  eq(listen({ method = "POST", file = tmp .. "/missing" }).status, 503)
+  write(file, "")
+  eq(listen({ method = "POST", file = file }, nil, "empty").status, 200)
+end)
+
+test("body and secret access need their own declarations and body default remains 4096", function()
+  local _, m = node(NODE_NOCAP.id)
+  local r = listen({ method = "POST", body = string.rep("x", 4096) }, NODE_NOCAP.id)
+  eq(r.status, 200); eq(m.body_allowed, false); eq(m.secret_allowed, false); eq(m.tcp_allowed, false)
+  local calls = m.listens
+  eq(listen({ method = "POST", body = string.rep("x", 4097) }, NODE_NOCAP.id).status, 413)
+  eq(m.listens, calls)
+  node()
+  ext.put_runtime({ secrets = { [NODE.id] = { current = ngx.encode_base64("node-private"), version = 1 },
+    [SIDE.id] = { current = ngx.encode_base64("site-private") } } })
+  listen({})
+  eq(ext.EXT[NODE.id].mod.secret_allowed, true)
+  eq(ext.EXT[NODE.id].mod.secret, "node-private")
+end)
+
+test("listen always uses 1000ms even without http_client and faults never proxy", function()
+  local e, m = node(NODE_NOCAP.id)
+  for _, closed in ipairs({ false, true }) do
+    settings.by_id[NODE_NOCAP.id].closed = closed
+    m.on_listen = function(ew) ngx.advance(1); return ew.respond(200, "ok") end
+    eq(listen({}, NODE_NOCAP.id).status, 200)
+    m.on_listen = function(ew) ngx.advance(1.001); return ew.respond(200, "late") end
+    eq(listen({}, NODE_NOCAP.id).status, 503)
+    m.on_listen = function() error("server-private") end
+    local r = listen({}, NODE_NOCAP.id)
+    eq(r.status, 503); eq(table.concat(r.output):find("server-private", 1, true), nil)
+    eq(table.concat(r.messages):find("server-private", 1, true), nil)
+  end
+  eq(e.faults, 4)
+end)
+
+test("listen rejects absent responses and rechecks mutated status, body and unsafe headers", function()
+  local cases = {
+    function() return nil end, function() return { status = 200, body = "unmarked" } end,
+    function(v) v.status = "200"; return v end, function(v) v.status = 200.5; return v end,
+    function(v) v.status = 0 / 0; return v end, function(v) v.status = 600; return v end,
+    function(v) v.body = {}; return v end, function(v) v.headers = "bad"; return v end,
+    function(v) v.headers = { ["X-Test"] = "bad\r\nInjected: yes" }; return v end,
+    function(v) v.headers = { ["Bad\nName"] = "x" }; return v end,
+    function(v) v.headers = { ["X-Test"] = 1 }; return v end,
+    function(v) v.status = nil; return setmetatable(v, { __index = function() error("server-private") end }) end,
+  }
+  for _, name in ipairs({ "Connection", "Keep-Alive", "Proxy-Connection", "Proxy-Authenticate", "Proxy-Authorization",
+    "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Content-Length", "X-Edgeweir-Error" }) do
+    local header = name
+    cases[#cases + 1] = function(v) v.headers = { [header] = "unsafe" }; return v end
+  end
+  for _, change in ipairs(cases) do
+    local _, m = node()
+    m.on_listen = function(ew) return change(ew.respond(200, "ok")) end
+    eq(listen({}).status, 500)
+  end
+  local _, m = node()
+  for _, args in ipairs({ { "200", "bad" }, { 200, {} }, { 200, "bad", { Upgrade = "websocket" } } }) do
+    m.on_listen = function(ew) return ew.respond(unpack(args)) end
+    eq(listen({}).status, 503, "API validation errors are hook faults")
+  end
+end)
+
+test("HEAD suppresses successful, missing-response and failed listener bodies", function()
+  local _, m = node()
+  local r = listen({ method = "HEAD", body = "data" })
+  eq(r.status, 200); eq(#r.output, 0)
+  m.on_listen = function() return nil end
+  r = listen({ method = "HEAD" }); eq(r.status, 500); eq(#r.output, 0)
+  m.on_listen = function(ew) error(ew.secret()) end
+  r = listen({ method = "HEAD" }); eq(r.status, 503); eq(#r.output, 0)
+  r = listen({ method = "HEAD" }, nil, "missing"); eq(r.status, 404); eq(#r.output, 0)
+end)
+
+test("node entry points honor disabled settings, package identity and worker trips", function()
+  local e, m = node()
+  m.on_listen = function() error("failed") end
+  for _ = 1, ext.MAX_FAULTS do eq(listen({}).status, 503) end
+  eq(e.tripped, 100 + ext.TRIP_SECONDS)
+  local before = m.listens
+  eq(listen({}).status, 503); eq(m.listens, before, "tripped hook skipped")
+  e.tripped = 0
+  settings.by_id[NODE.id].sha256 = string.rep("c", 64)
+  eq(listen({}).status, 503)
+  enable(NODE.id)
+  settings.by_id[NODE.id].enabled = false
+  eq(listen({}).status, 503)
+  local inits = m.inits
+  request({}, function() ext.node_init(); ext.log(nil) end)
+  eq(m.inits, inits)
+  settings.disabled = true
+  eq(listen({}).status, 503)
+  settings.disabled = false
+  eq(listen({}, "unknown-node").status, 503)
+  eq(listen({}, VERDICTS.id).status, 503, "site package cannot listen")
+  eq(m.listens, before)
+end)
+
+test("node timers have independent views and obey disable and secret-safe fault handling", function()
+  local e, m = node(nil, { timer = true })
+  request({}, function(r)
+    ext.node_init()
+    eq(#r.timers, 1)
+    r.timers[1](false)
+    no_site(m.last_timer)
+    local before = m.timers
+    settings.node_secrets[NODE.id] = 2
+    r.timers[1](false)
+    eq(m.timers, before, "timer waits for the new secret version")
+    eq(#r.timers, 2, "pending timer remains scheduled")
+    ext.put_runtime({ secrets = { [NODE.id] = { current = ngx.encode_base64("node-private"), version = 2 } } })
+    r.timers[2](false)
+    eq(m.timers, before + 1)
+    settings.node_secrets[NODE.id] = 1
+    ext.put_runtime({ secrets = { [NODE.id] = { current = ngx.encode_base64("node-private"), version = 1 } } })
+    before = m.timers
+    settings.by_id[NODE.id].enabled = false
+    r.timers[1](false); eq(m.timers, before)
+    settings.by_id[NODE.id].enabled = true
+    settings.disabled = true
+    r.timers[1](false); eq(m.timers, before)
+    settings.disabled = false
+    settings.by_id[NODE.id].config = { fail_timer = true }
+    r.timers[1](false)
+    eq(e.faults, 1)
+    eq(table.concat(r.messages):find("node-private", 1, true), nil)
+  end)
 end)
 
 os.execute("rm -r '" .. tmp .. "'")

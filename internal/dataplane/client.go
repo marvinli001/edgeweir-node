@@ -68,6 +68,9 @@ type SiteTable struct {
 type ExtensionTable struct {
 	Disabled bool                 `json:"disabled"`
 	List     []configir.Extension `json:"list"`
+	// ConfID prevents new node workers from initializing with the old hot table.
+	ConfID      string            `json:"conf_id,omitempty"`
+	NodeSecrets map[string]uint32 `json:"node_secrets,omitempty"`
 	// Node is this node's identity for ew.node (Lua API 2).
 	Node *ExtensionNode `json:"node,omitempty"`
 }

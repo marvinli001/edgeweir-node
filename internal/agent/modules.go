@@ -26,7 +26,7 @@ func (a *Agent) extraFeatures() []string {
 		out = append(out, configir.FeatureMarkdown)
 	}
 	if !a.cfg.Extensions.Disabled {
-		out = append(out, configir.FeatureExtensions, configir.FeatureExtensionsV2)
+		out = append(out, configir.FeatureExtensions, configir.FeatureExtensionsV2, configir.FeatureExtensionsNode)
 	}
 	return out
 }

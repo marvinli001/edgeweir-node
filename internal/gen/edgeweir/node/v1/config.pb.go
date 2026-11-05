@@ -760,7 +760,9 @@ func (OriginCacheControl) EnumDescriptor() ([]byte, []int) {
 //   - inside a site domains, and offline_hosts, by (name, wildcard, match)
 //     (v0.25.0; a name sorts before the same name with wildcard);
 //   - origin_client_certificates by id (v1.3.0);
-//   - connection_limits ports by start (v1.6.0).
+//   - connection_limits ports by start (v1.6.0);
+//   - inside an extension listeners by name, with allow and methods sorted
+//     and unique; site scope is encoded as the empty string.
 //
 // content_hash is the lowercase hex SHA-256 of the deterministic binary
 // encoding of this message with `revision` and `content_hash` cleared.
@@ -8736,6 +8738,16 @@ type Extension struct {
 	// `secret: true`, extension version 1.1); 0: none. Nodes fetch the secret
 	// itself with NodeService.GetExtensionSecrets when it changes.
 	SecretVersion uint32 `protobuf:"varint,13,opt,name=secret_version,json=secretVersion,proto3" json:"secret_version,omitempty"`
+	// Empty: site scope, including legacy manifests without scope; leave this
+	// field unset for site extensions to preserve their encoding. "node":
+	// node scope, requiring Lua API 2 and extensions-node-v1 in required_features
+	// in addition to extensions-v1 and extensions-v2. Nodes verify the scope
+	// against the signed manifest; Lua API 2 alone does not imply node scope.
+	Scope string `protobuf:"bytes,14,opt,name=scope,proto3" json:"scope,omitempty"`
+	// Effective operator bindings for node scope only, at most 2, sorted by
+	// name. Omit unbound/null entries and all bindings when this extension or
+	// extensions globally are disabled. These are separate from config_json.
+	Listeners     []*ExtensionListener `protobuf:"bytes,15,rep,name=listeners,proto3" json:"listeners,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8861,6 +8873,118 @@ func (x *Extension) GetSecretVersion() uint32 {
 	return 0
 }
 
+func (x *Extension) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *Extension) GetListeners() []*ExtensionListener {
+	if x != nil {
+		return x.Listeners
+	}
+	return nil
+}
+
+// ExtensionListener is one enabled, dedicated HTTP listener of a node-scoped
+// extension. Its name, methods and body limit must match the signed manifest;
+// port, bind and allow are the operator's independent binding. Nodes verify
+// the declaration and binding before opening a port.
+type ExtensionListener struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Manifest listener name ([a-z][a-z0-9_]{0,15}), unique in this extension.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// 1024-65535, excluding 8443; must not conflict with edge, layer-4,
+	// internal service or other enabled extension listener ports.
+	Port uint32 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	// Normalized IPv4 or IPv6 literal, excluding IPv4-mapped IPv6 addresses.
+	Bind string `protobuf:"bytes,3,opt,name=bind,proto3" json:"bind,omitempty"`
+	// 1-64 normalized CIDRs, sorted and unique, excluding IPv4-mapped IPv6.
+	// Only the real TCP peer is checked, before Lua; forwarding headers do not
+	// affect this ACL. Empty is invalid, never an implicit allow-all.
+	Allow []string `protobuf:"bytes,4,rep,name=allow,proto3" json:"allow,omitempty"`
+	// Non-empty subset of GET, HEAD and POST, sorted and unique.
+	Methods []string `protobuf:"bytes,5,rep,name=methods,proto3" json:"methods,omitempty"`
+	// Request body limit in bytes, 0-65536. Unset means 4096; explicit 0 is
+	// valid and must retain presence. Derived from the signed manifest.
+	MaxBody       *uint32 `protobuf:"varint,6,opt,name=max_body,json=maxBody,proto3,oneof" json:"max_body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExtensionListener) Reset() {
+	*x = ExtensionListener{}
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExtensionListener) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExtensionListener) ProtoMessage() {}
+
+func (x *ExtensionListener) ProtoReflect() protoreflect.Message {
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExtensionListener.ProtoReflect.Descriptor instead.
+func (*ExtensionListener) Descriptor() ([]byte, []int) {
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *ExtensionListener) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ExtensionListener) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *ExtensionListener) GetBind() string {
+	if x != nil {
+		return x.Bind
+	}
+	return ""
+}
+
+func (x *ExtensionListener) GetAllow() []string {
+	if x != nil {
+		return x.Allow
+	}
+	return nil
+}
+
+func (x *ExtensionListener) GetMethods() []string {
+	if x != nil {
+		return x.Methods
+	}
+	return nil
+}
+
+func (x *ExtensionListener) GetMaxBody() uint32 {
+	if x != nil && x.MaxBody != nil {
+		return *x.MaxBody
+	}
+	return 0
+}
+
 // ExtensionSharedDict is one lua_shared_dict of an extension.
 type ExtensionSharedDict struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -8872,7 +8996,7 @@ type ExtensionSharedDict struct {
 
 func (x *ExtensionSharedDict) Reset() {
 	*x = ExtensionSharedDict{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[76]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8884,7 +9008,7 @@ func (x *ExtensionSharedDict) String() string {
 func (*ExtensionSharedDict) ProtoMessage() {}
 
 func (x *ExtensionSharedDict) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[76]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8897,7 +9021,7 @@ func (x *ExtensionSharedDict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionSharedDict.ProtoReflect.Descriptor instead.
 func (*ExtensionSharedDict) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{76}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *ExtensionSharedDict) GetName() string {
@@ -8929,7 +9053,7 @@ type SiteExtension struct {
 
 func (x *SiteExtension) Reset() {
 	*x = SiteExtension{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[77]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8941,7 +9065,7 @@ func (x *SiteExtension) String() string {
 func (*SiteExtension) ProtoMessage() {}
 
 func (x *SiteExtension) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[77]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8954,7 +9078,7 @@ func (x *SiteExtension) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SiteExtension.ProtoReflect.Descriptor instead.
 func (*SiteExtension) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{77}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *SiteExtension) GetId() string {
@@ -8992,7 +9116,7 @@ type ExtensionDataItem struct {
 
 func (x *ExtensionDataItem) Reset() {
 	*x = ExtensionDataItem{}
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[78]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9004,7 +9128,7 @@ func (x *ExtensionDataItem) String() string {
 func (*ExtensionDataItem) ProtoMessage() {}
 
 func (x *ExtensionDataItem) ProtoReflect() protoreflect.Message {
-	mi := &file_edgeweir_node_v1_config_proto_msgTypes[78]
+	mi := &file_edgeweir_node_v1_config_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9017,7 +9141,7 @@ func (x *ExtensionDataItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionDataItem.ProtoReflect.Descriptor instead.
 func (*ExtensionDataItem) Descriptor() ([]byte, []int) {
-	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{78}
+	return file_edgeweir_node_v1_config_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *ExtensionDataItem) GetName() string {
@@ -9756,7 +9880,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x11TierLatencyTarget\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x03 \x01(\rR\x04port\"\xa4\x03\n" +
+	"\x04port\x18\x03 \x01(\rR\x04port\"\xfd\x03\n" +
 	"\tExtension\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x1c\n" +
@@ -9773,7 +9897,17 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"configJson\x12H\n" +
 	"\fshared_dicts\x18\v \x03(\v2%.edgeweir.node.v1.ExtensionSharedDictR\vsharedDicts\x12\x17\n" +
 	"\alua_api\x18\f \x01(\rR\x06luaApi\x12%\n" +
-	"\x0esecret_version\x18\r \x01(\rR\rsecretVersion\"B\n" +
+	"\x0esecret_version\x18\r \x01(\rR\rsecretVersion\x12\x14\n" +
+	"\x05scope\x18\x0e \x01(\tR\x05scope\x12A\n" +
+	"\tlisteners\x18\x0f \x03(\v2#.edgeweir.node.v1.ExtensionListenerR\tlisteners\"\xac\x01\n" +
+	"\x11ExtensionListener\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\x12\x12\n" +
+	"\x04bind\x18\x03 \x01(\tR\x04bind\x12\x14\n" +
+	"\x05allow\x18\x04 \x03(\tR\x05allow\x12\x18\n" +
+	"\amethods\x18\x05 \x03(\tR\amethods\x12\x1e\n" +
+	"\bmax_body\x18\x06 \x01(\rH\x00R\amaxBody\x88\x01\x01B\v\n" +
+	"\t_max_body\"B\n" +
 	"\x13ExtensionSharedDict\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
 	"\asize_kb\x18\x02 \x01(\rR\x06sizeKb\"y\n" +
@@ -9861,7 +9995,7 @@ func file_edgeweir_node_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var file_edgeweir_node_v1_config_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 79)
+var file_edgeweir_node_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 80)
 var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(L4Protocol)(0),               // 0: edgeweir.node.v1.L4Protocol
 	(ListenerProtocol)(0),         // 1: edgeweir.node.v1.ListenerProtocol
@@ -9952,10 +10086,11 @@ var file_edgeweir_node_v1_config_proto_goTypes = []any{
 	(*TierHop)(nil),               // 86: edgeweir.node.v1.TierHop
 	(*TierLatencyTarget)(nil),     // 87: edgeweir.node.v1.TierLatencyTarget
 	(*Extension)(nil),             // 88: edgeweir.node.v1.Extension
-	(*ExtensionSharedDict)(nil),   // 89: edgeweir.node.v1.ExtensionSharedDict
-	(*SiteExtension)(nil),         // 90: edgeweir.node.v1.SiteExtension
-	(*ExtensionDataItem)(nil),     // 91: edgeweir.node.v1.ExtensionDataItem
-	(*timestamppb.Timestamp)(nil), // 92: google.protobuf.Timestamp
+	(*ExtensionListener)(nil),     // 89: edgeweir.node.v1.ExtensionListener
+	(*ExtensionSharedDict)(nil),   // 90: edgeweir.node.v1.ExtensionSharedDict
+	(*SiteExtension)(nil),         // 91: edgeweir.node.v1.SiteExtension
+	(*ExtensionDataItem)(nil),     // 92: edgeweir.node.v1.ExtensionDataItem
+	(*timestamppb.Timestamp)(nil), // 93: google.protobuf.Timestamp
 }
 var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	24,  // 0: edgeweir.node.v1.NodeConfig.listeners:type_name -> edgeweir.node.v1.Listener
@@ -10029,8 +10164,8 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	28,  // 68: edgeweir.node.v1.Site.development_mode:type_name -> edgeweir.node.v1.DevelopmentMode
 	29,  // 69: edgeweir.node.v1.Site.markdown:type_name -> edgeweir.node.v1.Markdown
 	30,  // 70: edgeweir.node.v1.Site.ai_crawl:type_name -> edgeweir.node.v1.AiCrawlPolicy
-	90,  // 71: edgeweir.node.v1.Site.extensions:type_name -> edgeweir.node.v1.SiteExtension
-	92,  // 72: edgeweir.node.v1.DevelopmentMode.expires_at:type_name -> google.protobuf.Timestamp
+	91,  // 71: edgeweir.node.v1.Site.extensions:type_name -> edgeweir.node.v1.SiteExtension
+	93,  // 72: edgeweir.node.v1.DevelopmentMode.expires_at:type_name -> google.protobuf.Timestamp
 	31,  // 73: edgeweir.node.v1.AiCrawlPolicy.actions:type_name -> edgeweir.node.v1.AiCrawlerAction
 	2,   // 74: edgeweir.node.v1.AuthRule.kind:type_name -> edgeweir.node.v1.AuthKind
 	35,  // 75: edgeweir.node.v1.AuthRule.basic:type_name -> edgeweir.node.v1.BasicAuth
@@ -10056,7 +10191,7 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	64,  // 95: edgeweir.node.v1.QueryParam.expression:type_name -> edgeweir.node.v1.RuleExpression
 	64,  // 96: edgeweir.node.v1.EdgeRule.expression:type_name -> edgeweir.node.v1.RuleExpression
 	65,  // 97: edgeweir.node.v1.EdgeRule.action:type_name -> edgeweir.node.v1.RuleAction
-	92,  // 98: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	93,  // 98: edgeweir.node.v1.HttpChallenge.expires_at:type_name -> google.protobuf.Timestamp
 	4,   // 99: edgeweir.node.v1.CacheKeyPolicy.query:type_name -> edgeweir.node.v1.CacheKeyQuery
 	5,   // 100: edgeweir.node.v1.Domain.match:type_name -> edgeweir.node.v1.DomainMatch
 	6,   // 101: edgeweir.node.v1.OriginPool.policy:type_name -> edgeweir.node.v1.LoadBalancePolicy
@@ -10074,18 +10209,19 @@ var file_edgeweir_node_v1_config_proto_depIdxs = []int32{
 	11,  // 113: edgeweir.node.v1.CacheRule.action:type_name -> edgeweir.node.v1.CacheAction
 	12,  // 114: edgeweir.node.v1.CacheRule.origin_cache_control:type_name -> edgeweir.node.v1.OriginCacheControl
 	64,  // 115: edgeweir.node.v1.CacheRuleMatch.condition:type_name -> edgeweir.node.v1.RuleExpression
-	92,  // 116: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
+	93,  // 116: edgeweir.node.v1.CertificateRef.not_after:type_name -> google.protobuf.Timestamp
 	84,  // 117: edgeweir.node.v1.TieredCache.nodes:type_name -> edgeweir.node.v1.TierNode
 	85,  // 118: edgeweir.node.v1.TieredCache.plans:type_name -> edgeweir.node.v1.TierPlan
 	87,  // 119: edgeweir.node.v1.TieredCache.latency_targets:type_name -> edgeweir.node.v1.TierLatencyTarget
 	86,  // 120: edgeweir.node.v1.TierPlan.hops:type_name -> edgeweir.node.v1.TierHop
-	89,  // 121: edgeweir.node.v1.Extension.shared_dicts:type_name -> edgeweir.node.v1.ExtensionSharedDict
-	91,  // 122: edgeweir.node.v1.SiteExtension.data:type_name -> edgeweir.node.v1.ExtensionDataItem
-	123, // [123:123] is the sub-list for method output_type
-	123, // [123:123] is the sub-list for method input_type
-	123, // [123:123] is the sub-list for extension type_name
-	123, // [123:123] is the sub-list for extension extendee
-	0,   // [0:123] is the sub-list for field type_name
+	90,  // 121: edgeweir.node.v1.Extension.shared_dicts:type_name -> edgeweir.node.v1.ExtensionSharedDict
+	89,  // 122: edgeweir.node.v1.Extension.listeners:type_name -> edgeweir.node.v1.ExtensionListener
+	92,  // 123: edgeweir.node.v1.SiteExtension.data:type_name -> edgeweir.node.v1.ExtensionDataItem
+	124, // [124:124] is the sub-list for method output_type
+	124, // [124:124] is the sub-list for method input_type
+	124, // [124:124] is the sub-list for extension type_name
+	124, // [124:124] is the sub-list for extension extendee
+	0,   // [0:124] is the sub-list for field type_name
 }
 
 func init() { file_edgeweir_node_v1_config_proto_init() }
@@ -10095,13 +10231,14 @@ func file_edgeweir_node_v1_config_proto_init() {
 	}
 	file_edgeweir_node_v1_config_proto_msgTypes[14].OneofWrappers = []any{}
 	file_edgeweir_node_v1_config_proto_msgTypes[52].OneofWrappers = []any{}
+	file_edgeweir_node_v1_config_proto_msgTypes[76].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_edgeweir_node_v1_config_proto_rawDesc), len(file_edgeweir_node_v1_config_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   79,
+			NumMessages:   80,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

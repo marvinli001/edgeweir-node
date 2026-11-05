@@ -50,6 +50,7 @@ _M.MAX_BODY = 65536
 local LIST = {}
 local EXT = {}
 _M.EXT = EXT
+local usable
 
 local VERDICT = {}
 local function verdict(kind, t)
@@ -88,10 +89,11 @@ end
 
 local function read_file(path, max)
   local f = io.open(path, "rb")
-  if not f then return nil end
-  local data = f:read(max and (max + 1) or "*a")
+  if not f then return nil, "unreadable" end
+  local data, err = f:read(max and (max + 1) or "*a")
   f:close()
-  if data and max and #data > max then return nil end
+  if not data and err then return nil, "unreadable" end
+  if data and max and #data > max then return nil, "truncated" end
   return data
 end
 
@@ -174,6 +176,11 @@ local function load_one(spec)
     return e
   end
   e.lua_api = lua_api
+  e.scope = m.scope or "site"
+  if (e.scope ~= "site" and e.scope ~= "node") or (e.scope == "node" and lua_api ~= 2) then
+    e.err = "unsupported scope"
+    return e
+  end
   e.version, e.manifest = m.version, m
   e.hooks, e.caps = set_of(m.hooks), set_of(m.capabilities)
   e.fields = {}
@@ -182,6 +189,10 @@ local function load_one(spec)
   e.endpoints = {}
   for _, ep in ipairs(m.endpoints or {}) do
     e.endpoints[ep.path] = { methods = set_of(ep.methods), max_body = tonumber(ep.max_body) or 4096 }
+  end
+  e.listeners = {}
+  for _, listener in ipairs(m.listeners or {}) do
+    e.listeners[listener.name] = { methods = set_of(listener.methods), max_body = listener.max_body or 4096 }
   end
   e.dicts = {}
   for _, d in ipairs(m.shared_dicts or {}) do
@@ -195,12 +206,12 @@ local function load_one(spec)
   local env = sandbox(e)
   local fn, err = load(src, "@" .. e.id .. "/lua/main.lua", "t", env)
   if not fn then
-    e.err = "load: " .. tostring(err)
+    e.err = e.scope == "node" and "load failed" or ("load: " .. tostring(err))
     return e
   end
   local ok, mod = pcall(fn)
   if not ok or type(mod) ~= "table" then
-    e.err = ok and "lua/main.lua must return a table" or ("load: " .. tostring(mod))
+    e.err = ok and "lua/main.lua must return a table" or (e.scope == "node" and "load failed" or ("load: " .. tostring(mod)))
     return e
   end
   e.mod = mod
@@ -220,16 +231,19 @@ end
 
 -- init_worker loads every listed package in this worker.
 function _M.init_worker()
+  local node = false
   for _, spec in ipairs(LIST) do
     local ok, e = pcall(load_one, spec)
     if not ok then e = { id = spec.id, sha256 = spec.sha256, dir = spec.dir, err = "load: " .. tostring(e), log_second = 0, log_lines = 0 } end
     EXT[spec.id] = e
+    if e.scope == "node" then node = true end
     if e.err then
       ngx.log(ngx.ERR, "[ext ", spec.id, "] ", e.err)
       local d = meta()
       if d then d:set(shared_key(e, "err"), e.err) end
     end
   end
+  return node
 end
 
 -- compile(doc) turns the site table's extensions part into the settings by
@@ -239,6 +253,8 @@ function _M.compile(doc)
   if type(doc) ~= "table" or type(doc.list) ~= "table" then return nil end
   local out = { disabled = doc.disabled == true, by_id = {} }
   if type(doc.node) == "table" then out.node = doc.node end
+  if type(doc.conf_id) == "string" then out.conf_id = doc.conf_id end
+  if type(doc.node_secrets) == "table" then out.node_secrets = doc.node_secrets end
   for i, x in ipairs(doc.list) do
     if type(x) == "table" and type(x.id) == "string" then
       out.by_id[x.id] = {
@@ -267,20 +283,20 @@ end
 -- Per-request state: ngx.ctx.edgeweir_ext = { [id] = {ew, hook, ctx} },
 -- edgeweir_ext_fields (rule fields), edgeweir_ext_log (log fields),
 -- edgeweir_ext_counts (counters by stats name), edgeweir_ext_inject.
+-- Node hooks use edgeweir_node_ext and fresh API views for each call.
 
-local function req_state(id)
+local function req_state(e)
   local ctx = ngx.ctx
-  local all = ctx.edgeweir_ext
-  if not all then all = {}; ctx.edgeweir_ext = all end
-  local st = all[id]
-  if not st then st = {}; all[id] = st end
+  local key = e.scope == "node" and "edgeweir_node_ext" or "edgeweir_ext"
+  local all = ctx[key]
+  if not all then all = {}; ctx[key] = all end
+  local st = all[e.id]
+  if not st then st = {}; all[e.id] = st end
   return st
 end
 
 local function current_hook(e)
-  local st = ngx.ctx.edgeweir_ext
-  st = st and st[e.id]
-  return st and st.hook
+  return req_state(e).hook
 end
 
 local function need(e, cap)
@@ -325,6 +341,25 @@ local function valid_header(name, value, respond)
   if sub(l, 1, 11) == "x-edgeweir-" or l == "content-length" or l == "transfer-encoding" or l == "connection" then
     error("header " .. name .. " is reserved", 3)
   end
+end
+
+local HOP_HEADERS = { ["connection"] = true, ["keep-alive"] = true, ["proxy-connection"] = true,
+  ["proxy-authenticate"] = true, ["proxy-authorization"] = true, te = true, trailer = true,
+  ["transfer-encoding"] = true, upgrade = true }
+
+local function validate_response(status, body, headers, listener)
+  if type(status) ~= "number" or status < 200 or status > 599 or status % 1 ~= 0 then error("invalid status", 2) end
+  if body ~= nil and type(body) ~= "string" then error("body must be a string", 2) end
+  local checked = listener and {} or nil
+  if headers ~= nil then
+    if type(headers) ~= "table" then error("headers must be a table", 2) end
+    for k, v in pairs(headers) do
+      valid_header(k, v, true)
+      if listener and HOP_HEADERS[lower(k)] then error("hop-by-hop header", 2) end
+      if checked then checked[k] = v end
+    end
+  end
+  return checked
 end
 
 local function attr(s)
@@ -413,7 +448,7 @@ local function api2(e, a)
     local started = ngx.now()
     local ok, verified, name = pcall(require("edgeweir.bots").request)
     ngx.update_time()
-    local st = req_state(e.id)
+    local st = req_state(e)
     st.excluded = (st.excluded or 0) + (ngx.now() - started)
     if ok and verified then return name end
     return nil
@@ -556,14 +591,16 @@ local function api(e)
     ja4 = function() return require("edgeweir.ja4").value() end,
     request_id = function() return var("edgeweir_request_id") or var("request_id") end,
     pass_level = function()
+      if e.scope == "node" and current_hook(e) ~= "log" then return 0 end
       local site = ngx.ctx.edgeweir_site
       return site and require("edgeweir.challenge").pass_level(site) or 0
     end,
     body = function()
       need(e, "request_body")
-      local hook = in_hooks(e, { "access", "access_late", "endpoint" })
+      local hook = in_hooks(e, { "access", "access_late", "endpoint", "listen" })
+      if hook == "listen" then return req_state(e).body end
       local limit = _M.MAX_BODY
-      if hook == "endpoint" then limit = req_state(e.id).max_body or 0 end
+      if hook == "endpoint" then limit = req_state(e).max_body or 0 end
       local len = tonumber(var("http_content_length"))
       if not len or len > limit then return nil, "truncated" end
       if len == 0 then return "" end
@@ -620,7 +657,7 @@ local function api(e)
   }
 
   local function injected_bytes(n)
-    local st = req_state(e.id)
+    local st = req_state(e)
     st.injected = (st.injected or 0) + n
     if st.injected > _M.MAX_INJECT then error("more than 8 KiB of HTML injected", 3) end
   end
@@ -675,6 +712,7 @@ local function api(e)
     fields["ext." .. e.id .. "." .. name] = value
   end
   a.log_field = function(name, value)
+    if e.scope == "node" then in_hooks(e, { "log" }) end
     if not e.log_fields[name] then error("log field " .. tostring(name) .. " not declared", 2) end
     if type(value) == "number" or type(value) == "boolean" then value = tostring(value) end
     if type(value) ~= "string" then error("log field " .. name .. " must be a string", 2) end
@@ -685,6 +723,7 @@ local function api(e)
     log["ext." .. e.id .. "." .. name] = value
   end
   a.count = function(name, n)
+    if e.scope == "node" then in_hooks(e, { "log" }) end
     if not e.counters[name] then error("counter " .. tostring(name) .. " not declared", 2) end
     n = n == nil and 1 or n
     if type(n) ~= "number" or n < 0 or n ~= n or n == math.huge or n % 1 ~= 0 then error("invalid count", 2) end
@@ -729,28 +768,41 @@ local function api(e)
   a.json_decode = function(s) return cjson.decode(s) end
   a.tcp = function()
     need(e, "http_client")
-    in_hooks(e, { "access", "access_late", "endpoint", "timer" })
+    in_hooks(e, { "access", "access_late", "endpoint", "listen", "timer" })
     return ngx.socket.tcp()
   end
   a.timer = function(delay, fn)
     need(e, "timers")
     in_hooks(e, { "init", "timer" })
     if type(delay) ~= "number" or delay < 0 or type(fn) ~= "function" then error("invalid timer", 2) end
-    return ngx.timer.at(delay, function(premature)
+    local function run(premature)
       if premature then return end
-      local st = req_state(e.id)
+      local config = e.global_config
+      if e.scope == "node" then
+        local active, set, _, pending = usable(e.id, "node")
+        if active ~= e then
+          if pending then ngx.timer.at(0.1, run) end
+          return
+        end
+        config = set.config
+      end
+      local st = req_state(e)
       st.hook = "timer"
-      local ew = setmetatable({ global_config = e.global_config, ctx = {} }, { __index = a })
+      local ew = setmetatable({ global_config = config, ctx = {} }, { __index = a })
+      if e.scope == "node" then
+        st.ew, st.ctx, st.site, st.site_config, st.body = ew, ew.ctx, nil, nil, nil
+      end
       ngx.update_time()
       local started = ngx.now()
       local ok, err = pcall(fn, ew)
       ngx.update_time()
       if not ok then
-        _M.fault(e, nil, "timer: " .. tostring(err))
+        _M.fault(e, nil, e.scope == "node" and "timer failed" or ("timer: " .. tostring(err)))
       elseif ngx.now() - started > (e.caps.http_client and _M.IO_BUDGET or _M.BUDGET) then
         _M.fault(e, nil, "timer over its budget")
       end
-    end)
+    end
+    return ngx.timer.at(delay, run)
   end
 
   a.deny = function(status)
@@ -770,13 +822,9 @@ local function api(e)
     return verdict("allow")
   end
   a.respond = function(status, body, headers)
-    if current_hook(e) ~= "endpoint" then need(e, "verdicts") end
-    if type(status) ~= "number" or status < 200 or status > 599 or status % 1 ~= 0 then error("invalid status", 2) end
-    if body ~= nil and type(body) ~= "string" then error("body must be a string", 2) end
-    if headers ~= nil then
-      if type(headers) ~= "table" then error("headers must be a table", 2) end
-      for k, v in pairs(headers) do valid_header(k, v, true) end
-    end
+    local hook = current_hook(e)
+    if hook ~= "endpoint" and not (e.scope == "node" and hook == "listen") then need(e, "verdicts") end
+    validate_response(status, body, headers, e.scope == "node")
     return verdict("respond", { status = status, body = body, headers = headers })
   end
   if (e.lua_api or 1) >= 2 then api2(e, a) end
@@ -827,17 +875,30 @@ local function settings(id)
   local cfg = require("edgeweir.store").config()
   local x = cfg.extensions
   if not x or x.disabled then return nil end
-  return x.by_id[id]
+  return x.by_id[id], x
 end
 
 -- usable returns the loaded extension and its settings when it should run
--- on this request; else nil and whether that fails closed.
-local function usable(id)
-  local set = settings(id)
-  if not set or not set.enabled then return nil, nil, false end
+-- on this request; else nil, settings, closed, and readiness pending.
+usable = function(id, scope)
   local e = EXT[id]
+  if e and scope and (e.scope or "site") ~= scope then return nil, nil, false end
+  local set, cfg = settings(id)
+  if not set or not set.enabled then return nil, nil, false end
   if not e or e.err or not e.mod or e.sha256 ~= set.sha256 then return nil, set, set.closed end
   if e.tripped > ngx.now() then return nil, set, set.closed end
+  if e.scope == "node" then
+    local expected = require("edgeweir.init").conf_id
+    if type(expected) ~= "string" or expected == "" or cfg.conf_id ~= expected then return nil, set, set.closed, true end
+    if e.manifest.secret then
+      local d = meta()
+      local raw = d and d:get("ext_secret|" .. id)
+      if not raw then return nil, set, set.closed, true end
+      local secret = cjson.decode(raw)
+      local version = cfg.node_secrets and cfg.node_secrets[id]
+      if type(version) ~= "number" or version < 1 or secret.version ~= version then return nil, set, set.closed, true end
+    end
+  end
   return e, set, false
 end
 
@@ -846,19 +907,26 @@ end
 local function call(e, set, site, hook, ...)
   local fn = e.mod[hook]
   if type(fn) ~= "function" then return true, nil end
-  local st = req_state(e.id)
+  local st = req_state(e)
+  local node = e.scope == "node"
+  if node and hook ~= "log" then site = nil end
   local ew = st.ew
-  if not ew or st.site ~= site then
-    ew = setmetatable({ site_id = site and site.id, ctx = st.ctx or {} }, { __index = e.api })
+  if node or not ew or st.site ~= site then
+    ew = setmetatable({ site_id = site and site.id, ctx = node and {} or st.ctx or {} }, { __index = e.api })
     if (e.lua_api or 1) >= 2 then
       local d = site and type(site.domains) == "table" and site.domains[1]
       ew.site_name = type(d) == "table" and d.name or nil
     end
-    st.ctx, st.ew, st.site = ew.ctx, ew, site
+    st.ctx, st.ew = ew.ctx, ew
+    st.site = not node and site or nil
   end
   ew.global_config = set.config
   e.global_config = set.config
-  ew.site_config = st.site_config
+  ew.site_config = not node and st.site_config or nil
+  if node then
+    st.site_config = nil
+    if hook ~= "listen" then st.body = nil end
+  end
   local previous, excluded = st.hook, st.excluded
   st.hook, st.excluded = hook, 0
   ngx.update_time()
@@ -869,11 +937,11 @@ local function call(e, set, site, hook, ...)
   st.hook, st.excluded = previous, excluded
   ngx.update_time()
   if not ok then
-    _M.fault(e, site and site.id, hook .. ": " .. tostring(res))
+    _M.fault(e, site and site.id, node and (hook .. " failed") or (hook .. ": " .. tostring(res)))
     return false
   end
   local io = e.caps.http_client and (hook == "access" or hook == "access_late" or hook == "endpoint")
-  if ngx.now() - started > (io and _M.IO_BUDGET or _M.BUDGET) then
+  if ngx.now() - started > ((io or (node and hook == "listen")) and _M.IO_BUDGET or _M.BUDGET) then
     _M.fault(e, site and site.id, hook .. " over its budget")
     return false
   end
@@ -885,6 +953,7 @@ local function ensure_init(e, set)
   if e.inited then return true end
   e.inited = true
   e.api = e.api or api(e)
+  if e.scope == "node" and not e.hooks.init then return true end
   if type(e.mod.init) ~= "function" then return true end
   local ok = call(e, set, nil, "init")
   if not ok then
@@ -900,7 +969,7 @@ local function unavailable()
   ngx.header["Content-Type"] = "text/plain; charset=utf-8"
   ngx.header["Cache-Control"] = "no-store"
   ngx.header["X-Edgeweir-Error"] = "extension"
-  ngx.print("extension unavailable\n")
+  if ngx.req.get_method() ~= "HEAD" then ngx.print("extension unavailable\n") end
   return ngx.exit(ngx.HTTP_OK)
 end
 
@@ -924,14 +993,14 @@ _M.respond = respond
 -- where an extension that fails closed and cannot run ends it ("closed");
 -- the response hooks skip it.
 local function each(site, fn, request)
-  local list = site._ext
+  local list = site and site._ext
   if not list then return end
   for i = 1, #list do
     local x = list[i]
-    local e, set, closed = usable(x.id)
+    local e, set, closed = usable(x.id, "site")
     if e then
       if ensure_init(e, set) then
-        req_state(x.id).site_config = x.config
+        req_state(e).site_config = x.config
         local r = fn(e, set, x)
         if r ~= nil then return r end
       elseif request and set.closed then
@@ -941,6 +1010,18 @@ local function each(site, fn, request)
       return "closed"
     end
   end
+end
+
+local function each_node(fn)
+  for _, spec in ipairs(LIST) do
+    local e, set = usable(spec.id, "node")
+    if e and ensure_init(e, set) then fn(e, set) end
+  end
+end
+
+-- Called after runtime settings arrive, also when there are no sites.
+function _M.node_init()
+  each_node(function() end)
 end
 
 local function log_verdict(id, kind)
@@ -1035,7 +1116,7 @@ function _M.origin_access(id)
 end
 
 -- put_runtime stores what the agent pushes (PUT /v1/extensions/runtime):
--- {secrets = {id = {current, previous}}, sidecars = {id = ready}}, base64
+-- {secrets = {id = {current, previous, version}}, sidecars = {id = ready}}, base64
 -- secrets; extensions left out lose theirs.
 function _M.put_runtime(doc)
   local d = meta()
@@ -1043,7 +1124,7 @@ function _M.put_runtime(doc)
   local keep = {}
   for id, s in pairs(type(doc.secrets) == "table" and doc.secrets or {}) do
     if type(id) == "string" and type(s) == "table" and type(s.current) == "string" then
-      d:set("ext_secret|" .. id, cjson.encode({ current = s.current, previous = type(s.previous) == "string" and s.previous ~= "" and s.previous or nil }))
+      d:set("ext_secret|" .. id, cjson.encode({ current = s.current, previous = type(s.previous) == "string" and s.previous ~= "" and s.previous or nil, version = s.version }))
       keep["ext_secret|" .. id] = true
     end
   end
@@ -1119,7 +1200,7 @@ local function plain(status, msg)
   ngx.status = status
   ngx.header["Content-Type"] = "text/plain; charset=utf-8"
   ngx.header["Cache-Control"] = "no-store"
-  ngx.print(msg, "\n")
+  if ngx.req.get_method() ~= "HEAD" then ngx.print(msg, "\n") end
   return ngx.exit(ngx.HTTP_OK)
 end
 
@@ -1134,7 +1215,7 @@ function _M.endpoint(site, path)
     end
   end
   if not x then return plain(404, "not found") end
-  local e, set, closed = usable(id)
+  local e, set, closed = usable(id, "site")
   if not e then
     if closed then reasons.set("extension"); return unavailable() end
     return plain(404, "not found")
@@ -1176,7 +1257,7 @@ function _M.endpoint(site, path)
     if set.closed then reasons.set("extension"); return unavailable() end
     return plain(404, "not found")
   end
-  local st = req_state(id)
+  local st = req_state(e)
   st.site_config, st.max_body = x.config, ep.max_body
   local ok, res = call(e, set, site, "endpoint", rest)
   if not ok then
@@ -1185,6 +1266,64 @@ function _M.endpoint(site, path)
   end
   if type(res) == "table" and res[VERDICT] == "respond" then return respond(res) end
   return plain(500, "extension returned no response")
+end
+
+local function listener_body(limit)
+  local len = tonumber(ngx.var.http_content_length)
+  if len and len > limit then return nil, "truncated" end
+  ngx.req.read_body()
+  local data = ngx.req.get_body_data()
+  if data then
+    if #data > limit then return nil, "truncated" end
+    return data
+  end
+  local file = ngx.req.get_body_file()
+  if file then
+    local raw, err = read_file(file, limit)
+    if raw == nil and err == nil then return "" end
+    return raw, err
+  end
+  return ""
+end
+
+-- Internal content entry: path is the request URI (ngx.var.uri), not a file
+-- or site route. The caller selects an enabled binding and checks its real
+-- TCP peer ACL first. Only the signed listener declaration is used.
+function _M.listen(id, name, path)
+  ngx.ctx.edgeweir_ext_listener = true
+  local e, set = usable(id, "node")
+  if not e then return unavailable() end
+  local listener = e.listeners[name]
+  if not listener or not e.hooks.listen then return plain(404, "not found") end
+  if not listener.methods[ngx.req.get_method()] then
+    local methods = {}
+    for method in pairs(listener.methods) do methods[#methods + 1] = method end
+    table.sort(methods)
+    ngx.header["Allow"] = concat(methods, ", ")
+    return plain(405, "method not allowed")
+  end
+  local ok, body, err = pcall(listener_body, listener.max_body)
+  if not ok or (body == nil and err ~= "truncated") then
+    _M.fault(e, nil, "listen request body failed")
+    return unavailable()
+  end
+  if body == nil then return plain(413, "request body too large") end
+  if not ensure_init(e, set) then return unavailable() end
+  req_state(e).body = body
+  local called, res = call(e, set, nil, "listen", name, path)
+  if not called then return unavailable() end
+  if type(res) ~= "table" or rawget(res, VERDICT) ~= "respond" then
+    _M.fault(e, nil, "listen returned no response")
+    return plain(500, "extension returned no response")
+  end
+  local response = { status = rawget(res, "status"), body = rawget(res, "body"), headers = rawget(res, "headers") }
+  local valid, headers = pcall(validate_response, response.status, response.body, response.headers, true)
+  if not valid then
+    _M.fault(e, nil, "listen returned an invalid response")
+    return plain(500, "extension returned an invalid response")
+  end
+  response.headers = headers
+  return respond(response)
 end
 
 -- header_filter runs the header filter hooks and prepares the body filter
@@ -1313,9 +1452,22 @@ end
 function _M.log(site)
   -- ngx.is_subrequest raises outside a request (the Lua tests' timers).
   if ngx.get_phase() ~= "timer" and ngx.is_subrequest then return end
+  if ngx.ctx.edgeweir_ext_listener then return end
   each(site, function(e, set)
     if e.hooks.log then call(e, set, site, "log") end
     return nil
+  end)
+  _M.node_log(site)
+end
+
+-- Node log hooks follow site hooks, without any site-extension association.
+function _M.node_log(site)
+  if ngx.ctx.edgeweir_ext_listener then return end
+  if ngx.get_phase() ~= "timer" and ngx.is_subrequest then return end
+  if ngx.ctx.edgeweir_node_ext_logged then return end
+  ngx.ctx.edgeweir_node_ext_logged = true
+  each_node(function(e, set)
+    if e.hooks.log then call(e, set, site, "log") end
   end)
 end
 

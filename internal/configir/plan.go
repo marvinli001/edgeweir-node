@@ -918,6 +918,14 @@ func Build(c *nodev1.NodeConfig, opts Options) (*Plan, error) {
 	for _, l := range p.Listeners {
 		listenerPorts[l.Port] = true
 	}
+	for _, e := range p.Extensions {
+		for _, listener := range e.Listeners {
+			if listenerPorts[listener.Port] {
+				return nil, fmt.Errorf("%w: extension %q: listener port conflict", ErrRejected, e.ID)
+			}
+			listenerPorts[listener.Port] = true
+		}
+	}
 	var tierPeers map[string][]TierPeer
 	if p.Tier, tierPeers, err = buildTier(c, opts.NodeID, listenerPorts); err != nil {
 		return nil, err

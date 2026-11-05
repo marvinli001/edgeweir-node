@@ -123,7 +123,10 @@ type Console struct {
 	securityCalls      []int
 	reportSecurityFail int
 
-	probe probeState
+	probe                 probeState
+	extensionPackages     map[string][]byte
+	extensionSecrets      map[string]*nodev1.ExtensionSecret
+	extensionPackageError error
 
 	// The node channel address handed out (ReportStatusResponse.channel,
 	// GetProbeTargetsResponse.channel, CheckChannel) and the checks made.

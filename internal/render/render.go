@@ -382,6 +382,8 @@ type data struct {
 	Extensions []renderedExtension
 	// Sidecars are the Extensions with a sidecar (extension version 1.1).
 	Sidecars []renderedExtension
+
+	NodeListeners []extensionListener
 	// RegexCacheEntries sizes lua_regex_cache_max_entries when site or
 	// offline host patterns (domains-v2) are matched with ngx.re's "jo": each
 	// is compiled once per worker. 0: nginx's default (1024).
@@ -1219,6 +1221,10 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	listeners, err := extensionListeners(plan)
+	if err != nil {
+		return nil, err
+	}
 	dicts = append(dicts, extDicts...)
 	if err := validateCompression(plan); err != nil {
 		return nil, err
@@ -1234,6 +1240,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 	edge := edgeServers(p, plan)
 	layers := renderedLayers(p, plan)
 	p.WorkerConnections += listeningSockets(p, len(layers), edge, l4)
+	p.WorkerConnections += len(listeners)
 	tier, err := buildTierData(p, plan)
 	if err != nil {
 		return nil, err
@@ -1250,6 +1257,7 @@ func Render(p Params, plan *configir.Plan) ([]byte, error) {
 		SharedDicts:       dicts,
 		Extensions:        exts,
 		Sidecars:          sidecars(exts),
+		NodeListeners:     listeners,
 		RegexCacheEntries: regexCacheEntries(plan),
 		EdgeServers:       edge,
 		ForwardedFor:      forwardedFor,

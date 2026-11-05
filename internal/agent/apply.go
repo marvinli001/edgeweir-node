@@ -133,6 +133,23 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 		}
 	}()
 	if !bytes.Equal(conf, current) || !a.engine.Running() {
+		owned := previousPlan
+		if !a.engine.Running() {
+			owned = nil
+		}
+		if owned == nil && a.engine.Running() && len(plan.Extensions) > 0 {
+			// nginx can outlive the agent. Only a matching live configuration
+			// proves that the cached plan's sockets are already controlled.
+			sctx, cancel := context.WithTimeout(ctx, a.cfg.PushTimeout)
+			status, err := a.dp.Status(sctx)
+			cancel()
+			if err == nil && status.ConfID == render.ConfID(conf) {
+				owned = plan
+			}
+		}
+		if err := preflightExtensionListeners(ctx, plan, owned); err != nil {
+			return permanentUnless(ctx, err)
+		}
 		next := a.cfg.ConfPath + ".next"
 		if err := fsutil.WriteFileAtomic(next, conf, 0o644); err != nil {
 			return err
@@ -181,6 +198,17 @@ func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr e
 	// retries a failure.
 	a.pushChallengeKeysWithRetry(ctx, plan)
 	table := a.siteTable(plan)
+	for _, e := range plan.Extensions {
+		if e.Scope == "node" {
+			table.Extensions.ConfID = render.ConfID(conf)
+			if e.SecretVersion > 0 {
+				if table.Extensions.NodeSecrets == nil {
+					table.Extensions.NodeSecrets = map[string]uint32{}
+				}
+				table.Extensions.NodeSecrets[e.ID] = e.SecretVersion
+			}
+		}
+	}
 	touched = true
 	if err := a.pushWithRetry(ctx, table); err != nil {
 		return err

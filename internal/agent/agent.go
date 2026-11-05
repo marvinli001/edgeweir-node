@@ -813,6 +813,9 @@ func (a *Agent) serveInitialConfig(ctx context.Context) {
 			certs, perr = a.attachCertificates(plan, a.loadCertificateFailures(cfg))
 			a.attachOriginClientCertificates(plan)
 			if perr == nil {
+				perr = a.ensureExtensions(ctx, plan)
+			}
+			if perr == nil {
 				perr = a.applyPlan(ctx, plan)
 			}
 		}

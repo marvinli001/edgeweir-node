@@ -164,7 +164,7 @@ function _M.log(waf_location)
   end
   -- Node extensions' log hooks set their log fields and counters first
   -- (edgeweir.ext).
-  if ctx_site and ctx_site._ext and ctx_site.id == site then
+  if ctx_site and ctx_site.id == site then
     require("edgeweir.ext").log(ctx_site)
   end
   local geo = _M.geo(ctx, var.remote_addr)

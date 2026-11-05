@@ -92,7 +92,8 @@ type errTransient struct{ error }
 // signature and key, unpacked and its manifest checked again; Dir is set
 // for those that pass. A package that fails is reported and left out; the
 // rest of the configuration applies. Only a console that cannot be reached
-// fails the apply (retried with the next sync).
+// fails an online apply (retried with the next sync). Offline LKG restore
+// leaves a missing package failed without dropping the sites' settings.
 func (a *Agent) ensureExtensions(ctx context.Context, plan *configir.Plan) error {
 	if len(plan.Extensions) == 0 {
 		return nil
@@ -111,7 +112,7 @@ func (a *Agent) ensureExtensions(ctx context.Context, plan *configir.Plan) error
 		dir, err := a.extensionTree(ctx, e, local)
 		var transient errTransient
 		switch {
-		case errors.As(err, &transient):
+		case errors.As(err, &transient) && a.channel != nil:
 			return transient.error
 		case err != nil:
 			if e.State == "" {
@@ -177,6 +178,9 @@ func (a *Agent) extensionTree(ctx context.Context, e *configir.Extension, localK
 	}
 	if pkg.SHA256 != e.SHA256 || pkg.Manifest.ID != e.ID || pkg.Manifest.Version != e.Version {
 		return "", errors.New("the package is not the configured extension")
+	}
+	if err := e.CheckManifest(pkg.Manifest); err != nil {
+		return "", err
 	}
 	if err := compatible(pkg.Manifest); err != nil {
 		e.State = "incompatible"
@@ -384,6 +388,18 @@ func (a *Agent) extensionReport(ctx context.Context) []*nodev1.ExtensionStatus {
 		}
 		if len(s.Message) > 500 {
 			s.Message = s.Message[:500]
+		}
+		if e.Scope == extension.ScopeNode && len(e.Listeners) > 0 {
+			listeners := map[string]any{}
+			for _, listener := range e.Listeners {
+				state, message := "listening", ""
+				if !runnable(plan, e) || !a.engine.Running() {
+					state, message = "failed", s.Message
+				}
+				listeners[listener.Name] = map[string]any{"port": listener.Port, "state": state, "message": message}
+			}
+			raw, _ := json.Marshal(map[string]any{"listeners": listeners})
+			s.DetailsJson = string(raw)
 		}
 		out = append(out, s)
 	}

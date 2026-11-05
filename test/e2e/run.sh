@@ -1902,6 +1902,163 @@ pass "Markdown: prefix and tag purges clear both variants"
 WAIT_SECS=180 wait_for "Markdown responses uploaded" sh -c "[ \"\$(curl -fsS $HELPER/md/responses)\" -gt 0 ]"
 pass "Markdown: converted responses reach the console ($(curl -fsS "$HELPER/md/responses"))"
 
+# Signed node packages use the same mTLS download, apply and rollback path.
+ext_publish() { curl -fsS -X POST "$HELPER/extensions?mode=$1"; }
+ext_http() { client -sS --max-time 10 "$@"; }
+ext_closed() {
+  local port connects
+  for port in ${1:-19145 19146}; do
+    connects=$(ext_http -o /dev/null -w '%{num_connects}' "http://node:$port/" 2>/dev/null) || true
+    [ "$connects" = 0 ] || return 1
+  done
+}
+ext_ready_log() { compose logs node | grep -q 't58 node initialized token=zero node=node-e2e'; }
+ext_hot() { ext_http http://node:19145/ | grep -q '"token":"two"' && ext_http http://node:19145/ | grep -q '"secret":true'; }
+ext_head() {
+  compose exec -T node perl -MIO::Socket::INET -e '
+    my $s = IO::Socket::INET->new(PeerAddr => "127.0.0.1", PeerPort => $ARGV[1], Timeout => 10) or die $!;
+    print $s "HEAD $ARGV[0] HTTP/1.0\r\nHost: demo.test\r\n\r\n";
+    local $/; my $r = <$s>; $r =~ m{^HTTP/\S+ (\d+)}; my $code = $1;
+    $r =~ s/^.*?\r\n\r\n//s; print "$code " . length($r);' "$1" "${2:-19145}"
+}
+rev=$(ext_publish unbound)
+wait_for "unbound node package" applied_is "$rev APPLY_STATE_APPLIED"
+ext_closed || fail "manifest default_port opened an unbound listener"
+rev=$(ext_publish zero)
+wait_for "zero-site node configuration" applied_is "$rev APPLY_STATE_APPLIED"
+# Observe init before any listener request, with no site capable of invoking it.
+wait_for "node init in a worker timer" ext_ready_log
+r=$(ext_http --path-as-is 'http://node:19145/a%62?query=hidden')
+grep -Eq '"path":"(\\/|/)ab"' <<<"$r" || fail "listen did not receive ngx.var.uri: $r"
+grep -q '"inited":true' <<<"$r" || fail "zero-site node init did not run: $r"
+for port in 19145 19146; do
+  [ "$(ext_http -o /dev/null -w '%{http_code}' -X PUT "http://node:$port/")" = 405 ] || fail "unsigned method reached listener $port"
+done
+small=$(printf '%4096s' '' | tr ' ' x)
+large="${small}x"
+[ "$(ext_http -o /dev/null -w '%{http_code}' --data-binary "$small" http://node:19145/)" = 200 ] || fail "default body limit rejected 4096 bytes"
+[ "$(ext_http -o /dev/null -w '%{http_code}' --data-binary "$large" http://node:19145/)" = 413 ] || fail "default body limit accepted 4097 bytes"
+for port in 19145 19146; do
+  [ "$(ext_http -o /dev/null -w '%{http_code}' -H 'Transfer-Encoding: chunked' -H 'Content-Length:' --data-binary "$large" "http://node:$port/")" = 413 ] || fail "chunked body exceeded signed limit at $port"
+done
+[ "$(ext_http -o /dev/null -w '%{http_code}' --data-binary '' http://node:19146/)" = 200 ] || fail "signed zero rejected an empty body"
+[ "$(ext_http -o /dev/null -w '%{http_code}' --data-binary x http://node:19146/)" = 413 ] || fail "signed zero accepted a byte"
+[ "$(ext_http -o /dev/null -w '%{http_code}' -H 'Transfer-Encoding: chunked' -H 'Content-Length:' --data-binary x http://node:19146/)" = 413 ] || fail "signed zero accepted an unsized byte"
+[ "$(ext_head /)" = '200 0' ] || fail "HEAD listener sent a body"
+[ "$(ext_head /fail)" = '503 0' ] || fail "failed HEAD listener sent a body or fell through"
+[ "$(ext_http -o /dev/null -w '%{http_code}' -H 'Host: demo.test' http://node:19145/fail)" = 503 ] || fail "listener failure fell through to the site"
+pass "node listener: zero-site timer init, normalized URI, signed methods, finite default/zero/chunked body limits and HEAD"
+
+rev=$(ext_publish enabled)
+wait_for "node listener with existing sites" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(status_code demo.test)" = 200 ] || fail "node package disrupted an existing site"
+ext_http http://node:19145/ | grep -Eq '"logs":[1-9][0-9]*' || fail "node log did not run on a site with no extension association"
+reloads_before=$(reloads)
+rev=$(ext_publish hot)
+wait_for "node global settings" applied_is "$rev APPLY_STATE_APPLIED"
+wait_for "node timer sees global config and secret rotation" ext_hot
+[ "$(reloads)" = "$reloads_before" ] || fail "global settings or secret rotation reloaded nginx"
+rev=$(ext_publish deny)
+wait_for "node listener ACL" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(ext_http -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 192.0.2.1' -H 'Forwarded: for=192.0.2.1' http://node:19145/)" = 403 ] || fail "forwarded headers bypassed the TCP peer ACL"
+rev=$(ext_publish loopback)
+wait_for "loopback-only node binding" applied_is "$rev APPLY_STATE_APPLIED"
+ext_closed 19147 || fail "loopback binding accepted a LAN peer"
+loopback=$(compose exec -T node perl -MIO::Socket::INET -e '
+  my $s=IO::Socket::INET->new(PeerAddr=>"127.0.0.1",PeerPort=>19147,Timeout=>10) or die $!;
+  print $s "GET / HTTP/1.0\r\nHost: local\r\n\r\n"; print scalar <$s>;')
+grep -q ' 200 ' <<<"$loopback" || fail "loopback peer could not use its binding"
+for mode in disabled kill; do
+  rev=$(ext_publish "$mode")
+  wait_for "node listener $mode" applied_is "$rev APPLY_STATE_APPLIED"
+  ext_closed || fail "$mode left a listener bound"
+  rev=$(ext_publish enabled)
+  wait_for "node listener restored" applied_is "$rev APPLY_STATE_APPLIED"
+  [ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 200 ] || fail "enable did not restore the binding"
+done
+# A foreign TCP owner must fail before installation, leaving old site and listener traffic.
+compose exec -d -T node perl -MIO::Socket::INET -e '
+  my $s=IO::Socket::INET->new(LocalAddr=>"0.0.0.0",LocalPort=>19148,Listen=>1) or die $!;
+  open my $f, ">", "/tmp/t58-external.pid" or die $!; print $f "$$\n"; close $f; sleep 300;'
+wait_for "foreign TCP owner" compose exec -T node test -s /tmp/t58-external.pid
+for mode in conflict badbind; do
+  old=$rev
+  ext_publish "$mode" >/dev/null
+  wait_for "node binding preflight failure" applied_is "$old APPLY_STATE_FAILED"
+  [ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 200 ] || fail "preflight failure removed the old listener"
+  [ "$(status_code demo.test)" = 200 ] || fail "preflight failure disrupted site traffic"
+done
+compose exec -T node perl -e 'open my $f,"<","/tmp/t58-external.pid" or die $!; my $pid=<$f>; kill "TERM",$pid; unlink "/tmp/t58-external.pid";'
+rev=$(ext_publish unknown)
+wait_for "undeclared binding rejected" applied_is "$rev APPLY_STATE_APPLIED"
+ext_closed || fail "an undeclared binding opened a listener"
+curl -fsS "$HELPER/extensions/status" | grep -q 'node-status failed' || fail "undeclared binding failure was not reported"
+rev=$(ext_publish enabled)
+wait_for "node binding rollback" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 200 ] || fail "rollback did not restore the listener"
+curl -fsS "$HELPER/extensions/status" | grep -q '"state":"listening"' || fail "confirmed listener was not reported"
+pass "node listener: LAN/loopback and TCP ACL, hot globals/secrets, disable/restore, preflight preservation, undeclared binding and rollback"
+
+node_address=$(ext_http -o /dev/null -w '%{remote_ip}' http://node/)
+rev=$(ext_publish 'reload&bind=127.0.0.1')
+wait_for "controlled loopback listener before reload failure" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(ext_head / 19149)" = '200 0' ] || fail "controlled loopback listener is unavailable"
+conf_before=$(conf_id)
+file_before=$(compose exec -T node sha256sum /var/lib/edgeweir-node/nginx/conf/nginx.conf)
+compose exec -d -T node perl -MIO::Socket::INET -e '
+  my $s=IO::Socket::INET->new(LocalAddr=>$ARGV[0],LocalPort=>19149,Listen=>1) or die $!;
+  open my $f, ">", "/tmp/t58-reload-foreign.pid" or die $!; print $f "$$\n"; close $f; sleep 300;' "$node_address"
+wait_for "foreign owner on another address of the controlled port" compose exec -T node test -s /tmp/t58-reload-foreign.pid
+old=$rev
+rejected=$(ext_publish "reload&bind=$node_address")
+wait_for "unconfirmed nginx reload rejected" applied_is "$old APPLY_STATE_FAILED"
+[ "$rejected" != "$old" ] || fail "reload fixture did not publish a new revision"
+compose logs node | grep -F "bind() to $node_address:19149 failed" >/dev/null || fail "nginx did not encounter the real foreign socket"
+compose logs node | grep -F 'nginx did not load the new configuration' >/dev/null || fail "waitForConf did not reject the failed reload"
+[ "$(conf_id)" = "$conf_before" ] || fail "failed reload changed the live worker ConfID"
+[ "$(compose exec -T node sha256sum /var/lib/edgeweir-node/nginx/conf/nginx.conf)" = "$file_before" ] || fail "failed reload did not restore the previous configuration file"
+[ "$(ext_head / 19149)" = '200 0' ] || fail "failed reload removed the previous listener"
+[ "$(status_code demo.test)" = 200 ] || fail "failed reload disrupted previous site traffic"
+compose exec -T node perl -e 'open my $f,"<","/tmp/t58-reload-foreign.pid" or die $!; my $pid=<$f>; kill "TERM",$pid; unlink "/tmp/t58-reload-foreign.pid";'
+rev=$(ext_publish "reload&bind=$node_address")
+wait_for "same binding succeeds after the foreign socket is released" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19149/)" = 200 ] || fail "released binding did not become reachable"
+[ "$(conf_id)" != "$conf_before" ] || fail "successful binding change kept the old ConfID"
+rev=$(ext_publish enabled)
+wait_for "normal node bindings restored after reload failure test" applied_is "$rev APPLY_STATE_APPLIED"
+ext_closed 19149 || fail "the previous address binding remained open after restoration"
+pass "node listener: real nginx bind failure rejects the revision, preserves traffic and restores the file; releasing the foreign socket permits the same binding"
+
+rev=$(ext_publish zero)
+wait_for "zero-site LKG to restore" applied_is "$rev APPLY_STATE_APPLIED"
+compose pause console >/dev/null
+compose restart node >/dev/null
+wait_for "cached node listener restored from offline LKG" ext_head /
+[ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 503 ] || fail "offline listener with no secret did not fail closed"
+[ "$(status_code demo.test)" = 404 ] || fail "zero-site offline LKG changed its site set"
+control GET /v1/extensions | grep -q '"node-status"' || fail "offline LKG did not verify and load the cached node package"
+compose unpause console >/dev/null
+rev=$(ext_publish mixed)
+wait_for "site and node packages" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(status_code ext-closed.test)" = 200 ] || fail "signed site fixture did not load"
+read -r node_digest site_digest <<<"$(curl -fsS "$HELPER/extensions/digests")"
+compose pause console >/dev/null
+compose exec -T node rm "/var/lib/edgeweir-node/extensions/$node_digest.ewx" "/var/lib/edgeweir-node/extensions/$site_digest.ewx"
+compose restart node >/dev/null
+wait_for "site traffic from LKG with missing packages" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.test' $NODE/)\" = 200 ]"
+ext_closed || fail "an unverified node package restored a binding"
+[ "$(status_code ext-closed.test)" = 503 ] || fail "missing closed site package silently became fail-open"
+compose unpause console >/dev/null
+old=$rev
+ext_publish transient >/dev/null
+wait_for "online transient package error rejects apply" applied_is "$old APPLY_STATE_FAILED"
+[ "$(status_code demo.test)" = 200 ] || fail "transient package fetch disrupted old site traffic"
+rev=$(ext_publish mixed)
+wait_for "signed packages recovered through normal download" applied_is "$rev APPLY_STATE_APPLIED"
+[ "$(status_code ext-closed.test)" = 200 ] || fail "site package did not recover"
+[ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 200 ] || fail "node listener did not recover"
+pass "LKG extensions: verified cache restores bindings; missing archives preserve closed site refs, reject node bindings, and online failures keep the old revision"
+
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"

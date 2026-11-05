@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"strconv"
@@ -55,7 +56,7 @@ var reservedIDs = []string{"edgeweir", "core", "challenge", "session", "health",
 
 // Hooks and capabilities (sidecar: Lua API 2).
 var (
-	Hooks        = []string{"init", "access", "access_late", "header_filter", "body_filter", "log", "endpoint"}
+	Hooks        = []string{"init", "access", "access_late", "header_filter", "body_filter", "log", "endpoint", "listen"}
 	Capabilities = []string{"verdicts", "request_headers", "request_body", "response_headers", "html_inject", "body_rewrite", "http_client", "timers", "sidecar"}
 	methods      = []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
 	fieldTypes   = []string{"string", "number", "boolean"}
@@ -73,6 +74,7 @@ type Manifest struct {
 	License      string            `json:"license,omitempty"`
 	Homepage     string            `json:"homepage,omitempty"`
 	Requires     Requires          `json:"requires"`
+	Scope        string            `json:"scope,omitempty"`
 	Hooks        []string          `json:"hooks"`
 	Capabilities []string          `json:"capabilities,omitempty"`
 	Config       json.RawMessage   `json:"config,omitempty"`
@@ -80,6 +82,7 @@ type Manifest struct {
 	LogFields    []string          `json:"log_fields,omitempty"`
 	Counters     []string          `json:"counters,omitempty"`
 	Endpoints    []Endpoint        `json:"endpoints,omitempty"`
+	Listeners    []Listener        `json:"listeners,omitempty"`
 	SharedDicts  []SharedDict      `json:"shared_dicts,omitempty"`
 	// Extension version 1.1 (Lua API 2).
 	Secret  bool        `json:"secret,omitempty"`
@@ -162,12 +165,15 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	var m Manifest
+	m := Manifest{Scope: ScopeSite}
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("manifest: %w", err)
 	}
-	if dec.More() {
+	if err := dec.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("manifest: trailing data")
+	}
+	if err := m.validateScope(data); err != nil {
+		return nil, fmt.Errorf("manifest: %w", err)
 	}
 	if err := m.validate(); err != nil {
 		return nil, fmt.Errorf("manifest: %w", err)
@@ -198,8 +204,8 @@ func (m *Manifest) validate() error {
 		return fmt.Errorf("invalid publisher %q", m.Publisher)
 	case m.Name["en"] == "":
 		return errors.New("name.en is required")
-	case m.Requires.LuaAPI < 1:
-		return errors.New("requires.lua_api is required")
+	case m.Requires.LuaAPI != 1 && m.Requires.LuaAPI != 2:
+		return errors.New("requires.lua_api must be 1 or 2")
 	case len(m.Hooks) == 0 || !unique(m.Hooks):
 		return errors.New("hooks must be a non-empty set")
 	case !unique(m.Capabilities):

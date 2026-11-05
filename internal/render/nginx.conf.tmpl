@@ -300,6 +300,38 @@ http {
     }
 {{- end }}
 
+{{- range .NodeListeners }}
+
+    # The original TCP peer remains authoritative after any real-ip rewrite.
+    geo $realip_remote_addr $ewx_{{ .Key }}_peer {
+        default 0;
+{{- range .Allow }}
+        {{ . }} 1;
+{{- end }}
+    }
+    map $request_method $ewx_{{ .Key }}_method {
+        default 0;
+{{- range .Methods }}
+        {{ . }} 1;
+{{- end }}
+    }
+    server {
+        listen {{ .Address }};
+        server_name _;
+        access_log off;
+        client_max_body_size {{ .BodyLimit }};
+        client_body_buffer_size 64k;
+        client_body_timeout 10s;
+        location / {
+            if ($ewx_{{ .Key }}_peer = 0) { return 403; }
+            if ($ewx_{{ .Key }}_method = 0) {
+                add_header Allow "{{ join .Methods ", " }}" always;
+                return 405;
+            }
+            content_by_lua_block { require("edgeweir.ext").listen("{{ .ID }}", "{{ .Name }}", ngx.var.uri) }
+        }
+    }
+{{- end }}
 {{- if .Sidecars }}
 
     # Extension sidecars (extension version 1.1): the sidecar's socket, then

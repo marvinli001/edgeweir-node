@@ -73,7 +73,14 @@ function _M.init_worker()
   require("edgeweir.topstats").init_worker()
   require("edgeweir.cc").init_worker()
   math.randomseed(ngx.now() * 1000 + ngx.worker.pid())
-  require("edgeweir.ext").init_worker()
+  local ext = require("edgeweir.ext")
+  if ext.init_worker() then
+    -- Config and secrets arrive over the control socket after workers start.
+    local ok, err = ngx.timer.every(0.1, function(premature)
+      if not premature then ext.node_init() end
+    end)
+    if not ok then ngx.log(ngx.ERR, "cannot start node extension init timer: ", err) end
+  end
 end
 
 return _M
