@@ -25,6 +25,9 @@ builds:
     binary: edgeweir-node
     env:
       - CGO_ENABLED=0
+      - GOGC=25
+      - GOMEMLIMIT=2GiB
+      - GOFLAGS=-p=1
     goos:
       - linux
     goarch:

@@ -36,6 +36,8 @@ ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=none
 ARG DATE=unknown
+# The generated image codecs otherwise exhaust small builders.
+ENV GOGC=25 GOMEMLIMIT=2GiB GOFLAGS=-p=1
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
