@@ -1912,7 +1912,7 @@ ext_closed() {
     [ "$connects" = 0 ] || return 1
   done
 }
-ext_ready_log() { compose logs node | grep -q 't58 node initialized token=zero node=node-e2e'; }
+ext_ready_log() { compose logs node | grep -q 'node extension initialized token=zero node=node-e2e'; }
 ext_hot() { ext_http http://node:19145/ | grep -q '"token":"two"' && ext_http http://node:19145/ | grep -q '"secret":true'; }
 ext_head() {
   compose exec -T node perl -MIO::Socket::INET -e '
@@ -1979,8 +1979,8 @@ done
 # A foreign TCP owner must fail before installation, leaving old site and listener traffic.
 compose exec -d -T node perl -MIO::Socket::INET -e '
   my $s=IO::Socket::INET->new(LocalAddr=>"0.0.0.0",LocalPort=>19148,Listen=>1) or die $!;
-  open my $f, ">", "/tmp/t58-external.pid" or die $!; print $f "$$\n"; close $f; sleep 300;'
-wait_for "foreign TCP owner" compose exec -T node test -s /tmp/t58-external.pid
+  open my $f, ">", "/tmp/ext-listener-external.pid" or die $!; print $f "$$\n"; close $f; sleep 300;'
+wait_for "foreign TCP owner" compose exec -T node test -s /tmp/ext-listener-external.pid
 for mode in conflict badbind; do
   old=$rev
   ext_publish "$mode" >/dev/null
@@ -1988,7 +1988,7 @@ for mode in conflict badbind; do
   [ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 200 ] || fail "preflight failure removed the old listener"
   [ "$(status_code demo.test)" = 200 ] || fail "preflight failure disrupted site traffic"
 done
-compose exec -T node perl -e 'open my $f,"<","/tmp/t58-external.pid" or die $!; my $pid=<$f>; kill "TERM",$pid; unlink "/tmp/t58-external.pid";'
+compose exec -T node perl -e 'open my $f,"<","/tmp/ext-listener-external.pid" or die $!; my $pid=<$f>; kill "TERM",$pid; unlink "/tmp/ext-listener-external.pid";'
 rev=$(ext_publish unknown)
 wait_for "undeclared binding rejected" applied_is "$rev APPLY_STATE_APPLIED"
 ext_closed || fail "an undeclared binding opened a listener"
@@ -2007,8 +2007,8 @@ conf_before=$(conf_id)
 file_before=$(compose exec -T node sha256sum /var/lib/edgeweir-node/nginx/conf/nginx.conf)
 compose exec -d -T node perl -MIO::Socket::INET -e '
   my $s=IO::Socket::INET->new(LocalAddr=>$ARGV[0],LocalPort=>19149,Listen=>1) or die $!;
-  open my $f, ">", "/tmp/t58-reload-foreign.pid" or die $!; print $f "$$\n"; close $f; sleep 300;' "$node_address"
-wait_for "foreign owner on another address of the controlled port" compose exec -T node test -s /tmp/t58-reload-foreign.pid
+  open my $f, ">", "/tmp/ext-listener-reload-foreign.pid" or die $!; print $f "$$\n"; close $f; sleep 300;' "$node_address"
+wait_for "foreign owner on another address of the controlled port" compose exec -T node test -s /tmp/ext-listener-reload-foreign.pid
 old=$rev
 rejected=$(ext_publish "reload&bind=$node_address")
 wait_for "unconfirmed nginx reload rejected" applied_is "$old APPLY_STATE_FAILED"
@@ -2019,7 +2019,7 @@ compose logs node | grep -F 'nginx did not load the new configuration' >/dev/nul
 [ "$(compose exec -T node sha256sum /var/lib/edgeweir-node/nginx/conf/nginx.conf)" = "$file_before" ] || fail "failed reload did not restore the previous configuration file"
 [ "$(ext_head / 19149)" = '200 0' ] || fail "failed reload removed the previous listener"
 [ "$(status_code demo.test)" = 200 ] || fail "failed reload disrupted previous site traffic"
-compose exec -T node perl -e 'open my $f,"<","/tmp/t58-reload-foreign.pid" or die $!; my $pid=<$f>; kill "TERM",$pid; unlink "/tmp/t58-reload-foreign.pid";'
+compose exec -T node perl -e 'open my $f,"<","/tmp/ext-listener-reload-foreign.pid" or die $!; my $pid=<$f>; kill "TERM",$pid; unlink "/tmp/ext-listener-reload-foreign.pid";'
 rev=$(ext_publish "reload&bind=$node_address")
 wait_for "same binding succeeds after the foreign socket is released" applied_is "$rev APPLY_STATE_APPLIED"
 [ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19149/)" = 200 ] || fail "released binding did not become reachable"
