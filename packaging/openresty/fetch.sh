@@ -20,13 +20,35 @@ export GNUPGHOME="$work/gnupg"
 install -d -m 0700 "$GNUPGHOME"
 
 fetch() { # url file
-  local attempt
+  local url=$1 file=$2 attempt repo release tag metadata asset
+  local -a headers=()
+  case "$url" in
+    https://github.com/*/releases/download/*)
+      repo=${url#https://github.com/}
+      repo=${repo%%/releases/download/*}
+      release=${url#https://github.com/$repo/releases/download/}
+      tag=${release%%/*}
+      metadata="$work/${repo//\//-}-${tag//\//-}.json"
+      [ -s "$metadata" ] || fetch "https://api.github.com/repos/$repo/releases/tags/$tag" "$metadata" || return 1
+      asset=$(python3 - "$metadata" "${release#*/}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as source:
+    assets = json.load(source)["assets"]
+print(next(asset["id"] for asset in assets if asset["name"] == sys.argv[2]))
+PY
+      ) || return 1
+      url="https://api.github.com/repos/$repo/releases/assets/$asset"
+      headers=(-H 'Accept: application/octet-stream')
+      ;;
+  esac
   for attempt in 1 2 3 4 5; do
-    if curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$2.part" "$1"; then
-      mv "$2.part" "$2"
+    if curl -fsSL --proto '=https' --tlsv1.2 --retry 3 "${headers[@]}" -o "$file.part" "$url"; then
+      mv "$file.part" "$file"
       return 0
     fi
-    echo "download of $1 failed (attempt $attempt)" >&2
+    echo "download of $url failed (attempt $attempt)" >&2
     sleep $((attempt * 3))
   done
   return 1
