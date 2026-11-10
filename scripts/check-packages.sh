@@ -3,12 +3,14 @@
 # or a release): every deb, rpm and tar.gz carries the binary, the Lua
 # modules, LICENSE and the repository's NOTICE; every binary was built with the
 # release tags (nodynamic, wasm2go) and links neither purego nor wazero, and
-# NOTICE lists every module it links. Needs bsdtar (macOS tar, libarchive) or
-# GNU tar with ar for the deb files, and Go for `go version -m`.
+# NOTICE lists every module it links. Needs libarchive tar (macOS tar or
+# libarchive-tools on Linux), ar, and Go for `go version -m`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DIST="${1:-dist}"
 TAGS=nodynamic,wasm2go
+archive_tar=tar
+if command -v bsdtar >/dev/null 2>&1; then archive_tar=bsdtar; fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -25,9 +27,9 @@ extract() {
   mkdir -p "$2"
   case "$1" in
   *.deb)
-    (cd "$2" && ar x "$OLDPWD/$1" && tar -xf data.tar.* && rm -f data.tar.* control.tar.* debian-binary)
+    (cd "$2" && ar x "$OLDPWD/$1" && "$archive_tar" -xf data.tar.* && rm -f data.tar.* control.tar.* debian-binary)
     ;;
-  *) tar -xf "$1" -C "$2" ;;
+  *) "$archive_tar" -xf "$1" -C "$2" ;;
   esac
 }
 

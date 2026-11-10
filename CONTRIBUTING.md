@@ -134,7 +134,7 @@ make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=<t
 
 ## CI 验收与制品复用
 
-维护者可在 InstaBox 的独立、干净检出完成一次正式验收。需要 Python 3.11+、项目固定版本的 Node/Go、Docker Compose/Buildx、Skopeo；Core/Node 还需工作流固定版本的 Buf、GoReleaser、Syft，Core 升级验收需 cosign。先配置隔离端口、项目名和测试服务，所有测试在共享机的锁下运行。不要在共享机执行不可信 fork 的代码。
+维护者可在 InstaBox 的独立、干净检出完成一次正式验收。需要 Python 3.11+、项目固定版本的 Node/Go、Docker Compose/Buildx、Skopeo；Core/Node 还需工作流固定版本的 Buf、GoReleaser、Syft，Linux 的 Node 包检查需要 libarchive-tools，Core 升级验收需 cosign。先配置隔离端口、项目名和测试服务，所有测试在共享机的锁下运行。不要在共享机执行不可信 fork 的代码。
 
 ```sh
 flock /data/locks/heavy.lock python3 scripts/ci-verify.py run --directory .local/acceptance/final
