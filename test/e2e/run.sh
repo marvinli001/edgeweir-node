@@ -144,7 +144,11 @@ control() {
     local $/; my $r = <$s>; $r =~ s/^.*?\r\n\r\n//s; print $r;' "$@"
 }
 
-compose up -d --build --quiet-pull
+if [ "${E2E_SKIP_BUILD:-0}" = "1" ]; then
+  compose up -d --no-build --quiet-pull
+else
+  compose up -d --build --quiet-pull
+fi
 wait_for "fake console" curl -fsS "$HELPER/pin"
 wait_for "node data plane" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' $NODE/)\" = 404 ]"
 

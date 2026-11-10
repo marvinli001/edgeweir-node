@@ -1,0 +1,14 @@
+{
+  "repository": "marvinli001/edgeweir-node",
+  "branch": "master",
+  "stages": {
+    "checks": "bash scripts/ci-accept.sh checks",
+    "proto": "bash scripts/ci-accept.sh proto",
+    "lua": "bash scripts/ci-accept.sh lua",
+    "snapshot": "bash scripts/ci-accept.sh snapshot",
+    "containers": "bash scripts/ci-accept.sh containers"
+  },
+  "cleanup": "bash scripts/ci-accept.sh cleanup",
+  "private": false,
+  "go_version_file": "go.mod"
+}

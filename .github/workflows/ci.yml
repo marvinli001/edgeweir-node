@@ -4,16 +4,53 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      scope:
+        type: choice
+        options: [auto, full]
+        default: auto
+      base:
+        description: Optional comparison commit
+        type: string
 
 permissions:
   contents: read
+  statuses: read
+  actions: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      product: ${{ steps.plan.outputs.product }}
+      checks: ${{ steps.plan.outputs.checks }}
+      proto: ${{ steps.plan.outputs.proto }}
+      lua: ${{ steps.plan.outputs.lua }}
+      snapshot: ${{ steps.plan.outputs.snapshot }}
+      containers: ${{ steps.plan.outputs.containers }}
+      full: ${{ steps.plan.outputs.full }}
+      reuse: ${{ steps.plan.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_SCOPE: ${{ inputs.scope }}
+          CI_BASE_SHA: ${{ inputs.base || github.event.pull_request.base.sha || github.event.before }}
+          CI_ALLOW_REUSE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: python3 scripts/ci-plan.py
+
   test:
+    needs: plan
+    if: needs.plan.outputs.checks == 'true'
     name: go vet + test (race)
     runs-on: ubuntu-latest
     steps:
@@ -27,9 +64,13 @@ jobs:
       - name: images and Actions are pinned
         run: make pin-check
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      - if: needs.plan.outputs.reuse != 'true'
+        run: go test -race -count=1 ./...
+      - run: python3 -m unittest discover -s tests/ci -p 'test_*.py'
 
   proto:
+    needs: plan
+    if: needs.plan.outputs.proto == 'true'
     name: generated code is fresh
     runs-on: ubuntu-latest
     steps:
@@ -45,6 +86,8 @@ jobs:
       - run: make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=$(PROTO_TAG),subdir=proto'
 
   lua:
+    needs: plan
+    if: needs.plan.outputs.lua == 'true'
     name: Lua unit tests (resty)
     runs-on: ubuntu-latest
     steps:
@@ -52,6 +95,8 @@ jobs:
       - run: make lua-test
 
   goreleaser:
+    needs: plan
+    if: needs.plan.outputs.snapshot == 'true'
     name: goreleaser check + snapshot
     runs-on: ubuntu-latest
     steps:
@@ -83,6 +128,7 @@ jobs:
           distribution: goreleaser
           version: v2.18.2
           args: release --snapshot --clean
+      - run: make package-check
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: snapshot-dist
@@ -94,33 +140,61 @@ jobs:
             dist/checksums.txt
           retention-days: 7
 
-  docker:
-    name: docker build
+  e2e:
+    needs: plan
+    if: needs.plan.outputs.containers == 'true'
+    name: build image and container acceptance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - name: Build the three tested images once
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
         with:
-          context: .
-          push: false
+          source: .
+          files: test/e2e/compose.yml
+          targets: |
+            node
+            console
+            geoip
           load: true
-          tags: edgeweir-node:ci
-      - name: serves 404 unknown-host before enrollment
-        run: |
-          docker run --rm -d --name node -p 18081:80 edgeweir-node:ci
-          for i in $(seq 30); do curl -s -o /dev/null localhost:18081/ && break; sleep 1; done
-          curl -si -H 'Host: x.test' localhost:18081/ | tee /tmp/resp
-          grep -q '^HTTP/1.1 404' /tmp/resp
-          grep -qi '^X-Edgeweir-Error: unknown-host' /tmp/resp
-          docker stop node
-
-  e2e:
-    name: container smoke test (fake console)
-    runs-on: ubuntu-latest
-    needs: [test]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          set: |
+            *.context=.
+            node.args.OPENRESTY_JOBS=4
+            node.cache-from=type=gha,scope=node-e2e
+            node.cache-from+=type=registry,ref=ghcr.io/marvinli001/edgeweir-node:buildcache-amd64
+            node.cache-to=type=gha,scope=node-e2e,mode=max
+            console.cache-from=type=gha,scope=node-fakeconsole
+            console.cache-to=type=gha,scope=node-fakeconsole,mode=max
+            geoip.cache-from=type=gha,scope=node-geoip
+            geoip.cache-to=type=gha,scope=node-geoip,mode=max
       - run: make e2e
         env:
           E2E_STATS: "1"
+          E2E_SKIP_BUILD: "1"
+
+  acceptance:
+    if: always() && needs.plan.outputs.product == 'true'
+    needs: [plan, test, proto, lua, goreleaser, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PLAN: ${{ toJSON(needs.plan.outputs) }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY_GATE'
+          import json, os
+          plan, results = json.loads(os.environ['PLAN']), json.loads(os.environ['RESULTS'])
+          assert results['plan']['result'] == 'success'
+          for job, key in [('test', 'checks'), ('proto', 'proto'), ('lua', 'lua'), ('goreleaser', 'snapshot'), ('e2e', 'containers')]:
+              expected = 'success' if plan[key] == 'true' else 'skipped'
+              assert results[job]['result'] == expected, (job, results[job]['result'], expected)
+          PY_GATE
+
+  full-acceptance:
+    needs: [plan, acceptance]
+    # A reused proof keeps its original expiry; only fresh tests create this CI gate.
+    if: needs.plan.outputs.full == 'true' && needs.plan.outputs.reuse != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'

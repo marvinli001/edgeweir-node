@@ -139,6 +139,10 @@ openresty-packages: ## Build the edgeweir-openresty(-modsecurity) deb/rpm packag
 	rm -rf $(OPENRESTY_OUT)/.$(ARCH)
 	$(OPENRESTY_BUILD) --target packages --output type=local,dest=$(OPENRESTY_OUT)/.$(ARCH)/packages .
 	$(OPENRESTY_BUILD) --target tree --output type=local,dest=$(OPENRESTY_OUT)/.$(ARCH)/tree .
+	$(MAKE) openresty-package-sbom ARCH=$(ARCH)
+
+.PHONY: openresty-package-sbom
+openresty-package-sbom: ## Finish packages and SBOM after a native Bake build
 	mv $(OPENRESTY_OUT)/.$(ARCH)/packages/*.deb $(OPENRESTY_OUT)/.$(ARCH)/packages/*.rpm $(OPENRESTY_OUT)/
 	syft scan dir:$(OPENRESTY_OUT)/.$(ARCH)/tree/tree --select-catalogers +sbom-cataloger --source-name edgeweir-openresty \
 		--source-version $(OPENRESTY_VERSION)-$(OPENRESTY_RELEASE) \

@@ -131,3 +131,29 @@ make proto-check PROTO_INPUT='https://github.com/marvinli001/edgeweir.git#tag=<t
 - 一个 PR 只做一件事，按逻辑拆成小提交。
 - 描述里写清动机、改动内容和验证方式。
 - CI 全部通过后再请求 review。
+
+## CI 验收与制品复用
+
+维护者可在 InstaBox 的独立、干净检出完成一次正式验收。需要 Python 3.11+、项目固定版本的 Node/Go、Docker Compose/Buildx、Skopeo；Core/Node 还需工作流固定版本的 Buf、GoReleaser、Syft，Core 升级验收需 cosign。先配置隔离端口、项目名和测试服务，所有测试在共享机的锁下运行。不要在共享机执行不可信 fork 的代码。
+
+```sh
+flock /data/locks/heavy.lock python3 scripts/ci-verify.py run --directory .local/acceptance/final
+```
+
+`.github/acceptance.json` 定义必须完成的全部命令；任一命令、清理或源码检查失败都不会生成完整验收。记录包含精确提交和 Git tree、策略摘要、命令/日志摘要、测试结果摘要、时间和双架构候选镜像摘要。普通定向测试不能冒充该记录。Node 的正式二进制仍按发布 tag 干净构建，不把 snapshot 包直接当正式包。
+
+获得发布授权后，由仓库所有者的 GitHub 身份上传验收记录：
+
+```sh
+python3 scripts/ci-verify.py publish --directory .local/acceptance/final
+```
+
+对带 Web 镜像的仓库，这一步也会将已验收的 OCI 候选上传到本仓库现有 GHCR 包的 `candidate-<完整提交>`，不会移动日期版本、latest 或 stable。所有者令牌须能写入 Git blob/commit status 和对应包；仓库/包可见性不会被修改。CI 只信任所有者签发的逐提交状态及其不可变证据 blob，核对源码、策略、完整范围和摘要，有效期按实际验收完成时间计算为 7 天，更新的 CI 失败会使旧结果失效。原始日志留在验收目录，只有摘要上传 GitHub。
+
+`scope=auto` 按变更选择验收；未提供比较基准时保守执行完整范围。`scope=full` 强制重新验收，不复用旧记录。独立 `full-acceptance` 门槛才可用于发布，局部 CI 的绿色结果不可用于发布。制品缺失、过期或标签/架构/摘要不符时拒绝发布，不能凭一次成功构建代替验收。
+
+公开仓库的正常 PR 仍在 GitHub 隔离 runner 检查。维护者若先在 InstaBox 验收，应冻结带 `[skip ci]` 的最终提交，推送后发布上述记录，再按需手动运行 CI/Release；这样不会在证据上传前抢先启动第二轮完整验收。不要以 `[skip ci]` 代替验收。需要完整重建时更新构建输入的固定版本并重新验收；Release 只晋级同一候选摘要，不重建镜像。
+
+Node CI 用 Bake 一次构建 node、fake console、GeoIP 夹具，随后 E2E 使用 `--no-build`；未注册 404 的原断言保留在 E2E。发布在原生 amd64/arm64 runner 上用 `docker-bake.release.hcl` 同时导出 OpenResty 包、文件树与镜像，共用一份编译结果，再生成包 SBOM、签名和 provenance。不同架构分别保存缓存，不使用 QEMU 编译 C/C++。
+
+原生发布缓存写入同一 GHCR 包的 `buildcache-amd64` / `buildcache-arm64`，可跨版本 tag 复用；GitHub 的 GHA 缓存不能跨不同 tag 读取，因此不把发布缓存仅存到 tag 作用域。CI 的非发布构建继续使用默认分支/PR 作用域的 GHA 缓存。

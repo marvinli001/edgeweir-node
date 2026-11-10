@@ -71,3 +71,11 @@ TODO.md
 /ROADMAP*.md
 /docs/adr/
 /dev-docs/
+
+# CI verification receipts and immutable candidate archives
+.local/acceptance/
+.local/ci-candidate/
+
+# Python acceptance tooling
+__pycache__/
+*.pyc

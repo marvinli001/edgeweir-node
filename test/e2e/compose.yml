@@ -11,6 +11,7 @@ name: edgeweir-node-e2e
 
 services:
   console:
+    image: ${E2E_CONSOLE_IMAGE:-edgeweir-node:e2e-console}
     build:
       context: ../..
       dockerfile: test/e2e/fakeconsole/Dockerfile
