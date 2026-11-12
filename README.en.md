@@ -36,7 +36,7 @@ Edge node for [Edgeweir](https://github.com/marvinli001/edgeweir): the `edgeweir
 | OpenResty data plane | Routing, caching, origin requests, policy enforcement, layer-4 forwarding (stream); hot updates for sites, origins, certificates, rules and layer-4 applications over a local unix socket |
 | [edgeweir](https://github.com/marvinli001/edgeweir) console | Control plane: internal CA, node channel (default `:8443`), `NodeConfig` compilation and delivery |
 
-- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v1.10.0`.
+- Contract: the protobuf in `edgeweir/proto` (`edgeweir.node.v1.NodeService`, `ProbeService`, `NodeConfig`), generated with buf from git tag `proto/v1.11.0`.
 - Structural changes (listeners, cache zones, resolver, the set of sites, domains, protocol and compression settings of HTTPS sites, loading the OWASP CRS and its excluded rules, ports, protocols and PROXY protocol settings of layer-4 applications) re-render `nginx.conf` and reload after `openresty -t`, the old workers serving open connections until they end; all other changes are hot-updated without a reload.
 
 | Data-plane behavior | Response |
@@ -464,3 +464,5 @@ Documents other than the READMEs are in Chinese.
 [AGPL-3.0-only](LICENSE); commercial use is permitted under its terms. Open-source core and commercial product boundaries: [LICENSING.md](LICENSING.md).
 
 Bundled GeoIP data: [IPinfo Lite](https://ipinfo.io/lite), [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). IP address data is powered by [IPinfo](https://ipinfo.io).
+
+`network-counters-v1` reports the non-loopback interfaces' raw Linux RX/TX uint64 byte counters with a boot ID and sample time. Read failures omit counters rather than reporting zero. The controller can use this for persistent operational node limits without a commercial license; select uplink interfaces explicitly to avoid counting bridged or tunnel traffic twice.

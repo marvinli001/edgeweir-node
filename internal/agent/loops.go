@@ -232,6 +232,9 @@ func (a *Agent) reportOnce(ctx context.Context, interval time.Duration) time.Dur
 		scancel()
 	}
 	req.Metrics = a.nodeMetrics(cctx)
+	if req.Metrics != nil && req.Metrics.Network != nil {
+		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, "network-counters-v1")
+	}
 	req.CacheUsage = a.cacheUsageReport()
 	req.OriginHealth = a.originHealth(cctx)
 	req.Bans = a.banReport(cctx)

@@ -36,7 +36,7 @@
 | OpenResty 数据面 | 路由、缓存、回源、策略执行、四层转发（stream）；经本地 unix socket 接收站点、源站、证书、规则与四层应用的热更新 |
 | [edgeweir](https://github.com/marvinli001/edgeweir) 控制台 | 控制面：内部 CA、节点通道（默认 `:8443`）、`NodeConfig` 编译与下发 |
 
-- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v1.10.0` 生成。
+- 契约：`edgeweir/proto` 中的 protobuf（`edgeweir.node.v1.NodeService`、`ProbeService`、`NodeConfig`），以 buf 从 git tag `proto/v1.11.0` 生成。
 - 结构性变更（监听、缓存 zone、resolver、站点集合、HTTPS 站点的域名、协议与压缩设置、OWASP CRS 的加载与排除规则、四层应用的端口、协议与 PROXY protocol 设置）重新渲染 `nginx.conf`，经 `openresty -t` 后 reload，已有连接由旧 worker 服务到结束；其余变更热更新，不 reload。
 
 | 数据面行为 | 响应 |
@@ -462,3 +462,5 @@ gh attestation verify edgeweir-node_<版本>_linux_amd64.tar.gz --repo marvinli0
 [AGPL-3.0-only](LICENSE)，允许合规商用。开源核心与商业产品的边界见 [LICENSING.md](LICENSING.md)。
 
 内置 GeoIP 数据：[IPinfo Lite](https://ipinfo.io/lite)，[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)。IP address data is powered by [IPinfo](https://ipinfo.io).
+
+`network-counters-v1` 上报非回环网卡的原始 Linux RX/TX uint64 字节计数、启动标识与采样时间；读取失败时不返回计数，不会伪报为零。控制台可据此持久化节点流量限额，不依赖商业授权；限制上联流量时应明确选择网卡，避免重复统计桥接与隧道流量。

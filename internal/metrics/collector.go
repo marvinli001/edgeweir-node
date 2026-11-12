@@ -118,6 +118,8 @@ func (c *Collector) Collect() (*nodev1.NodeMetrics, error) {
 		c.at = now
 	}
 	m.CpuPercent, m.EgressBps = c.percent, c.egress
+	// Missing counters stay absent; they must never be reported as a reset to zero.
+	m.Network, _ = c.readNetwork(now, loopback)
 	return m, errors.Join(errs...)
 }
 
