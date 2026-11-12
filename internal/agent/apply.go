@@ -57,12 +57,16 @@ func (a *Agent) applyTimeout() time.Duration {
 func (a *Agent) applyPlan(ctx context.Context, plan *configir.Plan) (resultErr error) {
 	a.activationMu.Lock()
 	defer a.activationMu.Unlock()
+	needsBootstrap := false
 	for _, listener := range plan.Listeners {
-		if listener.TLS {
-			if err := a.ensureBootstrapCertificate(); err != nil {
-				return err
-			}
-			break
+		needsBootstrap = needsBootstrap || listener.TLS
+	}
+	for _, app := range plan.L4Apps {
+		needsBootstrap = needsBootstrap || app.TLS()
+	}
+	if needsBootstrap {
+		if err := a.ensureBootstrapCertificate(); err != nil {
+			return err
 		}
 	}
 	// The node certificate's copies the tiered cache's servers name.
