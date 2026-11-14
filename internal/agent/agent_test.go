@@ -84,6 +84,9 @@ func (e *fakeEngine) Test(ctx context.Context, conf string) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if strings.HasSuffix(conf, "early-hints-probe.nginx.conf") {
+		return nil
+	}
 	if e.hangTests && !strings.HasSuffix(conf, "modsecurity-probe.nginx.conf") {
 		e.tests++
 		e.mu.Unlock()

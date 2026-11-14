@@ -1014,6 +1014,8 @@ proto v1.9.0，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `Node
 
 通用的签名 Lua 扩展（格式 `edgeweir-node-extension-v1`，Lua API 1 / 2；契约见控制台仓库的 `docs/reference/extensions.md`）。节点不认识任何具体扩展，不检查许可证，不联系发布者。网站作用范围沿用 `extensions-v1` / `extensions-v2`；节点作用范围还需要 `extensions-node-v1`，不能由 Lua API 版本推断。
 
+网站扩展的 `early_hints` 能力沿用 Lua API 2，通过 `ew.early_hints(links)` 在 `access` / `access_late` 发一个仅含 Link 的 103。`lua/edgeweir/earlyhints.lua` 校验连续数组（1–32 条、合计 ≤ 8192 字节、以 `<` 开头、无 CR/LF/NUL），仅由节点自身通过私有 FFI 调用 nginx 的信息响应过滤器；扩展环境仍无 ffi。`nginx-early-hints-ffi.patch` 临时替换头列表，发送后恢复最终响应头；请求结构上的标记跨扩展与内部重定向限制每请求一次。只允许 HTTP/2、HTTP/3 的客户端主请求，分层上层与内部请求不发；运行条件不满足返回 `false, reason`，最终响应照常继续。agent 只有探测 FFI 成功才报告 `extensions-early-hints-v1`，`--no-extensions` 时不报告；底层包要求 1.31.1.1-4。源站的 103 转发保持关闭。
+
 1. **分发**：`NodeConfig.extensions` 列出集群有网站开启的扩展（当前版本的摘要、大小、JWS 签名、签名公钥、启用、失败模式、全局配置、共享字典）与总开关 `extensions_disabled`，`Site.extensions` 列出网站开启的扩展及网站配置（`internal/configir/extensions.go` 校验）。agent 在应用配置前（`internal/agent/extensions.go`）按摘要经 mTLS 的 `GetExtensionPackage` 取缺少的扩展包，检查大小与 SHA-256，用下发的公钥验证 JWS（`--extension-keys` 指定本地 JWK 文件时，公钥还必须在其中），按控制台同样的规则读取归档与清单（`internal/extension`：严格 ustar、上限、无链接 / 原生代码 / 字节码、严格清单），检查 `requires`，解包到 `<state>/extensions/<sha256>/`（文件 0644、目录 0755，`.verified` 标记，归档另存 `<sha256>.ewx`）。失败的扩展包不加载、上报为 `failed` 或 `incompatible`，其余配置照常应用；不再被当前与上一份配置引用的目录被删除。
 2. **渲染**：可加载的扩展按安装顺序写进 `init_by_lua` 的参数 `extensions = {{id, dir, sha256}}`，每个声明的共享字典渲染为 `lua_shared_dict ewx_<十六进制 id>_<name>`；有扩展时边缘层的 `location /` 与请求体分级位置加 `body_filter_by_lua`。加载集合或共享字典变化时 reload；启用、失败模式、配置、网站列表与总开关随站点表热更新（`extensions: {disabled, list}`，`edgeweir.store` 编译为 `cfg.extensions`，网站为 `site._ext`）。`--no-extensions` 时 agent 不声明 `extensions-v1`，拒绝下发了扩展的配置，从不下载或加载扩展包。
 3. **运行时**（`lua/edgeweir/ext.lua`）：每个 worker 在 `init_worker` 中把扩展包载入各自的环境（标准库副本、`os.time/clock/date`、只允许扩展包自己的 `lua/` 模块与 `cjson.safe`、`resty.sha256`、`resty.string`、`resty.random`、`resty.lrucache`、`ngx.re`；没有 `ngx`、`io`、`debug`、`ffi`、`jit`、`package`、字节码），扩展首次使用时运行 `init`。钩子：`access`（主机查找、封禁与保留路径之后，访问控制、规则与挑战之前；`ew.allow()` 让本请求跳过 Under Attack 与 CC 挑战）、`access_late`（规则与挑战之后，CRS、缓存与回源之前）、`header_filter`、`body_filter`（`body_rewrite`）、`log`（访问日志写入之前），以及 `/.edgeweir/ext/<id>/` 下的静态资源与端点（与其他保留路径一样受封禁与 CC 约束，不经过访问控制、规则与挑战）。裁决 `deny` 走节点错误页（`X-Edgeweir-Error: extension-denied`，拦截原因 `extension`，规则 id `ext:<id>`），`challenge` 用核心挑战（有该级别通行凭证则继续），`respond` 直接应答。
@@ -1081,10 +1083,10 @@ proto v1.9.0，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `Node
 
 | 包 | 内容 | 依赖 |
 | --- | --- | --- |
-| `edgeweir-openresty` 1.31.1.1-3 | `/usr/lib/edgeweir-openresty`（nginx、LuaJIT、lualib、`bin/openresty`、`bin/resty`），`/usr/share/doc/edgeweir-openresty` | glibc ≥ 2.34、libgcc |
-| `edgeweir-openresty-modsecurity` 1.31.1.1-3 | `modules/ngx_http_modsecurity_module.so`、私有的 `lib/libmodsecurity.so.3`（不在动态链接器的搜索路径里）、`/usr/share/edgeweir-openresty`（CRS、`unicode.mapping`） | 同版本的 edgeweir-openresty、libstdc++ |
+| `edgeweir-openresty` 1.31.1.1-4 | `/usr/lib/edgeweir-openresty`（nginx、LuaJIT、lualib、`bin/openresty`、`bin/resty`），`/usr/share/doc/edgeweir-openresty` | glibc ≥ 2.34、libgcc |
+| `edgeweir-openresty-modsecurity` 1.31.1.1-4 | `modules/ngx_http_modsecurity_module.so`、私有的 `lib/libmodsecurity.so.3`（不在动态链接器的搜索路径里）、`/usr/share/edgeweir-openresty`（CRS、`unicode.mapping`） | 同版本的 edgeweir-openresty、libstdc++ |
 
-文件名按 nfpm 惯例：`edgeweir-openresty_1.31.1.1-3_amd64.deb`、`edgeweir-openresty-1.31.1.1-3.x86_64.rpm`（arm64 为 `arm64` / `aarch64`），`-modsecurity` 同理；另有每个架构的 SPDX SBOM `edgeweir-openresty_1.31.1.1-3_<架构>.sbom.json`。`make openresty-packages ARCH=amd64|arm64` 构建到 `out/openresty/`，goreleaser 把它们复制进 `dist/`、计入 `checksums.txt` 并随发布上传；发布工作流在对应架构的机器上构建。两个包安装到独立目录，不与发行版或 OpenResty 官方的包冲突。
+文件名按 nfpm 惯例：`edgeweir-openresty_1.31.1.1-4_amd64.deb`、`edgeweir-openresty-1.31.1.1-4.x86_64.rpm`（arm64 为 `arm64` / `aarch64`），`-modsecurity` 同理；另有每个架构的 SPDX SBOM `edgeweir-openresty_1.31.1.1-4_<架构>.sbom.json`。`make openresty-packages ARCH=amd64|arm64` 构建到 `out/openresty/`，goreleaser 把它们复制进 `dist/`、计入 `checksums.txt` 并随发布上传；发布工作流在对应架构的机器上构建。两个包安装到独立目录，不与发行版或 OpenResty 官方的包冲突。
 
 - **构建环境**：固定 digest 的 `almalinux:9.7`，工具链（gcc 11.5、binutils 2.35.2）只从已冻结的 AlmaLinux 9.7 vault 安装。glibc 2.34 是最低要求：产物可在 RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新的发行版上运行；构建检查二进制需要的 glibc 版本不超过 2.34、libmodsecurity 需要的 libstdc++ 不超过 GLIBCXX_3.4.29。
 - **源码与校验**（`sources.lock`）：每个源码包先校验固定的 SHA-256；上游发布了签名的，再用 `keys/` 里固定的公钥以 `gpgv` 校验，并要求签名密钥属于固定的主密钥指纹。

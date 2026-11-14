@@ -1,0 +1,96 @@
+--- a/src/http/ngx_http_request.h
++++ b/src/http/ngx_http_request.h
+@@ -554,6 +554,7 @@
+     unsigned                          request_complete:1;
+     unsigned                          request_output:1;
+     unsigned                          header_sent:1;
++    unsigned                          early_hints_sent:1;
+     unsigned                          response_sent:1;
+     unsigned                          expect_tested:1;
+     unsigned                          root_tested:1;
+--- a/src/http/ngx_http_core_module.c
++++ b/src/http/ngx_http_core_module.c
+@@ -1928,6 +1928,83 @@
+                    "http send early hints \"%V?%V\"", &r->uri, &r->args);
+ 
+     return ngx_http_top_early_hints_filter(r);
++}
++
++
++/* Private FFI entry: 0 sent, 1 protocol, 2 sent already, 3 subrequest,
++ * 4 internal, 5 unsupported.  Values have been validated by the caller. */
++int
++ngx_http_ffi_send_early_hints(ngx_http_request_t *r, ngx_str_t *links,
++    size_t count)
++{
++    size_t            i;
++    ngx_int_t         rc;
++    ngx_list_t        saved;
++    ngx_table_elt_t  *h;
++
++    if (r == NULL || r->connection->fd == (ngx_socket_t) -1) {
++        return 5;
++    }
++
++    if (r != r->main) {
++        return 3;
++    }
++
++    if (r->internal || r->post_action || r->background) {
++        return 4;
++    }
++
++    if (r->http_version != NGX_HTTP_VERSION_20
++        && r->http_version != NGX_HTTP_VERSION_30)
++    {
++        return 1;
++    }
++
++    if (r->early_hints_sent) {
++        return 2;
++    }
++
++    if (r->header_sent || r->connection->error || count == 0 || count > 32) {
++        return 5;
++    }
++
++    saved = r->headers_out.headers;
++
++    if (ngx_list_init(&r->headers_out.headers, r->pool, count,
++                      sizeof(ngx_table_elt_t)) != NGX_OK)
++    {
++        r->headers_out.headers = saved;
++        return 5;
++    }
++
++    for (i = 0; i < count; i++) {
++        h = ngx_list_push(&r->headers_out.headers);
++        if (h == NULL) {
++            r->headers_out.headers = saved;
++            return 5;
++        }
++
++        ngx_memzero(h, sizeof(ngx_table_elt_t));
++        h->value.data = ngx_pnalloc(r->pool, links[i].len);
++        if (h->value.data == NULL) {
++            r->headers_out.headers = saved;
++            return 5;
++        }
++
++        ngx_memcpy(h->value.data, links[i].data, links[i].len);
++        h->value.len = links[i].len;
++        h->hash = 1;
++        ngx_str_set(&h->key, "Link");
++        h->lowcase_key = (u_char *) "link";
++    }
++
++    /* Bypass the origin-passthrough predicate, not the protocol filters.
++     * Keep the bit even on failure: a frame may already have been queued. */
++    r->early_hints_sent = 1;
++    rc = ngx_http_top_early_hints_filter(r);
++    r->headers_out.headers = saved;
++
++    return rc == NGX_ERROR ? 5 : 0;
+ }
+ 
+ 

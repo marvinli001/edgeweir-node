@@ -26,6 +26,8 @@ const FeatureExtensionsV2 = "extensions-v2"
 // FeatureExtensionsNode covers signed node hooks and independent HTTP listeners.
 const FeatureExtensionsNode = "extensions-node-v1"
 
+const FeatureExtensionsEarlyHints = "extensions-early-hints-v1"
+
 // Extension is an installed extension's active package and the operator's
 // settings. The agent fills in Dir, State and Message once it has the
 // package (internal/agent/extensions.go).

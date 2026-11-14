@@ -241,6 +241,9 @@ func serveTestOrigin(addr string) {
 		h := w.Header()
 		h.Set("X-Origin", port)
 		h.Set("X-Request-Id", "origin-"+port)
+		if serveInformationalOrigin(w, r) {
+			return
+		}
 		if serveContent(w, r, port) {
 			return
 		}
@@ -831,6 +834,7 @@ func main() {
 	imageHelpers(mux, c)
 	markdownHelpers(mux, c)
 	extensionHelpers(mux, c, *origin)
+	informationalHelpers(mux, c)
 	g10Handlers(mux, c, *origin)
 	g11Handlers(mux, c, *origin, clientCA)
 	g12Handlers(mux, c, *origin)

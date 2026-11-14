@@ -134,6 +134,9 @@ function M.access(ew)
 end
 return M
 ]] })
+local HINTS = package("t-informational", { requires = { lua_api = 2 }, hooks = { "access" } }, {
+  ["lua/main.lua"] = "return { access = function() end }",
+})
 local SIDE = package("t-side", { requires = { lua_api = 2 }, hooks = { "access", "access_late" }, capabilities = { "sidecar" },
   secret = true }, { ["lua/main.lua"] = [[
 local M = {}
@@ -210,7 +213,7 @@ settings.node_secrets = { [NODE.id] = 1 }
 
 ext.init({
   { id = "hello-header", dir = example_dir, sha256 = string.rep("b", 64) },
-  VERDICTS, NOCAP, PROBE, BROKEN, API2, SIDE, FUTURE, NODE, NODE_NOCAP,
+  VERDICTS, NOCAP, PROBE, BROKEN, API2, HINTS, SIDE, FUTURE, NODE, NODE_NOCAP,
 })
 ext.init_worker()
 
@@ -252,6 +255,32 @@ test("the example loads and its init runs on first use", function()
   ext.log(s)
   eq(e.inited, true, "inited")
   eq(ngx.shared["ewx_68656c6c6f2d686561646572_state"]:get("started") ~= nil, true, "init set started")
+end)
+
+test("early_hints requires its capability, API 2 and an access hook", function()
+  enable(HINTS.id)
+  access(site({ { id = HINTS.id, config = {} } }))
+  local e = ext.EXT[HINTS.id]
+  reset_ctx()
+  ngx.ctx.edgeweir_ext = { [HINTS.id] = { hook = "access" } }
+  local ok, err = pcall(e.api.early_hints, { "</a>" })
+  eq(ok, false); eq(err:find("capability early_hints not declared", 1, true) ~= nil, true)
+  e.caps.early_hints = true
+  for _, hook in ipairs({ "init", "header_filter", "body_filter", "log", "endpoint", "timer", "listen" }) do
+    ngx.ctx.edgeweir_ext[HINTS.id].hook = hook
+    ok, err = pcall(e.api.early_hints, { "</a>" })
+    eq(ok, false); eq(err:find("not allowed in hook", 1, true) ~= nil, true)
+  end
+  local saved = _G.package.loaded["edgeweir.earlyhints"]
+  _G.package.loaded["edgeweir.earlyhints"] = { send = function() return false, "unsupported" end }
+  for _, hook in ipairs({ "access", "access_late" }) do
+    ngx.ctx.edgeweir_ext[HINTS.id].hook = hook
+    local sent, reason = e.api.early_hints({ "</a>" })
+    eq(sent, false); eq(reason, "unsupported")
+  end
+  _G.package.loaded["edgeweir.earlyhints"] = saved
+  e.caps.early_hints = nil
+  eq(ext.EXT["hello-header"].api.early_hints, nil, "API 1 unchanged")
 end)
 
 test("a broken package reports its load error", function()

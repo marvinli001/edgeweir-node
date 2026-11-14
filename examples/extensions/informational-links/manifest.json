@@ -1,0 +1,20 @@
+{
+  "format": "edgeweir-node-extension-v1",
+  "id": "informational-links",
+  "version": "1.0.0",
+  "publisher": "example.org",
+  "name": { "en": "Informational links", "zh-CN": "信息响应链接" },
+  "license": "Apache-2.0",
+  "requires": { "lua_api": 2, "node": ">=1.9.0" },
+  "hooks": ["access", "access_late", "header_filter"],
+  "capabilities": ["early_hints", "response_headers", "verdicts"],
+  "config": {
+    "site": {
+      "type": "object",
+      "properties": {
+        "phase": { "type": "string", "enum": ["access", "access_late", "both"], "default": "access_late" },
+        "deny": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

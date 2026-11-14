@@ -126,7 +126,8 @@ lua-test: ## Run Lua unit tests with resty inside the OpenResty image
 			--shdict "edgeweir_auth 1m" --shdict "edgeweir_purge_rate 1m" --shdict "edgeweir_rate_6c6f67 256k" /t/accesslogs.lua && \
 		resty -I /lua --shdict "edgeweir_l4 1m" --shdict "edgeweir_l4_state 1m" --shdict "edgeweir_l4_stats 1m" /t/l4.lua && \
 		resty -I /lua --shdict "edgeweir_meta 1m" \
-			--shdict "ewx_68656c6c6f2d686561646572_state 64k" /t/ext.lua /examples/extensions/hello-header'
+			--shdict "ewx_68656c6c6f2d686561646572_state 64k" /t/ext.lua /examples/extensions/hello-header && \
+		resty -I /lua /t/earlyhints.lua'
 
 .PHONY: docker
 docker: ## Build the node container image (bundles IPinfo Lite when IPINFO_TOKEN is set)
@@ -149,7 +150,10 @@ openresty-package-sbom: ## Finish packages and SBOM after a native Bake build
 		-o spdx-json=$(OPENRESTY_OUT)/edgeweir-openresty_$(OPENRESTY_VERSION)-$(OPENRESTY_RELEASE)_$(ARCH).sbom.json
 	cd $(OPENRESTY_OUT) && ls -1 *_$(ARCH).* *.$(if $(filter arm64,$(ARCH)),aarch64,x86_64).rpm
 
-.PHONY: e2e
+.PHONY: e2e e2e-early-hints
+e2e-early-hints: ## Verify extension informational responses over HTTP/1.1, HTTP/2 and HTTP/3
+	bash test/e2e/early-hints.sh
+
 e2e: ## Run the container smoke test (fake console + node + origin)
 	./test/e2e/run.sh
 

@@ -2063,6 +2063,8 @@ wait_for "signed packages recovered through normal download" applied_is "$rev AP
 [ "$(ext_http -o /dev/null -w '%{http_code}' http://node:19145/)" = 200 ] || fail "node listener did not recover"
 pass "LKG extensions: verified cache restores bindings; missing archives preserve closed site refs, reject node bindings, and online failures keep the old revision"
 
+EARLY_HINTS_REUSE=1 bash ./early-hints.sh
+
 reloads_before=$(compose logs node | grep -c "nginx configuration installed and reloaded" || true)
 rev=$(curl -fsS -X POST "$HELPER/publish")
 wait_for "revision $rev applied" applied_is "$rev APPLY_STATE_APPLIED"

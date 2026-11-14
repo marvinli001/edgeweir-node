@@ -19,6 +19,9 @@ import (
 // (configir.Options.ExtraFeatures) and ReportStatus announces them.
 func (a *Agent) extraFeatures() []string {
 	out := append(slices.Clone(a.geoFeatures), a.moduleFeatures...)
+	if a.cfg.Extensions.Disabled {
+		out = slices.DeleteFunc(out, func(feature string) bool { return feature == configir.FeatureExtensionsEarlyHints })
+	}
 	if a.cfg.Image.Workers > 0 {
 		out = append(out, configir.FeatureImageConvert)
 	}
@@ -52,6 +55,13 @@ func (a *Agent) detectModules(ctx context.Context) {
 		features = append(features, configir.FeatureOriginProxyProtocol)
 	} else {
 		a.log.Warn("OpenResty cannot send PROXY protocol to HTTP origins (edgeweir-openresty 1.31.1.1-3 or later can)", "err", err)
+	}
+	if !a.cfg.Extensions.Disabled {
+		if err := a.probeEarlyHints(ctx); err == nil {
+			features = append(features, configir.FeatureExtensionsEarlyHints)
+		} else {
+			a.log.Warn("OpenResty cannot send extension informational responses", "err", err)
+		}
 	}
 	slices.Sort(features)
 	a.moduleFeatures = slices.Compact(features)
@@ -110,6 +120,20 @@ func (a *Agent) probeUpstreamProxyProtocol(ctx context.Context) error {
 		return err
 	}
 	path := filepath.Join(p.Prefix, "conf", "proxy-protocol-probe.nginx.conf")
+	defer func() { _ = os.Remove(path) }()
+	if err := fsutil.WriteFileAtomic(path, conf, 0o644); err != nil {
+		return err
+	}
+	return a.engine.Test(ctx, path)
+}
+
+func (a *Agent) probeEarlyHints(ctx context.Context) error {
+	p := a.cfg.Render.WithDefaults()
+	conf, err := render.EarlyHintsProbe(p)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(p.Prefix, "conf", "early-hints-probe.nginx.conf")
 	defer func() { _ = os.Remove(path) }()
 	if err := fsutil.WriteFileAtomic(path, conf, 0o644); err != nil {
 		return err

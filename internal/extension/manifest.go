@@ -57,7 +57,7 @@ var reservedIDs = []string{"edgeweir", "core", "challenge", "session", "health",
 // Hooks and capabilities (sidecar: Lua API 2).
 var (
 	Hooks        = []string{"init", "access", "access_late", "header_filter", "body_filter", "log", "endpoint", "listen"}
-	Capabilities = []string{"verdicts", "request_headers", "request_body", "response_headers", "html_inject", "body_rewrite", "http_client", "timers", "sidecar"}
+	Capabilities = []string{"verdicts", "request_headers", "request_body", "response_headers", "html_inject", "body_rewrite", "http_client", "timers", "sidecar", "early_hints"}
 	methods      = []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
 	fieldTypes   = []string{"string", "number", "boolean"}
 )
@@ -220,6 +220,8 @@ func (m *Manifest) validate() error {
 		return errors.New("secret, sidecar and data need lua_api 2")
 	case (m.Sidecar != nil) != m.Has("sidecar"):
 		return errors.New("sidecar and the sidecar capability go together")
+	case m.Requires.LuaAPI < 2 && m.Has("early_hints"):
+		return errors.New("early_hints needs lua_api 2")
 	case m.Data != nil && m.Sidecar == nil:
 		return errors.New("data needs a sidecar")
 	}
