@@ -109,7 +109,7 @@ test("built-in pages: status, title and request id in Chinese or English", funct
   eq(challenge.language(nil), "en")
 end)
 
-test("built-in pages: the failing hop, what to do and a retry button where it helps", function()
+test("built-in pages: the failing hop and a retry button where it helps", function()
   local values = { status = "503", request_id = "req-1", client_ip = "203.0.113.9", host = "<shop>.test",
     display_time = "2026-10-03 03:41:28 UTC", time = "2026-10-03T03:41:28Z", path = "/<a>&b" }
   for _, case in ipairs({
@@ -204,7 +204,7 @@ test("built-in pages of requests nginx refuses: the request fails at the visitor
   -- The same trace, told apart by words.
   local uri, header = errorpages.builtin("en", 414), errorpages.builtin("en", 494)
   assert(errorpages.render(uri, values):find("<h1>URL too long</h1>", 1, true))
-  assert(errorpages.render(header, values):find("Clear this site's cookies", 1, true))
+  assert(errorpages.render(header, values):find("<h1>Request header too large</h1>", 1, true))
   -- The edge node's own failure (500) keeps the visitor healthy.
   local page = errorpages.render(errorpages.builtin("en", 500), values)
   assert(page:find(hop("", "Visitor", "Working")) and page:find(hop("x", "Edge", "Error")), "500 at the edge node")
@@ -223,6 +223,10 @@ test("built-in pages: the console's card, small and still", function()
       eq(select(2, page:gsub("<li", "")), 3, name .. ": three hops")
       assert(page:find("@media (prefers-color-scheme:dark)", 1, true) and page:find("@media (prefers-reduced-motion:reduce)", 1, true),
         name .. ": dark and reduced motion")
+      assert(page:find('<div class="error-heading"><div class="st">', 1, true), name .. ": grouped heading")
+      assert(page:find('.error-heading{text-align:center}', 1, true), name .. ": centered title")
+      assert(page:find('.error-heading .st{flex-direction:row;align-items:center;justify-content:center}', 1, true), name .. ": centered status")
+      assert(not page:find('class="todo"', 1, true) and not page:find('.todo', 1, true), name .. ": no description")
       assert(not page:find("infinite", 1, true), name .. ": nothing loops")
       assert(not page:find("@font-face", 1, true) and not page:find("url(", 1, true), name .. ": no web font, no external resource")
       for weight in page:gmatch("font%-weight:(%d+)") do

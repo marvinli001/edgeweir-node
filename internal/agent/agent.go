@@ -294,6 +294,7 @@ type Agent struct {
 	geo           *geoip.Databases
 	locateAddress string
 	located       *nodev1.NodeLocation
+	publicIPv4    string // AWS metadata, guarded by mu; not a connection's shared egress
 	// moduleFeatures are the optional OpenResty modules this node can use
 	// (brotli-v1, zstd-v1, modsecurity-v1), detected at startup.
 	moduleFeatures []string
@@ -601,6 +602,7 @@ func (a *Agent) run(parent context.Context) error {
 	spawn("captchas", a.captchaLoop)
 	spawn("tierlatency", a.tierLatencyLoop)
 	spawn("extensions", a.extensionLoop)
+	spawn("public-address", a.publicAddressLoop)
 
 	if err := a.ids.WaitForEnrollment(ctx, a.cfg.EnrollPollInterval, a.log); err != nil {
 		return nil // shutting down

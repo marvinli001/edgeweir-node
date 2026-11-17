@@ -27,7 +27,7 @@
 -- external URL, no web font, light and dark), in Chinese or English by
 -- Accept-Language, and show the status, which hop failed (the visitor for
 -- requests nginx refuses, the edge node or the origin), a short title,
--- what to do, the request id, the host, the client address and the time.
+-- the request id, the host, the client address and the time.
 --
 -- Every page: Content-Type text/html; charset=utf-8, Cache-Control:
 -- no-store, the exact Content-Length and X-Edgeweir-Error: <code>. The edge
@@ -208,7 +208,7 @@ end
 --
 -- A built-in page is a card on a gray canvas under Edgeweir's tile, like
 -- the console's status pages: the status with a pill naming what failed,
--- the title, what to do, then the hop trace of the request from the
+-- the title, then the hop trace of the request from the
 -- visitor through the edge node to the origin. The hops before the one
 -- that failed are healthy, the failing one is red (a rate limit holds the
 -- request there in orange) and the ones after it were not reached. A
@@ -244,7 +244,7 @@ local LANG = { zh = "zh-CN", en = "en" }
 local REQUEST_ID = { zh = "请求 ID", en = "Request ID" }
 
 -- TEXT: the hops, their states and the page's other words; stamp is the
--- failing hop's state (also the status pill), todo what the visitor can do.
+-- failing hop's state (also the status pill).
 local TEXT = {
   zh = {
     hops = { "访客", "边缘节点", "源站" }, ok = "正常", unreached = "未到达",
@@ -253,25 +253,6 @@ local TEXT = {
       [400] = "格式错误", [403] = "拦截", [404] = "未接入", [413] = "过大", [414] = "过长", [429] = "限速",
       [494] = "过大", [497] = "未加密", [500] = "出错", [502] = "无法连接", [503] = "暂不可用", [504] = "超时",
       ["site-disabled"] = "已停用", other = "出错", [405] = "不支持", maintenance = "维护中", [401] = "未认证",
-    },
-    todo = {
-      [400] = "边缘节点无法解析这个请求，请检查网址后重试。",
-      [403] = "如果你认为这是误拦，请把请求 ID 发给网站管理员。",
-      [404] = "这台边缘节点没有为此域名配置网站，请检查网址。",
-      [413] = "上传的内容超过了边缘节点允许的大小，请减小后重试。",
-      [414] = "网址超过了边缘节点允许的长度，请检查链接。",
-      [429] = "请稍等片刻再试。",
-      [494] = "请清除此网站的 Cookie 后重试。",
-      [497] = "此端口只接受 HTTPS，请在网址中使用 https。",
-      [500] = "请稍后重试；问题持续时，请把请求 ID 发给网站管理员。",
-      [502] = "源站可能暂时离线，请稍后重试。",
-      [503] = "请稍后重试。",
-      [504] = "源站没有及时响应，请稍后重试。",
-      ["site-disabled"] = "网站管理员已停用此站点。",
-      [405] = "这个网址不接受这种请求方法。",
-      maintenance = "网站正在维护，请稍后再来。",
-      [401] = "这个网址需要登录，请输入用户名和密码后重试。",
-      other = "请稍后重试。",
     },
   },
   en = {
@@ -282,25 +263,6 @@ local TEXT = {
       [429] = "Rate limited", [494] = "Too large", [497] = "Not encrypted", [500] = "Error", [502] = "Unreachable",
       [503] = "Unavailable", [504] = "Timed out", ["site-disabled"] = "Disabled", other = "Error",
       [405] = "Not allowed", maintenance = "Maintenance", [401] = "Not signed in",
-    },
-    todo = {
-      [400] = "The edge couldn't read this request. Check the URL and try again.",
-      [403] = "If you think this is a mistake, send the request ID to the site's owner.",
-      [404] = "This edge serves no site at this address. Check the URL.",
-      [413] = "The upload is larger than the edge accepts. Make it smaller, then try again.",
-      [414] = "The address is longer than the edge accepts. Check the link.",
-      [429] = "Wait a moment, then try again.",
-      [494] = "Clear this site's cookies, then try again.",
-      [497] = "This port only accepts HTTPS. Use https in the address.",
-      [500] = "Try again shortly. If it keeps happening, send the request ID to the site's owner.",
-      [502] = "The origin may be offline for a moment. Try again shortly.",
-      [503] = "Try again shortly.",
-      [504] = "The origin didn't answer in time. Try again shortly.",
-      ["site-disabled"] = "The site's owner has turned this site off.",
-      [405] = "This address does not accept this request method.",
-      maintenance = "The site is under maintenance. Please come back later.",
-      [401] = "This address needs a sign-in. Enter your user name and password, then try again.",
-      other = "Try again shortly.",
     },
   },
 }
@@ -331,7 +293,7 @@ _M.STYLE = [=[:root{color-scheme:light dark;--bg:#f3f4f7;--panel:#fff;--faint:#f
   .. [=[.cd{--x:var(--err);--xi:var(--err-ink);--xl:var(--line);width:100%;max-width:560px;padding:40px;border:1px solid var(--bo);border-radius:12px;background:var(--panel);box-shadow:var(--shadow);animation:in .2s cubic-bezier(.2,0,0,1) both}.w .cd{--x:var(--warn);--xi:var(--warn-ink);--xl:var(--warn)}]=]
   .. [=[.st{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}.code{font-size:40px;line-height:48px;font-weight:500;font-variant-numeric:tabular-nums}]=]
   .. [=[.pl{padding:2px 8px;border-radius:4px;font-size:12px;line-height:20px;color:var(--xi);background:color-mix(in srgb,var(--x) 8%,transparent)}]=]
-  .. [=[h1{margin:16px 0 0;font-size:20px;line-height:28px;font-weight:500}.todo,.hint{margin-top:8px;color:var(--mu);max-width:34em}]=]
+  .. [=[h1{margin:16px 0 0;font-size:20px;line-height:28px;font-weight:500}.error-heading{text-align:center}.error-heading .st{flex-direction:row;align-items:center;justify-content:center}.hint{margin-top:8px;color:var(--mu);max-width:34em}]=]
   .. [=[.hops{list-style:none;margin:28px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));text-align:center}.hops li{position:relative;display:flex;flex-direction:column;align-items:center;padding:0 4px}]=]
   .. [=[.hops li+li:before{content:"";position:absolute;top:15px;left:calc(22px - 50%);right:calc(50% + 22px);border-top:2px solid var(--brand)}.hops .x:before{border-top-style:dashed;border-color:var(--xl)}.hops .n:before{border-top-style:dashed;border-color:var(--line)}]=]
   .. [=[.hops i{position:relative;display:grid;place-items:center;width:32px;height:32px;margin-bottom:8px;border-radius:50%;color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,transparent)}]=]
@@ -401,7 +363,7 @@ function _M.builtin(lang, kind)
   local text = TEXT[lang]
   local f = FAILS[kind] or FAILS.other
   local title = TITLES[lang][key] or (lang == "zh" and "错误" or "Error")
-  local stamp, todo = text.stamp[key] or text.stamp.other, text.todo[key] or text.todo.other
+  local stamp = text.stamp[key] or text.stamp.other
   local hops = {}
   for i = 0, 2 do
     if i < f[1] then
@@ -417,8 +379,8 @@ function _M.builtin(lang, kind)
     '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">',
     "<title>{{status}} ", title, "</title><style>", _M.STYLE, f.retry and (_M.BUTTON .. ".ac{margin-top:24px}") or "",
     "</style></head><body", f.held and ' class="w"' or "", "><main>", _M.BRAND,
-    '<div class="cd"><div class="st"><p class="code">{{status}}</p><span class="pl">', stamp, "</span></div>",
-    "<h1>", title, '</h1><p class="todo">', todo, "</p>", _M.hops(lang, hops),
+    '<div class="cd"><div class="error-heading"><div class="st"><p class="code">{{status}}</p><span class="pl">', stamp, "</span></div>",
+    "<h1>", title, "</h1></div>", _M.hops(lang, hops),
     "<dl><div><dt>", REQUEST_ID[lang], '</dt><dd class="rid">{{request_id}}</dd></div>',
     "<div><dt>", text.host, "</dt><dd>{{host}}</dd></div>",
     "<div><dt>", text.ip, "</dt><dd><details><summary>", text.show, "</summary>{{client_ip}}</details></dd></div>",

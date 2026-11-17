@@ -189,6 +189,7 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 		req.AppliedAt = timestamppb.New(a.appliedAt)
 	}
 	req.CertificateFailures = a.certUse.report()
+	publicIPv4 := a.publicIPv4
 	if a.clock != nil {
 		offset := a.clock.offset.Milliseconds()
 		req.ClockOffsetMillis = &offset
@@ -196,6 +197,11 @@ func (a *Agent) statusRequest() *nodev1.ReportStatusRequest {
 	a.mu.Unlock()
 	req.RevisionReceipt = a.receiptFor(req.AppliedRevision, req.AppliedContentHash)
 	req.Info = hostinfo.Collect(a.engineVersion)
+	if publicIPv4 != "" {
+		req.Info.IpAddresses = append(req.Info.IpAddresses, publicIPv4)
+		slices.Sort(req.Info.IpAddresses)
+		req.Info.IpAddresses = slices.Compact(req.Info.IpAddresses)
+	}
 	req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, a.extraFeatures()...)
 	if a.cfg.Metrics.Enabled() {
 		req.Info.SupportedFeatures = append(req.Info.SupportedFeatures, configir.FeatureMetrics)

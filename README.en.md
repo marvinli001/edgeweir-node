@@ -192,6 +192,10 @@ Platform bans dropped by nftables require `nftables` and `CAP_NET_ADMIN`. Neithe
 
 - Docker: build the image with `docker build --build-arg NFT_CAPABILITY=true` and start the container with `--cap-add NET_ADMIN`.
 
+### Public IPv4
+
+AWS EC2 and Lightsail public IPv4 may not appear on a local interface. On detected AWS hosts, the node discovers its own NAT public IPv4 through local IMDSv2 in the background every five minutes and includes it in heartbeats. Requests bypass proxies and redirects; no external IP echo service or AWS API key is used. Transient failures do not block heartbeats and retain the last result for at most fifteen minutes; an explicit missing mapping clears it. With metadata disabled, inaccessible from a container, or the host unrecognized, interface reporting continues and the operator can configure scheduling addresses explicitly. Use the node's inbound address, not a shared egress address. For offline map data, see [Node public IPs and the map](https://github.com/marvinli001/edgeweir/blob/master/docs/deploy/networking.en.md#node-public-ips-and-the-map).
+
 ### GeoIP
 
 | Database | Source | Flag |

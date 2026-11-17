@@ -192,6 +192,10 @@ sudo systemctl enable --now edgeweir-probe
 
 - Docker：以 `docker build --build-arg NFT_CAPABILITY=true` 构建镜像，以 `--cap-add NET_ADMIN` 启动容器。
 
+### 公网 IPv4
+
+AWS EC2／Lightsail 的公网 IPv4 可能不在本机网卡上。节点识别 AWS 主机后，通过本机 IMDSv2 在后台发现自己的 NAT 公网 IPv4，每五分钟刷新并随心跳上报；禁用代理和重定向，不调用外部查 IP 服务，也不需要 AWS API 密钥。临时查询失败不阻塞心跳，旧值最多保留十五分钟；明确没有映射时清除。元数据被关闭、容器无法访问 IMDSv2 或主机类型未识别时，仍上报网卡地址，可在控制台显式配置调度地址。该地址必须是节点自己的入站地址，不能使用共享出口。节点地图的离线位置数据见 [公网 IP 与地图](https://github.com/marvinli001/edgeweir/blob/master/docs/deploy/networking.md#节点公网-ip-与地图)。
+
 ### GeoIP
 
 | 数据库 | 来源 | 参数 |
