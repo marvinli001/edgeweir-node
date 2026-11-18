@@ -6,6 +6,7 @@ compose() { docker compose -f compose.yml "$@"; }
 helper="http://127.0.0.1:${E2E_HELPER_PORT:-28090}"
 port="${E2E_TLS_PORT:-28443}"
 tmp=$(mktemp -d)
+http3_client=(curl)
 cleanup() {
   result=$?
   if [ "$result" -ne 0 ]; then compose logs --tail=100 node console; fi
@@ -35,14 +36,24 @@ if [ "${EARLY_HINTS_REUSE:-0}" != 1 ]; then
     --token "$(curl -fsS "$helper/token")" --ca-sha256 "$(curl -fsS "$helper/pin")"
 fi
 
+if ! curl --version | grep -w HTTP3 >/dev/null; then
+  http3_image=$(docker build --quiet http3)
+  http3_client=(docker run --rm --network host --user "$(id -u):$(id -g)"
+    --mount "type=bind,src=$tmp,dst=$tmp" "$http3_image")
+fi
+
 fetch() { # protocol, path, status, hint count, [HEAD]
   local protocol=$1 path=$2 status=$3 hints=$4
+  local client=(curl)
   local flags=(--http1.1)
   if [ "$protocol" = 2 ]; then flags=(--http2); fi
-  if [ "$protocol" = 3 ]; then flags=(--http3-only); fi
+  if [ "$protocol" = 3 ]; then
+    flags=(--http3-only)
+    client=("${http3_client[@]}")
+  fi
   if [ "${5:-}" = HEAD ]; then flags+=(--head); fi
   : > "$tmp/body"
-  curl -ksS --noproxy '*' --max-time 10 "${flags[@]}" \
+  "${client[@]}" -ksS --noproxy '*' --max-time 10 "${flags[@]}" \
     --resolve "hints.test:$port:127.0.0.1" -D "$tmp/headers" -o "$tmp/body" \
     -w '%{time_starttransfer} %{time_total}' "https://hints.test:$port$path" > "$tmp/timing"
   python3 - "$tmp/headers" "$protocol" "$status" "$hints" "$path" "$tmp/timing" "${5:-GET}" <<'PY'
