@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/marvinli001/edgeweir-node/internal/apisecurity"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
@@ -339,13 +340,15 @@ func validErrorRedirect(u string) bool {
 // content holds a site's validated proto v0.24.0 settings until the site
 // is built.
 type content struct {
-	tries       uint32
-	statusRetry bool
-	purge       *PurgeRef
-	maintenance *Maintenance
-	charset     *Charset
-	bodyLimit   uint64
-	hideXCache  bool
+	apiSecurity        *apisecurity.Settings
+	apiSecurityVersion string
+	tries              uint32
+	statusRetry        bool
+	purge              *PurgeRef
+	maintenance        *Maintenance
+	charset            *Charset
+	bodyLimit          uint64
+	hideXCache         bool
 }
 
 // buildContent validates the proto v0.24.0 settings of a site (disabled
@@ -353,6 +356,9 @@ type content struct {
 func buildContent(s *nodev1.Site) (content, error) {
 	var c content
 	var err error
+	if c.apiSecurity, c.apiSecurityVersion, err = buildAPISecurity(s.GetApiSecurityJson()); err != nil {
+		return c, err
+	}
 	if c.tries, c.statusRetry, err = buildRetries(s.GetOriginPool()); err != nil {
 		return c, err
 	}
@@ -377,6 +383,7 @@ func buildContent(s *nodev1.Site) (content, error) {
 
 // apply copies the settings onto the site.
 func (c content) apply(site *Site) {
+	site.APISecurity, site.APISecurityVersion = c.apiSecurity, c.apiSecurityVersion
 	site.Tries, site.NoStatusRetry = c.tries, !c.statusRetry
 	site.Purge, site.PurgeKey = c.purge != nil, c.purge
 	site.Maintenance, site.Charset = c.maintenance, c.charset

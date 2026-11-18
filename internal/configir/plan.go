@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marvinli001/edgeweir-node/internal/apisecurity"
+
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 )
 
@@ -292,7 +294,9 @@ type Site struct {
 	PurgeKey *PurgeRef `json:"-"`
 	// AuthRules is the site's access authentication in order (feature
 	// access-auth-v1, ADR-0038).
-	AuthRules []AuthRule `json:"auth_rules,omitempty"`
+	AuthRules          []AuthRule            `json:"auth_rules,omitempty"`
+	APISecurity        *apisecurity.Settings `json:"api_security,omitempty"`
+	APISecurityVersion string                `json:"api_security_version,omitempty"`
 	// AuthIdentityHeaders are the request headers removed from every
 	// request of the site (feature auth-identity-headers-v1); edgeweir.auth
 	// adds those of AuthRules.
@@ -413,7 +417,7 @@ type HTTPChallenge struct {
 
 // SupportedFeatures are the features of this agent version, announced in
 // NodeInfo.supported_features (the node's files add Options.ExtraFeatures).
-var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureDevelopmentMode, FeatureChallengeV3, FeatureAICrawlers, FeatureTieredCache}
+var SupportedFeatures = []string{"tls-v1", "http01-v1", "http3-v1", "rules-v1", "stats-sequence-v1", "stats-watermark-v1", "access-logs-v1", "bans-v1", "challenge-v1", "ja4-v1", FeatureErrorPages, FeatureSessionAffinity, FeatureActiveHealth, FeaturePurgeTag, FeaturePrefetch, FeatureRulesV2, FeatureProbeHealth, FeatureL4, FeatureRuleLog, FeatureTLSPendingDomains, FeatureOriginHTTP2, FeatureRulesV3, FeatureEdgePorts, FeatureClientIP, FeatureL4V2, FeatureSiteContent, FeatureCacheZone, FeatureDomainsV2, FeatureUnknownHost, FeatureMultiCertificate, FeatureClientCert, FeatureCertificateIsolation, FeatureAccessAuth, FeatureAuthIdentityHeaders, FeatureEncodedPaths, FeatureAccessControl, FeatureWAFV2, FeatureRulesBody, FeatureChallengeV2, FeatureAccessLogsV2, FeatureStatsDims, FeatureOriginMTLS, FeatureOriginCA, FeatureOriginStats, FeatureOriginCARotation, FeatureActiveHealthGRPC, FeatureConnLimit, FeatureGreylist, FeatureDevelopmentMode, FeatureChallengeV3, FeatureAICrawlers, FeatureTieredCache, FeatureAPISecurity}
 
 // FeatureActiveHealthGRPC (proto v1.6.0): ActiveHealthCheck.type GRPC,
 // grpc.health.v1 probes. FeatureOriginProxyProtocol (proto v1.6.0):

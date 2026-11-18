@@ -94,6 +94,9 @@ English summary: report vulnerabilities through [GitHub private advisories](http
 - 预热与 sitemap 预热只经本机边缘监听（回环地址或 unix socket）请求，源站地址策略照常生效，控制台不发起任何请求；https 预热连接节点自己的 HTTPS 监听，不校验它自己的证书。
 - S3 源站收不到客户端的 `x-amz-*` 请求头（节点只签名自己的头），客户端也无法伪造 `X-Edgeweir-*` 内部头。
 - 带 `Authorization` 的请求默认不查缓存也不存储（RFC 9111 §3.5），只有规则显式设置 `cache_authorized` 才缓存。
+- API 安全（`api-security-v1`）在访问鉴权之后、规则与缓存之前执行；JWT 匹配范围始终绕过缓存，包括观察与 JWT 例外。静态公钥固定算法、发行者与受众，令牌携带的密钥地址或内嵌密钥不能改变信任库。例外只跳过一个 API 检查，不授予其他安全豁免。
+- API 检查器只经本机 agent socket 调用，最多 16 个并发检查，执行预算 75 ms、socket 总预算 250 ms；请求体 128 KiB、GraphQL 文档最多 64 KiB，解析深度、节点、词元、fragment 展开与数字指数另设硬上限。无可读完整请求体（包括 chunked、HTTP/2 或 HTTP/3 无 Content-Length）时按截断处理，执行模式拒绝，观察模式保留流量并记录；策略版本错配与资源不足也不能静默放行。
+- API 元数据仅含固定词段或配置模板、固定原因码、模式、例外 ID 与请求 ID，不含请求体、查询值、Token 或 Cookie；与现有访问日志共用有界队列与采样，不能当作全量审计记录。
 - 站点、源站、规则 id 只接受 `[A-Za-z0-9_-]`，避免它们在数据面的键里互相冒充。
 
 **节点扩展（`extensions-v1`）**

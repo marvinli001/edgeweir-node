@@ -179,6 +179,7 @@ local function record(var, site_id, geo, status)
     tier = M.tier(var),
     -- Node extensions' log fields and verdicts (edgeweir.ext).
     ext = ngx.ctx.edgeweir_ext_log,
+    api_security = ngx.ctx.edgeweir_api_log,
   }
   -- The AI crawler the request claimed (ai-crawlers-v1).
   local ctx = ngx.ctx
@@ -212,7 +213,7 @@ local function decide(site, dict)
     local id = ngx.var.request_id or tostring(ngx.now()) .. tostring(ngx.worker.pid())
     if ngx.crc32_short(id) % 10000 < rate then return true, rate, rules end
   end
-  if not rules and not (site.log_blocked and ctx.edgeweir_reason) then return false end
+  if not rules and not (site.log_blocked and ctx.edgeweir_reason) and not ctx.edgeweir_api_force_log then return false end
   local forced = dict:incr("forced|" .. site.id .. "|" .. floor(ngx.now()), 1, 0, 2)
   if not forced or forced > M.MAX_FORCED then return false end
   return true, 10000, rules
@@ -260,6 +261,10 @@ function M.log(waf_ids, waf_blocked, site_id, geo, tap_only)
     local peer = var.realip_remote_addr
     if peer and peer ~= "unix:" and peer ~= var.remote_addr then entry.peer_ip = clean(peer, 64) end
   end
+  if ctx.edgeweir_api_log then
+    entry.path = ctx.edgeweir_api_log.template
+    entry.query, entry.headers, entry.user_agent, entry.referer = nil, nil, nil, nil
+  end
   local raw = json.encode(entry)
   if not raw or not dict:rpush("pending", raw) then dict:incr("dropped", 1, 0) end
 end
@@ -270,6 +275,14 @@ function M.drain()
     local raw = dict:lpop("pending")
     if not raw then break end
     local record = json.decode(raw)
+    if record and type(record.api_security) == "table" then
+      for _, key in ipairs({ "issues", "exceptionIds" }) do
+        local values = record.api_security[key]
+        if type(values) == "table" and #values == 0 then
+          record.api_security[key] = json.empty_array or setmetatable(values, json.array_mt)
+        end
+      end
+    end
     if record then entries[#entries+1] = record end
   end
   if json.array_mt then setmetatable(entries, json.array_mt) end

@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/marvinli001/edgeweir-node/internal/apisecurity"
 	"github.com/marvinli001/edgeweir-node/internal/configir"
 	nodev1 "github.com/marvinli001/edgeweir-node/internal/gen/edgeweir/node/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -51,7 +52,8 @@ type sampledLog struct {
 	CrawlerChargedMicros uint64 `json:"crawler_charged_micros"`
 	PeerIP               string `json:"peer_ip"`
 	// Ext are node extensions' log fields and verdicts (extensions-v1).
-	Ext map[string]string `json:"ext"`
+	Ext         map[string]string `json:"ext"`
+	APISecurity json.RawMessage   `json:"api_security"`
 }
 
 // logFields are the fields of proto v0.30.0 (ADR-0041 §1) every line and
@@ -106,7 +108,7 @@ const (
 // BlockReasons are the block reasons of AccessLog.block_reason and
 // MinuteStats.block_reasons (ADR-0041 §3, the console's BLOCK_REASONS).
 var BlockReasons = []string{"ip_banned", "ip_blocked", "rule", "rate_limit", "crs", "cc", "challenge", "auth", "referer",
-	"user_agent", "region", "cors", "websocket_origin", "client_cert", "maintenance", "ai_crawler", "pay_per_crawl", "extension"}
+	"user_agent", "region", "cors", "websocket_origin", "client_cert", "maintenance", "ai_crawler", "pay_per_crawl", "extension", "api_security"}
 
 var (
 	crawlerRE            = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
@@ -295,7 +297,8 @@ func (c *Client) DrainLogs(ctx context.Context) ([]*nodev1.AccessLog, error) {
 			RequestBytes: f.RequestBytes, ContentType: f.ContentType, TlsVersion: f.TLSVersion,
 			BlockReason: f.BlockReason, BlockRuleId: f.BlockRuleID, Tier: f.Tier,
 			Query: Text(l.Query, maxQuery), Headers: logHeaders(l.Headers), PeerIp: peerIP(l.PeerIP),
-			Ext: extLogFields(l.Ext),
+			Ext:             extLogFields(l.Ext),
+			ApiSecurityJson: apisecurity.LogJSON(l.APISecurity),
 		})
 		if c := logs[len(logs)-1]; crawlerRE.MatchString(l.Crawler) && slices.Contains(crawlerVerifications, l.CrawlerVerification) {
 			c.Crawler, c.CrawlerVerification = l.Crawler, l.CrawlerVerification

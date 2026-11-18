@@ -1027,6 +1027,14 @@ proto v1.9.0，ADR-0073（控制台仓库）。`configir.buildTier` 校验 `Node
 
 `lua/edgeweir/init.lua` 在 worker timer 中调用 `ext.node_init()`，即使没有网站或首次请求也会初始化。节点就绪检查使用同一份 store 配置快照：仅节点包使用的 `extensions.conf_id` 必须匹配本 worker 的非空 `ConfID`，`extensions.node_secrets` 的期待版本须与现有 runtime secret 的版本一致，防止重载时用旧全局设置或旧 secret 初始化；短暂未就绪的 timer 保持排程。`stats.log` 对每个已识别网站调用原 `ext.log(site)`，由它先派发网站钩子再派发节点钩子；独立监听器不进入这条链。身份继续由原 `extensions.node` 传入；全局设置与 secret 沿现有站点表、`PUT /v1/extensions/runtime` 热更新，节点钩子不接收 `site_config`。
 
+### 3.37 API 安全（`api-security-v1`）
+
+`Site.api_security_json` 是有界策略的原始 JSON；配置构建校验 Schema 子集、路径模板、静态公钥和各项预算，原字节参与配置哈希。站点表携带策略及其 SHA-256。Lua 在现有访问鉴权之后、请求规则与缓存之前调用 agent socket 的 `POST /v1/api-security/check`，以站点 ID 和摘要绑定 applied plan；错版不能借用其他策略放行。JWT 范围复用鉴权匹配，进入范围的请求始终绕过缓存。
+
+Go 检查器使用 `golang-jwt/jwt/v5` 验证固定算法与静态公钥，使用 `gqlparser/v2` 的 AST 校验 GraphQL 结构；没有逐请求取钥或外部引用下载。检查最多 16 并发，75 ms 预算，并在解析前限制请求体、JSON 深度与节点、GraphQL 词元与嵌套、片段展开和数字指数。请求体复用现有截断判定，只检查带 Content-Length 且不超过 128 KiB 的完整数据；不可用或截断在执行模式拒绝，在观察模式记录并保持流量。
+
+端点匹配按方法、完整路径模板及静态段数优先；等优先级重叠模板拒绝。例外仅跳过指定方法、模板的一项 API 检查，编码歧义路径不授予例外。真实流量的候选模板只保留固定词段或配置模板；检查结果经 `AccessLog.api_security_json` 走原有采样队列，含模板、固定原因码、模式和例外 ID，不含请求值或正文。控制台负责候选数量与保留期。
+
 ## 4. 文件布局
 
 | 路径 | 内容 |

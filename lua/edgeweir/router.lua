@@ -113,6 +113,7 @@ local charset = require("edgeweir.charset")
 local purgemethod = require("edgeweir.purgemethod")
 local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
+local apisecurity = require("edgeweir.apisecurity")
 local accesscontrol = require("edgeweir.access")
 local bots = require("edgeweir.bots")
 local aicrawl = require("edgeweir.aicrawl")
@@ -329,7 +330,7 @@ local function route(site, pctx, headers, host, original_path, acme)
   -- RFC 9111, section 3.5: responses to requests with Authorization are
   -- shared only when the applying rule allows it (cache_authorized).
   local authorized = var.http_authorization ~= nil
-  if pctx and pctx.cache_bypass then
+  if ngx.ctx.edgeweir_api_cache_bypass or (pctx and pctx.cache_bypass) then
     var.edgeweir_range_mode = "pass"
     return true
   end
@@ -616,6 +617,7 @@ local function access()
   -- platform lists (edgeweir.policy). The identity headers the visitor sent
   -- are gone from headers too: the rules never read them. Sites without
   -- rules still remove those of their disabled and former rules.
+  apisecurity.capture(site, headers)
   if site._auth or site._auth_identity then
     auth.select(site, acme, headers)
   end

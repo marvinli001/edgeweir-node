@@ -316,6 +316,7 @@ function _M.prepare(s, cfg)
   s._tls_pending = policy.prepare_tls_pending(s.domains)
   -- Access authentication (access-auth-v1): rules, users and keys.
   auth.prepare(s)
+  require("edgeweir.apisecurity").prepare(s)
   -- Access control (access-control-v1): lists, hotlink, user agents, CORS,
   -- geo, WebSocket origins and idle timeout, security headers.
   access.prepare(s)

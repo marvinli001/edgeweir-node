@@ -18,6 +18,7 @@ spdx() {
 	github.com/coder/websocket) echo ISC ;;
 	github.com/JohannesKaufmann/dom | github.com/JohannesKaufmann/html-to-markdown/v2) echo MIT ;;
 	github.com/gen2brain/avif | github.com/gen2brain/webp) echo MIT ;;
+	github.com/golang-jwt/jwt/v5 | github.com/vektah/gqlparser/v2) echo MIT ;;
 	github.com/oschwald/maxminddb-golang/v2) echo ISC ;;
 	golang.org/x/crypto | golang.org/x/net | golang.org/x/sys | golang.org/x/text | google.golang.org/protobuf) echo BSD-3-Clause ;;
 	*)

@@ -4927,6 +4927,9 @@ type AccessLog struct {
 	Crawler              string `protobuf:"bytes,40,opt,name=crawler,proto3" json:"crawler,omitempty"`
 	CrawlerVerification  string `protobuf:"bytes,41,opt,name=crawler_verification,json=crawlerVerification,proto3" json:"crawler_verification,omitempty"`
 	CrawlerChargedMicros uint64 `protobuf:"varint,42,opt,name=crawler_charged_micros,json=crawlerChargedMicros,proto3" json:"crawler_charged_micros,omitempty"`
+	// Bounded, redacted API endpoint template and check outcomes (api-security-v1).
+	// No query values, headers, credentials or body data.
+	ApiSecurityJson string `protobuf:"bytes,43,opt,name=api_security_json,json=apiSecurityJson,proto3" json:"api_security_json,omitempty"`
 	// Requests the edge fetched through the tiered cache: the upper tier's
 	// node id and cache status ("<id> HIT"), "origin" when it fell back to
 	// the origins; "" otherwise (cache hits included). Added in v1.9.0.
@@ -5225,6 +5228,13 @@ func (x *AccessLog) GetCrawlerChargedMicros() uint64 {
 		return x.CrawlerChargedMicros
 	}
 	return 0
+}
+
+func (x *AccessLog) GetApiSecurityJson() string {
+	if x != nil {
+		return x.ApiSecurityJson
+	}
+	return ""
 }
 
 func (x *AccessLog) GetTier() string {
@@ -7495,8 +7505,7 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\x10ErrorParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x1a\n" +
-	"\x18ReportTaskResultResponse\"\xea\n" +
-	"\n" +
+	"\x18ReportTaskResultResponse\"\x96\v\n" +
 	"\tAccessLog\x12.\n" +
 	"\x04time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x17\n" +
 	"\asite_id\x18\x02 \x01(\tR\x06siteId\x12\x1b\n" +
@@ -7544,7 +7553,8 @@ const file_edgeweir_node_v1_node_proto_rawDesc = "" +
 	"\apeer_ip\x18\" \x01(\tR\x06peerIp\x12\x18\n" +
 	"\acrawler\x18( \x01(\tR\acrawler\x121\n" +
 	"\x14crawler_verification\x18) \x01(\tR\x13crawlerVerification\x124\n" +
-	"\x16crawler_charged_micros\x18* \x01(\x04R\x14crawlerChargedMicros\x12\x12\n" +
+	"\x16crawler_charged_micros\x18* \x01(\x04R\x14crawlerChargedMicros\x12*\n" +
+	"\x11api_security_json\x18+ \x01(\tR\x0fapiSecurityJson\x12\x12\n" +
 	"\x04tier\x18P \x01(\tR\x04tier\x126\n" +
 	"\x03ext\x18< \x03(\v2$.edgeweir.node.v1.AccessLog.ExtEntryR\x03ext\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +

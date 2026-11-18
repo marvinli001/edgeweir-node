@@ -2588,6 +2588,9 @@ type Site struct {
 	// whose Accept names text/markdown (Markdown); unset means off. Added in
 	// proto/v1.9.0 (feature markdown-v1).
 	Markdown *Markdown `protobuf:"bytes,40,opt,name=markdown,proto3" json:"markdown,omitempty"`
+	// Bounded API security policy as UTF-8 JSON, contract api-security-v1.
+	// Empty: disabled. Public verification keys only; no credentials.
+	ApiSecurityJson string `protobuf:"bytes,41,opt,name=api_security_json,json=apiSecurityJson,proto3" json:"api_security_json,omitempty"`
 	// AI crawl control (ADR-0070): actions on the crawlers of
 	// NodeConfig.ai_crawlers, the managed robots.txt and pay per crawl.
 	// Unset: crawlers are only tagged. Added in v1.9.0 (feature
@@ -2913,6 +2916,13 @@ func (x *Site) GetMarkdown() *Markdown {
 		return x.Markdown
 	}
 	return nil
+}
+
+func (x *Site) GetApiSecurityJson() string {
+	if x != nil {
+		return x.ApiSecurityJson
+	}
+	return ""
 }
 
 func (x *Site) GetAiCrawl() *AiCrawlPolicy {
@@ -9317,7 +9327,7 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1e\n" +
 	"\vmax_size_mb\x18\x02 \x01(\x04R\tmaxSizeMb\x12 \n" +
 	"\fkeys_zone_mb\x18\x03 \x01(\rR\n" +
-	"keysZoneMb\"\x82\x11\n" +
+	"keysZoneMb\"\xae\x11\n" +
 	"\x04Site\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -9370,7 +9380,8 @@ const file_edgeweir_node_v1_config_proto_rawDesc = "" +
 	"\x15auth_identity_headers\x18% \x03(\tR\x13authIdentityHeaders\x12^\n" +
 	"\x17encoded_path_exemptions\x18& \x03(\v2&.edgeweir.node.v1.EncodedPathExemptionR\x15encodedPathExemptions\x12L\n" +
 	"\x10development_mode\x18' \x01(\v2!.edgeweir.node.v1.DevelopmentModeR\x0fdevelopmentMode\x126\n" +
-	"\bmarkdown\x18( \x01(\v2\x1a.edgeweir.node.v1.MarkdownR\bmarkdown\x12:\n" +
+	"\bmarkdown\x18( \x01(\v2\x1a.edgeweir.node.v1.MarkdownR\bmarkdown\x12*\n" +
+	"\x11api_security_json\x18) \x01(\tR\x0fapiSecurityJson\x12:\n" +
 	"\bai_crawl\x18- \x01(\v2\x1f.edgeweir.node.v1.AiCrawlPolicyR\aaiCrawl\x12 \n" +
 	"\ftier_plan_id\x18P \x01(\tR\n" +
 	"tierPlanId\x12?\n" +

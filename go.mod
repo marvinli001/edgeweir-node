@@ -8,8 +8,10 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/webp v0.6.4
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/oschwald/maxminddb-golang/v2 v2.6.0
+	github.com/vektah/gqlparser/v2 v2.5.64
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.48.0

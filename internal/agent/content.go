@@ -185,6 +185,7 @@ func (a *Agent) agentHandler() http.Handler {
 		writePurge(w, status, answer)
 	})
 	mux.HandleFunc("POST /v1/challenge/verify", a.serveChallengeVerify)
+	mux.HandleFunc("POST /v1/api-security/check", a.serveAPISecurity)
 	return mux
 }
 

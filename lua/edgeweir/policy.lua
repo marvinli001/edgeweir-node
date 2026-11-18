@@ -52,6 +52,7 @@ local ratelimit = require("edgeweir.ratelimit")
 local compress = require("edgeweir.compress")
 local clientcert = require("edgeweir.clientcert")
 local auth = require("edgeweir.auth")
+local apisecurity = require("edgeweir.apisecurity")
 local access = require("edgeweir.access")
 local body = require("edgeweir.body")
 local bans = require("edgeweir.bans")
@@ -748,6 +749,10 @@ function _M.access(site, headers, acme, site_allowed)
   -- cache (edgeweir.auth).
   if site._auth then
     local result = auth.check(site, _M.site_https_redirect)
+    if result then return result end
+  end
+  if site._api then
+    local result = apisecurity.check(site, acme)
     if result then return result end
   end
   for _, phase in ipairs(_M.phases) do

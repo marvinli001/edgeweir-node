@@ -276,10 +276,11 @@ type Agent struct {
 	log *slog.Logger
 
 	// purgeLimit limits the accepted PURGE requests of each site.
-	purgeLimit purgeLimiter
-	engine     Engine
-	dp         DataPlane
-	ids        identity.Store
+	purgeLimit        purgeLimiter
+	apiSecurityChecks atomic.Int32
+	engine            Engine
+	dp                DataPlane
+	ids               identity.Store
 	// tierLatency holds the round trip times to the tiered cache's latency
 	// targets (tierLatencyLoop).
 	tierLatency tierLatencies

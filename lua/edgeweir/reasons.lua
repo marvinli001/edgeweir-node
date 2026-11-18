@@ -19,6 +19,7 @@ _M.REASONS = {
   -- AI crawl control (ai-crawlers-v1, ADR-0070): a crawler's block or
   -- challenge action; pay per crawl's 402 and 400 answers.
   ai_crawler = true, pay_per_crawl = true,
+  api_security = true,
 }
 
 -- set records reason and, for reasons a rule caused, the rule's id (custom
