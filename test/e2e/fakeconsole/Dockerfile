@@ -10,6 +10,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 COPY --from=build /out/fakeconsole /usr/local/bin/fakeconsole
+COPY examples/extensions/informational-links /examples/extensions/informational-links
 # /shared receives the HTTPS origin's CA for the node (named volume).
 RUN install -d -o 65534 -g 65534 -m 0755 /shared
 USER 65534:65534

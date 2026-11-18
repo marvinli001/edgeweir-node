@@ -431,6 +431,11 @@ local HTTP_VERSIONS = { [1.0] = "1.0", [1.1] = "1.1", [2.0] = "2", [3.0] = "3" }
 
 -- api2 adds the calls of Lua API 2 to a (extension version 1.1).
 local function api2(e, a)
+  a.early_hints = function(links)
+    need(e, "early_hints")
+    in_hooks(e, { "access", "access_late" })
+    return require("edgeweir.earlyhints").send(links)
+  end
   local var = function(name) return ngx.var[name] end
   local function num(name) return tonumber(var(name)) end
   a.req.http_version = function() return HTTP_VERSIONS[ngx.req.http_version()] or "" end

@@ -119,12 +119,16 @@ func TestExtensionTreeScopeGuards(t *testing.T) {
 
 func TestExtensionNodeCapability(t *testing.T) {
 	a := &Agent{}
+	a.moduleFeatures = []string{configir.FeatureExtensionsEarlyHints}
 	features := append(slices.Clone(configir.SupportedFeatures), a.extraFeatures()...)
 	if !slices.Contains(features, configir.FeatureExtensionsV2) || !slices.Contains(features, configir.FeatureExtensionsNode) {
 		t.Fatalf("extension runtime features %v", features)
 	}
 	a.cfg.Extensions.Disabled = true
-	for _, feature := range []string{configir.FeatureExtensions, configir.FeatureExtensionsV2, configir.FeatureExtensionsNode} {
+	if !slices.Contains(features, configir.FeatureExtensionsEarlyHints) {
+		t.Fatalf("missing early hints feature: %v", features)
+	}
+	for _, feature := range []string{configir.FeatureExtensions, configir.FeatureExtensionsV2, configir.FeatureExtensionsNode, configir.FeatureExtensionsEarlyHints} {
 		if slices.Contains(a.extraFeatures(), feature) {
 			t.Fatalf("local disable announced %s", feature)
 		}
