@@ -108,16 +108,18 @@ EDGEWEIR_RESULT {"v":1,"step":"enroll","status":"enrolled","exit":0,"retry":fals
 | 下线 | 控制台的下线任务（`decommission-v1`）：节点回报后停止服务，删除身份、配置与缓存，此后（重启后也是）不再启动，直到重新注册；软件包保留 |
 | 仍需 SSH | 密钥丢失或证书在离线期间过期后的重新注册、修改本机参数（`/etc/default/edgeweir-node`、内核封禁的 drop-in）、卸载软件包 |
 
+edgeweir-openresty 1.31.1.1-5 回移了 NGINX 的 HTTP/2 修复（CVE-2026-123007、CVE-2026-123633）和 HTTP/3 修复（CVE-2026-121810）。逐个节点摘流，更新系统包并重启 `edgeweir-node` 服务，或用本次发布的镜像重建容器。`edgeweir-node healthcheck` 和已启用协议的站点探测通过后再恢复流量。控制台自升级只更新 agent 和 Lua。
+
 ### deb / rpm
 
 系统要求：glibc 2.34 及以上（RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新版本），amd64 或 arm64。OpenResty 由 agent 以子进程运行；若装有 OpenResty 官方包，停用其服务（`sudo systemctl disable --now openresty`）。
 
-发布物：`edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）、`edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）、`edgeweir-openresty_1.31.1.1-4_<架构>.deb` / `edgeweir-openresty-1.31.1.1-4.<架构>.rpm`、同名的 `edgeweir-openresty-modsecurity` 包、`checksums.txt*`。安装前[验证发布物](#验证发布物)。
+发布物：`edgeweir-node_<版本>_<架构>.deb`（`amd64`、`arm64`）、`edgeweir-node-<版本>-1.<架构>.rpm`（`x86_64`、`aarch64`）、`edgeweir-openresty_1.31.1.1-5_<架构>.deb` / `edgeweir-openresty-1.31.1.1-5.<架构>.rpm`、同名的 `edgeweir-openresty-modsecurity` 包、`checksums.txt*`。安装前[验证发布物](#验证发布物)。
 
 ```sh
-sudo apt install ./edgeweir-openresty_1.31.1.1-4_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-4_amd64.deb \
+sudo apt install ./edgeweir-openresty_1.31.1.1-5_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-5_amd64.deb \
   ./edgeweir-node_<版本>_amd64.deb
-# 或 sudo dnf install ./edgeweir-openresty-1.31.1.1-4.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-4.x86_64.rpm \
+# 或 sudo dnf install ./edgeweir-openresty-1.31.1.1-5.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-5.x86_64.rpm \
 #      ./edgeweir-node-<版本>-1.x86_64.rpm
 sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
 sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>

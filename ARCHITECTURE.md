@@ -1091,10 +1091,10 @@ Go 检查器使用 `golang-jwt/jwt/v5` 验证固定算法与静态公钥，使�
 
 | 包 | 内容 | 依赖 |
 | --- | --- | --- |
-| `edgeweir-openresty` 1.31.1.1-4 | `/usr/lib/edgeweir-openresty`（nginx、LuaJIT、lualib、`bin/openresty`、`bin/resty`），`/usr/share/doc/edgeweir-openresty` | glibc ≥ 2.34、libgcc |
-| `edgeweir-openresty-modsecurity` 1.31.1.1-4 | `modules/ngx_http_modsecurity_module.so`、私有的 `lib/libmodsecurity.so.3`（不在动态链接器的搜索路径里）、`/usr/share/edgeweir-openresty`（CRS、`unicode.mapping`） | 同版本的 edgeweir-openresty、libstdc++ |
+| `edgeweir-openresty` 1.31.1.1-5 | `/usr/lib/edgeweir-openresty`（nginx、LuaJIT、lualib、`bin/openresty`、`bin/resty`），`/usr/share/doc/edgeweir-openresty` | glibc ≥ 2.34、libgcc |
+| `edgeweir-openresty-modsecurity` 1.31.1.1-5 | `modules/ngx_http_modsecurity_module.so`、私有的 `lib/libmodsecurity.so.3`（不在动态链接器的搜索路径里）、`/usr/share/edgeweir-openresty`（CRS、`unicode.mapping`） | 同版本的 edgeweir-openresty、libstdc++ |
 
-文件名按 nfpm 惯例：`edgeweir-openresty_1.31.1.1-4_amd64.deb`、`edgeweir-openresty-1.31.1.1-4.x86_64.rpm`（arm64 为 `arm64` / `aarch64`），`-modsecurity` 同理；另有每个架构的 SPDX SBOM `edgeweir-openresty_1.31.1.1-4_<架构>.sbom.json`。`make openresty-packages ARCH=amd64|arm64` 构建到 `out/openresty/`，goreleaser 把它们复制进 `dist/`、计入 `checksums.txt` 并随发布上传；发布工作流在对应架构的机器上构建。两个包安装到独立目录，不与发行版或 OpenResty 官方的包冲突。
+文件名按 nfpm 惯例：`edgeweir-openresty_1.31.1.1-5_amd64.deb`、`edgeweir-openresty-1.31.1.1-5.x86_64.rpm`（arm64 为 `arm64` / `aarch64`），`-modsecurity` 同理；另有每个架构的 SPDX SBOM `edgeweir-openresty_1.31.1.1-5_<架构>.sbom.json`。`make openresty-packages ARCH=amd64|arm64` 构建到 `out/openresty/`，goreleaser 把它们复制进 `dist/`、计入 `checksums.txt` 并随发布上传；发布工作流在对应架构的机器上构建。两个包安装到独立目录，不与发行版或 OpenResty 官方的包冲突。
 
 - **构建环境**：固定 digest 的 `almalinux:9.7`，工具链（gcc 11.5、binutils 2.35.2）只从已冻结的 AlmaLinux 9.7 vault 安装。glibc 2.34 是最低要求：产物可在 RHEL / Rocky / AlmaLinux 9、Debian 12、Ubuntu 22.04 及更新的发行版上运行；构建检查二进制需要的 glibc 版本不超过 2.34、libmodsecurity 需要的 libstdc++ 不超过 GLIBCXX_3.4.29。
 - **源码与校验**（`sources.lock`）：每个源码包先校验固定的 SHA-256；上游发布了签名的，再用 `keys/` 里固定的公钥以 `gpgv` 校验，并要求签名密钥属于固定的主密钥指纹。

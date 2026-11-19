@@ -108,16 +108,18 @@ After the install the console manages the node through the node channel only; SS
 | Decommission | The console's decommission task (`decommission-v1`): the node reports it, stops serving, deletes its identity, configuration and cache, and does not start again (also after a reboot) until it is enrolled anew; the packages stay |
 | Still needs SSH | Re-enrolling after the key is lost or the certificate expired while offline, changing local settings (`/etc/default/edgeweir-node`, the kernel-ban drop-in), removing the packages |
 
+edgeweir-openresty 1.31.1.1-5 backports the NGINX HTTP/2 fixes for CVE-2026-123007 and CVE-2026-123633 and the HTTP/3 fix for CVE-2026-121810. Drain one node at a time, upgrade the system packages and restart the `edgeweir-node` service, or recreate the container with the image from this release. Restore traffic after `edgeweir-node healthcheck` and a site check over each enabled protocol succeed. Console self-updates cover only the agent and Lua.
+
 ### deb / rpm
 
 Requirements: glibc 2.34 or later (RHEL / Rocky / AlmaLinux 9, Debian 12, Ubuntu 22.04 and newer), amd64 or arm64. The agent runs OpenResty as a child process; if OpenResty's own packages are installed, disable their service (`sudo systemctl disable --now openresty`).
 
-Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `edgeweir-openresty_1.31.1.1-4_<arch>.deb` / `edgeweir-openresty-1.31.1.1-4.<arch>.rpm`, the `edgeweir-openresty-modsecurity` packages named alike, `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
+Artifacts: `edgeweir-node_<version>_<arch>.deb` (`amd64`, `arm64`), `edgeweir-node-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`), `edgeweir-openresty_1.31.1.1-5_<arch>.deb` / `edgeweir-openresty-1.31.1.1-5.<arch>.rpm`, the `edgeweir-openresty-modsecurity` packages named alike, `checksums.txt*`. [Verify](#verify-release-artifacts) before installing.
 
 ```sh
-sudo apt install ./edgeweir-openresty_1.31.1.1-4_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-4_amd64.deb \
+sudo apt install ./edgeweir-openresty_1.31.1.1-5_amd64.deb ./edgeweir-openresty-modsecurity_1.31.1.1-5_amd64.deb \
   ./edgeweir-node_<version>_amd64.deb
-# or sudo dnf install ./edgeweir-openresty-1.31.1.1-4.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-4.x86_64.rpm \
+# or sudo dnf install ./edgeweir-openresty-1.31.1.1-5.x86_64.rpm ./edgeweir-openresty-modsecurity-1.31.1.1-5.x86_64.rpm \
 #      ./edgeweir-node-<version>-1.x86_64.rpm
 sudo install -m 0600 /dev/stdin /root/edgeweir-token <<< '<token>'
 sudo edgeweir-node enroll --server https://console.example.com:8443 --token-file /root/edgeweir-token --ca-sha256 <sha256>

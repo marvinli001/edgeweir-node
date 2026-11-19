@@ -9,6 +9,9 @@ for f in "$dl"/*.tar.gz "$dl"/*.tar.xz; do tar -xf "$f" -C "$src" --no-same-owne
 mv "$src/ngx_brotli-$(ver ngx_brotli)" "$ngx_brotli"
 rm -rf "$ngx_brotli/deps/brotli"
 mv "$src/brotli-$(ver brotli)" "$ngx_brotli/deps/brotli"
+for cve in CVE-2026-121810 CVE-2026-123007 CVE-2026-123633; do
+  patch -d "$nginx_src" -p1 --fuzz=0 --batch --forward --no-backup-if-mismatch <"/build/patches/nginx-$cve.patch"
+done
 patch -d "$nginx_src" -p1 --no-backup-if-mismatch </build/patches/nginx-nogroup.patch
 patch -d "$nginx_src" -p1 --no-backup-if-mismatch </build/patches/nginx-upstream-proxy-protocol.patch
 patch -d "$nginx_src" -p1 --no-backup-if-mismatch </build/patches/nginx-early-hints-ffi.patch

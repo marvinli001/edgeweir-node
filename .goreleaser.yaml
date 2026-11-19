@@ -126,10 +126,10 @@ nfpms:
     overrides:
       deb:
         dependencies:
-          - edgeweir-openresty (>= 1.31.1.1-4)
+          - edgeweir-openresty (>= 1.31.1.1-5)
       rpm:
         dependencies:
-          - edgeweir-openresty >= 1.31.1.1-4
+          - edgeweir-openresty >= 1.31.1.1-5
     recommends:
       - edgeweir-openresty-modsecurity
       - nftables
